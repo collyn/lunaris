@@ -1,0 +1,53 @@
+# Rust / Cargo
+/target/
+moonlight-common-rust/
+
+
+# Build outputs & Binaries
+bin/
+*.exe
+*.dll
+*.so
+*.dylib
+*.AppImage
+
+# Node / JS / Web
+node_modules/
+dist/
+dist-ssr/
+
+
+# IDEs & Editors
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+*~
+
+# OS Files
+.DS_Store
+Thumbs.db
+
+# Databases & Runtime State
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+lunaris.db
+
+# Environment & Secrets
+.env
+.env.local
+.env.*.local
+agent_config.json
+**/agent_config.json
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*

@@ -1,0 +1,25 @@
+/* Global Minimal Stylesheet */
+:root {
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  color-scheme: dark;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  background-color: #080c14;
+  color: #f1f5f9;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+a {
+  color: #00f0ff;
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}

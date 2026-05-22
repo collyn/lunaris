@@ -1,0 +1,158 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-linux:
+    name: Build Linux
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake clang pkg-config libssl-dev libavahi-compat-libdnssd-dev
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --release --workspace
+
+      - name: Upload Server Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: server-linux
+          path: target/release/server
+
+      - name: Upload Agent Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-linux
+          path: target/release/agent
+
+  build-windows:
+    name: Build Windows
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --release --bin agent
+
+      - name: Upload Agent Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-windows
+          path: target/release/agent.exe
+
+  build-macos:
+    name: Build macOS
+    runs-on: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build Apple Silicon (M1/M2/M3)
+        run: cargo build --release --bin agent --target aarch64-apple-darwin
+
+      - name: Build Intel x86_64
+        run: cargo build --release --bin agent --target x86_64-apple-darwin
+
+      - name: Create Universal Binary
+        run: |
+          mkdir -p target/release/macos
+          lipo -create target/aarch64-apple-darwin/release/agent target/x86_64-apple-darwin/release/agent -output target/release/macos/agent
+
+      - name: Upload Agent Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-macos
+          path: target/release/macos/agent
+
+  release:
+    name: Create Release
+    needs: [build-linux, build-windows, build-macos]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download Linux Server Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: server-linux
+          path: ./artifacts/linux-server
+
+      - name: Download Linux Agent Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: agent-linux
+          path: ./artifacts/linux-agent
+
+      - name: Download Windows Agent Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: agent-windows
+          path: ./artifacts/windows-agent
+
+      - name: Download macOS Agent Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: agent-macos
+          path: ./artifacts/macos-agent
+
+      - name: Organize Release Files
+        run: |
+          mkdir -p release-files
+          mv ./artifacts/linux-server/server ./release-files/lunaris-server-linux
+          mv ./artifacts/linux-agent/agent ./release-files/lunaris-agent-linux
+          mv ./artifacts/windows-agent/agent.exe ./release-files/lunaris-agent-windows.exe
+          mv ./artifacts/macos-agent/agent ./release-files/lunaris-agent-macos
+          chmod +x ./release-files/*
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Release ${{ github.ref_name }}
+          tag_name: ${{ github.ref }}
+          draft: false
+          prerelease: false
+          files: |
+            release-files/lunaris-server-linux
+            release-files/lunaris-agent-linux
+            release-files/lunaris-agent-windows.exe
+            release-files/lunaris-agent-macos
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
