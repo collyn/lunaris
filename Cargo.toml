@@ -5,3 +5,7 @@ members = [
     "common",
 ]
 resolver = "2"
+
+[patch.crates-io]
+printf-compat = { git = "https://github.com/lights0123/printf-compat.git" }
+

@@ -5291,3 +5291,8 @@ dependencies = [
  "cc",
  "pkg-config",
 ]
+
+[[patch.unused]]
+name = "printf-compat"
+version = "0.4.0"
+source = "git+https://github.com/lights0123/printf-compat.git#fe0eb92ac1e06e8a1a87f29696a65148f9c1929e"
