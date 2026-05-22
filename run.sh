@@ -34,7 +34,7 @@ fi
 
 # 3. Build & Run the backend server
 echo "[Backend] Starting Rust signaling server..."
-cargo run --release --manifest-path server/Cargo.toml &
+cargo run --release --manifest-path server/Cargo.toml --bin server &
 
 # 4. Run the frontend in dev mode
 echo "[Frontend] Starting Vite development server..."
