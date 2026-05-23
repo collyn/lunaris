@@ -34,6 +34,7 @@ function App() {
   const [hostsLoading, setHostsLoading] = useState<boolean>(false);
   const [hostsError, setHostsError] = useState<string | null>(null);
   const [selectedHost, setSelectedHost] = useState<Host | null>(null);
+  const [agentToken, setAgentToken] = useState<string | null>(null);
 
   // Sunshine Host Configuration Modal State
   const [showSettingsModal, setShowSettingsModal] = useState<boolean>(false);
@@ -238,9 +239,54 @@ function App() {
     }
   };
 
+  const fetchAgentToken = async () => {
+    if (!token) return;
+    try {
+      const serverHost = getBackendHost();
+      const response = await fetch(`${window.location.protocol}//${serverHost}/api/agent/token`, {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+      if (response.ok) {
+        const data = await response.json();
+        setAgentToken(data.token);
+      }
+    } catch (err) {
+      console.error("Failed to fetch agent token:", err);
+    }
+  };
+
+  const downloadAgentConfig = () => {
+    if (!agentToken) return;
+    
+    // Construct default ws/wss URL
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const serverHost = getBackendHost();
+    const serverUrl = `${protocol}//${serverHost}`;
+
+    const configObj = {
+      client_unique_id: "",
+      client_private_key: "",
+      client_certificate: "",
+      server_certificate: "",
+      server_url: serverUrl,
+      server_token: agentToken
+    };
+
+    const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(configObj, null, 2));
+    const downloadAnchor = document.createElement('a');
+    downloadAnchor.setAttribute("href",     dataStr);
+    downloadAnchor.setAttribute("download", "agent_config.json");
+    document.body.appendChild(downloadAnchor);
+    downloadAnchor.click();
+    downloadAnchor.remove();
+  };
+
   useEffect(() => {
     if (token) {
       fetchHosts();
+      fetchAgentToken();
       // Periodically refresh host list
       const interval = setInterval(fetchHosts, 5000);
       return () => clearInterval(interval);
@@ -759,6 +805,62 @@ function App() {
                     )}
                   </button>
                 </form>
+               </div>
+
+              <div className="sidebar-card" style={{ marginTop: '20px' }}>
+                <h3>Host Agent Setup</h3>
+                <p className="sidebar-desc">Install and configure the Lunaris Agent on your remote host machine.</p>
+                
+                {agentToken && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginTop: '12px' }}>
+                    <div className="form-group" style={{ margin: 0 }}>
+                      <label style={{ fontSize: '11px' }}>Signaling Server URL</label>
+                      <input 
+                        type="text" 
+                        readOnly 
+                        value={`${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${getBackendHost()}`}
+                        style={{ fontFamily: 'monospace', fontSize: '11px', padding: '6px', background: 'rgba(255,255,255,0.05)', color: 'var(--text-secondary)' }}
+                      />
+                    </div>
+                    <div className="form-group" style={{ margin: 0 }}>
+                      <label style={{ fontSize: '11px' }}>Agent Connection Token</label>
+                      <div style={{ display: 'flex', gap: '6px' }}>
+                        <input 
+                          type="password" 
+                          readOnly 
+                          value={agentToken}
+                          id="client-agent-token-field"
+                          style={{ fontFamily: 'monospace', fontSize: '11px', padding: '6px', background: 'rgba(255,255,255,0.05)', color: 'var(--text-secondary)', flex: 1 }}
+                        />
+                        <button 
+                          type="button"
+                          className="btn-secondary" 
+                          style={{ padding: '6px 10px', fontSize: '11px', border: '1px solid var(--border-color)' }}
+                          onClick={() => {
+                            const el = document.getElementById('client-agent-token-field') as HTMLInputElement;
+                            if (el) {
+                              if (el.type === 'password') {
+                                el.type = 'text';
+                              } else {
+                                el.type = 'password';
+                              }
+                            }
+                          }}
+                        >
+                          👁️
+                        </button>
+                      </div>
+                    </div>
+                    <button 
+                      type="button"
+                      className="btn-secondary"
+                      onClick={downloadAgentConfig}
+                      style={{ marginTop: '6px', padding: '8px', fontSize: '0.85rem', width: '100%' }}
+                    >
+                      📥 Download agent_config.json
+                    </button>
+                  </div>
+                )}
               </div>
             </div>
           </div>

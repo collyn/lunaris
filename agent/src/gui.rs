@@ -22,6 +22,7 @@ pub struct ConfigResponse {
     pub server_url: String,
     pub agent_name: String,
     pub no_auto_start_sunshine: bool,
+    pub server_token: String,
 }
 
 #[derive(serde::Serialize, Clone)]
@@ -83,6 +84,7 @@ fn get_config() -> Result<ConfigResponse, String> {
         client_certificate: "".to_string(),
         server_certificate: "".to_string(),
         server_url: "ws://127.0.0.1:8080".to_string(),
+        server_token: "".to_string(),
     });
 
     // Extract name from environment or host name
@@ -95,25 +97,48 @@ fn get_config() -> Result<ConfigResponse, String> {
         server_url: config.server_url,
         agent_name,
         no_auto_start_sunshine: false, // Default
+        server_token: config.server_token,
     })
 }
 
 #[tauri::command]
-fn save_config(server_url: String, _agent_name: String, _no_auto_start_sunshine: bool) -> Result<(), String> {
+fn save_config(server_url: String, _agent_name: String, _no_auto_start_sunshine: bool, server_token: String) -> Result<(), String> {
     let mut config = load_config("agent_config.json").unwrap_or_else(|_| AgentConfig {
         client_unique_id: uuid::Uuid::new_v4().to_string().to_uppercase(),
         client_private_key: "".to_string(),
         client_certificate: "".to_string(),
         server_certificate: "".to_string(),
         server_url: "ws://127.0.0.1:8080".to_string(),
+        server_token: "".to_string(),
     });
 
     config.server_url = server_url;
+    config.server_token = server_token;
     // We can save other fields or settings in agent_config.json if desired.
     if let Err(e) = save_config_file(&config, "agent_config.json") {
         return Err(format!("Failed to save config: {}", e));
     }
     Ok(())
+}
+
+#[tauri::command]
+fn import_config() -> Result<bool, String> {
+    // Open native file dialog
+    let file_path = rfd::FileDialog::new()
+        .set_title("Select agent_config.json")
+        .add_filter("JSON Config", &["json"])
+        .pick_file();
+
+    if let Some(path) = file_path {
+        let path_str = path.to_string_lossy();
+        crate::pairing::import_config_file(&path_str, "agent_config.json")
+            .map_err(|e| format!("Failed to import config: {}", e))?;
+        
+        info!("Successfully imported configuration from {:?}", path);
+        Ok(true)
+    } else {
+        Ok(false)
+    }
 }
 
 #[tauri::command]
@@ -152,6 +177,7 @@ fn start_agent(state: State<'_, AppState>) -> Result<(), String> {
             47989,
             false, // Default
             "sunshine".to_string(),
+            "agent_config.json".to_string(),
         );
 
         tokio::select! {
@@ -293,6 +319,7 @@ pub fn run_gui() {
         .invoke_handler(tauri::generate_handler![
             get_config,
             save_config,
+            import_config,
             start_agent,
             stop_agent,
             get_status,

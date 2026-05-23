@@ -10,11 +10,13 @@ document.addEventListener('DOMContentLoaded', () => {
   const agentIdVal = document.getElementById('agent-id-val');
   
   const serverUrlInput = document.getElementById('server-url');
+  const serverTokenInput = document.getElementById('server-token');
   const agentNameInput = document.getElementById('agent-name');
   const autostartSunshineInput = document.getElementById('autostart-sunshine');
 
   const toggleAgentBtn = document.getElementById('toggle-agent-btn');
   const saveConfigBtn = document.getElementById('save-config-btn');
+  const importConfigBtn = document.getElementById('import-config-btn');
   const clearLogsBtn = document.getElementById('clear-logs-btn');
   const copyLogsBtn = document.getElementById('copy-logs-btn');
   const consoleOutput = document.getElementById('console-output');
@@ -55,6 +57,7 @@ document.addEventListener('DOMContentLoaded', () => {
     try {
       const config = await invoke('get_config');
       serverUrlInput.value = config.server_url || 'ws://127.0.0.1:8080';
+      serverTokenInput.value = config.server_token || '';
       agentNameInput.value = config.agent_name || '';
       autostartSunshineInput.checked = !config.no_auto_start_sunshine;
       agentIdVal.textContent = config.client_unique_id || 'N/A';
@@ -69,13 +72,15 @@ document.addEventListener('DOMContentLoaded', () => {
   async function saveConfig() {
     try {
       const serverUrl = serverUrlInput.value.trim();
+      const serverToken = serverTokenInput.value.trim();
       const agentName = agentNameInput.value.trim();
       const noAutoStartSunshine = !autostartSunshineInput.checked;
 
       await invoke('save_config', {
         serverUrl,
         agentName,
-        noAutoStartSunshine
+        noAutoStartSunshine,
+        serverToken
       });
 
       appendLog(`[INFO] Configuration saved successfully.`);
@@ -152,6 +157,20 @@ document.addEventListener('DOMContentLoaded', () => {
   // Event Listeners
   toggleAgentBtn.addEventListener('click', toggleAgent);
   saveConfigBtn.addEventListener('click', saveConfig);
+  importConfigBtn.addEventListener('click', async () => {
+    try {
+      appendLog(`[INFO] Requesting configuration file import...`);
+      const success = await invoke('import_config');
+      if (success) {
+        appendLog(`[INFO] Configuration imported successfully!`);
+        await loadConfig();
+      } else {
+        appendLog(`[INFO] Configuration import cancelled.`);
+      }
+    } catch (err) {
+      appendLog(`[ERROR] Failed to import configuration: ${err}`);
+    }
+  });
   
   clearLogsBtn.addEventListener('click', () => {
     consoleOutput.innerHTML = '';

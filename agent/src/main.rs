@@ -60,6 +60,12 @@ struct Args {
 
     #[arg(long)]
     cli: bool,
+
+    #[arg(long, default_value = "agent_config.json")]
+    config: String,
+
+    #[arg(long)]
+    import_config: Option<String>,
 }
 
 const LINUX_SUNSHINE_URL: &str = "https://github.com/LizardByte/Sunshine/releases/latest/download/sunshine.AppImage";
@@ -319,18 +325,35 @@ pub extern "C" fn __cpu_indicator_init() -> i32 {
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let args = Args::parse();
 
+    // If import_config is specified, we perform the import first
+    if let Some(ref import_path) = args.import_config {
+        let _ = tracing_subscriber::registry()
+            .with(tracing_subscriber::EnvFilter::new(
+                std::env::var("RUST_LOG").unwrap_or_else(|_| "info,agent=debug".into()),
+            ))
+            .with(tracing_subscriber::fmt::layer())
+            .try_init();
+
+        info!("Importing configuration from {} into {}...", import_path, args.config);
+        if let Err(e) = crate::pairing::import_config_file(import_path, &args.config) {
+            error!("Failed to import configuration: {:?}", e);
+            std::process::exit(1);
+        }
+        info!("Configuration imported and merged successfully!");
+    }
+
     #[cfg(feature = "gui")]
     {
         if !args.cli && !args.pair {
             // Init tracing logger with custom MakeWriter to stream logs to GUI
-            tracing_subscriber::registry()
+            let _ = tracing_subscriber::registry()
                 .with(tracing_subscriber::EnvFilter::new(
                     std::env::var("RUST_LOG").unwrap_or_else(|_| "info,agent=debug".into()),
                 ))
                 .with(tracing_subscriber::fmt::layer()
                     .with_writer(gui::ChannelMakeWriter)
                     .with_ansi(false))
-                .init();
+                .try_init();
 
             info!("Launching Lunaris Agent in Desktop GUI mode...");
             gui::run_gui();
@@ -340,12 +363,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     // CLI mode execution
     // Init standard tracing logger
-    tracing_subscriber::registry()
+    let _ = tracing_subscriber::registry()
         .with(tracing_subscriber::EnvFilter::new(
             std::env::var("RUST_LOG").unwrap_or_else(|_| "info,agent=debug".into()),
         ))
         .with(tracing_subscriber::fmt::layer())
-        .init();
+        .try_init();
 
     info!("Launching Lunaris Agent in CLI mode...");
 
@@ -359,14 +382,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let pin = args.pin.ok_or_else(|| anyhow::anyhow!("--pin is required when pairing"))?;
         info!("Starting Sunshine pairing handshake with {}:{} using PIN {}", args.host_ip, args.host_port, pin);
         let config = perform_pairing(&args.host_ip, args.host_port, &pin, &name, args.server.clone()).await?;
-        save_config(&config, "agent_config.json")?;
-        info!("Pairing completed successfully! Config saved to agent_config.json");
+        save_config(&config, &args.config)?;
+        info!("Pairing completed successfully! Config saved to {}", args.config);
         return Ok(());
     }
 
     // Auto pairing / key generation before Sunshine starts
     info!("Ensuring Agent credentials are paired with local Sunshine configuration...");
-    let config = match auto_pair_local_sunshine(&name, "agent_config.json", args.server.clone()) {
+    let config = match auto_pair_local_sunshine(&name, &args.config, args.server.clone()) {
         Ok(c) => c,
         Err(e) => {
             error!("Failed to auto-pair local Sunshine config: {:?}", e);
@@ -381,6 +404,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         args.host_port,
         args.no_auto_start_sunshine,
         args.sunshine_path,
+        args.config,
     )
     .await?;
 
@@ -414,6 +438,7 @@ pub async fn run_agent_loop(
     host_port: u16,
     no_auto_start_sunshine: bool,
     sunshine_path: String,
+    config_path: String,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Reset status
     CONNECTED_TO_SERVER.store(false, std::sync::atomic::Ordering::SeqCst);
@@ -453,7 +478,7 @@ pub async fn run_agent_loop(
         // Since we are starting/restarting Sunshine, we must ensure the auto-pair runs
         // when Sunshine is not running, so that we can write to sunshine_state.json safely.
         info!("Ensuring Agent credentials are paired with local Sunshine configuration...");
-        config = match auto_pair_local_sunshine(&name, "agent_config.json", Some(config.server_url.clone())) {
+        config = match auto_pair_local_sunshine(&name, &config_path, Some(config.server_url.clone())) {
             Ok(c) => c,
             Err(e) => {
                 error!("Failed to auto-pair local Sunshine config: {:?}", e);
@@ -478,7 +503,7 @@ pub async fn run_agent_loop(
     } else if !port_open && no_auto_start_sunshine {
         // If it's not running and we can't start it, we still run auto-pair just in case
         info!("Sunshine is not running and auto-start is disabled. Ensuring configuration is prepared...");
-        config = match auto_pair_local_sunshine(&name, "agent_config.json", Some(config.server_url.clone())) {
+        config = match auto_pair_local_sunshine(&name, &config_path, Some(config.server_url.clone())) {
             Ok(c) => c,
             Err(e) => {
                 error!("Failed to auto-pair local Sunshine config: {:?}", e);
@@ -498,8 +523,8 @@ pub async fn run_agent_loop(
                 if cert_path.exists() {
                     if let Ok(cert_pem) = std::fs::read_to_string(&cert_path) {
                         config.server_certificate = cert_pem;
-                        if let Err(e) = save_config(&config, "agent_config.json") {
-                            error!("Failed to save server certificate to agent_config.json: {:?}", e);
+                        if let Err(e) = save_config(&config, &config_path) {
+                            error!("Failed to save server certificate to {}: {:?}", config_path, e);
                         } else {
                             info!("Successfully read and saved server certificate!");
                             cert_loaded = true;
@@ -540,18 +565,20 @@ pub async fn run_agent_loop(
     // Connect to Signaling Server
     let server_ws_url = if let Some(support) = codec_support {
         format!(
-            "{}/ws/agent?id={}&name={}&codec_support={}",
+            "{}/ws/agent?id={}&name={}&codec_support={}&token={}",
             config.server_url.trim_end_matches('/'),
             config.client_unique_id,
             urlencoding::encode(&name),
-            support
+            support,
+            urlencoding::encode(&config.server_token)
         )
     } else {
         format!(
-            "{}/ws/agent?id={}&name={}",
+            "{}/ws/agent?id={}&name={}&token={}",
             config.server_url.trim_end_matches('/'),
             config.client_unique_id,
-            urlencoding::encode(&name)
+            urlencoding::encode(&name),
+            urlencoding::encode(&config.server_token)
         )
     };
 

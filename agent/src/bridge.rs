@@ -24,10 +24,7 @@ use webrtc::{
     },
     interceptor::registry::Registry,
     media::Sample,
-    peer_connection::{
-        configuration::RTCConfiguration,
-        RTCPeerConnection,
-    },
+    peer_connection::RTCPeerConnection,
     rtp::{header::Header, packet::Packet, packetizer::Payloader},
     rtp_transceiver::{
         rtp_codec::{RTCRtpCodecCapability, RTCRtpCodecParameters, RTPCodecType},
@@ -350,7 +347,19 @@ pub async fn setup_bridge_session(
         .with_interceptor_registry(registry)
         .build();
 
-    let rtc_config = RTCConfiguration::default();
+    let rtc_config = webrtc::peer_connection::configuration::RTCConfiguration {
+        ice_servers: vec![
+            webrtc::ice_transport::ice_server::RTCIceServer {
+                urls: vec!["stun:stun.l.google.com:19302".to_string()],
+                ..Default::default()
+            },
+            webrtc::ice_transport::ice_server::RTCIceServer {
+                urls: vec!["stun:stun1.l.google.com:19302".to_string()],
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
     let peer_connection = Arc::new(api.new_peer_connection(rtc_config).await?);
 
     // Resolve codec settings with host capability checks

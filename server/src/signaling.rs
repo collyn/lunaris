@@ -26,6 +26,7 @@ use crate::auth::verify_jwt;
 
 pub struct SignalingState {
     pub db: SqlitePool,
+    pub agent_token: String,
     // agent_id -> sender to agent WS
     pub agents: RwLock<HashMap<String, mpsc::UnboundedSender<ServerToAgentMessage>>>,
     // client_id -> sender to client WS
@@ -41,9 +42,10 @@ pub struct SignalingState {
 }
 
 impl SignalingState {
-    pub fn new(db: SqlitePool) -> Self {
+    pub fn new(db: SqlitePool, agent_token: String) -> Self {
         Self {
             db,
+            agent_token,
             agents: RwLock::new(HashMap::new()),
             clients: RwLock::new(HashMap::new()),
             client_to_agent: RwLock::new(HashMap::new()),
@@ -85,6 +87,7 @@ pub struct AgentParams {
     pub id: String,
     pub name: String,
     pub codec_support: Option<u32>,
+    pub token: Option<String>,
 }
 
 // WS Client query params
@@ -98,6 +101,12 @@ pub async fn agent_ws_handler(
     Query(params): Query<AgentParams>,
     State(state): State<Arc<SignalingState>>,
 ) -> impl IntoResponse {
+    let incoming_token = params.token.as_deref().unwrap_or("").trim();
+    if incoming_token != state.agent_token.trim() {
+        warn!("Unauthorized agent connection attempt for ID {} (invalid or missing token)", params.id);
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+
     ws.on_upgrade(move |socket| handle_agent_socket(socket, params, state))
 }
 

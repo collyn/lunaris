@@ -18,12 +18,18 @@ fn default_server_url() -> String {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct AgentConfig {
+    #[serde(default)]
     pub client_unique_id: String,
+    #[serde(default)]
     pub client_private_key: String,
+    #[serde(default)]
     pub client_certificate: String,
+    #[serde(default)]
     pub server_certificate: String,
     #[serde(default = "default_server_url")]
     pub server_url: String,
+    #[serde(default)]
+    pub server_token: String,
 }
 
 pub fn get_sunshine_dir() -> Option<PathBuf> {
@@ -44,6 +50,31 @@ pub fn save_config(config: &AgentConfig, path: &str) -> Result<(), anyhow::Error
     fs::write(path, content)?;
     Ok(())
 }
+
+pub fn import_config_file(imported_path: &str, target_path: &str) -> Result<(), anyhow::Error> {
+    let content = fs::read_to_string(imported_path)?;
+    let mut imported: AgentConfig = serde_json::from_str(&content)?;
+
+    // Load existing config if available to preserve keys/certificates
+    if let Ok(ext) = load_config(target_path) {
+        if imported.client_unique_id.is_empty() {
+            imported.client_unique_id = ext.client_unique_id;
+        }
+        if imported.client_private_key.is_empty() {
+            imported.client_private_key = ext.client_private_key;
+        }
+        if imported.client_certificate.is_empty() {
+            imported.client_certificate = ext.client_certificate;
+        }
+        if imported.server_certificate.is_empty() {
+            imported.server_certificate = ext.server_certificate;
+        }
+    }
+
+    save_config(&imported, target_path)?;
+    Ok(())
+}
+
 
 pub fn auto_pair_local_sunshine(
     client_name: &str,
@@ -81,6 +112,7 @@ pub fn auto_pair_local_sunshine(
             client_certificate,
             server_certificate: "".to_string(), // Will be updated later
             server_url: cli_server_url.clone().unwrap_or_else(default_server_url),
+            server_token: "".to_string(),
         }
     };
 
@@ -214,6 +246,7 @@ pub async fn perform_pairing(
         client_certificate,
         server_certificate,
         server_url: cli_server_url.unwrap_or_else(default_server_url),
+        server_token: "".to_string(),
     })
 }
 

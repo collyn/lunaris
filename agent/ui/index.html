@@ -48,6 +48,10 @@
           <input type="text" id="server-url" placeholder="ws://127.0.0.1:8080">
         </div>
         <div class="form-group">
+          <label for="server-token">Server Connection Token</label>
+          <input type="password" id="server-token" placeholder="Enter token">
+        </div>
+        <div class="form-group">
           <label for="agent-name">Host Agent Name</label>
           <input type="text" id="agent-name" placeholder="LunarisHost">
         </div>
@@ -64,6 +68,7 @@
     <div class="actions-bar">
       <button id="toggle-agent-btn" class="btn btn-primary">Start Host Agent</button>
       <button id="save-config-btn" class="btn btn-secondary">Save Configuration</button>
+      <button id="import-config-btn" class="btn btn-secondary">Import Config</button>
     </div>
 
     <!-- Monospace Console Logs -->

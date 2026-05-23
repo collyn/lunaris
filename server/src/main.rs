@@ -40,6 +40,63 @@ pub extern "C" fn __cpu_indicator_init() -> i32 {
     0
 }
 
+fn find_web_dist() -> Option<std::path::PathBuf> {
+    // Candidate 1: Current Working Directory
+    let cwd_path = std::path::PathBuf::from("web/dist");
+    if cwd_path.exists() {
+        return Some(cwd_path);
+    }
+
+    // Candidate 2: Relative to Executable Path
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            let path = exe_dir.join("web/dist");
+            if path.exists() {
+                return Some(path);
+            }
+            
+            // If executable is in target/release/ or target/debug/
+            if let Some(target_dir) = exe_dir.parent() {
+                if let Some(workspace_dir) = target_dir.parent() {
+                    let path = workspace_dir.join("web/dist");
+                    if path.exists() {
+                        return Some(path);
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
+fn get_or_generate_agent_token() -> String {
+    if let Ok(token) = std::env::var("LUNARIS_TOKEN") {
+        if !token.trim().is_empty() {
+            return token.trim().to_string();
+        }
+    }
+
+    let token_file = std::path::Path::new("server_token.txt");
+    if token_file.exists() {
+        if let Ok(token) = std::fs::read_to_string(token_file) {
+            let trimmed = token.trim();
+            if !trimmed.is_empty() {
+                return trimmed.to_string();
+            }
+        }
+    }
+
+    // Generate a random token based on UUID
+    let generated = uuid::Uuid::new_v4().to_string().replace("-", "")[..16].to_string();
+
+    if let Err(e) = std::fs::write(token_file, &generated) {
+        error!("Failed to write server_token.txt: {:?}", e);
+    }
+
+    generated
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Init logger
@@ -56,7 +113,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Initializing SQLite database: {}", database_url);
     let pool = init_db(&database_url).await?;
 
-    let signaling_state = Arc::new(SignalingState::new(pool.clone()));
+    let agent_token = get_or_generate_agent_token();
+    info!("==================================================");
+    info!(" [Security] Agent Connection Token: {}", agent_token);
+    info!("==================================================");
+
+    let signaling_state = Arc::new(SignalingState::new(pool.clone(), agent_token));
 
     // Configure CORS
     let cors = CorsLayer::new()
@@ -64,28 +126,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .allow_methods(Any)
         .allow_headers(Any);
 
-    // Verify static web assets directory
-    let web_dir = std::path::Path::new("web/dist");
-    if web_dir.exists() {
-        info!("Serving static files from web/dist");
+    // Verify and configure static web assets serving
+    let (serve_dir, _web_dir_found) = if let Some(path) = find_web_dist() {
+        info!("Serving static files from {:?}", path);
+        let serve = ServeDir::new(&path)
+            .not_found_service(ServeFile::new(path.join("index.html")));
+        (Some(serve), true)
     } else {
         error!("Directory 'web/dist' not found! Make sure you build the web interface first via 'npm run build' inside the 'web' directory.");
-    }
-
-    let serve_dir = ServeDir::new("web/dist")
-        .not_found_service(ServeFile::new("web/dist/index.html"));
+        (None, false)
+    };
 
     // Build routes
-    let app = Router::new()
+    let mut app = Router::new()
         .route("/api/auth/register", post(register_handler))
         .route("/api/auth/login", post(login_handler))
         .route("/api/hosts", get(hosts_handler))
         .route("/api/hosts/pair", post(pair_host_handler))
         .route("/api/hosts/:id", delete(unpair_host_handler))
+        .route("/api/agent/token", get(agent_token_handler))
         .route("/ws/agent", get(agent_ws_handler))
-        .route("/ws/client", get(client_ws_handler))
-        .fallback_service(serve_dir)
-        .layer(cors)
+        .route("/ws/client", get(client_ws_handler));
+
+    if let Some(serve) = serve_dir {
+        app = app.fallback_service(serve);
+    }
+
+    let app = app.layer(cors)
         .with_state(signaling_state);
 
     let port = std::env::var("SERVER_PORT").unwrap_or_else(|_| "8080".to_string());
@@ -420,5 +487,12 @@ async fn unpair_host_handler(
     }
 
     StatusCode::OK.into_response()
+}
+
+async fn agent_token_handler(
+    _user: crate::auth::AuthenticatedUser,
+    State(state): State<Arc<SignalingState>>,
+) -> impl IntoResponse {
+    Json(serde_json::json!({ "token": state.agent_token }))
 }
 
