@@ -110,6 +110,7 @@ where
         }
     }
 
+    #[allow(dead_code)]
     pub fn reset(&mut self, new_reader: R) {
         // Read to end
         while let Ok(Some(_)) = self.next() {}

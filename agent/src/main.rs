@@ -20,7 +20,15 @@ mod pairing;
 mod video;
 mod bridge;
 
-use crate::pairing::{save_config, perform_pairing, query_sunshine_codec_support, auto_pair_local_sunshine};
+#[cfg(feature = "gui")]
+pub mod gui;
+
+pub static CONNECTED_TO_SERVER: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+pub static SUNSHINE_PID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+pub static AGENT_ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+pub static LAST_ERROR: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+use crate::pairing::{save_config, perform_pairing, query_sunshine_codec_support, auto_pair_local_sunshine, AgentConfig};
 use crate::bridge::{setup_bridge_session, BridgeSession};
 
 #[derive(Parser, Debug)]
@@ -38,8 +46,8 @@ struct Args {
     #[arg(long)]
     pin: Option<String>,
 
-    #[arg(long, default_value = "ws://127.0.0.1:8080")]
-    server: String,
+    #[arg(long)]
+    server: Option<String>,
 
     #[arg(long)]
     name: Option<String>,
@@ -49,11 +57,16 @@ struct Args {
 
     #[arg(long, default_value = "sunshine")]
     sunshine_path: String,
+
+    #[arg(long)]
+    cli: bool,
 }
 
 const LINUX_SUNSHINE_URL: &str = "https://github.com/LizardByte/Sunshine/releases/latest/download/sunshine.AppImage";
+#[allow(dead_code)]
 const WINDOWS_SUNSHINE_URL: &str = "https://github.com/LizardByte/Sunshine/releases/latest/download/Sunshine-Windows-AMD64-portable.zip";
 
+#[allow(dead_code)]
 fn which_sunshine() -> Result<(), &'static str> {
     let check_cmd = if cfg!(target_os = "windows") { "where" } else { "which" };
     let output = std::process::Command::new(check_cmd)
@@ -89,6 +102,7 @@ async fn download_file(url: &str, dest: &std::path::Path) -> Result<(), anyhow::
     Ok(())
 }
 
+#[allow(dead_code)]
 fn unzip_file(zip_path: &std::path::Path, extract_to: &std::path::Path) -> Result<(), anyhow::Error> {
     info!("Extracting zip {:?} to {:?}", zip_path, extract_to);
     let file = std::fs::File::open(zip_path)?;
@@ -302,8 +316,30 @@ pub extern "C" fn __cpu_indicator_init() -> i32 {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Init tracing logger
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let args = Args::parse();
+
+    #[cfg(feature = "gui")]
+    {
+        if !args.cli && !args.pair {
+            // Init tracing logger with custom MakeWriter to stream logs to GUI
+            tracing_subscriber::registry()
+                .with(tracing_subscriber::EnvFilter::new(
+                    std::env::var("RUST_LOG").unwrap_or_else(|_| "info,agent=debug".into()),
+                ))
+                .with(tracing_subscriber::fmt::layer()
+                    .with_writer(gui::ChannelMakeWriter)
+                    .with_ansi(false))
+                .init();
+
+            info!("Launching Lunaris Agent in Desktop GUI mode...");
+            gui::run_gui();
+            return Ok(());
+        }
+    }
+
+    // CLI mode execution
+    // Init standard tracing logger
     tracing_subscriber::registry()
         .with(tracing_subscriber::EnvFilter::new(
             std::env::var("RUST_LOG").unwrap_or_else(|_| "info,agent=debug".into()),
@@ -311,7 +347,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
-    let args = Args::parse();
+    info!("Launching Lunaris Agent in CLI mode...");
 
     let name = args.name.clone().unwrap_or_else(|| {
         hostname::get()
@@ -322,7 +358,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if args.pair {
         let pin = args.pin.ok_or_else(|| anyhow::anyhow!("--pin is required when pairing"))?;
         info!("Starting Sunshine pairing handshake with {}:{} using PIN {}", args.host_ip, args.host_port, pin);
-        let config = perform_pairing(&args.host_ip, args.host_port, &pin, &name).await?;
+        let config = perform_pairing(&args.host_ip, args.host_port, &pin, &name, args.server.clone()).await?;
         save_config(&config, "agent_config.json")?;
         info!("Pairing completed successfully! Config saved to agent_config.json");
         return Ok(());
@@ -330,7 +366,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Auto pairing / key generation before Sunshine starts
     info!("Ensuring Agent credentials are paired with local Sunshine configuration...");
-    let mut config = match auto_pair_local_sunshine(&name, "agent_config.json") {
+    let config = match auto_pair_local_sunshine(&name, "agent_config.json", args.server.clone()) {
         Ok(c) => c,
         Err(e) => {
             error!("Failed to auto-pair local Sunshine config: {:?}", e);
@@ -338,22 +374,118 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
+    run_agent_loop(
+        config,
+        name,
+        args.host_ip,
+        args.host_port,
+        args.no_auto_start_sunshine,
+        args.sunshine_path,
+    )
+    .await?;
+
+    Ok(())
+}
+
+async fn kill_running_sunshine() {
+    info!("Attempting to kill any running Sunshine instances...");
+    #[cfg(target_os = "windows")]
+    {
+        let _ = tokio::process::Command::new("taskkill")
+            .args(&["/F", "/IM", "sunshine.exe"])
+            .output()
+            .await;
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = tokio::process::Command::new("pkill")
+            .args(&["-9", "sunshine"])
+            .output()
+            .await;
+    }
+    // Give it a moment to release ports/resources
+    tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+}
+
+pub async fn run_agent_loop(
+    mut config: AgentConfig,
+    name: String,
+    host_ip: String,
+    host_port: u16,
+    no_auto_start_sunshine: bool,
+    sunshine_path: String,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // Reset status
+    CONNECTED_TO_SERVER.store(false, std::sync::atomic::Ordering::SeqCst);
+    SUNSHINE_PID.store(0, std::sync::atomic::Ordering::SeqCst);
+
+    // Check if Sunshine is already running and if we are authorized
+    let mut port_open = std::net::TcpStream::connect(format!("{}:{}", host_ip, host_port)).is_ok();
+    let mut is_authorized = false;
+    if port_open {
+        if !config.server_certificate.is_empty() {
+            info!("Sunshine is running. Checking authorization...");
+            match query_sunshine_codec_support(&host_ip, host_port, &config).await {
+                Ok(_) => {
+                    info!("Sunshine is already authorized. No restart needed.");
+                    is_authorized = true;
+                }
+                Err(e) => {
+                    warn!("Sunshine is running but unauthorized: {:?}", e);
+                }
+            }
+        } else {
+            info!("Sunshine is running, but we do not have the server certificate yet.");
+        }
+    }
+
+    if port_open && !is_authorized && !no_auto_start_sunshine {
+        info!("Killing unauthorized Sunshine instance to re-apply configuration...");
+        kill_running_sunshine().await;
+        port_open = false;
+    }
+
     // Auto start Sunshine if needed
     let mut local_sunshine_path: Option<String> = None;
-    let mut _sunshine_child = if !args.no_auto_start_sunshine {
+    let mut _sunshine_child = None;
+
+    if !is_authorized && !no_auto_start_sunshine {
+        // Since we are starting/restarting Sunshine, we must ensure the auto-pair runs
+        // when Sunshine is not running, so that we can write to sunshine_state.json safely.
+        info!("Ensuring Agent credentials are paired with local Sunshine configuration...");
+        config = match auto_pair_local_sunshine(&name, "agent_config.json", Some(config.server_url.clone())) {
+            Ok(c) => c,
+            Err(e) => {
+                error!("Failed to auto-pair local Sunshine config: {:?}", e);
+                return Err(e.into());
+            }
+        };
+
         // Prepare/Download portable Sunshine if necessary
         let path_to_run = match prepare_sunshine().await {
             Ok(p) => p.to_string_lossy().into_owned(),
             Err(e) => {
-                warn!("Could not automatically prepare Sunshine binary: {:?}. Fallback to path: {}", e, args.sunshine_path);
-                args.sunshine_path.clone()
+                warn!("Could not automatically prepare Sunshine binary: {:?}. Fallback to path: {}", e, sunshine_path);
+                sunshine_path.clone()
             }
         };
         local_sunshine_path = Some(path_to_run.clone());
-        check_and_start_sunshine(&path_to_run, &args.host_ip, args.host_port)
-    } else {
-        None
-    };
+        let child_opt = check_and_start_sunshine(&path_to_run, &host_ip, host_port);
+        if let Some(ref child) = child_opt {
+            SUNSHINE_PID.store(child.id().unwrap_or(0), std::sync::atomic::Ordering::SeqCst);
+        }
+        _sunshine_child = child_opt;
+    } else if !port_open && no_auto_start_sunshine {
+        // If it's not running and we can't start it, we still run auto-pair just in case
+        info!("Sunshine is not running and auto-start is disabled. Ensuring configuration is prepared...");
+        config = match auto_pair_local_sunshine(&name, "agent_config.json", Some(config.server_url.clone())) {
+            Ok(c) => c,
+            Err(e) => {
+                error!("Failed to auto-pair local Sunshine config: {:?}", e);
+                return Err(e.into());
+            }
+        };
+    }
 
     // If server_certificate is empty, we will try to read it from Sunshine credentials directory
     if config.server_certificate.is_empty() {
@@ -388,7 +520,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Query Sunshine capabilities with retry
     let mut codec_support = None;
     for i in 1..=5 {
-        match query_sunshine_codec_support(&args.host_ip, args.host_port, &config).await {
+        match query_sunshine_codec_support(&host_ip, host_port, &config).await {
             Ok(support) => {
                 info!("Successfully queried Sunshine codec support bitmask: {}", support);
                 codec_support = Some(support);
@@ -409,7 +541,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let server_ws_url = if let Some(support) = codec_support {
         format!(
             "{}/ws/agent?id={}&name={}&codec_support={}",
-            args.server.trim_end_matches('/'),
+            config.server_url.trim_end_matches('/'),
             config.client_unique_id,
             urlencoding::encode(&name),
             support
@@ -417,7 +549,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         format!(
             "{}/ws/agent?id={}&name={}",
-            args.server.trim_end_matches('/'),
+            config.server_url.trim_end_matches('/'),
             config.client_unique_id,
             urlencoding::encode(&name)
         )
@@ -426,12 +558,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Connecting to signaling server at: {}", server_ws_url);
     let (ws_stream, _) = connect_async(server_ws_url).await?;
     info!("Connected to signaling server!");
+    CONNECTED_TO_SERVER.store(true, std::sync::atomic::Ordering::SeqCst);
 
     let (mut ws_write, mut ws_read) = ws_stream.split();
     let (agent_tx, mut agent_rx) = mpsc::unbounded_channel::<AgentMessage>();
 
     // Spawn outbound WS writing task
-    tokio::spawn(async move {
+    let write_task = tokio::spawn(async move {
         while let Some(msg) = agent_rx.recv().await {
             if let Ok(json) = serde_json::to_string(&msg) {
                 if let Err(e) = ws_write.send(WsMessage::Text(json)).await {
@@ -477,6 +610,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             fps,
                             bitrate,
                             codec,
+                            app_id,
                         } => {
                             info!("Incoming session request from client: {}", client_id);
                             
@@ -484,14 +618,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             let session = match setup_bridge_session(
                                 config.clone(),
                                 client_id.clone(),
-                                args.host_ip.clone(),
-                                args.host_port,
+                                host_ip.clone(),
+                                host_port,
                                 agent_tx.clone(),
                                 width,
                                 height,
                                 fps,
                                 bitrate,
                                 codec,
+                                app_id,
                             ).await {
                                 Ok(s) => s,
                                 Err(e) => {
@@ -570,7 +705,76 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             let mut lock = active_session.lock().await;
                             if let Some(session) = lock.take() {
                                 let _ = session.peer_connection.close().await;
+                                let mut stream_lock = session.moonlight_stream.lock().await;
+                                if let Some(stream) = stream_lock.take() {
+                                    info!("Stopping Moonlight stream...");
+                                    stream.stop();
+                                }
                             }
+                        }
+                        SignalingMessage::GetAppList { target_id } => {
+                            info!("Received GetAppList request from target: {}", target_id);
+                            let config_clone = config.clone();
+                            let host_ip_clone = host_ip.clone();
+                            let agent_tx_clone = agent_tx.clone();
+                            tokio::spawn(async move {
+                                match get_agent_apps(&config_clone, &host_ip_clone, host_port).await {
+                                    Ok((apps, current_game_id)) => {
+                                        let resp = AgentMessage::Signaling(SignalingMessage::AppListResponse {
+                                            target_id,
+                                            apps,
+                                            current_game_id,
+                                        });
+                                        let _ = agent_tx_clone.send(resp);
+                                    }
+                                    Err(e) => {
+                                        error!("Failed to get app list: {:?}", e);
+                                        let resp = AgentMessage::Signaling(SignalingMessage::Error {
+                                            message: format!("Failed to retrieve app list: {:?}", e),
+                                        });
+                                        let _ = agent_tx_clone.send(resp);
+                                    }
+                                }
+                            });
+                        }
+                        SignalingMessage::StopActiveStream { target_id } => {
+                            info!("Received StopActiveStream request from target: {}", target_id);
+                            // Clean up active session locally first
+                            {
+                                let mut lock = active_session.lock().await;
+                                if let Some(session) = lock.take() {
+                                    let _ = session.peer_connection.close().await;
+                                    let mut stream_lock = session.moonlight_stream.lock().await;
+                                    if let Some(stream) = stream_lock.take() {
+                                        info!("Stopping Moonlight stream...");
+                                        stream.stop();
+                                    }
+                                }
+                            }
+                            let config_clone = config.clone();
+                            let host_ip_clone = host_ip.clone();
+                            let agent_tx_clone = agent_tx.clone();
+                            tokio::spawn(async move {
+                                match stop_agent_stream(&config_clone, &host_ip_clone, host_port).await {
+                                    Ok(success) => {
+                                        let resp = AgentMessage::Signaling(SignalingMessage::StopActiveStreamResponse {
+                                            target_id,
+                                            success,
+                                            error: None,
+                                        });
+                                        let _ = agent_tx_clone.send(resp);
+                                    }
+                                    Err(e) => {
+                                        error!("Failed to stop stream: {:?}", e);
+                                        let resp = AgentMessage::Signaling(SignalingMessage::StopActiveStreamResponse {
+                                            target_id,
+                                            success: false,
+                                            error: Some(e.to_string()),
+                                        });
+                                        let _ = agent_tx_clone.send(resp);
+                                    }
+                                }
+                            });
                         }
                         SignalingMessage::GetSunshineConfig { target_id } => {
                             info!("Received GetSunshineConfig request from target: {}", target_id);
@@ -587,17 +791,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             });
                             let _ = agent_tx.send(resp);
                         }
-                        SignalingMessage::UpdateSunshineConfig { target_id, config } => {
+                        SignalingMessage::UpdateSunshineConfig { target_id, config: config_str } => {
                             info!("Received UpdateSunshineConfig request from target: {}", target_id);
                             let mut success = true;
                             let mut error = None;
-                            if let Err(e) = write_sunshine_conf(&config) {
+                            if let Err(e) = write_sunshine_conf(&config_str) {
                                 error!("Failed to write sunshine.conf: {:?}", e);
                                 success = false;
                                 error = Some(e.to_string());
                             } else {
                                 info!("Successfully updated sunshine.conf, restarting Sunshine process...");
-                                if !args.no_auto_start_sunshine {
+                                if !no_auto_start_sunshine {
                                     if let Some(path) = &local_sunshine_path {
                                         if let Some(mut child) = _sunshine_child.take() {
                                             info!("Killing local Sunshine process (PID: {:?}) for configuration update...", child.id());
@@ -617,7 +821,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             let _ = child.wait().await;
                                             tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
                                         }
-                                        _sunshine_child = check_and_start_sunshine(path, &args.host_ip, args.host_port);
+                                        let child_opt = check_and_start_sunshine(path, &host_ip, host_port);
+                                        if let Some(ref child) = child_opt {
+                                            SUNSHINE_PID.store(child.id().unwrap_or(0), std::sync::atomic::Ordering::SeqCst);
+                                        } else {
+                                            SUNSHINE_PID.store(0, std::sync::atomic::Ordering::SeqCst);
+                                        }
+                                        _sunshine_child = child_opt;
                                     } else {
                                         warn!("Sunshine path is not known, cannot restart automatically.");
                                     }
@@ -639,6 +849,101 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    CONNECTED_TO_SERVER.store(false, std::sync::atomic::Ordering::SeqCst);
+    write_task.abort();
+
+    // Clean up active session and stop Moonlight stream
+    {
+        let mut session_lock = active_session.lock().await;
+        if let Some(session) = session_lock.take() {
+            info!("Stopping active remote streaming session on agent exit...");
+            let _ = session.peer_connection.close().await;
+            let mut stream_lock = session.moonlight_stream.lock().await;
+            if let Some(stream) = stream_lock.take() {
+                info!("Stopping Moonlight stream...");
+                stream.stop();
+            }
+        }
+    }
+    
+    // Explicitly kill Sunshine child if we spawned it
+    if let Some(mut child) = _sunshine_child {
+        info!("Stopping local Sunshine child process...");
+        #[cfg(unix)]
+        {
+            if let Some(pid) = child.id() {
+                unsafe {
+                    libc::kill(-(pid as libc::pid_t), libc::SIGKILL);
+                }
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = child.kill().await;
+        }
+        let _ = child.wait().await;
+        SUNSHINE_PID.store(0, std::sync::atomic::Ordering::SeqCst);
+    }
+
     info!("Host Agent finished.");
     Ok(())
+}
+
+async fn get_agent_apps(
+    config: &crate::pairing::AgentConfig,
+    host_ip: &str,
+    host_port: u16,
+) -> Result<(Vec<common::AppInfo>, u32), anyhow::Error> {
+    use moonlight_common::http::client::tokio_hyper::TokioHyperClient;
+    use moonlight_common::http::{ClientIdentifier, ClientSecret, ServerIdentifier};
+    use moonlight_common::high::tokio::MoonlightHost;
+
+    let host = MoonlightHost::<TokioHyperClient>::new(host_ip.to_string(), host_port, Some(config.client_unique_id.clone()))?;
+    
+    let client_cert_pem = pem::parse(&config.client_certificate)?;
+    let client_key_pem = pem::parse(&config.client_private_key)?;
+    let server_cert_pem = pem::parse(&config.server_certificate)?;
+
+    host.set_identity(
+        ClientIdentifier::from_pem(client_cert_pem),
+        ClientSecret::from_pem(client_key_pem),
+        ServerIdentifier::from_pem(server_cert_pem),
+    )
+    .await?;
+
+    let apps = host.app_list().await?;
+    let current_game = host.current_game().await?;
+
+    let app_infos = apps.into_iter().map(|app| common::AppInfo {
+        id: app.id,
+        title: app.title,
+    }).collect();
+
+    Ok((app_infos, current_game))
+}
+
+async fn stop_agent_stream(
+    config: &crate::pairing::AgentConfig,
+    host_ip: &str,
+    host_port: u16,
+) -> Result<bool, anyhow::Error> {
+    use moonlight_common::http::client::tokio_hyper::TokioHyperClient;
+    use moonlight_common::http::{ClientIdentifier, ClientSecret, ServerIdentifier};
+    use moonlight_common::high::tokio::MoonlightHost;
+
+    let host = MoonlightHost::<TokioHyperClient>::new(host_ip.to_string(), host_port, Some(config.client_unique_id.clone()))?;
+    
+    let client_cert_pem = pem::parse(&config.client_certificate)?;
+    let client_key_pem = pem::parse(&config.client_private_key)?;
+    let server_cert_pem = pem::parse(&config.server_certificate)?;
+
+    host.set_identity(
+        ClientIdentifier::from_pem(client_cert_pem),
+        ClientSecret::from_pem(client_key_pem),
+        ServerIdentifier::from_pem(server_cert_pem),
+    )
+    .await?;
+
+    let cancelled = host.cancel().await?;
+    Ok(cancelled)
 }

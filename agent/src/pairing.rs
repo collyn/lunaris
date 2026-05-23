@@ -12,12 +12,18 @@ use moonlight_common::{
 };
 use uuid::Uuid;
 
+fn default_server_url() -> String {
+    "ws://127.0.0.1:8080".to_string()
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct AgentConfig {
     pub client_unique_id: String,
     pub client_private_key: String,
     pub client_certificate: String,
     pub server_certificate: String,
+    #[serde(default = "default_server_url")]
+    pub server_url: String,
 }
 
 pub fn get_sunshine_dir() -> Option<PathBuf> {
@@ -42,6 +48,7 @@ pub fn save_config(config: &AgentConfig, path: &str) -> Result<(), anyhow::Error
 pub fn auto_pair_local_sunshine(
     client_name: &str,
     config_path: &str,
+    cli_server_url: Option<String>,
 ) -> Result<AgentConfig, anyhow::Error> {
     let sunshine_dir = get_sunshine_dir().ok_or_else(|| anyhow::anyhow!("Could not locate configuration directory"))?;
     if !sunshine_dir.exists() {
@@ -49,7 +56,16 @@ pub fn auto_pair_local_sunshine(
     }
 
     // 1. Load or Generate Agent config (keys/cert)
-    let config = if let Ok(existing_config) = load_config(config_path) {
+    let mut config = if let Ok(mut existing_config) = load_config(config_path) {
+        if existing_config.client_private_key.is_empty() || existing_config.client_certificate.is_empty() {
+            let crypto_provider = Arc::new(OpenSSLCryptoBackend);
+            let (client_identifier, client_secret) = crypto_provider.generate_client_identity()?;
+            existing_config.client_private_key = client_secret.to_pem().to_string();
+            existing_config.client_certificate = client_identifier.to_pem().to_string();
+        }
+        if existing_config.client_unique_id.is_empty() {
+            existing_config.client_unique_id = Uuid::new_v4().to_string().to_uppercase();
+        }
         existing_config
     } else {
         let client_unique_id = Uuid::new_v4().to_string().to_uppercase();
@@ -64,8 +80,14 @@ pub fn auto_pair_local_sunshine(
             client_private_key,
             client_certificate,
             server_certificate: "".to_string(), // Will be updated later
+            server_url: cli_server_url.clone().unwrap_or_else(default_server_url),
         }
     };
+
+    // If server_url is explicitly passed via CLI, update the config
+    if let Some(url) = cli_server_url {
+        config.server_url = url;
+    }
 
     // 2. Load and update sunshine_state.json
     let state_file_path = sunshine_dir.join("sunshine_state.json");
@@ -89,24 +111,35 @@ pub fn auto_pair_local_sunshine(
         .as_array_mut()
         .ok_or_else(|| anyhow::anyhow!("named_devices is not an array"))?;
 
-    let mut found = false;
-    for dev in devices.iter() {
+    let mut found_idx = None;
+    for (idx, dev) in devices.iter().enumerate() {
         if let Some(uuid_str) = dev["uuid"].as_str() {
             if uuid_str.to_uppercase() == config.client_unique_id.to_uppercase() {
-                found = true;
+                found_idx = Some(idx);
                 break;
             }
         }
     }
 
-    if !found {
+    let mut needs_write = false;
+    if let Some(idx) = found_idx {
+        let dev = &mut devices[idx];
+        if dev["cert"].as_str() != Some(&config.client_certificate) || dev["name"].as_str() != Some(client_name) {
+            dev["cert"] = serde_json::json!(config.client_certificate);
+            dev["name"] = serde_json::json!(client_name);
+            needs_write = true;
+        }
+    } else {
         devices.push(serde_json::json!({
             "name": client_name,
             "cert": config.client_certificate,
             "uuid": config.client_unique_id.to_uppercase(),
             "enabled": "true"
         }));
-        
+        needs_write = true;
+    }
+
+    if needs_write {
         let updated_state = serde_json::to_string_pretty(&state_json)?;
         fs::write(&state_file_path, updated_state)?;
     }
@@ -130,6 +163,7 @@ pub async fn perform_pairing(
     port: u16,
     pin_str: &str,
     client_name: &str,
+    cli_server_url: Option<String>,
 ) -> Result<AgentConfig, anyhow::Error> {
     // Parse PIN
     let pin_chars: Vec<char> = pin_str.chars().collect();
@@ -179,6 +213,7 @@ pub async fn perform_pairing(
         client_private_key,
         client_certificate,
         server_certificate,
+        server_url: cli_server_url.unwrap_or_else(default_server_url),
     })
 }
 
@@ -189,6 +224,16 @@ pub async fn query_sunshine_codec_support(
     port: u16,
     config: &AgentConfig,
 ) -> Result<u32, anyhow::Error> {
+    if config.client_certificate.is_empty() {
+        return Err(anyhow::anyhow!("Client certificate is empty"));
+    }
+    if config.client_private_key.is_empty() {
+        return Err(anyhow::anyhow!("Client private key is empty"));
+    }
+    if config.server_certificate.is_empty() {
+        return Err(anyhow::anyhow!("Server certificate is empty"));
+    }
+
     let host = MoonlightHost::<TokioHyperClient>::new(
         ip.to_string(),
         port,

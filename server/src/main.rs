@@ -8,6 +8,7 @@ use axum::{
 use common::{AuthResponse, HostInfo, HostStatus, LoginRequest, RegisterRequest, PairHostRequest};
 use std::sync::Arc;
 use tower_http::cors::{Any, CorsLayer};
+use tower_http::services::{ServeDir, ServeFile};
 use tracing::{error, info};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use uuid::Uuid;
@@ -63,6 +64,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .allow_methods(Any)
         .allow_headers(Any);
 
+    // Verify static web assets directory
+    let web_dir = std::path::Path::new("web/dist");
+    if web_dir.exists() {
+        info!("Serving static files from web/dist");
+    } else {
+        error!("Directory 'web/dist' not found! Make sure you build the web interface first via 'npm run build' inside the 'web' directory.");
+    }
+
+    let serve_dir = ServeDir::new("web/dist")
+        .not_found_service(ServeFile::new("web/dist/index.html"));
+
     // Build routes
     let app = Router::new()
         .route("/api/auth/register", post(register_handler))
@@ -72,6 +84,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/hosts/:id", delete(unpair_host_handler))
         .route("/ws/agent", get(agent_ws_handler))
         .route("/ws/client", get(client_ws_handler))
+        .fallback_service(serve_dir)
         .layer(cors)
         .with_state(signaling_state);
 

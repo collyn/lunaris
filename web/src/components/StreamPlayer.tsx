@@ -1,5 +1,12 @@
 import React, { useEffect, useRef, useState } from 'react';
 
+const getBackendHost = () => {
+  if (window.location.port === '5173' || window.location.port === '3000') {
+    return `${window.location.hostname}:8080`;
+  }
+  return window.location.host;
+};
+
 interface StreamPlayerProps {
   hostId: string;
   hostName: string;
@@ -44,9 +51,13 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const channelsRef = useRef<Record<string, RTCDataChannel>>({});
 
-  const [status, setStatus] = useState<string>('Connecting...');
+  const [status, setStatus] = useState<string>('Initializing...');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [isPointerLocked, setIsPointerLocked] = useState<boolean>(false);
+  const [appList, setAppList] = useState<{ id: number; title: string }[] | null>(null);
+  const [currentGameId, setCurrentGameId] = useState<number>(0);
+  const [selectedAppId, setSelectedAppId] = useState<number | null>(null);
+  const [isStoppingStream, setIsStoppingStream] = useState<boolean>(false);
   
   // Settings States
   const [activeResolution, setActiveResolution] = useState<string>(() => localStorage.getItem('lunaris_stream_res') || '1080p');
@@ -386,8 +397,8 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     addLog(`Initiating session with host: ${hostName} (${hostId}) using codec ${resolvedCodec}`);
     
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const host = window.location.hostname;
-    const wsUrl = `${protocol}//${host}:8080/ws/client?token=${encodeURIComponent(token)}`;
+    const host = getBackendHost();
+    const wsUrl = `${protocol}//${host}/ws/client?token=${encodeURIComponent(token)}`;
     
     addLog(`Connecting to signaling server...`);
     const ws = new WebSocket(wsUrl);
@@ -396,34 +407,47 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     ws.onopen = () => {
       if (wsRef.current !== ws) return;
       addLog("Signaling WebSocket connected.");
-      setStatus("Signaling...");
       
-      let width = 1920;
-      let height = 1080;
-      if (activeResolution === '720p') {
-        width = 1280;
-        height = 720;
-      } else if (activeResolution === '540p') {
-        width = 960;
-        height = 540;
-      }
-
-      // Request session
-      ws.send(JSON.stringify({
-        event: "Signaling",
-        data: {
-          type: "RequestSession",
-          payload: { 
-            host_id: hostId,
-            width,
-            height,
-            fps: activeFps,
-            bitrate: activeBitrate,
-            codec: resolvedCodec
+      if (selectedAppId === null) {
+        setStatus("Loading Apps...");
+        ws.send(JSON.stringify({
+          event: "Signaling",
+          data: {
+            type: "GetAppList",
+            payload: { target_id: hostId }
           }
+        }));
+        addLog("Sent GetAppList command.");
+      } else {
+        setStatus("Signaling...");
+        let width = 1920;
+        let height = 1080;
+        if (activeResolution === '720p') {
+          width = 1280;
+          height = 720;
+        } else if (activeResolution === '540p') {
+          width = 960;
+          height = 540;
         }
-      }));
-      addLog(`Sent RequestSession command (res: ${activeResolution}, fps: ${activeFps}, bitrate: ${activeBitrate}Kbps, codec: ${resolvedCodec}).`);
+
+        // Request session
+        ws.send(JSON.stringify({
+          event: "Signaling",
+          data: {
+            type: "RequestSession",
+            payload: { 
+              host_id: hostId,
+              width,
+              height,
+              fps: activeFps,
+              bitrate: activeBitrate,
+              codec: resolvedCodec,
+              app_id: selectedAppId
+            }
+          }
+        }));
+        addLog(`Sent RequestSession command for app ${selectedAppId} (res: ${activeResolution}, fps: ${activeFps}, bitrate: ${activeBitrate}Kbps, codec: ${resolvedCodec}).`);
+      }
     };
 
     ws.onmessage = async (event) => {
@@ -436,6 +460,32 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
         const type = message.data.type;
         
         switch (type) {
+          case "AppListResponse":
+            addLog("Received App list.");
+            setAppList(payload.apps);
+            setCurrentGameId(payload.current_game_id);
+            setStatus("Select App");
+            break;
+
+          case "StopActiveStreamResponse":
+            setIsStoppingStream(false);
+            if (payload.success) {
+              addLog("Active stream stopped.");
+              setCurrentGameId(0);
+              // refresh app list
+              ws.send(JSON.stringify({
+                event: "Signaling",
+                data: {
+                  type: "GetAppList",
+                  payload: { target_id: hostId }
+                }
+              }));
+            } else {
+              addLog(`Failed to stop active stream: ${payload.error}`);
+              alert(`Failed to stop active stream: ${payload.error || 'Unknown error'}`);
+            }
+            break;
+
           case "Sdp":
             if (payload.sdp.ty === "offer") {
               addLog("Received SDP Offer from host agent.");
@@ -498,7 +548,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     return () => {
       cleanup();
     };
-  }, [hostId, activeResolution, activeFps, activeBitrate, activeCodec, token, hostName]);
+  }, [hostId, activeResolution, activeFps, activeBitrate, activeCodec, token, hostName, selectedAppId]);
 
   // Send keyboard event helper (global/unified)
   const sendKeyEvent = (code: string, shiftKey: boolean, ctrlKey: boolean, altKey: boolean, metaKey: boolean, isDown: boolean) => {
@@ -863,7 +913,260 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     }
   };
 
+  const handleStopActiveStream = () => {
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      setIsStoppingStream(true);
+      wsRef.current.send(JSON.stringify({
+        event: "Signaling",
+        data: {
+          type: "StopActiveStream",
+          payload: { target_id: hostId }
+        }
+      }));
+      addLog("Sent StopActiveStream command.");
+    }
+  };
+
+  const handleLaunchApp = (appId: number) => {
+    setSelectedAppId(appId);
+  };
+
   const isStreaming = status === "Streaming";
+
+  if (selectedAppId === null) {
+    return (
+      <div className="stream-container" style={{ display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
+        <div className="glow-orb bg-glow-blue"></div>
+        <div className="glow-orb bg-glow-purple"></div>
+
+        {/* Header/Navbar */}
+        <header className="navbar" style={{ position: 'static', background: 'transparent', borderBottom: '1px solid rgba(255, 255, 255, 0.05)' }}>
+          <div className="nav-brand">
+            <button onClick={onBack} className="btn-secondary stream-back-btn" title="Leave" style={{ marginRight: '0.5rem', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)' }}>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                <path d="M19 12H5M12 19l-7-7 7-7" />
+              </svg>
+            </button>
+            <span className="brand-name" style={{ fontSize: '1.25rem' }}>{hostName}</span>
+            <span className="badge-tech">APPS</span>
+          </div>
+          <div className="nav-user-panel">
+            <button onClick={() => setShowSettingsModal(true)} className="btn-secondary" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)', padding: '0.5rem 1rem', borderRadius: '8px', fontSize: '0.85rem' }}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="12" r="3" />
+                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06-.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l.06-.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+              </svg>
+              Settings
+            </button>
+          </div>
+        </header>
+
+        {/* Settings Modal Overlay */}
+        {showSettingsModal && (
+          <div className="stream-settings-overlay" style={{ zIndex: 200 }}>
+            <div className="stream-settings-card">
+              <h2>Stream Settings</h2>
+              <p className="subtitle">Adjust quality settings for this session</p>
+              
+              <div className="settings-grid">
+                <div className="settings-group">
+                  <label htmlFor="resolution">Resolution</label>
+                  <select 
+                    id="resolution" 
+                    value={draftResolution} 
+                    onChange={(e) => setDraftResolution(e.target.value)}
+                  >
+                    <option value="1080p">1080p (1920x1080)</option>
+                    <option value="720p">720p (1280x720)</option>
+                    <option value="540p">540p (960x540)</option>
+                  </select>
+                </div>
+
+                <div className="settings-group">
+                  <label htmlFor="fps">Frame Rate</label>
+                  <select 
+                    id="fps" 
+                    value={draftFps} 
+                    onChange={(e) => setDraftFps(Number(e.target.value))}
+                  >
+                    <option value={60}>60 FPS</option>
+                    <option value={30}>30 FPS</option>
+                  </select>
+                </div>
+
+                <div className="settings-group">
+                  <label htmlFor="codec">Video Codec</label>
+                  <select 
+                    id="codec" 
+                    value={draftCodec} 
+                    onChange={(e) => setDraftCodec(e.target.value)}
+                  >
+                    <option value="h264" disabled={!supportedCodecs.h264}>
+                      {getCodecLabel("H.264", browserCodecs.h264, hostH264Supported)}
+                    </option>
+                    <option value="h265" disabled={!supportedCodecs.h265}>
+                      {getCodecLabel("H.265 (HEVC)", true, hostH265Supported)}
+                    </option>
+                    <option value="av1" disabled={!supportedCodecs.av1}>
+                      {getCodecLabel("AV1", browserCodecs.av1, hostAv1Supported)}
+                    </option>
+                  </select>
+                </div>
+
+                <div className="settings-group">
+                  <label htmlFor="bitrate">Bitrate (Kbps)</label>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                    <input 
+                      type="range" 
+                      id="bitrate" 
+                      min={1000} 
+                      max={50000} 
+                      step={500}
+                      value={draftBitrate} 
+                      onChange={(e) => setDraftBitrate(Number(e.target.value))}
+                      style={{ flex: 1 }}
+                    />
+                    <span style={{ minWidth: '70px', textAlign: 'right', fontWeight: 'bold', color: 'var(--accent-cyan)' }}>
+                      {(draftBitrate / 1000).toFixed(1)} Mbps
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              <div className="settings-actions">
+                <button 
+                  onClick={() => setShowSettingsModal(false)}
+                  className="btn-secondary"
+                >
+                  Cancel
+                </button>
+                <button 
+                  onClick={() => {
+                    setActiveResolution(draftResolution);
+                    setActiveFps(draftFps);
+                    setActiveBitrate(draftBitrate);
+                    setActiveCodec(draftCodec);
+                    
+                    localStorage.setItem('lunaris_stream_res', draftResolution);
+                    localStorage.setItem('lunaris_stream_fps', String(draftFps));
+                    localStorage.setItem('lunaris_stream_bitrate', String(draftBitrate));
+                    localStorage.setItem('lunaris_stream_codec', draftCodec);
+                    
+                    setShowSettingsModal(false);
+                    addLog(`Applied settings: res=${draftResolution}, fps=${draftFps}, bitrate=${draftBitrate}Kbps, codec=${draftCodec}`);
+                  }}
+                  className="btn-primary"
+                >
+                  Save Settings
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Content Area */}
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '2rem' }}>
+          <div className="app-selection-card" style={{ maxWidth: '900px', width: '100%', zIndex: 10, background: 'var(--bg-glass)', border: '1px solid var(--border-color)', borderRadius: '24px', padding: '2.5rem', boxShadow: 'var(--shadow-card)', backdropFilter: 'blur(20px)' }}>
+            
+            <div style={{ textAlign: 'center', marginBottom: '2.5rem' }}>
+              <h2 style={{ fontSize: '2.25rem', fontWeight: 800, background: 'linear-gradient(to right, #ffffff, #a5b4fc)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', letterSpacing: '-0.5px', marginBottom: '0.5rem' }}>
+                Select App to Stream
+              </h2>
+              <p style={{ color: 'var(--text-muted)', fontSize: '1.05rem' }}>
+                Choose an application configured on {hostName} to launch the WebRTC stream.
+              </p>
+            </div>
+
+            {errorMsg && (
+              <div className="auth-error-banner" style={{ marginBottom: '2rem' }}>
+                <span className="error-icon">⚠️</span>
+                <span>{errorMsg}</span>
+              </div>
+            )}
+
+            {appList === null ? (
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '5rem 0' }}>
+                <div className="tech-loader" style={{ marginBottom: '2rem' }}></div>
+                <p style={{ color: 'var(--text-muted)', fontSize: '1.1rem', letterSpacing: '0.5px' }}>{status === 'Initializing...' ? 'Connecting to signaling server...' : 'Querying host app list...'}</p>
+              </div>
+            ) : (
+              <div className="apps-grid">
+                {appList.map((app) => {
+                  const isActive = currentGameId === app.id;
+                  const isAnyActive = currentGameId !== 0;
+                  
+                  return (
+                    <div key={app.id} className={`app-card ${isActive ? 'active' : ''}`}>
+                      {isActive && (
+                        <div className="active-badge">
+                          <span className="badge-pulse"></span>
+                          Active
+                        </div>
+                      )}
+                      
+                      <div className="app-icon-wrapper">
+                        {app.title.toLowerCase().includes('desktop') ? (
+                          <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <rect x="2" y="3" width="20" height="14" rx="2" ry="2" />
+                            <line x1="8" y1="21" x2="16" y2="21" />
+                            <line x1="12" y1="17" x2="12" y2="21" />
+                          </svg>
+                        ) : app.title.toLowerCase().includes('steam') ? (
+                          <svg width="36" height="36" viewBox="0 0 24 24" fill="currentColor">
+                            <path d="M12 0C5.378 0 0 5.352 0 11.952c0 4.548 2.562 8.5 6.324 10.518L6.03 19.32a3.864 3.864 0 0 1 1.77-5.184l3.15-4.476c.036-1.572 1.152-2.85 2.652-3.15l1.698-5.328a.534.534 0 0 1 .636-.354.522.522 0 0 1 .36.63L14.73 7.332c1.374.45 2.37 1.692 2.454 3.192l4.824 2.19c.75-.492 1.674-.636 2.544-.378a3.918 3.918 0 0 1 2.766 4.788c-.6 2.394-3.036 3.84-5.46 3.24a3.882 3.882 0 0 1-2.736-3.324l-4.788-2.172c-.426.684-1.128 1.176-1.932 1.344l-3.144 4.464a3.903 3.903 0 0 1-5.184 1.74l3.12 3.12c5.964.882 11.232-3.18 11.232-9.456C24 5.352 18.622 0 12 0zm3.504 12c-1.38 0-2.502-1.122-2.502-2.502S14.124 7 15.504 7s2.502 1.122 2.502 2.502-1.122 2.496-2.502 2.496z"/>
+                          </svg>
+                        ) : (
+                          <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <line x1="6" y1="12" x2="10" y2="12" />
+                            <line x1="8" y1="10" x2="8" y2="14" />
+                            <line x1="15" y1="13" x2="15.01" y2="13" />
+                            <line x1="18" y1="11" x2="18.01" y2="11" />
+                            <rect x="2" y="6" width="20" height="12" rx="3" />
+                          </svg>
+                        )}
+                      </div>
+                      
+                      <div className="app-info-section">
+                        <h3 className="app-title-text">{app.title}</h3>
+                        <span className="app-id-label">App ID: {app.id}</span>
+                      </div>
+
+                      <div className="app-actions-panel">
+                        {isActive ? (
+                          <>
+                            <button 
+                              onClick={() => handleLaunchApp(app.id)}
+                              className="btn-primary app-btn-resume"
+                            >
+                              Resume Stream
+                            </button>
+                            <button 
+                              onClick={handleStopActiveStream}
+                              disabled={isStoppingStream}
+                              className="btn-danger app-btn-stop"
+                            >
+                              {isStoppingStream ? 'Stopping...' : 'Stop Stream'}
+                            </button>
+                          </>
+                        ) : (
+                          <button 
+                            onClick={() => handleLaunchApp(app.id)}
+                            className="btn-secondary app-btn-launch"
+                          >
+                            {isAnyActive ? 'Switch to App' : 'Launch App'}
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="stream-container" ref={containerRef}>

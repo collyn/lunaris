@@ -42,6 +42,7 @@ where
         }
     }
 
+    #[allow(dead_code)]
     pub fn reset(&mut self, new_reader: R) {
         self.annex_b.reset(new_reader);
     }

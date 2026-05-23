@@ -72,6 +72,12 @@ pub struct RtcIceCandidate {
     pub username_fragment: Option<String>,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct AppInfo {
+    pub id: u32,
+    pub title: String,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "type", content = "payload")]
 pub enum SignalingMessage {
@@ -82,6 +88,7 @@ pub enum SignalingMessage {
         fps: Option<u32>,
         bitrate: Option<u32>,
         codec: Option<String>,
+        app_id: Option<u32>,
     },
     // Server notifying agent about session request
     IncomingSession {
@@ -91,6 +98,7 @@ pub enum SignalingMessage {
         fps: Option<u32>,
         bitrate: Option<u32>,
         codec: Option<String>,
+        app_id: Option<u32>,
     },
     // SDP / ICE Exchange
     Sdp { target_id: String, sdp: RtcSessionDescription },
@@ -102,6 +110,20 @@ pub enum SignalingMessage {
     SunshineConfigResponse { target_id: String, config: String },
     UpdateSunshineConfig { target_id: String, config: String },
     UpdateSunshineConfigResponse { target_id: String, success: bool, error: Option<String> },
+    // App List Query
+    GetAppList { target_id: String },
+    AppListResponse {
+        target_id: String,
+        apps: Vec<AppInfo>,
+        current_game_id: u32,
+    },
+    // Stop Session/Stream
+    StopActiveStream { target_id: String },
+    StopActiveStreamResponse {
+        target_id: String,
+        success: bool,
+        error: Option<String>,
+    },
     // Errors
     Error { message: String },
 }

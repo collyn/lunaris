@@ -10,6 +10,13 @@ interface Host {
   server_codec_mode_support?: number;
 }
 
+const getBackendHost = () => {
+  if (window.location.port === '5173' || window.location.port === '3000') {
+    return `${window.location.hostname}:8080`;
+  }
+  return window.location.host;
+};
+
 function App() {
   const [token, setToken] = useState<string | null>(localStorage.getItem('lunaris_token'));
   const [username, setUsername] = useState<string | null>(localStorage.getItem('lunaris_username'));
@@ -47,8 +54,8 @@ function App() {
     setModalSuccess(false);
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const serverHost = window.location.hostname;
-    const wsUrl = `${protocol}//${serverHost}:8080/ws/client?token=${encodeURIComponent(token || '')}`;
+    const serverHost = getBackendHost();
+    const wsUrl = `${protocol}//${serverHost}/ws/client?token=${encodeURIComponent(token || '')}`;
 
     const ws = new WebSocket(wsUrl);
     
@@ -209,7 +216,8 @@ function App() {
     setHostsLoading(true);
     setHostsError(null);
     try {
-      const response = await fetch('http://' + window.location.hostname + ':8080/api/hosts', {
+      const serverHost = getBackendHost();
+      const response = await fetch(`${window.location.protocol}//${serverHost}/api/hosts`, {
         headers: {
           'Authorization': `Bearer ${token}`
         }
@@ -258,7 +266,8 @@ function App() {
 
     setAuthLoading(true);
     const endpoint = isRegister ? '/api/auth/register' : '/api/auth/login';
-    const serverUrl = `http://${window.location.hostname}:8080${endpoint}`;
+    const serverHost = getBackendHost();
+    const serverUrl = `${window.location.protocol}//${serverHost}${endpoint}`;
 
     try {
       const response = await fetch(serverUrl, {
@@ -315,7 +324,8 @@ function App() {
 
     setPairLoading(true);
     try {
-      const response = await fetch(`http://${window.location.hostname}:8080/api/hosts/pair`, {
+      const serverHost = getBackendHost();
+      const response = await fetch(`${window.location.protocol}//${serverHost}/api/hosts/pair`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -354,7 +364,8 @@ function App() {
     }
 
     try {
-      const response = await fetch(`http://${window.location.hostname}:8080/api/hosts/${hostId}`, {
+      const serverHost = getBackendHost();
+      const response = await fetch(`${window.location.protocol}//${serverHost}/api/hosts/${hostId}`, {
         method: 'DELETE',
         headers: {
           'Authorization': `Bearer ${token}`

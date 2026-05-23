@@ -1,5 +1,6 @@
-use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
+use sqlx::{sqlite::{SqliteConnectOptions, SqlitePoolOptions}, SqlitePool};
 use std::fs;
+use std::str::FromStr;
 
 pub async fn init_db(database_url: &str) -> Result<SqlitePool, sqlx::Error> {
     // If it's a file database, ensure parent directories exist
@@ -7,14 +8,19 @@ pub async fn init_db(database_url: &str) -> Result<SqlitePool, sqlx::Error> {
         let path = database_url.trim_start_matches("sqlite://");
         if path != ":memory:" {
             if let Some(parent) = std::path::Path::new(path).parent() {
-                fs::create_dir_all(parent).unwrap_or_default();
+                if !parent.as_os_str().is_empty() {
+                    fs::create_dir_all(parent).unwrap_or_default();
+                }
             }
         }
     }
 
+    let options = SqliteConnectOptions::from_str(database_url)?
+        .create_if_missing(true);
+
     let pool = SqlitePoolOptions::new()
         .max_connections(5)
-        .connect(database_url)
+        .connect_with(options)
         .await?;
 
     // Create tables

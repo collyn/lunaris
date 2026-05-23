@@ -7,8 +7,10 @@ use num_traits::FromPrimitive;
 use tracing::warn;
 
 // --- Transport Channel IDs ---
+#[allow(dead_code)]
 pub struct TransportChannelId;
 
+#[allow(dead_code)]
 impl TransportChannelId {
     pub const GENERAL: u8 = 0;
     pub const STATS: u8 = 1;
@@ -44,6 +46,7 @@ impl TransportChannelId {
 pub struct TransportChannel(pub u8);
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub enum InboundPacket {
     GeneralStop,
     MouseMove {
@@ -109,6 +112,7 @@ pub enum InboundPacket {
     RequestVideoIdr,
 }
 
+#[allow(dead_code)]
 impl InboundPacket {
     pub const CONTROLLER_CHANNELS: [u8; 16] = [
         TransportChannelId::CONTROLLER0,

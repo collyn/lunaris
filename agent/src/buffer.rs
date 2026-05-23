@@ -17,6 +17,7 @@ pub struct ByteBuffer<T> {
 }
 
 impl<T> ByteBuffer<T> {
+    #[allow(dead_code)]
     pub fn into_raw(self) -> (T, Range<usize>) {
         (self.buffer, 0..self.limit)
     }

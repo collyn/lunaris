@@ -238,6 +238,7 @@ pub async fn setup_bridge_session(
     fps: Option<u32>,
     bitrate: Option<u32>,
     codec: Option<String>,
+    app_id: Option<u32>,
 ) -> Result<Arc<BridgeSession>> {
     // Start Moonlight connection to Sunshine first to get capabilities
     info!("Starting Moonlight host connection to {}:{}", sunshine_ip, sunshine_port);
@@ -522,27 +523,31 @@ pub async fn setup_bridge_session(
     let aes_key = AesKey::new_random(&OpenSSLCryptoBackend)?;
     let aes_iv = AesIv::new_random(&OpenSSLCryptoBackend)?;
 
-    let mut app_id = 1;
-    match host.app_list().await {
-        Ok(apps) => {
-            info!("Retrieved app list from host: {:?}", apps);
-            if let Some(desktop_app) = apps.iter().find(|app| app.title.to_lowercase().contains("desktop")) {
-                info!("Found desktop app: {} (ID: {})", desktop_app.title, desktop_app.id);
-                app_id = desktop_app.id;
-            } else if let Some(first_app) = apps.first() {
-                info!("No desktop app found. Falling back to the first available app: {} (ID: {})", first_app.title, first_app.id);
-                app_id = first_app.id;
-            } else {
-                warn!("App list is empty. Falling back to App ID 1");
+    let mut resolved_app_id = app_id.unwrap_or(0);
+    if resolved_app_id == 0 {
+        match host.app_list().await {
+            Ok(apps) => {
+                info!("Retrieved app list from host: {:?}", apps);
+                if let Some(desktop_app) = apps.iter().find(|app| app.title.to_lowercase().contains("desktop")) {
+                    info!("Found desktop app: {} (ID: {})", desktop_app.title, desktop_app.id);
+                    resolved_app_id = desktop_app.id;
+                } else if let Some(first_app) = apps.first() {
+                    info!("No desktop app found. Falling back to the first available app: {} (ID: {})", first_app.title, first_app.id);
+                    resolved_app_id = first_app.id;
+                } else {
+                    warn!("App list is empty. Falling back to App ID 1");
+                    resolved_app_id = 1;
+                }
             }
-        }
-        Err(e) => {
-            warn!("Failed to retrieve app list: {:?}. Falling back to App ID 1", e);
+            Err(e) => {
+                warn!("Failed to retrieve app list: {:?}. Falling back to App ID 1", e);
+                resolved_app_id = 1;
+            }
         }
     }
 
     let stream_config = host.start_stream(
-        app_id,
+        resolved_app_id,
         &settings,
         aes_key,
         aes_iv,
