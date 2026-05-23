@@ -50,6 +50,7 @@ struct AppArgs {
     fps: u32,
     bitrate: u32,
     codec: String,
+    app_id: Option<u32>,
 }
 
 fn parse_args() -> Option<AppArgs> {
@@ -70,12 +71,18 @@ fn parse_args() -> Option<AppArgs> {
             let mut fps = 60;
             let mut bitrate = 8000;
             let mut codec = "h264".to_string();
+            let mut app_id: Option<u32> = None;
 
             for (k, v) in parsed_url.query_pairs() {
                 match k.as_ref() {
                     "host_id" => host_id = v.into_owned(),
                     "server" => server_url = v.into_owned(),
                     "token" => token = v.into_owned(),
+                    "app_id" => {
+                        if let Ok(id) = v.parse::<u32>() {
+                            app_id = Some(id);
+                        }
+                    }
                     "res" => {
                         let parts: Vec<&str> = v.split('x').collect();
                         if parts.len() == 2 {
@@ -103,7 +110,7 @@ fn parse_args() -> Option<AppArgs> {
             }
 
             if !host_id.is_empty() && !server_url.is_empty() && !token.is_empty() {
-                return Some(AppArgs { host_id, server_url, token, width, height, fps, bitrate, codec });
+                return Some(AppArgs { host_id, server_url, token, width, height, fps, bitrate, codec, app_id });
             }
         }
     }
@@ -118,6 +125,7 @@ fn parse_args() -> Option<AppArgs> {
     let mut fps = 60;
     let mut bitrate = 8000;
     let mut codec = "h264".to_string();
+    let mut app_id: Option<u32> = None;
 
     let mut i = 1;
     while i < args.len() - 1 {
@@ -132,6 +140,12 @@ fn parse_args() -> Option<AppArgs> {
             }
             "--token" => {
                 token = args[i + 1].clone();
+                i += 2;
+            }
+            "--app-id" => {
+                if let Ok(id) = args[i + 1].parse::<u32>() {
+                    app_id = Some(id);
+                }
                 i += 2;
             }
             "--res" => {
@@ -167,7 +181,7 @@ fn parse_args() -> Option<AppArgs> {
     }
 
     if !host_id.is_empty() && !server_url.is_empty() && !token.is_empty() {
-        Some(AppArgs { host_id, server_url, token, width, height, fps, bitrate, codec })
+        Some(AppArgs { host_id, server_url, token, width, height, fps, bitrate, codec, app_id })
     } else {
         None
     }
@@ -648,7 +662,7 @@ async fn run_client(args: AppArgs) -> Result<Option<AppArgs>, anyhow::Error> {
         fps: Some(args.fps),
         bitrate: Some(args.bitrate),
         codec: Some(args.codec.clone()),
-        app_id: None, // Default to Desktop
+        app_id: args.app_id,
     });
     outbox_tx.send(req_msg)?;
 
@@ -870,6 +884,7 @@ async fn run_client(args: AppArgs) -> Result<Option<AppArgs>, anyhow::Error> {
                                 fps,
                                 bitrate,
                                 codec,
+                                app_id: args.app_id,
                             };
                             
                             return Ok(Some(new_args));

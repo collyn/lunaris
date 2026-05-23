@@ -562,11 +562,20 @@ pub async fn run_agent_loop(
         }
     }
 
+    let mut base_ws_url = config.server_url.clone();
+    if base_ws_url.starts_with("http://") {
+        base_ws_url = base_ws_url.replacen("http://", "ws://", 1);
+    } else if base_ws_url.starts_with("https://") {
+        base_ws_url = base_ws_url.replacen("https://", "wss://", 1);
+    } else if !base_ws_url.starts_with("ws://") && !base_ws_url.starts_with("wss://") {
+        base_ws_url = format!("ws://{}", base_ws_url);
+    }
+
     // Connect to Signaling Server
     let server_ws_url = if let Some(support) = codec_support {
         format!(
             "{}/ws/agent?id={}&name={}&codec_support={}&token={}",
-            config.server_url.trim_end_matches('/'),
+            base_ws_url.trim_end_matches('/'),
             config.client_unique_id,
             urlencoding::encode(&name),
             support,
@@ -575,7 +584,7 @@ pub async fn run_agent_loop(
     } else {
         format!(
             "{}/ws/agent?id={}&name={}&token={}",
-            config.server_url.trim_end_matches('/'),
+            base_ws_url.trim_end_matches('/'),
             config.client_unique_id,
             urlencoding::encode(&name),
             urlencoding::encode(&config.server_token)

@@ -4,6 +4,7 @@ members = [
     "agent",
     "common",
     "client",
+    "client-tauri",
 ]
 resolver = "2"
 

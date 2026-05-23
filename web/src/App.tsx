@@ -14,12 +14,60 @@ const getBackendHost = () => {
   if (window.location.port === '5173' || window.location.port === '3000') {
     return `${window.location.hostname}:8080`;
   }
+  if (window.location.hostname === 'tauri.localhost' || window.location.protocol.startsWith('tauri')) {
+    return 'localhost:8080';
+  }
   return window.location.host;
 };
 
 function App() {
   const [token, setToken] = useState<string | null>(localStorage.getItem('lunaris_token'));
   const [username, setUsername] = useState<string | null>(localStorage.getItem('lunaris_username'));
+
+  // Check for deep link query parameters or local storage auto-launch flags on load
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    let qToken = params.get('token') || localStorage.getItem('lunaris_token');
+    let qHostId = params.get('host_id') || localStorage.getItem('lunaris_auto_launch_host_id');
+    let qHostName = params.get('host_name') || localStorage.getItem('lunaris_auto_launch_host_name') || 'Remote Host';
+    let qCodecSupport = params.get('codec_support') || localStorage.getItem('lunaris_auto_launch_codec_support');
+    
+    // Clear temporary auto-launch keys so they don't trigger again on reload
+    localStorage.removeItem('lunaris_auto_launch_host_id');
+    localStorage.removeItem('lunaris_auto_launch_host_name');
+    localStorage.removeItem('lunaris_auto_launch_codec_support');
+
+    const qRes = params.get('res') || localStorage.getItem('lunaris_stream_res');
+    const qFps = params.get('fps') || localStorage.getItem('lunaris_stream_fps');
+    const qBitrate = params.get('bitrate') || localStorage.getItem('lunaris_stream_bitrate');
+    const qCodec = params.get('codec') || localStorage.getItem('lunaris_stream_codec');
+    
+    if (qToken && qHostId) {
+      localStorage.setItem('lunaris_token', qToken);
+      setToken(qToken);
+      
+      if (qRes) localStorage.setItem('lunaris_stream_res', qRes);
+      if (qFps) localStorage.setItem('lunaris_stream_fps', qFps);
+      if (qBitrate) localStorage.setItem('lunaris_stream_bitrate', qBitrate);
+      if (qCodec) localStorage.setItem('lunaris_stream_codec', qCodec);
+      
+      let codecSupportNum: number | undefined = undefined;
+      if (qCodecSupport) {
+        const parsed = parseInt(qCodecSupport, 10);
+        if (!isNaN(parsed)) {
+          codecSupportNum = parsed;
+        }
+      }
+      
+      setSelectedHost({
+        id: qHostId,
+        name: qHostName,
+        status: 'Online',
+        ip_address: null,
+        server_codec_mode_support: codecSupportNum
+      });
+    }
+  }, []);
   
   // Auth Form State
   const [isRegister, setIsRegister] = useState<boolean>(false);
