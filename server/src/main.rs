@@ -97,6 +97,29 @@ fn get_or_generate_agent_token() -> String {
     generated
 }
 
+fn find_database_url() -> String {
+    if let Ok(url) = std::env::var("DATABASE_URL") {
+        return url;
+    }
+
+    // Default to "sqlite://lunaris.db"
+    // If started from target/release or target/debug, walk up to use root workspace directory
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            if let Some(target_dir) = exe_dir.parent() {
+                if let Some(workspace_dir) = target_dir.parent() {
+                    let path = workspace_dir.join("lunaris.db");
+                    if workspace_dir.join("Cargo.toml").exists() {
+                        return format!("sqlite://{}", path.to_string_lossy());
+                    }
+                }
+            }
+        }
+    }
+
+    "sqlite://lunaris.db".to_string()
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Init logger
@@ -107,8 +130,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
-    let database_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "sqlite://lunaris.db".to_string());
+    let database_url = find_database_url();
 
     info!("Initializing SQLite database: {}", database_url);
     let pool = init_db(&database_url).await?;

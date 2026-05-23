@@ -24,7 +24,7 @@ use webrtc::{
     },
     interceptor::registry::Registry,
     media::Sample,
-    peer_connection::RTCPeerConnection,
+    peer_connection::{RTCPeerConnection, peer_connection_state::RTCPeerConnectionState},
     rtp::{header::Header, packet::Packet, packetizer::Payloader},
     rtp_transceiver::{
         rtp_codec::{RTCRtpCodecCapability, RTCRtpCodecParameters, RTPCodecType},
@@ -70,6 +70,28 @@ use crate::input::TransportChannelId;
 pub struct BridgeSession {
     pub peer_connection: Arc<RTCPeerConnection>,
     pub moonlight_stream: Arc<TokioMutex<Option<MoonlightStream>>>,
+}
+
+impl Drop for BridgeSession {
+    fn drop(&mut self) {
+        info!("BridgeSession is being dropped, ensuring Moonlight stream is stopped...");
+        if let Ok(mut lock) = self.moonlight_stream.try_lock() {
+            if let Some(stream) = lock.take() {
+                info!("Stopping Moonlight stream in BridgeSession Drop (try_lock)...");
+                stream.stop();
+            }
+        } else {
+            warn!("Moonlight stream Mutex was locked, spawning async task to stop stream...");
+            let stream_mutex = self.moonlight_stream.clone();
+            tokio::spawn(async move {
+                let mut lock = stream_mutex.lock().await;
+                if let Some(stream) = lock.take() {
+                    info!("Stopping Moonlight stream in BridgeSession Drop (async)...");
+                    stream.stop();
+                }
+            });
+        }
+    }
 }
 
 pub struct VideoFramePayload {
@@ -445,8 +467,24 @@ pub async fn setup_bridge_session(
         }
     });
 
-    let moonlight_stream_mutex = Arc::new(TokioMutex::new(None));
+    let moonlight_stream_mutex: Arc<TokioMutex<Option<MoonlightStream>>> = Arc::new(TokioMutex::new(None));
     let ml_stream_clone = moonlight_stream_mutex.clone();
+
+    // Handle Peer Connection state changes to clean up session
+    let ml_stream_state_change = moonlight_stream_mutex.clone();
+    peer_connection.on_peer_connection_state_change(Box::new(move |state: RTCPeerConnectionState| {
+        let ml_stream = ml_stream_state_change.clone();
+        Box::pin(async move {
+            info!("WebRTC connection state changed to: {}", state);
+            if state == RTCPeerConnectionState::Closed || state == RTCPeerConnectionState::Failed {
+                let mut lock = ml_stream.lock().await;
+                if let Some(stream) = lock.take() {
+                    info!("WebRTC connection closed or failed, stopping Moonlight stream...");
+                    stream.stop();
+                }
+            }
+        })
+    }));
 
     // Create Data Channels
     let general_channel = peer_connection.create_data_channel("general", None).await?;

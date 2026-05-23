@@ -620,13 +620,6 @@ function App() {
                       <div key={host.id} className={`host-card ${host.status.toLowerCase()}`}>
                         <div className="host-card-glow"></div>
                         <div className="host-card-header">
-                          <div className="host-icon-box">
-                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                              <rect x="2" y="3" width="20" height="14" rx="2" ry="2" />
-                              <line x1="8" y1="21" x2="16" y2="21" />
-                              <line x1="12" y1="17" x2="12" y2="21" />
-                            </svg>
-                          </div>
                           <div>
                             <h3 className="host-name">{host.name}</h3>
                             <span className="host-id">ID: {host.id.slice(0, 8)}...</span>
@@ -647,18 +640,34 @@ function App() {
                           </div>
                         </div>
 
-                        <div className="host-card-footer" style={{ display: 'flex', alignItems: 'center' }}>
+                        <div className="host-card-footer" style={{ display: 'flex', alignItems: 'center', width: '100%' }}>
                           {isOnline ? (
-                            <button 
-                              onClick={() => setSelectedHost(host)}
-                              className="btn-primary host-connect-btn"
-                              style={{ flex: 1 }}
-                            >
-                              Launch Stream
-                              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                <path d="M5 12h14M12 5l7 7-7 7" />
-                              </svg>
-                            </button>
+                            <div style={{ display: 'flex', gap: '8px', width: '100%' }}>
+                              <button 
+                                onClick={() => setSelectedHost(host)}
+                                className="btn-primary host-connect-btn"
+                                style={{ flex: 1 }}
+                              >
+                                Launch Stream
+                              </button>
+                              <button 
+                                onClick={() => {
+                                  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                                  const serverHost = getBackendHost();
+                                  const serverUrl = `${protocol}//${serverHost}`;
+                                  const res = localStorage.getItem('lunaris_stream_res') || '1280x720';
+                                  const fps = localStorage.getItem('lunaris_stream_fps') || '60';
+                                  const bitrate = localStorage.getItem('lunaris_stream_bitrate') || '8000';
+                                  const codec = localStorage.getItem('lunaris_stream_codec') || 'h264';
+                                  window.location.href = `lunaris://connect?host_id=${host.id}&server=${serverUrl}&token=${token}&res=${res}&fps=${fps}&bitrate=${bitrate}&codec=${codec}`;
+                                }}
+                                className="btn-secondary host-app-btn"
+                                title="Launch in Native App"
+                                style={{ flex: 1 }}
+                              >
+                                Launch App
+                              </button>
+                            </div>
                           ) : (
                             <button 
                               disabled 

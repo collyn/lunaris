@@ -641,6 +641,20 @@ pub async fn run_agent_loop(
                         } => {
                             info!("Incoming session request from client: {}", client_id);
                             
+                            // Clean up previous active session on the agent to release Sunshine stream
+                            {
+                                let mut lock = active_session.lock().await;
+                                if let Some(old_session) = lock.take() {
+                                    info!("Cleaning up previous active session before setting up new one...");
+                                    let _ = old_session.peer_connection.close().await;
+                                    let mut stream_lock = old_session.moonlight_stream.lock().await;
+                                    if let Some(stream) = stream_lock.take() {
+                                        info!("Stopping Moonlight stream for previous session...");
+                                        stream.stop();
+                                    }
+                                }
+                            }
+
                             // Initialize bridge session
                             let session = match setup_bridge_session(
                                 config.clone(),

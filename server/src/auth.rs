@@ -54,6 +54,9 @@ pub fn verify_jwt(token: &str) -> Result<Claims, jsonwebtoken::errors::Error> {
     Ok(token_data.claims)
 }
 
+use std::sync::Arc;
+use crate::signaling::SignalingState;
+
 #[allow(dead_code)]
 pub struct AuthenticatedUser {
     pub user_id: String,
@@ -61,13 +64,10 @@ pub struct AuthenticatedUser {
 }
 
 #[async_trait]
-impl<S> FromRequestParts<S> for AuthenticatedUser
-where
-    S: Send + Sync,
-{
+impl FromRequestParts<Arc<SignalingState>> for AuthenticatedUser {
     type Rejection = (StatusCode, &'static str);
 
-    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+    async fn from_request_parts(parts: &mut Parts, state: &Arc<SignalingState>) -> Result<Self, Self::Rejection> {
         let auth_header = parts
             .headers
             .get("Authorization")
@@ -80,6 +80,20 @@ where
 
         let token = &auth_header[7..];
         let claims = verify_jwt(token).map_err(|_| (StatusCode::UNAUTHORIZED, "Invalid Token"))?;
+
+        // Verify that the user exists in the database to prevent foreign key errors
+        let user_exists: Option<String> = sqlx::query_scalar("SELECT id FROM users WHERE id = ?")
+            .bind(&claims.sub)
+            .fetch_optional(&state.db)
+            .await
+            .map_err(|e| {
+                tracing::error!("Database verification error: {:?}", e);
+                (StatusCode::INTERNAL_SERVER_ERROR, "Database Error")
+            })?;
+
+        if user_exists.is_none() {
+            return Err((StatusCode::UNAUTHORIZED, "User does not exist in database"));
+        }
 
         Ok(AuthenticatedUser {
             user_id: claims.sub,
