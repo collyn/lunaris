@@ -1060,6 +1060,10 @@ async fn run_client(args: AppArgs) -> Result<Option<AppArgs>, anyhow::Error> {
                     ui::draw_stats(&mut canvas, rendered_fps, &args.codec, args.width, args.height, args.bitrate);
                 }
 
+                let mouse_state = event_pump.mouse_state();
+                let mx = mouse_state.x();
+                let my = mouse_state.y();
+
                 ui::draw_menu(
                     &mut canvas,
                     win_w as i32,
@@ -1068,6 +1072,8 @@ async fn run_client(args: AppArgs) -> Result<Option<AppArgs>, anyhow::Error> {
                     fullscreen,
                     pointer_locked,
                     show_stats,
+                    mx,
+                    my,
                 );
 
                 if show_settings {
@@ -1079,20 +1085,23 @@ async fn run_client(args: AppArgs) -> Result<Option<AppArgs>, anyhow::Error> {
                         sel_fps_idx,
                         sel_codec_idx,
                         sel_bitrate_idx,
+                        mx,
+                        my,
                     );
                 }
 
                 if let Some(time) = lock_notification_time {
                     if time.elapsed() < Duration::from_secs(5) {
                         let hint = "Mouse locked. Press Ctrl+Alt+Esc to release.";
-                        let text_w = hint.len() as i32 * 10;
+                        let text_w = ui::get_text_width(hint, 12.0);
                         let text_x = (win_w as i32 - text_w) / 2;
-                        let text_y = win_h as i32 - 30;
-                        canvas.set_draw_color(sdl2::pixels::Color::RGBA(15, 23, 42, 180));
-                        let _ = canvas.fill_rect(sdl2::rect::Rect::new(text_x - 10, text_y - 5, (text_w + 20) as u32, 20u32));
-                        canvas.set_draw_color(sdl2::pixels::Color::RGBA(139, 92, 246, 255));
-                        let _ = canvas.draw_rect(sdl2::rect::Rect::new(text_x - 10, text_y - 5, (text_w + 20) as u32, 20u32));
-                        ui::draw_text(&mut canvas, hint, text_x, text_y, sdl2::pixels::Color::RGBA(241, 245, 249, 255), 1);
+                        let text_y = win_h as i32 - 32;
+                        
+                        let rect = sdl2::rect::Rect::new(text_x - 12, text_y - 6, (text_w + 24) as u32, 24u32);
+                        ui::fill_rounded_rect(&mut canvas, rect, 6, sdl2::pixels::Color::RGBA(11, 17, 30, 210));
+                        ui::draw_rounded_rect(&mut canvas, rect, 6, ui::ACCENT_PURPLE);
+                        
+                        ui::draw_text_with_shadow(&mut canvas, hint, text_x, text_y, sdl2::pixels::Color::RGBA(241, 245, 249, 255), 12.0);
                     } else {
                         lock_notification_time = None;
                     }

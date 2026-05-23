@@ -2,7 +2,6 @@ use sdl2::render::Canvas;
 use sdl2::render::RenderTarget;
 use sdl2::pixels::Color;
 use sdl2::rect::Rect;
-use font8x8::UnicodeFonts;
 
 // Settings Options definitions
 pub const RESOLUTIONS: &[(&str, u32, u32)] = &[
@@ -48,52 +47,193 @@ pub const STATUS_ONLINE: Color = Color::RGBA(0, 255, 148, 255);   // #00ff94
 #[allow(dead_code)]
 pub const ERROR_COLOR: Color = Color::RGBA(239, 68, 68, 255);     // #ef4444
 
-// Draw a linear gradient rectangle horizontally from color_start to color_end
-fn draw_gradient_rect<T: RenderTarget>(
+
+pub fn draw_rounded_rect<T: RenderTarget>(
     canvas: &mut Canvas<T>,
     rect: Rect,
+    radius: i32,
+    color: Color,
+) {
+    canvas.set_draw_color(color);
+    let x = rect.x();
+    let y = rect.y();
+    let w = rect.width() as i32;
+    let h = rect.height() as i32;
+    let r = radius;
+
+    // Draw straight lines of borders
+    let _ = canvas.draw_line((x + r, y), (x + w - r - 1, y)); // Top
+    let _ = canvas.draw_line((x + r, y + h - 1), (x + w - r - 1, y + h - 1)); // Bottom
+    let _ = canvas.draw_line((x, y + r), (x, y + h - r - 1)); // Left
+    let _ = canvas.draw_line((x + w - 1, y + r), (x + w - 1, y + h - r - 1)); // Right
+
+    // Draw corners
+    let mut px = -1;
+    let mut py = -1;
+    for dy in 0..=r {
+        let cy_offset = r - dy;
+        let dx = ((r * r - cy_offset * cy_offset) as f32).sqrt().round() as i32;
+
+        // Draw corner points
+        let _ = canvas.draw_point((x + r - dx, y + dy));
+        let _ = canvas.draw_point((x + w - r - 1 + dx, y + dy));
+        let _ = canvas.draw_point((x + r - dx, y + h - 1 - dy));
+        let _ = canvas.draw_point((x + w - r - 1 + dx, y + h - 1 - dy));
+
+        if px != -1 && py != -1 {
+            let _ = canvas.draw_line((x + r - px, y + py), (x + r - dx, y + dy));
+            let _ = canvas.draw_line((x + w - r - 1 + px, y + py), (x + w - r - 1 + dx, y + dy));
+            let _ = canvas.draw_line((x + r - px, y + h - 1 - py), (x + r - dx, y + h - 1 - dy));
+            let _ = canvas.draw_line((x + w - r - 1 + px, y + h - 1 - py), (x + w - r - 1 + dx, y + h - 1 - dy));
+        }
+        px = dx;
+        py = dy;
+    }
+}
+
+pub fn fill_rounded_rect<T: RenderTarget>(
+    canvas: &mut Canvas<T>,
+    rect: Rect,
+    radius: i32,
+    color: Color,
+) {
+    canvas.set_draw_color(color);
+    let x = rect.x();
+    let y = rect.y();
+    let w = rect.width() as i32;
+    let h = rect.height() as i32;
+    let r = radius;
+
+    // Center body
+    let _ = canvas.fill_rect(Rect::new(x, y + r, w as u32, (h - 2 * r) as u32));
+    
+    // Top and bottom slices
+    let _ = canvas.fill_rect(Rect::new(x + r, y, (w - 2 * r) as u32, r as u32));
+    let _ = canvas.fill_rect(Rect::new(x + r, y + h - r, (w - 2 * r) as u32, r as u32));
+
+    // Fill corners
+    for dy in 0..r {
+        let cy_offset = r - dy;
+        let dx = ((r * r - cy_offset * cy_offset) as f32).sqrt() as i32;
+
+        let _ = canvas.draw_line((x + r - dx, y + dy), (x + r, y + dy));
+        let _ = canvas.draw_line((x + w - r, y + dy), (x + w - r + dx - 1, y + dy));
+        let _ = canvas.draw_line((x + r - dx, y + h - 1 - dy), (x + r, y + h - 1 - dy));
+        let _ = canvas.draw_line((x + w - r, y + h - 1 - dy), (x + w - r + dx - 1, y + h - 1 - dy));
+    }
+}
+
+pub fn fill_rounded_gradient_rect<T: RenderTarget>(
+    canvas: &mut Canvas<T>,
+    rect: Rect,
+    radius: i32,
     color_start: Color,
     color_end: Color,
 ) {
     let w = rect.width() as i32;
     let h = rect.height() as i32;
+    let r = radius;
     for x in 0..w {
         let t = x as f32 / w as f32;
-        let r = (color_start.r as f32 * (1.0 - t) + color_end.r as f32 * t) as u8;
-        let g = (color_start.g as f32 * (1.0 - t) + color_end.g as f32 * t) as u8;
-        let b = (color_start.b as f32 * (1.0 - t) + color_end.b as f32 * t) as u8;
-        let a = (color_start.a as f32 * (1.0 - t) + color_end.a as f32 * t) as u8;
-        canvas.set_draw_color(Color::RGBA(r, g, b, a));
-        let _ = canvas.draw_line((rect.x() + x, rect.y()), (rect.x() + x, rect.y() + h - 1));
+        let color = Color::RGBA(
+            (color_start.r as f32 * (1.0 - t) + color_end.r as f32 * t) as u8,
+            (color_start.g as f32 * (1.0 - t) + color_end.g as f32 * t) as u8,
+            (color_start.b as f32 * (1.0 - t) + color_end.b as f32 * t) as u8,
+            (color_start.a as f32 * (1.0 - t) + color_end.a as f32 * t) as u8,
+        );
+        canvas.set_draw_color(color);
+        
+        let dy = if x < r {
+            let cx_offset = r - x;
+            let term = r * r - cx_offset * cx_offset;
+            if term >= 0 {
+                r - (term as f32).sqrt() as i32
+            } else {
+                0
+            }
+        } else if x >= w - r {
+            let cx_offset = r - (w - 1 - x);
+            let term = r * r - cx_offset * cx_offset;
+            if term >= 0 {
+                r - (term as f32).sqrt() as i32
+            } else {
+                0
+            }
+        } else {
+            0
+        };
+        
+        let _ = canvas.draw_line(
+            (rect.x() + x, rect.y() + dy),
+            (rect.x() + x, rect.y() + h - 1 - dy),
+        );
     }
 }
 
-// Draw text on canvas using font8x8
+use std::sync::OnceLock;
+use rusttype::{Font, Scale, point};
+
+pub fn get_font() -> &'static Font<'static> {
+    static FONT: OnceLock<Font<'static>> = OnceLock::new();
+    FONT.get_or_init(|| {
+        let font_data = include_bytes!("assets/SpaceGrotesk-Medium.ttf");
+        Font::try_from_bytes(font_data as &[u8]).expect("Failed to parse bundled SpaceGrotesk font")
+    })
+}
+
+pub fn get_text_width(text: &str, size: f32) -> i32 {
+    let font = get_font();
+    let scale = Scale::uniform(size);
+    let glyphs: Vec<_> = font.layout(text, scale, point(0.0, 0.0)).collect();
+    if glyphs.is_empty() {
+        return 0;
+    }
+    let last_glyph = &glyphs[glyphs.len() - 1];
+    let scale_factor = scale.x / font.units_per_em() as f32;
+    let width = last_glyph.position().x + last_glyph.unpositioned().h_metrics().advance_width as f32 * scale_factor;
+    width as i32
+}
+
 pub fn draw_text<T: RenderTarget>(
     canvas: &mut Canvas<T>,
     text: &str,
     x: i32,
     y: i32,
     color: Color,
-    scale: u32,
+    size: f32,
 ) {
-    canvas.set_draw_color(color);
-    let mut current_x = x;
-    for c in text.chars() {
-        if let Some(glyph) = font8x8::BASIC_FONTS.get(c) {
-            for row in 0..8 {
-                let byte = glyph[row];
-                for col in 0..8 {
-                    if (byte & (1 << col)) != 0 {
-                        let px = current_x + col as i32 * scale as i32;
-                        let py = y + row as i32 * scale as i32;
-                        let _ = canvas.fill_rect(Rect::new(px, py, scale, scale));
-                    }
+    let font = get_font();
+    let scale = Scale::uniform(size);
+    let v_metrics = font.v_metrics(scale);
+    let glyphs: Vec<_> = font.layout(text, scale, point(x as f32, y as f32 + v_metrics.ascent)).collect();
+    
+    for glyph in glyphs {
+        if let Some(bounding_box) = glyph.pixel_bounding_box() {
+            glyph.draw(|gx, gy, gv| {
+                if gv > 0.05 {
+                    let px = bounding_box.min.x + gx as i32;
+                    let py = bounding_box.min.y + gy as i32;
+                    let alpha = (color.a as f32 * gv) as u8;
+                    canvas.set_draw_color(Color::RGBA(color.r, color.g, color.b, alpha));
+                    let _ = canvas.draw_point((px, py));
                 }
-            }
+            });
         }
-        current_x += (8 * scale) as i32 + 2; // character width + spacing
     }
+}
+
+pub fn draw_text_with_shadow<T: RenderTarget>(
+    canvas: &mut Canvas<T>,
+    text: &str,
+    x: i32,
+    y: i32,
+    color: Color,
+    size: f32,
+) {
+    // Drop shadow
+    draw_text(canvas, text, x + 1, y + 1, Color::RGBA(0, 0, 0, 150), size);
+    // Main text
+    draw_text(canvas, text, x, y, color, size);
 }
 
 // Collapsed trigger notch dimensions
@@ -105,18 +245,22 @@ pub fn get_trigger_rect(win_w: i32) -> Rect {
 // Menu pill dimensions
 pub fn get_menu_rect(win_w: i32, y_offset: i32) -> Rect {
     let cx = win_w / 2;
-    Rect::new(cx - 180, y_offset, 360, 38)
+    Rect::new(cx - 200, y_offset, 400, 48)
 }
 
 // Menu buttons layouts
 pub fn get_menu_buttons(win_w: i32, y_offset: i32) -> Vec<(Rect, &'static str)> {
     let cx = win_w / 2;
+    let button_w: i32 = 68;
+    let button_h: i32 = 36;
+    let gap: i32 = 10;
+    let start_x = cx - 200 + 10;
     vec![
-        (Rect::new(cx - 170, y_offset + 5, 50, 28), "Exit"),
-        (Rect::new(cx - 110, y_offset + 5, 40, 28), "FS"),
-        (Rect::new(cx - 60, y_offset + 5, 50, 28), "Lock"),
-        (Rect::new(cx, y_offset + 5, 60, 28), "Stats"),
-        (Rect::new(cx + 70, y_offset + 5, 90, 28), "Settings"),
+        (Rect::new(start_x, y_offset + 6, button_w as u32, button_h as u32), "Exit"),
+        (Rect::new(start_x + (button_w + gap) * 1, y_offset + 6, button_w as u32, button_h as u32), "FS"),
+        (Rect::new(start_x + (button_w + gap) * 2, y_offset + 6, button_w as u32, button_h as u32), "Lock"),
+        (Rect::new(start_x + (button_w + gap) * 3, y_offset + 6, button_w as u32, button_h as u32), "Stats"),
+        (Rect::new(start_x + (button_w + gap) * 4, y_offset + 6, button_w as u32, button_h as u32), "Settings"),
     ]
 }
 
@@ -129,28 +273,41 @@ pub fn draw_menu<T: RenderTarget>(
     fullscreen: bool,
     pointer_locked: bool,
     show_stats: bool,
+    mx: i32,
+    my: i32,
 ) {
-    let collapsed_bg = Color::RGBA(15, 22, 38, 200); // BG_SECONDARY with alpha
-    let menu_bg = Color::RGBA(15, 22, 38, 220); // BG_SECONDARY with alpha
-    let border_color = ACCENT_CYAN;
+    let collapsed_bg = Color::RGBA(15, 23, 42, 200); // Sleek translucent dark glass
+    let menu_bg = Color::RGBA(15, 23, 42, 225); // Rich translucent space slate glass
     let border_color_collapsed = ACCENT_PURPLE;
-    let text_color = TEXT_MAIN;
 
     if !show_menu && y_offset <= -35 {
         // Draw collapsed trigger notch
         let trig = get_trigger_rect(win_w);
-        canvas.set_draw_color(collapsed_bg);
-        let _ = canvas.fill_rect(trig);
-        canvas.set_draw_color(border_color_collapsed);
-        let _ = canvas.draw_rect(trig);
-        draw_text(canvas, "V", trig.x() + 21, trig.y() + 3, ACCENT_CYAN, 1);
+        let is_hovered = mx >= trig.x() && mx <= trig.x() + trig.width() as i32
+            && my >= trig.y() && my <= trig.y() + trig.height() as i32;
+
+        let radius = 6;
+        fill_rounded_rect(canvas, trig, radius, collapsed_bg);
+        draw_rounded_rect(canvas, trig, radius, if is_hovered { ACCENT_CYAN } else { border_color_collapsed });
+        
+        // Draw a clean vector chevron down (V)
+        let cx = trig.x() + 25;
+        let cy = trig.y() + 5;
+        canvas.set_draw_color(if is_hovered { ACCENT_CYAN } else { ACCENT_PURPLE });
+        let _ = canvas.draw_line((cx - 4, cy), (cx, cy + 4));
+        let _ = canvas.draw_line((cx, cy + 4), (cx + 4, cy));
     } else {
-        // Draw expanded menu pill
+        // Draw expanded menu pill (radius 12)
         let menu_rect = get_menu_rect(win_w, y_offset);
-        canvas.set_draw_color(menu_bg);
-        let _ = canvas.fill_rect(menu_rect);
-        canvas.set_draw_color(border_color);
-        let _ = canvas.draw_rect(menu_rect);
+        let menu_radius = 12;
+        
+        // 1. Draw Drop Shadow
+        let shadow_rect = Rect::new(menu_rect.x(), menu_rect.y() + 3, menu_rect.width(), menu_rect.height());
+        fill_rounded_rect(canvas, shadow_rect, menu_radius, Color::RGBA(0, 0, 0, 120));
+
+        // 2. Draw Menu Background & Border
+        fill_rounded_rect(canvas, menu_rect, menu_radius, menu_bg);
+        draw_rounded_rect(canvas, menu_rect, menu_radius, Color::RGBA(255, 255, 255, 20)); // Subtle white outline
 
         let buttons = get_menu_buttons(win_w, y_offset);
         for &(rect, label) in &buttons {
@@ -163,30 +320,120 @@ pub fn draw_menu<T: RenderTarget>(
                 is_active = true;
             }
 
+            let is_hovered = mx >= rect.x() && mx <= rect.x() + rect.width() as i32
+                && my >= rect.y() && my <= rect.y() + rect.height() as i32;
+
+            let button_radius = 6;
+
             if is_active {
-                // Active buttons get a cyan-to-purple gradient background, dark text
-                draw_gradient_rect(canvas, rect, ACCENT_CYAN, ACCENT_PURPLE);
-                canvas.set_draw_color(TEXT_MAIN);
-                let _ = canvas.draw_rect(rect);
-                // Center text
-                let label_len = label.len() as i32;
-                let text_x = rect.x() + (rect.width() as i32 - label_len * 10) / 2;
-                let text_y = rect.y() + 10;
-                draw_text(canvas, label, text_x, text_y, Color::RGB(8, 12, 20), 1);
+                // Active buttons: Rounded linear gradient background, dark text
+                fill_rounded_gradient_rect(canvas, rect, button_radius, ACCENT_CYAN, ACCENT_PURPLE);
+                draw_rounded_rect(canvas, rect, button_radius, TEXT_MAIN);
+                
+                // Draw vector icon and label (dark color)
+                draw_button_contents(canvas, rect, label, Color::RGB(8, 12, 20), pointer_locked);
             } else {
-                // Normal buttons get tertiary background, subtle white border, main text
-                canvas.set_draw_color(Color::RGBA(23, 32, 51, 200)); // BG_TERTIARY with alpha
-                let _ = canvas.fill_rect(rect);
-                canvas.set_draw_color(Color::RGBA(255, 255, 255, 25)); // subtle white border
-                let _ = canvas.draw_rect(rect);
-                // Center text
-                let label_len = label.len() as i32;
-                let text_x = rect.x() + (rect.width() as i32 - label_len * 10) / 2;
-                let text_y = rect.y() + 10;
-                draw_text(canvas, label, text_x, text_y, text_color, 1);
+                // Inactive buttons: Translucent white glass, border glows cyan if hovered
+                if is_hovered {
+                    fill_rounded_rect(canvas, rect, button_radius, Color::RGBA(255, 255, 255, 20)); // Hover glass opacity
+                    draw_rounded_rect(canvas, rect, button_radius, ACCENT_CYAN); // Glowing border
+                    draw_button_contents(canvas, rect, label, TEXT_MAIN, pointer_locked);
+                } else {
+                    fill_rounded_rect(canvas, rect, button_radius, Color::RGBA(255, 255, 255, 10)); // Subtle glass opacity
+                    draw_rounded_rect(canvas, rect, button_radius, Color::RGBA(255, 255, 255, 12)); // Muted border
+                    draw_button_contents(canvas, rect, label, Color::RGBA(241, 245, 249, 180), pointer_locked);
+                }
             }
         }
     }
+}
+
+// Helper to draw vector icons and text inside menu buttons
+fn draw_button_contents<T: RenderTarget>(
+    canvas: &mut Canvas<T>,
+    rect: Rect,
+    label: &str,
+    color: Color,
+    pointer_locked: bool,
+) {
+    let ix = rect.x() + (rect.width() as i32 - 12) / 2;
+    let iy = rect.y() + 4;
+    
+    // Draw vector icon
+    canvas.set_draw_color(color);
+    match label {
+        "Exit" => {
+            // Exit: door bracket on the left, arrow pointing right out of it
+            let _ = canvas.draw_line((ix + 2, iy), (ix + 2, iy + 11));
+            let _ = canvas.draw_line((ix + 2, iy), (ix + 6, iy));
+            let _ = canvas.draw_line((ix + 2, iy + 11), (ix + 6, iy + 11));
+            let _ = canvas.draw_line((ix + 4, iy + 6), (ix + 11, iy + 6));
+            let _ = canvas.draw_line((ix + 11, iy + 6), (ix + 8, iy + 3));
+            let _ = canvas.draw_line((ix + 11, iy + 6), (ix + 8, iy + 9));
+        }
+        "FS" => {
+            // Fullscreen: Corner brackets
+            let _ = canvas.draw_line((ix, iy), (ix + 3, iy));
+            let _ = canvas.draw_line((ix, iy), (ix, iy + 3));
+            let _ = canvas.draw_line((ix + 11, iy), (ix + 8, iy));
+            let _ = canvas.draw_line((ix + 11, iy), (ix + 11, iy + 3));
+            let _ = canvas.draw_line((ix, iy + 11), (ix + 3, iy + 11));
+            let _ = canvas.draw_line((ix, iy + 11), (ix, iy + 8));
+            let _ = canvas.draw_line((ix + 11, iy + 11), (ix + 8, iy + 11));
+            let _ = canvas.draw_line((ix + 11, iy + 11), (ix + 11, iy + 8));
+        }
+        "Lock" => {
+            // Pointer Lock: Padlock that shifts open/close
+            let _ = canvas.draw_rect(Rect::new(ix + 2, iy + 5, 8, 7));
+            if pointer_locked {
+                // Locked: Closed Shackle
+                let _ = canvas.draw_line((ix + 4, iy + 4), (ix + 4, iy + 2));
+                let _ = canvas.draw_line((ix + 4, iy + 2), (ix + 7, iy + 2));
+                let _ = canvas.draw_line((ix + 7, iy + 2), (ix + 7, iy + 4));
+                // Center keyhole
+                let _ = canvas.fill_rect(Rect::new(ix + 5, iy + 7, 2, 2));
+                let _ = canvas.draw_line((ix + 6, iy + 9), (ix + 6, iy + 10));
+            } else {
+                // Unlocked: Open Shackle
+                let _ = canvas.draw_line((ix + 4, iy + 4), (ix + 4, iy + 1));
+                let _ = canvas.draw_line((ix + 4, iy + 1), (ix + 7, iy + 1));
+                let _ = canvas.draw_line((ix + 7, iy + 1), (ix + 7, iy + 3));
+                // Keyhole line
+                let _ = canvas.draw_line((ix + 5, iy + 8), (ix + 7, iy + 8));
+            }
+        }
+        "Stats" => {
+            // Stats: filled bar chart
+            let _ = canvas.fill_rect(Rect::new(ix, iy + 8, 3, 4));
+            let _ = canvas.fill_rect(Rect::new(ix + 4, iy + 4, 3, 8));
+            let _ = canvas.fill_rect(Rect::new(ix + 8, iy, 3, 12));
+        }
+        "Settings" => {
+            // Settings: Sliders
+            let _ = canvas.draw_line((ix, iy + 3), (ix + 11, iy + 3));
+            let _ = canvas.fill_rect(Rect::new(ix + 2, iy + 1, 3, 5));
+            let _ = canvas.draw_line((ix, iy + 8), (ix + 11, iy + 8));
+            let _ = canvas.fill_rect(Rect::new(ix + 7, iy + 6, 3, 5));
+        }
+        _ => {}
+    }
+
+    // Draw text label centered below icon
+    let display_text = match label {
+        "Exit" => "EXIT",
+        "FS" => "FULL",
+        "Lock" => "LOCK",
+        "Stats" => "STATS",
+        "Settings" => "CONFIG",
+        other => other,
+    };
+    
+    let text_size = 11.0;
+    let text_w = get_text_width(display_text, text_size);
+    let text_x = rect.x() + (rect.width() as i32 - text_w) / 2;
+    let text_y = rect.y() + 22;
+    
+    draw_text_with_shadow(canvas, display_text, text_x, text_y, color, text_size);
 }
 
 // Draw stats panel
@@ -198,44 +445,56 @@ pub fn draw_stats<T: RenderTarget>(
     height: u32,
     bitrate: u32,
 ) {
-    let bg_color = Color::RGBA(15, 22, 38, 200); // BG_SECONDARY with alpha
-    let border_color = STATUS_ONLINE; // Glowing neon green
+    let bg_color = Color::RGBA(11, 17, 30, 210); // Sleek translucent dark glass
+    let border_color = Color::RGBA(0, 240, 255, 100); // Subtle glowing cyan border
     let text_color = TEXT_MAIN;
     let label_color = TEXT_MUTED;
 
-    let rect = Rect::new(15, 50, 200, 85);
-    canvas.set_draw_color(bg_color);
-    let _ = canvas.fill_rect(rect);
-    canvas.set_draw_color(border_color);
-    let _ = canvas.draw_rect(rect);
+    let rect = Rect::new(15, 60, 220, 95); // Slightly larger for layout comfort
+    let radius = 8;
+    fill_rounded_rect(canvas, rect, radius, bg_color);
+    draw_rounded_rect(canvas, rect, radius, border_color);
 
-    // Draw Title: "STATS" in cyan
-    draw_text(canvas, "STATS", rect.x() + 10, rect.y() + 8, ACCENT_CYAN, 1);
-    // Draw thin line divider in slate
+    // Draw small glowing green dot (online state indicator)
+    let dot_x = rect.x() + 15;
+    let dot_y = rect.y() + 14;
+    // Outer glow ring
+    canvas.set_draw_color(Color::RGBA(0, 255, 148, 100));
+    let _ = canvas.draw_rect(Rect::new(dot_x - 2, dot_y - 2, 7, 7));
+    // Solid center
+    canvas.set_draw_color(STATUS_ONLINE);
+    let _ = canvas.fill_rect(Rect::new(dot_x - 1, dot_y - 1, 5, 5));
+
+    // Title: "STATS" in cyan with shadow
+    draw_text_with_shadow(canvas, "STATS", rect.x() + 30, rect.y() + 10, ACCENT_CYAN, 12.0);
+    
+    // Draw thin line divider in dark slate
     canvas.set_draw_color(Color::RGBA(255, 255, 255, 15));
-    let _ = canvas.draw_line((rect.x() + 5, rect.y() + 20), (rect.x() + rect.width() as i32 - 5, rect.y() + 20));
+    let _ = canvas.draw_line(
+        (rect.x() + 10, rect.y() + 24),
+        (rect.x() + rect.width() as i32 - 10, rect.y() + 24)
+    );
 
     let fps_val = format!("{}", fps);
     let res_val = format!("{}x{}", width, height);
     let codec_val = format!("{}", codec.to_uppercase());
     let bitrate_val = format!("{} Mbps", bitrate / 1000);
 
-    // Render labels and values
-    // FPS:
-    draw_text(canvas, "FPS:", rect.x() + 10, rect.y() + 26, label_color, 1);
-    draw_text(canvas, &fps_val, rect.x() + 75, rect.y() + 26, STATUS_ONLINE, 1);
+    let start_y = rect.y() + 30;
+    let row_h = 14;
 
-    // Res:
-    draw_text(canvas, "Res:", rect.x() + 10, rect.y() + 40, label_color, 1);
-    draw_text(canvas, &res_val, rect.x() + 75, rect.y() + 40, text_color, 1);
+    // Render labels and values with drop shadow
+    draw_text_with_shadow(canvas, "FPS", rect.x() + 15, start_y, label_color, 11.0);
+    draw_text_with_shadow(canvas, &fps_val, rect.x() + 85, start_y, STATUS_ONLINE, 11.0);
 
-    // Codec:
-    draw_text(canvas, "Codec:", rect.x() + 10, rect.y() + 54, label_color, 1);
-    draw_text(canvas, &codec_val, rect.x() + 75, rect.y() + 54, ACCENT_PURPLE, 1);
+    draw_text_with_shadow(canvas, "Res", rect.x() + 15, start_y + row_h, label_color, 11.0);
+    draw_text_with_shadow(canvas, &res_val, rect.x() + 85, start_y + row_h, text_color, 11.0);
 
-    // Bitrate:
-    draw_text(canvas, "Bit:", rect.x() + 10, rect.y() + 68, label_color, 1);
-    draw_text(canvas, &bitrate_val, rect.x() + 75, rect.y() + 68, text_color, 1);
+    draw_text_with_shadow(canvas, "Codec", rect.x() + 15, start_y + row_h * 2, label_color, 11.0);
+    draw_text_with_shadow(canvas, &codec_val, rect.x() + 85, start_y + row_h * 2, ACCENT_PURPLE, 11.0);
+
+    draw_text_with_shadow(canvas, "Bitrate", rect.x() + 15, start_y + row_h * 3, label_color, 11.0);
+    draw_text_with_shadow(canvas, &bitrate_val, rect.x() + 85, start_y + row_h * 3, text_color, 11.0);
 }
 
 // Layout coordinate helper for settings modal
@@ -316,29 +575,31 @@ pub fn draw_settings<T: RenderTarget>(
     fps_idx: usize,
     codec_idx: usize,
     bitrate_idx: usize,
+    mx: i32,
+    my: i32,
 ) {
     let layout = get_settings_layout(win_w, win_h);
-    let bg_color = Color::RGBA(15, 22, 38, 245); // BG_SECONDARY with high opacity
-    let border_color = ACCENT_CYAN; // Cyan glow border
+    let bg_color = Color::RGBA(11, 17, 30, 240); // Sleek translucent dark glass (high opacity)
+    let border_color = Color::RGBA(0, 240, 255, 120); // Cyan border glow
     let text_color = TEXT_MAIN;
     let label_color = TEXT_MUTED;
-    let btn_bg_color = Color::RGBA(23, 32, 51, 200); // BG_TERTIARY
-    let btn_border_color = Color::RGBA(255, 255, 255, 20); // subtle white border
 
-    // Draw main modal container
-    canvas.set_draw_color(bg_color);
-    let _ = canvas.fill_rect(layout.modal_rect);
-    canvas.set_draw_color(border_color);
-    let _ = canvas.draw_rect(layout.modal_rect);
+    // Draw main modal container (radius 12)
+    let modal_radius = 12;
+    fill_rounded_rect(canvas, layout.modal_rect, modal_radius, bg_color);
+    draw_rounded_rect(canvas, layout.modal_rect, modal_radius, border_color);
 
     // Title
-    draw_text(
+    let title_text = "STREAM CONFIGURATION";
+    let title_w = get_text_width(title_text, 14.0);
+    let title_x = layout.modal_rect.x() + (layout.modal_rect.width() as i32 - title_w) / 2;
+    draw_text_with_shadow(
         canvas,
-        "STREAM CONFIGURATION",
-        layout.modal_rect.x() + 90,
+        title_text,
+        title_x,
         layout.modal_rect.y() + 15,
         ACCENT_CYAN,
-        1,
+        14.0,
     );
 
     // Draw thin line divider under title
@@ -349,67 +610,90 @@ pub fn draw_settings<T: RenderTarget>(
     );
 
     // Helper closure to draw settings option rows
-    let draw_option_row = |canvas: &mut Canvas<T>, label: &str, btns: &[Rect], selected_idx: usize, labels: &[&str]| {
+    let draw_option_row = |canvas: &mut Canvas<T>, label: &str, btns: &[Rect], selected_idx: usize, labels: &[&str], mx: i32, my: i32| {
         let row_y = btns[0].y() + 5;
-        draw_text(canvas, label, layout.modal_rect.x() + 20, row_y, label_color, 1);
+        draw_text_with_shadow(canvas, label, layout.modal_rect.x() + 20, row_y - 2, label_color, 11.0);
         for (i, &rect) in btns.iter().enumerate() {
             let is_selected = i == selected_idx;
+            let is_hovered = mx >= rect.x() && mx <= rect.x() + rect.width() as i32
+                && my >= rect.y() && my <= rect.y() + rect.height() as i32;
+
+            let btn_radius = 4;
+            let opt_label = labels[i];
+            let opt_size = 11.0;
+            let text_w = get_text_width(opt_label, opt_size);
+            let text_x = rect.x() + (rect.width() as i32 - text_w) / 2;
+            let text_y = rect.y() + 6;
+
             if is_selected {
-                draw_gradient_rect(canvas, rect, ACCENT_CYAN, ACCENT_PURPLE);
-                canvas.set_draw_color(TEXT_MAIN);
-                let _ = canvas.draw_rect(rect);
-                let opt_label = labels[i];
-                let label_len = opt_label.len() as i32;
-                let text_x = rect.x() + (rect.width() as i32 - label_len * 10) / 2;
-                draw_text(canvas, opt_label, text_x, rect.y() + 6, Color::RGB(8, 12, 20), 1);
+                fill_rounded_gradient_rect(canvas, rect, btn_radius, ACCENT_CYAN, ACCENT_PURPLE);
+                draw_rounded_rect(canvas, rect, btn_radius, TEXT_MAIN);
+                draw_text(canvas, opt_label, text_x, text_y, Color::RGB(8, 12, 20), opt_size);
             } else {
-                canvas.set_draw_color(btn_bg_color);
-                let _ = canvas.fill_rect(rect);
-                canvas.set_draw_color(btn_border_color);
-                let _ = canvas.draw_rect(rect);
-                let opt_label = labels[i];
-                let label_len = opt_label.len() as i32;
-                let text_x = rect.x() + (rect.width() as i32 - label_len * 10) / 2;
-                draw_text(canvas, opt_label, text_x, rect.y() + 6, label_color, 1);
+                if is_hovered {
+                    fill_rounded_rect(canvas, rect, btn_radius, Color::RGBA(35, 48, 77, 220));
+                    draw_rounded_rect(canvas, rect, btn_radius, ACCENT_CYAN);
+                    draw_text_with_shadow(canvas, opt_label, text_x, text_y, TEXT_MAIN, opt_size);
+                } else {
+                    fill_rounded_rect(canvas, rect, btn_radius, Color::RGBA(23, 32, 51, 160));
+                    draw_rounded_rect(canvas, rect, btn_radius, Color::RGBA(255, 255, 255, 20));
+                    draw_text_with_shadow(canvas, opt_label, text_x, text_y, label_color, opt_size);
+                }
             }
         }
     };
 
     // 1. Resolution row
     let res_labels: Vec<&str> = RESOLUTIONS.iter().map(|r| r.0).collect();
-    draw_option_row(canvas, "Resolution:", &layout.res_btns, res_idx, &res_labels);
+    draw_option_row(canvas, "Resolution:", &layout.res_btns, res_idx, &res_labels, mx, my);
 
     // 2. FPS row
     let fps_labels: Vec<&str> = FPSS.iter().map(|f| f.0).collect();
-    draw_option_row(canvas, "Frame Rate:", &layout.fps_btns, fps_idx, &fps_labels);
+    draw_option_row(canvas, "Frame Rate:", &layout.fps_btns, fps_idx, &fps_labels, mx, my);
 
     // 3. Codec row
     let codec_labels: Vec<&str> = CODECS.iter().map(|c| c.0).collect();
-    draw_option_row(canvas, "Video Codec:", &layout.codec_btns, codec_idx, &codec_labels);
+    draw_option_row(canvas, "Video Codec:", &layout.codec_btns, codec_idx, &codec_labels, mx, my);
 
     // 4. Bitrate row
     let bitrate_labels: Vec<&str> = BITRATES.iter().map(|b| b.0).collect();
-    draw_option_row(canvas, "Bitrate:", &layout.bitrate_btns, bitrate_idx, &bitrate_labels);
+    draw_option_row(canvas, "Bitrate:", &layout.bitrate_btns, bitrate_idx, &bitrate_labels, mx, my);
 
     // Action buttons at the bottom
 
-    // Apply button (Cyan-to-Purple gradient with dark text)
-    draw_gradient_rect(canvas, layout.apply_btn, ACCENT_CYAN, ACCENT_PURPLE);
-    canvas.set_draw_color(TEXT_MAIN);
-    let _ = canvas.draw_rect(layout.apply_btn);
-    // Center the text
+    // Apply button (Cyan-to-Purple gradient with hover indicator)
+    let apply_hovered = mx >= layout.apply_btn.x() && mx <= layout.apply_btn.x() + layout.apply_btn.width() as i32
+        && my >= layout.apply_btn.y() && my <= layout.apply_btn.y() + layout.apply_btn.height() as i32;
+    fill_rounded_gradient_rect(canvas, layout.apply_btn, 6, ACCENT_CYAN, ACCENT_PURPLE);
+    if apply_hovered {
+        draw_rounded_rect(canvas, layout.apply_btn, 6, ACCENT_CYAN);
+    } else {
+        draw_rounded_rect(canvas, layout.apply_btn, 6, TEXT_MAIN);
+    }
     let apply_text = "Apply & Stream";
-    let text_x = layout.apply_btn.x() + (layout.apply_btn.width() as i32 - apply_text.len() as i32 * 10) / 2;
-    draw_text(canvas, apply_text, text_x, layout.apply_btn.y() + 10, Color::RGB(8, 12, 20), 1);
+    let apply_size = 12.0;
+    let apply_w = get_text_width(apply_text, apply_size);
+    let text_x = layout.apply_btn.x() + (layout.apply_btn.width() as i32 - apply_w) / 2;
+    draw_text(canvas, apply_text, text_x, layout.apply_btn.y() + 9, Color::RGB(8, 12, 20), apply_size);
 
     // Cancel button (Secondary)
-    canvas.set_draw_color(btn_bg_color);
-    let _ = canvas.fill_rect(layout.cancel_btn);
-    canvas.set_draw_color(btn_border_color);
-    let _ = canvas.draw_rect(layout.cancel_btn);
-    // Center the text
+    let cancel_hovered = mx >= layout.cancel_btn.x() && mx <= layout.cancel_btn.x() + layout.cancel_btn.width() as i32
+        && my >= layout.cancel_btn.y() && my <= layout.cancel_btn.y() + layout.cancel_btn.height() as i32;
+    if cancel_hovered {
+        fill_rounded_rect(canvas, layout.cancel_btn, 6, Color::RGBA(35, 48, 77, 220));
+        draw_rounded_rect(canvas, layout.cancel_btn, 6, ACCENT_CYAN);
+    } else {
+        fill_rounded_rect(canvas, layout.cancel_btn, 6, Color::RGBA(23, 32, 51, 160));
+        draw_rounded_rect(canvas, layout.cancel_btn, 6, Color::RGBA(255, 255, 255, 20));
+    }
     let cancel_text = "Cancel";
-    let text_x = layout.cancel_btn.x() + (layout.cancel_btn.width() as i32 - cancel_text.len() as i32 * 10) / 2;
-    draw_text(canvas, cancel_text, text_x, layout.cancel_btn.y() + 10, text_color, 1);
+    let cancel_size = 12.0;
+    let cancel_w = get_text_width(cancel_text, cancel_size);
+    let text_x = layout.cancel_btn.x() + (layout.cancel_btn.width() as i32 - cancel_w) / 2;
+    if cancel_hovered {
+        draw_text_with_shadow(canvas, cancel_text, text_x, layout.cancel_btn.y() + 9, TEXT_MAIN, cancel_size);
+    } else {
+        draw_text_with_shadow(canvas, cancel_text, text_x, layout.cancel_btn.y() + 9, text_color, cancel_size);
+    }
 }
 
