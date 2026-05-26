@@ -175,6 +175,7 @@ jobs:
     runs-on: macos-latest
     env:
       MACOSX_DEPLOYMENT_TARGET: "11.0"
+      PKG_CONFIG_PATH: "/opt/homebrew/lib/pkgconfig:/usr/local/lib/pkgconfig"
       BINDGEN_EXTRA_CLANG_ARGS: "-I/opt/homebrew/include -I/usr/local/include"
     steps:
       - name: Checkout repository
