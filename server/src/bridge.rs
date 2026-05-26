@@ -8,7 +8,7 @@ use std::time::Duration;
 use anyhow::Result;
 use bytes::Bytes;
 use tokio::sync::mpsc;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 
 use webrtc::ice_transport::ice_candidate::RTCIceCandidate;
 
@@ -26,7 +26,7 @@ use webrtc::{
     },
     interceptor::registry::Registry,
     media::Sample,
-    peer_connection::RTCPeerConnection,
+    peer_connection::{RTCPeerConnection, peer_connection_state::RTCPeerConnectionState},
     rtp::{header::Header, packet::Packet, packetizer::Payloader},
     rtp_transceiver::{
         rtp_codec::{RTCRtpCodecCapability, RTCRtpCodecParameters, RTPCodecType},
@@ -87,6 +87,7 @@ pub struct VideoFramePayload {
 pub struct StreamVideoDecoder {
     supported_formats: SupportedVideoFormats,
     need_idr: Arc<AtomicBool>,
+    webrtc_connected: Arc<AtomicBool>,
     video_frame_tx: tokio::sync::mpsc::Sender<VideoFramePayload>,
     frame_count: u64,
     start_time: std::time::Instant,
@@ -105,6 +106,10 @@ impl VideoDecoder for StreamVideoDecoder {
     fn stop(&mut self) {}
 
     fn submit_decode_unit(&mut self, unit: VideoDecodeUnit<'_>) -> DecodeResult {
+        if !self.webrtc_connected.load(Ordering::SeqCst) {
+            return DecodeResult::Ok;
+        }
+
         if self.need_idr.load(Ordering::SeqCst) {
             let now = std::time::Instant::now();
             if now.duration_since(self.last_idr_time) >= std::time::Duration::from_millis(1000) {
@@ -127,22 +132,13 @@ impl VideoDecoder for StreamVideoDecoder {
         }
 
         if frame_num % 120 == 0 {
-            debug!(
+            trace!(
                 "submit_decode_unit (enqueued): frame {}, timestamp {}, buffers {}, format: {:?}",
                 frame_num,
                 timestamp,
                 unit.buffers.len(),
                 self.format
             );
-            for (idx, buf) in unit.buffers.iter().enumerate() {
-                debug!(
-                    "  buffer {}: type={:?}, len={}, first_bytes={:02x?}",
-                    idx,
-                    buf.buffer_type,
-                    buf.data.len(),
-                    &buf.data[..std::cmp::min(buf.data.len(), 16)]
-                );
-            }
         }
 
         match self.video_frame_tx.try_send(VideoFramePayload {
@@ -369,6 +365,20 @@ pub async fn setup_bridge_session(
     };
     let peer_connection = Arc::new(api.new_peer_connection(rtc_config).await?);
 
+    let webrtc_connected = Arc::new(AtomicBool::new(false));
+    let webrtc_connected_clone = webrtc_connected.clone();
+    peer_connection.on_peer_connection_state_change(Box::new(move |state: RTCPeerConnectionState| {
+        let webrtc_connected = webrtc_connected_clone.clone();
+        Box::pin(async move {
+            info!("WebRTC connection state changed to: {}", state);
+            if state == RTCPeerConnectionState::Connected {
+                webrtc_connected.store(true, Ordering::SeqCst);
+            } else if state == RTCPeerConnectionState::Closed || state == RTCPeerConnectionState::Failed || state == RTCPeerConnectionState::Disconnected {
+                webrtc_connected.store(false, Ordering::SeqCst);
+            }
+        })
+    }));
+
     // Resolve codec settings with host capability checks
     let host_support = agent_config.server_codec_mode_support;
     let _h264_supported = host_support == 0 || (host_support & 262145) != 0;
@@ -590,7 +600,7 @@ pub async fn setup_bridge_session(
     )
     .await?;
 
-    let (video_frame_tx, mut video_frame_rx) = tokio::sync::mpsc::channel::<VideoFramePayload>(8);
+    let (video_frame_tx, mut video_frame_rx) = tokio::sync::mpsc::channel::<VideoFramePayload>(24);
     let video_track_clone = video_track.clone();
     let payload_type_clone = payload_type;
     let need_idr_clone_worker = need_idr_flag.clone();
@@ -600,8 +610,8 @@ pub async fn setup_bridge_session(
         let mut payloader = payloader;
 
         // Bounded channel for complete frames (each represented as Vec<Packet>).
-        // Capacity of 15 frames handles keyframe bursts cleanly without dropping frames.
-        let (packet_tx, mut packet_rx) = tokio::sync::mpsc::channel::<Vec<Packet>>(15);
+        // Capacity of 30 frames handles keyframe bursts cleanly without dropping frames.
+        let (packet_tx, mut packet_rx) = tokio::sync::mpsc::channel::<Vec<Packet>>(30);
 
         // Spawn a dedicated writer task to write the RTP packets.
         // This task assigns RTP sequence numbers to ensure no gaps ever occur on drops.
@@ -651,7 +661,7 @@ pub async fn setup_bridge_session(
             }
 
             if frame_count % 120 == 0 {
-                info!(
+                trace!(
                     "Background video processor: frame {}, timestamp {}, samples {}",
                     frame_count,
                     timestamp,
@@ -703,7 +713,7 @@ pub async fn setup_bridge_session(
             }
 
             if frame_count % 120 == 0 {
-                info!("Background video processor: frame {}, sent {} RTP packets", frame_count, total_packets);
+                trace!("Background video processor: frame {}, sent {} RTP packets", frame_count, total_packets);
             }
             frame_count += 1;
         }
@@ -722,6 +732,7 @@ pub async fn setup_bridge_session(
     let video_decoder = StreamVideoDecoder {
         supported_formats,
         need_idr: need_idr_flag.clone(),
+        webrtc_connected: webrtc_connected.clone(),
         video_frame_tx,
         frame_count: 0,
         start_time: std::time::Instant::now(),

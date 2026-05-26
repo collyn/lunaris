@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import QtQuick.Shapes
 
 Rectangle {
     id: dashboardRoot
@@ -438,6 +439,16 @@ Rectangle {
                 color: "#0a0b12"
                 border.color: Qt.rgba(255/255, 255/255, 255/255, 0.03)
                 border.width: 1
+
+                // Allow dragging the window by holding and dragging the navbar
+                DragHandler {
+                    target: null
+                    onActiveChanged: {
+                        if (active) {
+                            window.startSystemMove();
+                        }
+                    }
+                }
 
                 // Brand Title & Tech Pill
                 Row {
@@ -926,18 +937,35 @@ Rectangle {
                         bridge.fetchHosts();
                     }
                     background: Rectangle {
-                        implicitWidth: 32; implicitHeight: 32; radius: 16
-                        color: pairBackBtn.hovered ? Qt.rgba(255,255,255,0.06) : "transparent"
-                        border.color: Qt.rgba(255,255,255,0.15)
+                        implicitWidth: 36; implicitHeight: 36; radius: 18
+                        color: pairBackBtn.hovered ? Qt.rgba(0, 240/255, 255/255, 0.1) : "transparent"
+                        border.color: pairBackBtn.hovered ? "#00f0ff" : "transparent"
                         border.width: 1
+                        Behavior on color { ColorAnimation { duration: 150 } }
+                        Behavior on border.color { ColorAnimation { duration: 150 } }
                     }
                     contentItem: Item {
-                        implicitWidth: 12; implicitHeight: 12
-                        Item {
-                            width: 12; height: 12
+                        implicitWidth: 16; implicitHeight: 16
+                        Shape {
+                            id: pairBackArrow
                             anchors.centerIn: parent
-                            Rectangle { x: 4; y: 1; width: 2; height: 6; rotation: 45; color: "#cbd5e1"; antialiasing: true }
-                            Rectangle { x: 4; y: 9; width: 2; height: 6; rotation: -45; color: "#cbd5e1"; antialiasing: true }
+                            width: 8; height: 12
+                            
+                            property color arrowColor: pairBackBtn.hovered ? "#00f0ff" : "#cbd5e1"
+                            
+                            ShapePath {
+                                strokeColor: pairBackArrow.arrowColor
+                                strokeWidth: 2
+                                fillColor: "transparent"
+                                capStyle: ShapePath.RoundCap
+                                joinStyle: ShapePath.RoundJoin
+                                
+                                startX: 6
+                                startY: 2
+                                
+                                PathLine { x: 2; y: 6 }
+                                PathLine { x: 6; y: 10 }
+                            }
                         }
                     }
                 }
@@ -1189,6 +1217,104 @@ Rectangle {
                                 }
                             }
 
+                            // Autostart Option
+                            Row {
+                                spacing: 8
+                                width: parent.width
+
+                                MouseArea {
+                                    id: autostartCheckArea
+                                    width: 14
+                                    height: 14
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    hoverEnabled: true
+
+                                    Rectangle {
+                                        anchors.fill: parent
+                                        radius: 3
+                                        color: "#0f172a"
+                                        border.color: window.autostartEnabled ? "#00f0ff" : (autostartCheckArea.containsMouse ? "#00f0ff" : Qt.rgba(255, 255, 255, 0.2))
+                                        border.width: 1
+                                        Behavior on border.color { ColorAnimation { duration: 150 } }
+
+                                        Rectangle {
+                                            anchors.fill: parent
+                                            anchors.margins: 3
+                                            radius: 1.5
+                                            color: "#00f0ff"
+                                            visible: window.autostartEnabled
+                                        }
+                                    }
+
+                                    onClicked: {
+                                        var nextState = !window.autostartEnabled;
+                                        bridge.setAutostartEnabled(nextState);
+                                        window.autostartEnabled = bridge.isAutostartEnabled();
+                                    }
+                                }
+
+                                Text {
+                                    text: "Start Client on System Boot"
+                                    color: "#cbd5e1"
+                                    font.pixelSize: 11
+                                    font.bold: true
+                                    anchors.verticalCenter: autostartCheckArea.verticalCenter
+
+                                    MouseArea {
+                                        anchors.fill: parent
+                                        onClicked: autostartCheckArea.clicked(null)
+                                    }
+                                }
+                            }
+
+                            // Close to Tray Option
+                            Row {
+                                spacing: 8
+                                width: parent.width
+
+                                MouseArea {
+                                    id: closeToTrayCheckArea
+                                    width: 14
+                                    height: 14
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    hoverEnabled: true
+
+                                    Rectangle {
+                                        anchors.fill: parent
+                                        radius: 3
+                                        color: "#0f172a"
+                                        border.color: window.closeToTray ? "#00f0ff" : (closeToTrayCheckArea.containsMouse ? "#00f0ff" : Qt.rgba(255, 255, 255, 0.2))
+                                        border.width: 1
+                                        Behavior on border.color { ColorAnimation { duration: 150 } }
+
+                                        Rectangle {
+                                            anchors.fill: parent
+                                            anchors.margins: 3
+                                            radius: 1.5
+                                            color: "#00f0ff"
+                                            visible: window.closeToTray
+                                        }
+                                    }
+
+                                    onClicked: {
+                                        window.closeToTray = !window.closeToTray;
+                                    }
+                                }
+
+                                Text {
+                                    text: "Minimize to System Tray on Close"
+                                    color: "#cbd5e1"
+                                    font.pixelSize: 11
+                                    font.bold: true
+                                    anchors.verticalCenter: closeToTrayCheckArea.verticalCenter
+
+                                    MouseArea {
+                                        anchors.fill: parent
+                                        onClicked: closeToTrayCheckArea.clicked(null)
+                                    }
+                                }
+                            }
+
                             // Start/Stop Subprocess
                             Button {
                                 id: localAgentBtn
@@ -1249,18 +1375,35 @@ Rectangle {
                         bridge.fetchHosts();
                     }
                     background: Rectangle {
-                        implicitWidth: 32; implicitHeight: 32; radius: 16
-                        color: backBtn.hovered ? Qt.rgba(255,255,255,0.06) : "transparent"
-                        border.color: Qt.rgba(255,255,255,0.15)
+                        implicitWidth: 36; implicitHeight: 36; radius: 18
+                        color: backBtn.hovered ? Qt.rgba(0, 240/255, 255/255, 0.1) : "transparent"
+                        border.color: backBtn.hovered ? "#00f0ff" : "transparent"
                         border.width: 1
+                        Behavior on color { ColorAnimation { duration: 150 } }
+                        Behavior on border.color { ColorAnimation { duration: 150 } }
                     }
                     contentItem: Item {
-                        implicitWidth: 12; implicitHeight: 12
-                        Item {
-                            width: 12; height: 12
+                        implicitWidth: 16; implicitHeight: 16
+                        Shape {
+                            id: backArrow
                             anchors.centerIn: parent
-                            Rectangle { x: 4; y: 1; width: 2; height: 6; rotation: 45; color: "#cbd5e1"; antialiasing: true }
-                            Rectangle { x: 4; y: 9; width: 2; height: 6; rotation: -45; color: "#cbd5e1"; antialiasing: true }
+                            width: 8; height: 12
+                            
+                            property color arrowColor: backBtn.hovered ? "#00f0ff" : "#cbd5e1"
+                            
+                            ShapePath {
+                                strokeColor: backArrow.arrowColor
+                                strokeWidth: 2
+                                fillColor: "transparent"
+                                capStyle: ShapePath.RoundCap
+                                joinStyle: ShapePath.RoundJoin
+                                
+                                startX: 6
+                                startY: 2
+                                
+                                PathLine { x: 2; y: 6 }
+                                PathLine { x: 6; y: 10 }
+                            }
                         }
                     }
                 }
@@ -1295,49 +1438,7 @@ Rectangle {
                 anchors.topMargin: 4
             }
 
-            // Desktop direct stream launch button
-            Button {
-                id: directDesktopBtn
-                anchors.right: parent.right
-                anchors.top: parent.top
-                anchors.topMargin: 12
-                onClicked: {
-                    dashboardRoot.startSessionRequested(
-                        dashboardRoot.serverUrl,
-                        dashboardRoot.token,
-                        dashboardRoot.selectedHost.id,
-                        dashboardRoot.selectedHost.name,
-                        -1, // Desktop app id
-                        dashboardRoot.configRes,
-                        dashboardRoot.configFps,
-                        dashboardRoot.configCodec,
-                        dashboardRoot.configBitrate,
-                        dashboardRoot.configQueueLimit
-                    );
-                }
-                background: Rectangle {
-                    implicitWidth: 140; implicitHeight: 34; radius: 8
-                    color: directDesktopBtn.hovered ? Qt.rgba(0/255, 240/255, 255/255, 0.2) : Qt.rgba(0/255, 240/255, 255/255, 0.1)
-                    border.color: "#00f0ff"
-                    border.width: 1
-                }
-                contentItem: Row {
-                    spacing: 8
-                    anchors.centerIn: parent
-                    Item {
-                        width: 16; height: 16
-                        Rectangle { x: 0; y: 1; width: 16; height: 11; radius: 1.5; color: "transparent"; border.color: "#00f0ff"; border.width: 1.5 }
-                        Rectangle { x: 7; y: 12; width: 2; height: 3; color: "#00f0ff" }
-                        Rectangle { x: 4; y: 14; width: 8; height: 1.5; radius: 0.5; color: "#00f0ff" }
-                    }
-                    Text {
-                        text: "Direct Desktop"
-                        font.pixelSize: 12
-                        font.bold: true
-                        color: "#00f0ff"
-                    }
-                }
-            }
+            // Removed Direct Desktop button as it is already included as a standard app option by default
 
             // Apps Grid (Moonlight aspect-ratio cards)
             ScrollView {

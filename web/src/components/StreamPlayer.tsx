@@ -739,6 +739,8 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     let lastFramesDecoded = 0;
     let lastBytesReceived = 0;
     let lastTimestamp = 0;
+    let lastJbDelay = 0;
+    let lastJbEmitted = 0;
 
     const interval = setInterval(async () => {
       if (!pcRef.current) return;
@@ -782,14 +784,24 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
               videoJitter = Number(report.jitter) * 1000.0;
             }
 
-            // Check for jitter buffer delay drift and auto-reset if it exceeds 80ms
+            // Check for jitter buffer delay drift and auto-reset if it exceeds 60ms
             const jbDelay = report.jitterBufferDelay;
             const jbEmitted = report.jitterBufferEmittedCount;
             if (jbDelay !== undefined && jbEmitted !== undefined && jbEmitted > 0) {
-              const avgDelay = Number(jbDelay) / Number(jbEmitted); // in seconds
-              if (avgDelay > 0.080) { // 80ms threshold
+              let avgDelay = 0;
+              if (lastJbEmitted > 0 && jbEmitted > lastJbEmitted) {
+                const deltaDelay = Number(jbDelay) - lastJbDelay;
+                const deltaEmitted = Number(jbEmitted) - lastJbEmitted;
+                avgDelay = deltaDelay / deltaEmitted; // in seconds
+              } else {
+                avgDelay = Number(jbDelay) / Number(jbEmitted);
+              }
+              lastJbDelay = Number(jbDelay);
+              lastJbEmitted = Number(jbEmitted);
+
+              if (avgDelay > 0.060) { // 60ms threshold
                 const now = performance.now();
-                if (now - lastJitterResetTimeRef.current > 15000) { // 15s cooldown
+                if (now - lastJitterResetTimeRef.current > 10000) { // 10s cooldown
                   lastJitterResetTimeRef.current = now;
                   addLog(`Auto-resetting WebRTC jitter buffer (detected drift delay: ${(avgDelay * 1000).toFixed(1)}ms)`);
                   if (pcRef.current) {

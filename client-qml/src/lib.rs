@@ -174,6 +174,13 @@ fn parse_args() -> Option<AppArgs> {
 }
 
 pub fn run() {
+    // Disable GStreamer device provider features that cause periodic thread stalls
+    // and critical GLib log spam on Linux.
+    std::env::set_var(
+        "GST_PLUGIN_FEATURE_RANK",
+        "pipewiredeviceprovider:NONE,pulsedeviceprovider:NONE,v4l2deviceprovider:NONE,alsadeviceprovider:NONE,jackdeviceprovider:NONE"
+    );
+
     // Init standard tracing logger
     let _ = tracing_subscriber::registry()
         .with(tracing_subscriber::EnvFilter::new(

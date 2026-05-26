@@ -1,22 +1,105 @@
 import QtQuick
 import QtQuick.Controls
 import QtMultimedia
+import Qt.labs.platform as Platform
 import com.lunaris.client 1.0
 
 ApplicationWindow {
     id: window
     width: 1280
     height: 720
-    visible: true
+    visible: false
     visibility: Window.Windowed
-    title: "Lunaris Player Client (Qt6/QML)"
+    flags: Qt.Window
+    title: "Lunaris Player Client"
     color: "#0a0b10"
+
+    property bool exitRequested: false
+
+    onClosing: (close) => {
+        if (!exitRequested && closeToTray) {
+            close.accepted = false;
+            window.hide();
+        }
+    }
+
+    Platform.SystemTrayIcon {
+        id: trayIcon
+        visible: true
+        icon.source: "qrc:/icon.png"
+        tooltip: "Lunaris Client"
+
+        menu: Platform.Menu {
+            Platform.MenuItem {
+                text: window.visible ? "Hide Client" : "Show Client"
+                onTriggered: {
+                    if (window.visible) {
+                        window.hide()
+                    } else {
+                        window.show()
+                        window.raise()
+                        window.requestActivate()
+                    }
+                }
+            }
+            Platform.MenuItem {
+                text: dashboardView.localAgentRunning ? "Stop Local Agent" : "Start Local Agent"
+                onTriggered: {
+                    if (dashboardView.localAgentRunning) {
+                        bridge.stopLocalAgent();
+                    } else {
+                        if (dashboardView.localAgentHostname && dashboardView.serverUrl && dashboardView.agentToken) {
+                            bridge.startLocalAgent(dashboardView.serverUrl, dashboardView.agentToken, dashboardView.localAgentHostname);
+                        } else {
+                            window.show()
+                            window.raise()
+                            window.requestActivate()
+                            dashboardView.showPairingPage = true
+                        }
+                    }
+                }
+            }
+            Platform.MenuItem {
+                text: "Autostart on Boot"
+                checkable: true
+                checked: window.autostartEnabled
+                onTriggered: {
+                    var nextState = !window.autostartEnabled;
+                    bridge.setAutostartEnabled(nextState);
+                    window.autostartEnabled = bridge.isAutostartEnabled();
+                }
+            }
+            Platform.MenuSeparator {}
+            Platform.MenuItem {
+                text: "Exit"
+                onTriggered: {
+                    window.exitRequested = true;
+                    bridge.stopLocalAgent();
+                    Qt.quit();
+                }
+            }
+        }
+
+        onActivated: (reason) => {
+            if (reason === Platform.SystemTrayIcon.Trigger) {
+                if (window.visible) {
+                    window.hide();
+                } else {
+                    window.show();
+                    window.raise();
+                    window.requestActivate();
+                }
+            }
+        }
+    }
 
     // Custom properties to keep track of state
     property bool isPointerLocked: false
     property bool showStats: false
     property bool hideLocalCursor: true
     property bool ignoreMenuHover: false
+    property bool autostartEnabled: false
+    property bool closeToTray: true
     property real pingMs: 0.0
     property real decodeLatencyMs: 0.0
     property real fps: 0.0
@@ -617,6 +700,14 @@ ApplicationWindow {
         window.x = (Screen.width - window.width) / 2;
         window.y = (Screen.height - window.height) / 2;
 
+        window.autostartEnabled = bridge.isAutostartEnabled();
+
+        if (bridge.shouldStartMinimized()) {
+            window.visible = false;
+        } else {
+            window.visible = true;
+        }
+
         if (bridge.hasConnectionArgs()) {
             window.isStreamMode = true;
             bridge.setVideoSink(videoOutput.videoSink);
@@ -627,4 +718,6 @@ ApplicationWindow {
             window.isStreamMode = false;
         }
     }
+
+
 }

@@ -204,6 +204,139 @@ fn prepare_agent_config(server_url: &str, server_token: &str) -> std::path::Path
     path
 }
 
+#[allow(dead_code)]
+fn get_autostart_path_linux() -> Option<std::path::PathBuf> {
+    let home = std::env::var("HOME").ok()?;
+    let mut path = std::path::PathBuf::from(home);
+    path.push(".config");
+    path.push("autostart");
+    let _ = std::fs::create_dir_all(&path);
+    path.push("lunaris-client.desktop");
+    Some(path)
+}
+
+#[allow(dead_code)]
+fn get_autostart_path_macos() -> Option<std::path::PathBuf> {
+    let home = std::env::var("HOME").ok()?;
+    let mut path = std::path::PathBuf::from(home);
+    path.push("Library");
+    path.push("LaunchAgents");
+    let _ = std::fs::create_dir_all(&path);
+    path.push("com.lunaris.client.plist");
+    Some(path)
+}
+
+fn is_autostart_enabled_impl() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        if let Some(path) = get_autostart_path_linux() {
+            return path.exists();
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(path) = get_autostart_path_macos() {
+            return path.exists();
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let output = std::process::Command::new("reg")
+            .args(&["query", "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run", "/v", "LunarisClient"])
+            .output();
+        if let Ok(out) = output {
+            return out.status.success();
+        }
+    }
+    false
+}
+
+fn set_autostart_enabled_impl(enabled: bool) {
+    let exe_path = match std::env::current_exe() {
+        Ok(path) => path.to_string_lossy().to_string(),
+        Err(_) => return,
+    };
+
+    if enabled {
+        #[cfg(target_os = "linux")]
+        {
+            if let Some(path) = get_autostart_path_linux() {
+                let content = format!(
+                    "[Desktop Entry]\nType=Application\nName=Lunaris Client\nExec=\"{}\" --minimized\nIcon=lunaris-client\nX-GNOME-Autostart-enabled=true\n",
+                    exe_path
+                );
+                let _ = std::fs::write(path, content);
+            }
+        }
+        #[cfg(target_os = "macos")]
+        {
+            if let Some(path) = get_autostart_path_macos() {
+                let content = format!(
+                    r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.lunaris.client</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{}</string>
+        <string>--minimized</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+</dict>
+</plist>"#,
+                    exe_path
+                );
+                let _ = std::fs::write(path, content);
+            }
+        }
+        #[cfg(target_os = "windows")]
+        {
+            let val = format!("\"{}\" --minimized", exe_path);
+            let _ = std::process::Command::new("reg")
+                .args(&[
+                    "add",
+                    "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+                    "/v",
+                    "LunarisClient",
+                    "/t",
+                    "REG_SZ",
+                    "/d",
+                    &val,
+                    "/f",
+                ])
+                .output();
+        }
+    } else {
+        #[cfg(target_os = "linux")]
+        {
+            if let Some(path) = get_autostart_path_linux() {
+                let _ = std::fs::remove_file(path);
+            }
+        }
+        #[cfg(target_os = "macos")]
+        {
+            if let Some(path) = get_autostart_path_macos() {
+                let _ = std::fs::remove_file(path);
+            }
+        }
+        #[cfg(target_os = "windows")]
+        {
+            let _ = std::process::Command::new("reg")
+                .args(&[
+                    "delete",
+                    "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+                    "/v",
+                    "LunarisClient",
+                    "/f",
+                ])
+                .output();
+        }
+    }
+}
+
 #[cxx_qt::bridge]
 
 pub mod qobject {
@@ -441,6 +574,15 @@ pub mod qobject {
 
         #[qinvokable]
         fn get_local_hostname(self: Pin<&mut StreamBridge>) -> QString;
+
+        #[qinvokable]
+        fn is_autostart_enabled(self: Pin<&mut StreamBridge>) -> bool;
+
+        #[qinvokable]
+        fn set_autostart_enabled(self: Pin<&mut StreamBridge>, enabled: bool);
+
+        #[qinvokable]
+        fn should_start_minimized(self: Pin<&mut StreamBridge>) -> bool;
     }
 }
 
@@ -1367,6 +1509,7 @@ impl qobject::StreamBridge {
                     .arg(&name_str)
                     .arg("--server")
                     .arg(&server_str)
+                    .arg("--cli")
                     .stdout(std::process::Stdio::null())
                     .stderr(std::process::Stdio::null())
                     .spawn();
@@ -1412,6 +1555,18 @@ impl qobject::StreamBridge {
             .and_then(|s| s.into_string().ok())
             .unwrap_or_else(|| "Local Host".to_string());
         QString::from(&name)
+    }
+
+    pub fn is_autostart_enabled(self: Pin<&mut Self>) -> bool {
+        is_autostart_enabled_impl()
+    }
+
+    pub fn set_autostart_enabled(self: Pin<&mut Self>, enabled: bool) {
+        set_autostart_enabled_impl(enabled);
+    }
+
+    pub fn should_start_minimized(self: Pin<&mut Self>) -> bool {
+        std::env::args().any(|arg| arg == "--minimized")
     }
 }
 
