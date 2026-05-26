@@ -90,13 +90,9 @@ jobs:
           cache: 'npm'
           cache-dependency-path: web/package-lock.json
 
-      - name: Install Strawberry Perl
-        run: choco install strawberryperl -y --no-progress
-        shell: pwsh
-
       - name: Install C/C++ libraries via vcpkg
         run: |
-          vcpkg install ffmpeg:x64-windows opus:x64-windows
+          vcpkg install ffmpeg:x64-windows opus:x64-windows openssl:x64-windows
         shell: pwsh
 
       - name: Install Qt6
@@ -128,6 +124,8 @@ jobs:
           VCPKG_ROOT: C:\vcpkg
           FFMPEG_DIR: C:\vcpkg\installed\x64-windows
           PKG_CONFIG_PATH: C:\vcpkg\installed\x64-windows\lib\pkgconfig
+          OPENSSL_NO_VENDOR: "1"
+          OPENSSL_DIR: C:\vcpkg\installed\x64-windows
         shell: bash
 
       - name: Package Server and Web
@@ -176,18 +174,20 @@ jobs:
 
       - name: Install system dependencies
         run: |
-          brew install qt6 ffmpeg@6 pkg-config opus
+          brew install qt ffmpeg@6 pkg-config opus
 
       - name: Configure library paths
         run: |
-          QT_PREFIX=$(brew --prefix qt@6)
+          QT_PREFIX=$(brew --prefix qt)
           FFMPEG_PREFIX=$(brew --prefix ffmpeg@6)
           OPUS_PREFIX=$(brew --prefix opus)
 
-          # Qt6 (keg-only) — cxx-qt-build cần tìm qmake
+          # Qt6 (keg-only) — cxx-qt-build cần tìm qmake và Qt headers
           echo "QMAKE=${QT_PREFIX}/bin/qmake" >> $GITHUB_ENV
           echo "CMAKE_PREFIX_PATH=${QT_PREFIX}" >> $GITHUB_ENV
+          echo "QT_INCLUDE_DIR=${QT_PREFIX}/include" >> $GITHUB_ENV
           echo "PATH=${QT_PREFIX}/bin:$PATH" >> $GITHUB_ENV
+          echo "CXXFLAGS=-I${QT_PREFIX}/include" >> $GITHUB_ENV
 
           # FFmpeg@6 (keg-only)
           echo "PKG_CONFIG_PATH=${FFMPEG_PREFIX}/lib/pkgconfig:${OPUS_PREFIX}/lib/pkgconfig:$PKG_CONFIG_PATH" >> $GITHUB_ENV
