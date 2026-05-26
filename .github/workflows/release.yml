@@ -153,10 +153,9 @@ jobs:
           name: client-desktop-windows
           path: target/release/client-desktop.exe
 
-  # macOS: dùng macos-13 (Intel) để tránh lỗi ARM framework với Qt
   build-macos:
     name: Build macOS
-    runs-on: macos-13
+    runs-on: macos-latest
     env:
       MACOSX_DEPLOYMENT_TARGET: "11.0"
     steps:
@@ -172,15 +171,10 @@ jobs:
 
       - name: Install system dependencies
         run: |
-          brew install ffmpeg pkg-config opus
-
-      - name: Install Qt6
-        uses: jurplel/install-qt-action@v3
-        with:
-          version: '6.5.3'
-          host: 'mac'
-          target: 'desktop'
-          arch: 'clang_64'
+          brew install qt ffmpeg pkg-config opus
+          # Qt là keg-only trên Homebrew, force link để symlink headers/libs
+          # vào /opt/homebrew/include/ — nơi qmake báo cho cxx-qt-lib
+          brew link --force qt
 
       - name: Configure library paths
         run: |
@@ -195,6 +189,7 @@ jobs:
         uses: dtolnay/rust-toolchain@v1
         with:
           toolchain: nightly-2026-04-17
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
 
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
@@ -205,8 +200,16 @@ jobs:
           npm ci || npm install
           npm run build
 
-      - name: Build Rust Workspace
+      - name: Build Rust Workspace (Native Target)
         run: cargo build --release --workspace --exclude client
+
+      - name: Build Agent for Intel x86_64 (Cross-Compile)
+        run: cargo build --release --bin agent --target x86_64-apple-darwin
+
+      - name: Create Universal Agent Binary
+        run: |
+          mkdir -p target/release/macos
+          lipo -create target/release/agent target/x86_64-apple-darwin/release/agent -output target/release/macos/agent
 
       - name: Package Server and Web
         run: |
@@ -225,7 +228,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: agent-macos
-          path: target/release/agent
+          path: target/release/macos/agent
 
       - name: Upload Client Desktop Artifact
         uses: actions/upload-artifact@v4
@@ -241,7 +244,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # Download Linux Artifacts
       - name: Download Linux Server Artifact
         uses: actions/download-artifact@v4
         with:
@@ -260,7 +262,6 @@ jobs:
           name: client-desktop-linux
           path: ./artifacts/linux-client-desktop
 
-      # Download Windows Artifacts
       - name: Download Windows Server Artifact
         uses: actions/download-artifact@v4
         with:
@@ -279,7 +280,6 @@ jobs:
           name: client-desktop-windows
           path: ./artifacts/windows-client-desktop
 
-      # Download macOS Artifacts
       - name: Download macOS Server Artifact
         uses: actions/download-artifact@v4
         with:
