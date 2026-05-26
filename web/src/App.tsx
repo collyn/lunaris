@@ -52,7 +52,7 @@ function App() {
     let qHostId = params.get('host_id') || localStorage.getItem('lunaris_auto_launch_host_id');
     let qHostName = params.get('host_name') || localStorage.getItem('lunaris_auto_launch_host_name') || 'Remote Host';
     let qCodecSupport = params.get('codec_support') || localStorage.getItem('lunaris_auto_launch_codec_support');
-    
+
     // Clear temporary auto-launch keys so they don't trigger again on reload
     localStorage.removeItem('lunaris_auto_launch_host_id');
     localStorage.removeItem('lunaris_auto_launch_host_name');
@@ -62,16 +62,16 @@ function App() {
     const qFps = params.get('fps') || localStorage.getItem('lunaris_stream_fps');
     const qBitrate = params.get('bitrate') || localStorage.getItem('lunaris_stream_bitrate');
     const qCodec = params.get('codec') || localStorage.getItem('lunaris_stream_codec');
-    
+
     if (qToken && qHostId) {
       localStorage.setItem('lunaris_token', qToken);
       setToken(qToken);
-      
+
       if (qRes) localStorage.setItem('lunaris_stream_res', qRes);
       if (qFps) localStorage.setItem('lunaris_stream_fps', qFps);
       if (qBitrate) localStorage.setItem('lunaris_stream_bitrate', qBitrate);
       if (qCodec) localStorage.setItem('lunaris_stream_codec', qCodec);
-      
+
       let codecSupportNum: number | undefined = undefined;
       if (qCodecSupport) {
         const parsed = parseInt(qCodecSupport, 10);
@@ -79,7 +79,7 @@ function App() {
           codecSupportNum = parsed;
         }
       }
-      
+
       setSelectedHost({
         id: qHostId,
         name: qHostName,
@@ -89,7 +89,7 @@ function App() {
       });
     }
   }, []);
-  
+
   // Auth Form State
   const [authUsername, setAuthUsername] = useState<string>('');
   const [authPassword, setAuthPassword] = useState<string>('');
@@ -130,7 +130,7 @@ function App() {
   const openHostSettings = (host: Host) => {
     setSettingsHost(host);
     setShowSettingsModal(true);
-    
+
     if (host.agent_connected === false) {
       setModalLoading(false);
       setModalError("This host is registered as a direct Sunshine host (no agent running). remote Sunshine configuration is only supported for hosts running the Lunaris agent.");
@@ -147,7 +147,7 @@ function App() {
     const wsUrl = `${protocol}//${serverHost}/ws/client?token=${encodeURIComponent(token || '')}`;
 
     const ws = new WebSocket(wsUrl);
-    
+
     ws.onopen = () => {
       // Send GetSunshineConfig request
       const req = {
@@ -168,7 +168,7 @@ function App() {
         if (msg.event === "Signaling" && msg.data) {
           const type = msg.data.type;
           const payload = msg.data.payload;
-          
+
           if (type === "SunshineConfigResponse") {
             setModalLoading(false);
             const configText = payload.config;
@@ -178,12 +178,12 @@ function App() {
             } catch (e) {
               console.error("Failed to parse config as JSON:", e);
             }
-            
+
             // Set fields
             setModalEncoder(configMap.encoder || 'default');
             setModalPreset(configMap.preset || 'default');
             setModalPort(configMap.port || '47989');
-            
+
             // Extract raw fields
             let rawLines = [];
             for (const [k, v] of Object.entries(configMap)) {
@@ -243,7 +243,7 @@ function App() {
       setModalError("WebSocket connection is not open");
       return;
     }
-    
+
     setModalLoading(true);
     setModalError(null);
     setModalSuccess(false);
@@ -347,7 +347,7 @@ function App() {
 
   const downloadAgentConfig = () => {
     if (!agentToken) return;
-    
+
     // Construct default ws/wss URL
     const protocol = getBackendProtocol().ws;
     const serverHost = getBackendHost();
@@ -364,7 +364,7 @@ function App() {
 
     const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(configObj, null, 2));
     const downloadAnchor = document.createElement('a');
-    downloadAnchor.setAttribute("href",     dataStr);
+    downloadAnchor.setAttribute("href", dataStr);
     downloadAnchor.setAttribute("download", "agent_config.json");
     document.body.appendChild(downloadAnchor);
     downloadAnchor.click();
@@ -476,7 +476,7 @@ function App() {
   const handleAuth = async (e: React.FormEvent) => {
     e.preventDefault();
     setAuthError(null);
-    
+
     if (!authUsername.trim()) {
       setAuthError("Username is required");
       return;
@@ -488,10 +488,10 @@ function App() {
 
     setAuthLoading(true);
     const endpoint = '/api/auth/login';
-    
+
     // Save to localStorage so getBackendHost/getBackendProtocol resolves correctly
     localStorage.setItem('lunaris_server_host', authServerHost);
-    
+
     const serverHost = getBackendHost();
     const protocol = getBackendProtocol().http;
     const serverUrl = `${protocol}//${serverHost}${endpoint}`;
@@ -655,17 +655,17 @@ function App() {
   // If inside streaming session, render full screen stream viewer
   if (token && selectedHost) {
     return (
-      <StreamPlayer 
-        hostId={selectedHost.id} 
-        hostName={selectedHost.name} 
-        token={token} 
+      <StreamPlayer
+        hostId={selectedHost.id}
+        hostName={selectedHost.name}
+        token={token}
         serverCodecModeSupport={selectedHost.server_codec_mode_support}
         appId={selectedAppId}
         onBack={() => {
           setSelectedHost(null);
           setSelectedAppId(null);
           fetchHosts();
-        }} 
+        }}
       />
     );
   }
@@ -685,7 +685,6 @@ function App() {
             </svg>
           </div>
           <span className="brand-name">Lunaris</span>
-          <span className="badge-tech">v0.1.0</span>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
           {token && username && (
@@ -782,8 +781,8 @@ function App() {
           <div className="dashboard-grid setup-layout">
             <div className="dashboard-main">
               <div className="apps-navigation">
-                <button 
-                  onClick={() => setShowPairingPage(false)} 
+                <button
+                  onClick={() => setShowPairingPage(false)}
                   className="btn-back-nav"
                   title="Back to Device Directory"
                 >
@@ -811,7 +810,7 @@ function App() {
               <div className="sidebar-card pair-host-card">
                 <h3>Pair New Host</h3>
                 <p className="sidebar-desc">Pair directly with a device running Sunshine on your network.</p>
-                
+
                 {pairError && (
                   <div className="auth-error-banner" style={{ marginBottom: '15px' }}>
                     <span className="error-icon">⚠️</span>
@@ -889,14 +888,14 @@ function App() {
               <div className="sidebar-card">
                 <h3>Host Agent Setup</h3>
                 <p className="sidebar-desc">Install and configure the Lunaris Agent on your remote host machine.</p>
-                
+
                 {agentToken && (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginTop: '12px' }}>
                     <div className="form-group" style={{ margin: 0 }}>
                       <label style={{ fontSize: '11px' }}>Signaling Server URL</label>
-                      <input 
-                        type="text" 
-                        readOnly 
+                      <input
+                        type="text"
+                        readOnly
                         value={`${getBackendProtocol().ws}//${getBackendHost()}`}
                         style={{ fontFamily: 'monospace', fontSize: '11px', padding: '6px', background: 'rgba(255,255,255,0.05)', color: 'var(--text-secondary)' }}
                       />
@@ -904,16 +903,16 @@ function App() {
                     <div className="form-group" style={{ margin: 0 }}>
                       <label style={{ fontSize: '11px' }}>Agent Connection Token</label>
                       <div style={{ display: 'flex', gap: '6px' }}>
-                        <input 
-                          type="password" 
-                          readOnly 
+                        <input
+                          type="password"
+                          readOnly
                           value={agentToken}
                           id="client-agent-token-field"
                           style={{ fontFamily: 'monospace', fontSize: '11px', padding: '6px', background: 'rgba(255,255,255,0.05)', color: 'var(--text-secondary)', flex: 1 }}
                         />
-                        <button 
+                        <button
                           type="button"
-                          className="btn-secondary" 
+                          className="btn-secondary"
                           style={{ padding: '6px 10px', fontSize: '11px', border: '1px solid var(--border-color)' }}
                           onClick={() => {
                             const el = document.getElementById('client-agent-token-field') as HTMLInputElement;
@@ -926,7 +925,7 @@ function App() {
                         </button>
                       </div>
                     </div>
-                    <button 
+                    <button
                       type="button"
                       className="btn-secondary"
                       onClick={downloadAgentConfig}
@@ -951,9 +950,9 @@ function App() {
                     onClick={() => setActiveTab('devices')}
                   >
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                      <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/>
-                      <line x1="8" y1="21" x2="16" y2="21"/>
-                      <line x1="12" y1="17" x2="12" y2="21"/>
+                      <rect x="2" y="3" width="20" height="14" rx="2" ry="2" />
+                      <line x1="8" y1="21" x2="16" y2="21" />
+                      <line x1="12" y1="17" x2="12" y2="21" />
                     </svg>
                     Devices
                   </button>
@@ -962,8 +961,8 @@ function App() {
                     onClick={() => setActiveTab('users')}
                   >
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                      <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
-                      <circle cx="12" cy="7" r="4"/>
+                      <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+                      <circle cx="12" cy="7" r="4" />
                     </svg>
                     Users
                   </button>
@@ -972,10 +971,10 @@ function App() {
                     onClick={() => setActiveTab('groups')}
                   >
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                      <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
-                      <circle cx="9" cy="7" r="4"/>
-                      <path d="M23 21v-2a4 4 0 0 0-3-3.87"/>
-                      <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+                      <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
+                      <circle cx="9" cy="7" r="4" />
+                      <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
+                      <path d="M16 3.13a4 4 0 0 1 0 7.75" />
                     </svg>
                     Groups
                   </button>
@@ -987,8 +986,8 @@ function App() {
                   {viewingHost ? (
                     <div className="apps-directory-view">
                       <div className="apps-navigation">
-                        <button 
-                          onClick={() => setViewingHost(null)} 
+                        <button
+                          onClick={() => setViewingHost(null)}
                           className="btn-back-nav"
                           title="Back to Device Directory"
                         >
@@ -1021,12 +1020,12 @@ function App() {
                         <div className="error-card">
                           <div className="error-title">⚠️ Connection Error</div>
                           <div className="error-desc">{viewingAppsError}</div>
-                          <button 
+                          <button
                             onClick={() => {
                               const h = viewingHost;
                               setViewingHost(null);
                               setTimeout(() => setViewingHost(h), 50);
-                            }} 
+                            }}
                             className="btn-secondary"
                           >
                             Retry Scan
@@ -1044,13 +1043,13 @@ function App() {
                           {viewingApps.map((app) => (
                             <div key={app.id} className="app-portrait-card">
                               <div className="app-card-glow"></div>
-                              
+
                               {/* Box Art Cover */}
                               <div className="app-cover-wrapper">
                                 {app.icon_base64 ? (
-                                  <img 
-                                    src={`data:image/png;base64,${app.icon_base64}`} 
-                                    alt={app.title} 
+                                  <img
+                                    src={`data:image/png;base64,${app.icon_base64}`}
+                                    alt={app.title}
                                     className="app-cover-image"
                                   />
                                 ) : (
@@ -1075,7 +1074,7 @@ function App() {
                               <div className="app-hover-overlay">
                                 <div className="overlay-content">
                                   {/* Play Button - Launch Stream in browser */}
-                                  <button 
+                                  <button
                                     onClick={() => {
                                       setSelectedAppId(app.id);
                                       setSelectedHost(currentViewingHost || viewingHost);
@@ -1096,7 +1095,7 @@ function App() {
                                   {/* Action Row */}
                                   <div className="overlay-bottom-actions">
                                     {/* Launch Native App */}
-                                    <button 
+                                    <button
                                       onClick={() => {
                                         const protocol = getBackendProtocol().http;
                                         const serverHost = getBackendHost();
@@ -1108,7 +1107,7 @@ function App() {
                                         const codec = localStorage.getItem('lunaris_stream_codec') || 'h264';
                                         const mouseQueueLimit = localStorage.getItem('lunaris_mouse_queue_limit') || '256';
                                         const hostToUse = currentViewingHost || viewingHost;
-                                        
+
                                         if (!hostToUse) return;
 
                                         const tauri = (window as any).__TAURI__;
@@ -1146,7 +1145,7 @@ function App() {
 
                                     {/* Stop active stream (if host is Busy) */}
                                     {currentViewingHost?.status === "Busy" && (
-                                      <button 
+                                      <button
                                         onClick={() => handleStopStream(currentViewingHost.id)}
                                         className="overlay-btn btn-stop-stream"
                                         title="Terminate Active Stream Session"
@@ -1172,18 +1171,18 @@ function App() {
                           <p className="section-subtitle">Manage and connect to active remote agent streams</p>
                         </div>
                         <div style={{ display: 'flex', gap: '0.75rem' }}>
-                          <button 
-                            onClick={fetchHosts} 
-                            disabled={hostsLoading} 
+                          <button
+                            onClick={fetchHosts}
+                            disabled={hostsLoading}
                             className="btn-secondary refresh-btn"
                             title="Refresh device status"
                           >
-                            <svg 
-                              width="16" 
-                              height="16" 
-                              viewBox="0 0 24 24" 
-                              fill="none" 
-                              stroke="currentColor" 
+                            <svg
+                              width="16"
+                              height="16"
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              stroke="currentColor"
                               strokeWidth="2"
                               className={hostsLoading ? 'spin' : ''}
                             >
@@ -1191,8 +1190,8 @@ function App() {
                             </svg>
                             Sync Devices
                           </button>
-                          <button 
-                            onClick={() => setShowPairingPage(true)} 
+                          <button
+                            onClick={() => setShowPairingPage(true)}
                             className="btn-primary"
                             style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.6rem 1.2rem', fontSize: '0.9rem' }}
                             title="Pair a new Sunshine host or setup an agent"
@@ -1225,8 +1224,8 @@ function App() {
                           <h3>No host devices paired</h3>
                           <p>There are no paired host devices registered with the server.</p>
                           <p className="empty-hint" style={{ marginBottom: '1.25rem' }}>Click the button below to pair and setup a new remote device.</p>
-                          <button 
-                            onClick={() => setShowPairingPage(true)} 
+                          <button
+                            onClick={() => setShowPairingPage(true)}
                             className="btn-primary"
                             style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem' }}
                           >
@@ -1242,10 +1241,10 @@ function App() {
                           {hosts.map((host) => {
                             const isOnline = host.status === 'Online';
                             const isBusy = host.status === 'Busy';
-                            
+
                             return (
-                              <div 
-                                key={host.id} 
+                              <div
+                                key={host.id}
                                 className={`host-card ${host.status.toLowerCase()} ${isOnline ? 'clickable-host-card' : ''}`}
                                 onClick={() => {
                                   if (isOnline) {
@@ -1367,7 +1366,7 @@ function App() {
                 </svg>
               </button>
             </div>
-            
+
             <div className="host-settings-body">
               {modalError && (
                 <div className="host-settings-alert error">
@@ -1387,7 +1386,7 @@ function App() {
                   <span>Processing... Please wait...</span>
                 </div>
               )}
-              
+
               <div className="settings-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.25rem' }}>
                 <div className="settings-group" style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
                   <label htmlFor="modal-encoder" style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-muted)' }}>Video Encoder</label>
