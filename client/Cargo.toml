@@ -8,10 +8,8 @@ common = { path = "../common" }
 tokio = { version = "1.0", features = ["full"] }
 tokio-tungstenite = { version = "0.21", features = ["rustls-native-certs"] }
 webrtc = "0.17.1"
-serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 anyhow = "1.0"
-openh264 = "0.4"
 cpal = "0.15"
 ffmpeg-next = "6.0"
 sdl2 = "0.36"
@@ -21,5 +19,4 @@ bytes = "1.0"
 futures-util = "0.3"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-uuid = { version = "1.0", features = ["v4"] }
 rusttype = "0.9"
