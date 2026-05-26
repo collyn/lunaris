@@ -3,6 +3,14 @@ name = "client-qml"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+name = "client_qml"
+path = "src/lib.rs"
+
+[[bin]]
+name = "client-qml"
+path = "src/main.rs"
+
 [dependencies]
 common = { path = "../common" }
 tokio = { version = "1.0", features = ["full"] }
@@ -20,6 +28,7 @@ futures-util = "0.3"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1.0", features = ["v4"] }
+reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
 
 # Qt6 bindings dependencies
 cxx = "1.0"
