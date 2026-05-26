@@ -174,10 +174,14 @@ jobs:
 
       - name: Install system dependencies
         run: |
-          brew install qt ffmpeg@6 pkg-config opus
-          # Qt6 là keg-only, cần force link để symlink headers/libs vào /opt/homebrew/
-          # qmake báo QT_INSTALL_HEADERS=/opt/homebrew/include nên headers phải có ở đó
-          brew link --force qt
+          brew install ffmpeg@6 pkg-config opus
+
+      - name: Install Qt6
+        uses: jurplel/install-qt-action@v3
+        with:
+          version: '6.5.3'
+          host: 'mac'
+          target: 'desktop'
 
       - name: Configure library paths
         run: |
