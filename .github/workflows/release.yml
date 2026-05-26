@@ -89,31 +89,9 @@ jobs:
           cache: 'npm'
           cache-dependency-path: web/package-lock.json
 
-      # Tải FFmpeg 6.1 pre-built (ffmpeg-sys-next 6.1.0 cần avfft.h, bị xóa từ FFmpeg 7.x)
-      - name: Download FFmpeg 6.1 (pre-built)
+      - name: Install C/C++ libraries via vcpkg
         run: |
-          $FFMPEG_URL = "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2024-01-01-12-55/ffmpeg-n6.1-latest-win64-lgpl-shared-6.1.zip"
-          $FFMPEG_ALT_URL = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n6.1-latest-win64-lgpl-shared-6.1.zip"
-          try {
-            Invoke-WebRequest -Uri $FFMPEG_URL -OutFile ffmpeg.zip -MaximumRetryCount 3
-          } catch {
-            Invoke-WebRequest -Uri $FFMPEG_ALT_URL -OutFile ffmpeg.zip -MaximumRetryCount 3
-          }
-          Expand-Archive -Path ffmpeg.zip -DestinationPath C:\ffmpeg-extract
-          $extracted = Get-ChildItem C:\ffmpeg-extract | Select-Object -First 1
-          Move-Item $extracted.FullName C:\ffmpeg
-          # Verify headers exist
-          if (!(Test-Path "C:\ffmpeg\include\libavcodec\avfft.h")) {
-            Write-Error "avfft.h not found! FFmpeg 6.x headers required."
-            exit 1
-          }
-          Write-Host "FFmpeg installed at C:\ffmpeg"
-          Get-ChildItem C:\ffmpeg\include -Recurse -Name "*.h" | Select-Object -First 10
-        shell: pwsh
-
-      - name: Install OpenSSL and Opus via vcpkg
-        run: |
-          vcpkg install openssl:x64-windows opus:x64-windows
+          vcpkg install ffmpeg:x64-windows opus:x64-windows openssl:x64-windows
         shell: pwsh
 
       - name: Install Qt6
@@ -142,10 +120,11 @@ jobs:
       - name: Build Rust Workspace
         run: cargo build --release --workspace --exclude client
         env:
-          FFMPEG_DIR: C:\ffmpeg
+          VCPKG_ROOT: C:\vcpkg
+          FFMPEG_DIR: C:\vcpkg\installed\x64-windows
+          PKG_CONFIG_PATH: C:\vcpkg\installed\x64-windows\lib\pkgconfig
           OPENSSL_NO_VENDOR: "1"
           OPENSSL_DIR: C:\vcpkg\installed\x64-windows
-          PKG_CONFIG_PATH: C:\vcpkg\installed\x64-windows\lib\pkgconfig
         shell: bash
 
       - name: Package Server and Web
@@ -153,8 +132,6 @@ jobs:
           New-Item -ItemType Directory -Force -Path lunaris-server/web
           Copy-Item target/release/server.exe -Destination lunaris-server/
           Copy-Item -Recurse web/dist -Destination lunaris-server/web/dist
-          # Copy FFmpeg DLLs needed at runtime
-          Copy-Item C:\ffmpeg\bin\*.dll -Destination lunaris-server/
           Compress-Archive -Path lunaris-server/* -DestinationPath lunaris-server-windows.zip
         shell: pwsh
 
@@ -176,7 +153,7 @@ jobs:
           name: client-desktop-windows
           path: target/release/client-desktop.exe
 
-  # macOS: dùng macos-13 (Intel x86_64) để tránh lỗi ARM framework với Qt
+  # macOS: dùng macos-13 (Intel) để tránh lỗi ARM framework với Qt
   build-macos:
     name: Build macOS
     runs-on: macos-13
@@ -195,9 +172,7 @@ jobs:
 
       - name: Install system dependencies
         run: |
-          brew install qt@5 ffmpeg@6 pkg-config opus
-          # Thử cài Qt6; nếu formula 'qt' đã có sẵn thì dùng luôn
-          brew install qt || true
+          brew install ffmpeg pkg-config opus
 
       - name: Install Qt6
         uses: jurplel/install-qt-action@v3
@@ -209,10 +184,9 @@ jobs:
 
       - name: Configure library paths
         run: |
-          FFMPEG_PREFIX=$(brew --prefix ffmpeg@6)
+          FFMPEG_PREFIX=$(brew --prefix ffmpeg)
           OPUS_PREFIX=$(brew --prefix opus)
 
-          # FFmpeg@6 (keg-only)
           echo "PKG_CONFIG_PATH=${FFMPEG_PREFIX}/lib/pkgconfig:${OPUS_PREFIX}/lib/pkgconfig:$PKG_CONFIG_PATH" >> $GITHUB_ENV
           echo "BINDGEN_EXTRA_CLANG_ARGS=-I${FFMPEG_PREFIX}/include -I${OPUS_PREFIX}/include" >> $GITHUB_ENV
           echo "LIBRARY_PATH=${FFMPEG_PREFIX}/lib:${OPUS_PREFIX}/lib:$LIBRARY_PATH" >> $GITHUB_ENV
