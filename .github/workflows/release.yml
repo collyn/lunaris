@@ -175,19 +175,14 @@ jobs:
       - name: Install system dependencies
         run: |
           brew install qt ffmpeg@6 pkg-config opus
+          # Qt6 là keg-only, cần force link để symlink headers/libs vào /opt/homebrew/
+          # qmake báo QT_INSTALL_HEADERS=/opt/homebrew/include nên headers phải có ở đó
+          brew link --force qt
 
       - name: Configure library paths
         run: |
-          QT_PREFIX=$(brew --prefix qt)
           FFMPEG_PREFIX=$(brew --prefix ffmpeg@6)
           OPUS_PREFIX=$(brew --prefix opus)
-
-          # Qt6 (keg-only) — cxx-qt-build cần tìm qmake và Qt headers
-          echo "QMAKE=${QT_PREFIX}/bin/qmake" >> $GITHUB_ENV
-          echo "CMAKE_PREFIX_PATH=${QT_PREFIX}" >> $GITHUB_ENV
-          echo "QT_INCLUDE_DIR=${QT_PREFIX}/include" >> $GITHUB_ENV
-          echo "PATH=${QT_PREFIX}/bin:$PATH" >> $GITHUB_ENV
-          echo "CXXFLAGS=-I${QT_PREFIX}/include" >> $GITHUB_ENV
 
           # FFmpeg@6 (keg-only)
           echo "PKG_CONFIG_PATH=${FFMPEG_PREFIX}/lib/pkgconfig:${OPUS_PREFIX}/lib/pkgconfig:$PKG_CONFIG_PATH" >> $GITHUB_ENV
