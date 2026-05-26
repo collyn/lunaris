@@ -181,6 +181,7 @@ jobs:
           FFMPEG_PREFIX=$(brew --prefix ffmpeg)
           OPUS_PREFIX=$(brew --prefix opus)
 
+          echo "FFMPEG_DIR=${FFMPEG_PREFIX}" >> $GITHUB_ENV
           echo "PKG_CONFIG_PATH=${FFMPEG_PREFIX}/lib/pkgconfig:${OPUS_PREFIX}/lib/pkgconfig:$PKG_CONFIG_PATH" >> $GITHUB_ENV
           echo "BINDGEN_EXTRA_CLANG_ARGS=-I${FFMPEG_PREFIX}/include -I${OPUS_PREFIX}/include" >> $GITHUB_ENV
           echo "LIBRARY_PATH=${FFMPEG_PREFIX}/lib:${OPUS_PREFIX}/lib:$LIBRARY_PATH" >> $GITHUB_ENV
