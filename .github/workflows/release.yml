@@ -28,7 +28,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y cmake clang pkg-config libssl-dev libavahi-compat-libdnssd-dev \
-            libasound2-dev libsdl2-dev libavcodec-dev libavformat-dev libavutil-dev libswscale-dev \
+            libasound2-dev libavcodec-dev libavformat-dev libavutil-dev libswscale-dev \
             libswresample-dev libopus-dev qt6-base-dev qt6-declarative-dev qt6-multimedia-dev libgl1-mesa-dev \
             libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
             libavfilter-dev libavdevice-dev libpostproc-dev
@@ -48,7 +48,7 @@ jobs:
           npm run build
 
       - name: Build Rust Workspace
-        run: cargo build --release --workspace
+        run: cargo build --release --workspace --exclude client
 
       - name: Package Server and Web
         run: |
@@ -69,24 +69,16 @@ jobs:
           name: agent-linux
           path: target/release/agent
 
-      - name: Upload Client Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: client-linux
-          path: target/release/client
-
       - name: Upload Client Desktop Artifact
         uses: actions/upload-artifact@v4
         with:
           name: client-desktop-linux
           path: target/release/client-desktop
 
+  # Windows: build server, agent, client-desktop (exclude client SDL2)
   build-windows:
     name: Build Windows
     runs-on: windows-latest
-    env:
-      VCPKG_ROOT: ${{ github.workspace }}\vcpkg-dirs
-      VCPKG_DEFAULT_TRIPLET: x64-windows
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -98,18 +90,16 @@ jobs:
           cache: 'npm'
           cache-dependency-path: web/package-lock.json
 
-      - name: Setup vcpkg path
-        run: |
-          mkdir -p ${{ env.VCPKG_ROOT }}
-          echo "VCPKG_ROOT=${{ env.VCPKG_ROOT }}" >> $GITHUB_ENV
-        shell: bash
-
-      - name: Install dependencies via vcpkg
-        run: |
-          vcpkg install sdl2:x64-windows ffmpeg:x64-windows
+      - name: Install Strawberry Perl
+        run: choco install strawberryperl -y --no-progress
         shell: pwsh
 
-      - name: Install Qt
+      - name: Install C/C++ libraries via vcpkg
+        run: |
+          vcpkg install ffmpeg[core,avcodec,avformat,avutil,swscale,swresample,avfilter,avdevice]:x64-windows opus:x64-windows
+        shell: pwsh
+
+      - name: Install Qt6
         uses: jurplel/install-qt-action@v3
         with:
           version: '6.5.3'
@@ -133,17 +123,19 @@ jobs:
         shell: bash
 
       - name: Build Rust Workspace
-        run: cargo build --release --workspace
+        run: cargo build --release --workspace --exclude client
         env:
-          VCPKG_ROOT: ${{ env.VCPKG_ROOT }}
+          VCPKG_ROOT: C:\vcpkg
+          FFMPEG_DIR: C:\vcpkg\installed\x64-windows
+          PKG_CONFIG_PATH: C:\vcpkg\installed\x64-windows\lib\pkgconfig
         shell: bash
 
       - name: Package Server and Web
         run: |
-          mkdir -p lunaris-server/web
-          cp target/release/server.exe lunaris-server/
-          cp -r web/dist lunaris-server/web/dist
-          compress-archive -Path lunaris-server/* -DestinationPath lunaris-server-windows.zip
+          New-Item -ItemType Directory -Force -Path lunaris-server/web
+          Copy-Item target/release/server.exe -Destination lunaris-server/
+          Copy-Item -Recurse web/dist -Destination lunaris-server/web/dist
+          Compress-Archive -Path lunaris-server/* -DestinationPath lunaris-server-windows.zip
         shell: pwsh
 
       - name: Upload Server Artifact
@@ -158,25 +150,19 @@ jobs:
           name: agent-windows
           path: target/release/agent.exe
 
-      - name: Upload Client Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: client-windows
-          path: target/release/client.exe
-
       - name: Upload Client Desktop Artifact
         uses: actions/upload-artifact@v4
         with:
           name: client-desktop-windows
           path: target/release/client-desktop.exe
 
+  # macOS: build server, agent, client-desktop (exclude client SDL2)
+  # Sử dụng ffmpeg@6 vì ffmpeg-sys-next 6.1.0 không tương thích với FFmpeg 7.x (thiếu avfft.h)
   build-macos:
     name: Build macOS
     runs-on: macos-latest
     env:
       MACOSX_DEPLOYMENT_TARGET: "11.0"
-      PKG_CONFIG_PATH: "/opt/homebrew/lib/pkgconfig:/usr/local/lib/pkgconfig"
-      BINDGEN_EXTRA_CLANG_ARGS: "-I/opt/homebrew/include -I/usr/local/include"
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -190,8 +176,14 @@ jobs:
 
       - name: Install system dependencies
         run: |
-          brew update
-          brew install qt6 sdl2 ffmpeg pkg-config
+          brew install qt6 ffmpeg@6 pkg-config opus
+
+      - name: Configure FFmpeg and library paths
+        run: |
+          # FFmpeg@6 is keg-only, phải link các đường dẫn thủ công
+          echo "PKG_CONFIG_PATH=/opt/homebrew/opt/ffmpeg@6/lib/pkgconfig:$(brew --prefix opus)/lib/pkgconfig:$PKG_CONFIG_PATH" >> $GITHUB_ENV
+          echo "BINDGEN_EXTRA_CLANG_ARGS=-I/opt/homebrew/opt/ffmpeg@6/include -I$(brew --prefix opus)/include" >> $GITHUB_ENV
+          echo "LIBRARY_PATH=/opt/homebrew/opt/ffmpeg@6/lib:$(brew --prefix opus)/lib:$LIBRARY_PATH" >> $GITHUB_ENV
 
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@v1
@@ -209,7 +201,7 @@ jobs:
           npm run build
 
       - name: Build Rust Workspace (Native Target)
-        run: cargo build --release --workspace
+        run: cargo build --release --workspace --exclude client
 
       - name: Build Agent for Intel x86_64 (Cross-Compile)
         run: cargo build --release --bin agent --target x86_64-apple-darwin
@@ -238,12 +230,6 @@ jobs:
           name: agent-macos
           path: target/release/macos/agent
 
-      - name: Upload Client Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: client-macos
-          path: target/release/client
-
       - name: Upload Client Desktop Artifact
         uses: actions/upload-artifact@v4
         with:
@@ -271,12 +257,6 @@ jobs:
           name: agent-linux
           path: ./artifacts/linux-agent
 
-      - name: Download Linux Client Artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: client-linux
-          path: ./artifacts/linux-client
-
       - name: Download Linux Client Desktop Artifact
         uses: actions/download-artifact@v4
         with:
@@ -295,12 +275,6 @@ jobs:
         with:
           name: agent-windows
           path: ./artifacts/windows-agent
-
-      - name: Download Windows Client Artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: client-windows
-          path: ./artifacts/windows-client
 
       - name: Download Windows Client Desktop Artifact
         uses: actions/download-artifact@v4
@@ -321,12 +295,6 @@ jobs:
           name: agent-macos
           path: ./artifacts/macos-agent
 
-      - name: Download macOS Client Artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: client-macos
-          path: ./artifacts/macos-client
-
       - name: Download macOS Client Desktop Artifact
         uses: actions/download-artifact@v4
         with:
@@ -336,30 +304,25 @@ jobs:
       - name: Organize Release Files
         run: |
           mkdir -p release-files
-          
+
           # Linux
           mv ./artifacts/linux-server/lunaris-server-linux.tar.gz ./release-files/
           mv ./artifacts/linux-agent/agent ./release-files/lunaris-agent-linux
-          mv ./artifacts/linux-client/client ./release-files/lunaris-client-linux
           mv ./artifacts/linux-client-desktop/client-desktop ./release-files/lunaris-client-desktop-linux
-          
+
           # Windows
           mv ./artifacts/windows-server/lunaris-server-windows.zip ./release-files/
           mv ./artifacts/windows-agent/agent.exe ./release-files/lunaris-agent-windows.exe
-          mv ./artifacts/windows-client/client.exe ./release-files/lunaris-client-windows.exe
           mv ./artifacts/windows-client-desktop/client-desktop.exe ./release-files/lunaris-client-desktop-windows.exe
-          
+
           # macOS
           mv ./artifacts/macos-server/lunaris-server-macos.tar.gz ./release-files/
           mv ./artifacts/macos-agent/agent ./release-files/lunaris-agent-macos
-          mv ./artifacts/macos-client/client ./release-files/lunaris-client-macos
           mv ./artifacts/macos-client-desktop/client-desktop ./release-files/lunaris-client-desktop-macos
-          
+
           chmod +x ./release-files/lunaris-agent-linux
-          chmod +x ./release-files/lunaris-client-linux
           chmod +x ./release-files/lunaris-client-desktop-linux
           chmod +x ./release-files/lunaris-agent-macos
-          chmod +x ./release-files/lunaris-client-macos
           chmod +x ./release-files/lunaris-client-desktop-macos
 
       - name: Create GitHub Release
@@ -371,15 +334,12 @@ jobs:
           prerelease: false
           files: |
             release-files/lunaris-server-linux.tar.gz
-            release-files/lunaris-client-linux
             release-files/lunaris-client-desktop-linux
             release-files/lunaris-agent-linux
             release-files/lunaris-server-windows.zip
-            release-files/lunaris-client-windows.exe
             release-files/lunaris-client-desktop-windows.exe
             release-files/lunaris-agent-windows.exe
             release-files/lunaris-server-macos.tar.gz
-            release-files/lunaris-client-macos
             release-files/lunaris-client-desktop-macos
             release-files/lunaris-agent-macos
         env:
