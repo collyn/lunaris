@@ -75,7 +75,6 @@ jobs:
           name: client-desktop-linux
           path: target/release/client-desktop
 
-  # Windows: build server, agent, client-desktop (exclude client SDL2)
   build-windows:
     name: Build Windows
     runs-on: windows-latest
@@ -90,9 +89,31 @@ jobs:
           cache: 'npm'
           cache-dependency-path: web/package-lock.json
 
-      - name: Install C/C++ libraries via vcpkg
+      # Tải FFmpeg 6.1 pre-built (ffmpeg-sys-next 6.1.0 cần avfft.h, bị xóa từ FFmpeg 7.x)
+      - name: Download FFmpeg 6.1 (pre-built)
         run: |
-          vcpkg install ffmpeg:x64-windows opus:x64-windows openssl:x64-windows
+          $FFMPEG_URL = "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2024-01-01-12-55/ffmpeg-n6.1-latest-win64-lgpl-shared-6.1.zip"
+          $FFMPEG_ALT_URL = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n6.1-latest-win64-lgpl-shared-6.1.zip"
+          try {
+            Invoke-WebRequest -Uri $FFMPEG_URL -OutFile ffmpeg.zip -MaximumRetryCount 3
+          } catch {
+            Invoke-WebRequest -Uri $FFMPEG_ALT_URL -OutFile ffmpeg.zip -MaximumRetryCount 3
+          }
+          Expand-Archive -Path ffmpeg.zip -DestinationPath C:\ffmpeg-extract
+          $extracted = Get-ChildItem C:\ffmpeg-extract | Select-Object -First 1
+          Move-Item $extracted.FullName C:\ffmpeg
+          # Verify headers exist
+          if (!(Test-Path "C:\ffmpeg\include\libavcodec\avfft.h")) {
+            Write-Error "avfft.h not found! FFmpeg 6.x headers required."
+            exit 1
+          }
+          Write-Host "FFmpeg installed at C:\ffmpeg"
+          Get-ChildItem C:\ffmpeg\include -Recurse -Name "*.h" | Select-Object -First 10
+        shell: pwsh
+
+      - name: Install OpenSSL and Opus via vcpkg
+        run: |
+          vcpkg install openssl:x64-windows opus:x64-windows
         shell: pwsh
 
       - name: Install Qt6
@@ -121,11 +142,10 @@ jobs:
       - name: Build Rust Workspace
         run: cargo build --release --workspace --exclude client
         env:
-          VCPKG_ROOT: C:\vcpkg
-          FFMPEG_DIR: C:\vcpkg\installed\x64-windows
-          PKG_CONFIG_PATH: C:\vcpkg\installed\x64-windows\lib\pkgconfig
+          FFMPEG_DIR: C:\ffmpeg
           OPENSSL_NO_VENDOR: "1"
           OPENSSL_DIR: C:\vcpkg\installed\x64-windows
+          PKG_CONFIG_PATH: C:\vcpkg\installed\x64-windows\lib\pkgconfig
         shell: bash
 
       - name: Package Server and Web
@@ -133,6 +153,8 @@ jobs:
           New-Item -ItemType Directory -Force -Path lunaris-server/web
           Copy-Item target/release/server.exe -Destination lunaris-server/
           Copy-Item -Recurse web/dist -Destination lunaris-server/web/dist
+          # Copy FFmpeg DLLs needed at runtime
+          Copy-Item C:\ffmpeg\bin\*.dll -Destination lunaris-server/
           Compress-Archive -Path lunaris-server/* -DestinationPath lunaris-server-windows.zip
         shell: pwsh
 
@@ -154,11 +176,10 @@ jobs:
           name: client-desktop-windows
           path: target/release/client-desktop.exe
 
-  # macOS: build server, agent, client-desktop (exclude client SDL2)
-  # Sử dụng ffmpeg@6 vì ffmpeg-sys-next 6.1.0 không tương thích với FFmpeg 7.x (thiếu avfft.h)
+  # macOS: dùng macos-13 (Intel x86_64) để tránh lỗi ARM framework với Qt
   build-macos:
     name: Build macOS
-    runs-on: macos-latest
+    runs-on: macos-13
     env:
       MACOSX_DEPLOYMENT_TARGET: "11.0"
     steps:
@@ -174,7 +195,9 @@ jobs:
 
       - name: Install system dependencies
         run: |
-          brew install ffmpeg@6 pkg-config opus
+          brew install qt@5 ffmpeg@6 pkg-config opus
+          # Thử cài Qt6; nếu formula 'qt' đã có sẵn thì dùng luôn
+          brew install qt || true
 
       - name: Install Qt6
         uses: jurplel/install-qt-action@v3
@@ -182,6 +205,7 @@ jobs:
           version: '6.5.3'
           host: 'mac'
           target: 'desktop'
+          arch: 'clang_64'
 
       - name: Configure library paths
         run: |
@@ -197,7 +221,6 @@ jobs:
         uses: dtolnay/rust-toolchain@v1
         with:
           toolchain: nightly-2026-04-17
-          targets: aarch64-apple-darwin, x86_64-apple-darwin
 
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
@@ -208,16 +231,8 @@ jobs:
           npm ci || npm install
           npm run build
 
-      - name: Build Rust Workspace (Native Target)
+      - name: Build Rust Workspace
         run: cargo build --release --workspace --exclude client
-
-      - name: Build Agent for Intel x86_64 (Cross-Compile)
-        run: cargo build --release --bin agent --target x86_64-apple-darwin
-
-      - name: Create Universal Agent Binary
-        run: |
-          mkdir -p target/release/macos
-          lipo -create target/release/agent target/x86_64-apple-darwin/release/agent -output target/release/macos/agent
 
       - name: Package Server and Web
         run: |
@@ -236,7 +251,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: agent-macos
-          path: target/release/macos/agent
+          path: target/release/agent
 
       - name: Upload Client Desktop Artifact
         uses: actions/upload-artifact@v4
