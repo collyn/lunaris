@@ -4,7 +4,6 @@ on:
   push:
     tags:
       - 'v*'
-  workflow_dispatch:
 
 permissions:
   contents: write
@@ -17,10 +16,19 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install dependencies
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake clang pkg-config libssl-dev libavahi-compat-libdnssd-dev
+          sudo apt-get install -y cmake clang pkg-config libssl-dev libavahi-compat-libdnssd-dev \
+            libasound2-dev libsdl2-dev libavcodec-dev libavformat-dev libavutil-dev libswscale-dev \
+            libswresample-dev libopus-dev qt6-base-dev qt6-declarative-dev qt6-multimedia-dev libgl1-mesa-dev
 
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@master
@@ -30,20 +38,39 @@ jobs:
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
 
-      - name: Build
-        run: cargo build --release --bin server --bin agent
+      - name: Build Web Frontend
+        run: |
+          cd web
+          npm ci || npm install
+          npm run build
+
+      - name: Build Rust Workspace
+        run: cargo build --release --workspace
+
+      - name: Package Server and Web
+        run: |
+          mkdir -p lunaris-server/web
+          cp target/release/server lunaris-server/
+          cp -r web/dist lunaris-server/web/dist
+          tar -czf lunaris-server-linux.tar.gz -C lunaris-server .
 
       - name: Upload Server Artifact
         uses: actions/upload-artifact@v4
         with:
           name: server-linux
-          path: target/release/server
+          path: lunaris-server-linux.tar.gz
 
       - name: Upload Agent Artifact
         uses: actions/upload-artifact@v4
         with:
           name: agent-linux
           path: target/release/agent
+
+      - name: Upload Client Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: client-linux
+          path: target/release/client
 
   build-windows:
     name: Build Windows
@@ -124,6 +151,12 @@ jobs:
           name: agent-linux
           path: ./artifacts/linux-agent
 
+      - name: Download Linux Client Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: client-linux
+          path: ./artifacts/linux-client
+
       - name: Download Windows Agent Artifact
         uses: actions/download-artifact@v4
         with:
@@ -139,11 +172,14 @@ jobs:
       - name: Organize Release Files
         run: |
           mkdir -p release-files
-          mv ./artifacts/linux-server/server ./release-files/lunaris-server-linux
+          mv ./artifacts/linux-server/lunaris-server-linux.tar.gz ./release-files/
+          mv ./artifacts/linux-client/client ./release-files/lunaris-client-linux
           mv ./artifacts/linux-agent/agent ./release-files/lunaris-agent-linux
           mv ./artifacts/windows-agent/agent.exe ./release-files/lunaris-agent-windows.exe
           mv ./artifacts/macos-agent/agent ./release-files/lunaris-agent-macos
-          chmod +x ./release-files/*
+          chmod +x ./release-files/lunaris-client-linux
+          chmod +x ./release-files/lunaris-agent-linux
+          chmod +x ./release-files/lunaris-agent-macos
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -153,7 +189,8 @@ jobs:
           draft: false
           prerelease: false
           files: |
-            release-files/lunaris-server-linux
+            release-files/lunaris-server-linux.tar.gz
+            release-files/lunaris-client-linux
             release-files/lunaris-agent-linux
             release-files/lunaris-agent-windows.exe
             release-files/lunaris-agent-macos
