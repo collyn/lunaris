@@ -2,19 +2,37 @@
 
 mod protocol;
 
+use std::sync::mpsc::{channel, Sender};
+use std::sync::OnceLock;
+
+static LOG_SENDER: OnceLock<Sender<String>> = OnceLock::new();
+
+fn init_logger() {
+    let (tx, rx) = channel::<String>();
+    let _ = LOG_SENDER.set(tx);
+    
+    std::thread::spawn(move || {
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .append(true)
+            .open("/home/huy/Projects/lunaris/client_frontend_logs.txt")
+        {
+            use std::io::Write;
+            while let Ok(line) = rx.recv() {
+                let _ = write!(file, "{}", line);
+            }
+        }
+    });
+}
+
 #[tauri::command]
 fn log_from_frontend(level: String, message: String) {
     let log_line = format!("[Frontend {}] {}\n", level, message);
     print!("{}", log_line);
     
-    if let Ok(mut file) = std::fs::OpenOptions::new()
-        .create(true)
-        .write(true)
-        .append(true)
-        .open("/home/huy/Projects/lunaris/client_frontend_logs.txt")
-    {
-        use std::io::Write;
-        let _ = write!(file, "{}", log_line);
+    if let Some(sender) = LOG_SENDER.get() {
+        let _ = sender.send(log_line);
     }
 }
 
@@ -28,22 +46,24 @@ fn launch_native_client(
     bitrate: String,
     codec: String,
     app_id: Option<u32>,
+    mouse_queue_limit: Option<String>,
+    host_name: Option<String>,
 ) -> Result<(), String> {
     let current_exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let dir = current_exe.parent().ok_or("Failed to get parent dir")?;
     
     #[cfg(target_os = "windows")]
-    let client_bin_name = "client.exe";
+    let client_bin_name = "client-qml.exe";
     #[cfg(not(target_os = "windows"))]
-    let client_bin_name = "client";
+    let client_bin_name = "client-qml";
     
     let client_path = dir.join(client_bin_name);
     
     if !client_path.exists() {
-        return Err(format!("Native client binary not found at {:?}", client_path));
+        return Err(format!("Native QML client binary not found at {:?}", client_path));
     }
     
-    println!("Spawning native client: {:?}", client_path);
+    println!("Spawning native QML client: {:?}", client_path);
     let mut cmd = std::process::Command::new(client_path);
     cmd.args(&[
         "--host-id", &host_id,
@@ -59,12 +79,35 @@ fn launch_native_client(
         cmd.args(&["--app-id", &id.to_string()]);
     }
 
+    if let Some(limit) = mouse_queue_limit {
+        cmd.args(&["--mouse-queue-limit", &limit]);
+    }
+
+    if let Some(name) = host_name {
+        cmd.args(&["--host-name", &name]);
+    }
+
     cmd.spawn().map_err(|e| e.to_string())?;
         
     Ok(())
 }
 
 fn main() {
+    init_logger();
+
+    // Disable DMA-BUF renderer to fix laggy scrolling/rendering in WebKitGTK on Linux (Nvidia/Wayland issues)
+    #[cfg(target_os = "linux")]
+    {
+        let is_wayland = std::env::var("XDG_SESSION_TYPE").map(|v| v.to_lowercase() == "wayland").unwrap_or(false);
+        let has_nvidia = std::path::Path::new("/sys/module/nvidia").exists() || std::path::Path::new("/proc/driver/nvidia").exists();
+        if is_wayland && has_nvidia {
+            println!("Nvidia Wayland session detected. Disabling DMA-BUF renderer to prevent WebKitGTK glitches.");
+            std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+        } else {
+            println!("AMD/Intel or X11 session detected. Keeping DMA-BUF renderer enabled for hardware acceleration.");
+        }
+    }
+
     // Try registering custom URI scheme handler with the OS
     if let Err(e) = protocol::register_protocol() {
         eprintln!("Failed to register protocol handler: {:?}", e);
@@ -196,6 +239,30 @@ fn main() {
                 .fullscreen(false)
                 .initialization_script(&script)
                 .build()?;
+
+            #[cfg(target_os = "linux")]
+            {
+                let _ = _window.with_webview(|webview| {
+                    use webkit2gtk::{WebViewExt, SettingsExt, PermissionRequestExt};
+                    let webview = webview.inner();
+                    if let Some(settings) = webview.settings() {
+                        settings.set_enable_webrtc(true);
+                        settings.set_enable_media_stream(true);
+                        settings.set_enable_mediasource(true);
+                        settings.set_enable_media(true);
+                        settings.set_enable_media_capabilities(true);
+                        settings.set_enable_encrypted_media(true);
+                        settings.set_media_playback_requires_user_gesture(false);
+                        settings.set_media_playback_allows_inline(true);
+                        settings.set_media_content_types_requiring_hardware_support(None);
+                    }
+
+                    webview.connect_permission_request(move |_, request| {
+                        request.allow();
+                        true
+                    });
+                });
+            }
 
             Ok(())
         })

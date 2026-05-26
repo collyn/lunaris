@@ -91,6 +91,7 @@ pub struct StreamVideoDecoder {
     frame_count: u64,
     start_time: std::time::Instant,
     format: Option<VideoFormat>,
+    last_idr_time: std::time::Instant,
 }
 
 impl VideoDecoder for StreamVideoDecoder {
@@ -104,9 +105,14 @@ impl VideoDecoder for StreamVideoDecoder {
     fn stop(&mut self) {}
 
     fn submit_decode_unit(&mut self, unit: VideoDecodeUnit<'_>) -> DecodeResult {
-        if self.need_idr.swap(false, Ordering::SeqCst) {
-            info!("Forcing keyframe request (DR_NEED_IDR) due to PLI from WebRTC");
-            return DecodeResult::NeedIdr;
+        if self.need_idr.load(Ordering::SeqCst) {
+            let now = std::time::Instant::now();
+            if now.duration_since(self.last_idr_time) >= std::time::Duration::from_millis(1000) {
+                self.need_idr.store(false, Ordering::SeqCst);
+                self.last_idr_time = now;
+                info!("Forcing keyframe request (DR_NEED_IDR) due to PLI/queue full");
+                return DecodeResult::NeedIdr;
+            }
         }
 
         let frame_num = self.frame_count;
@@ -121,7 +127,7 @@ impl VideoDecoder for StreamVideoDecoder {
         }
 
         if frame_num % 120 == 0 {
-            info!(
+            debug!(
                 "submit_decode_unit (enqueued): frame {}, timestamp {}, buffers {}, format: {:?}",
                 frame_num,
                 timestamp,
@@ -129,7 +135,7 @@ impl VideoDecoder for StreamVideoDecoder {
                 self.format
             );
             for (idx, buf) in unit.buffers.iter().enumerate() {
-                info!(
+                debug!(
                     "  buffer {}: type={:?}, len={}, first_bytes={:02x?}",
                     idx,
                     buf.buffer_type,
@@ -147,7 +153,15 @@ impl VideoDecoder for StreamVideoDecoder {
             Err(e) => {
                 warn!("Video frame queue full or closed, dropping frame: {:?}", e);
                 self.need_idr.store(true, Ordering::SeqCst);
-                DecodeResult::NeedIdr
+                
+                let now = std::time::Instant::now();
+                if now.duration_since(self.last_idr_time) >= std::time::Duration::from_millis(1000) {
+                    self.need_idr.store(false, Ordering::SeqCst);
+                    self.last_idr_time = now;
+                    DecodeResult::NeedIdr
+                } else {
+                    DecodeResult::Ok
+                }
             }
         }
     }
@@ -453,7 +467,7 @@ pub async fn setup_bridge_session(
     let mouse_absolute_channel = peer_connection.create_data_channel("mouse_absolute", Some(mouse_absolute_init)).await?;
 
     let mouse_relative_init = RTCDataChannelInit {
-        ordered: Some(true),
+        ordered: Some(false),
         max_retransmits: Some(0),
         ..Default::default()
     };
@@ -576,26 +590,28 @@ pub async fn setup_bridge_session(
     )
     .await?;
 
-    let (video_frame_tx, mut video_frame_rx) = tokio::sync::mpsc::channel::<VideoFramePayload>(2);
+    let (video_frame_tx, mut video_frame_rx) = tokio::sync::mpsc::channel::<VideoFramePayload>(8);
     let video_track_clone = video_track.clone();
     let payload_type_clone = payload_type;
     let need_idr_clone_worker = need_idr_flag.clone();
 
     tokio::spawn(async move {
-        let mut seq: u16 = 0;
         let mut frame_count: u64 = 0;
         let mut payloader = payloader;
 
         // Bounded channel for complete frames (each represented as Vec<Packet>).
-        // Capacity of 1 frame ensures minimum latency and immediate dropping on congestion.
-        let (packet_tx, mut packet_rx) = tokio::sync::mpsc::channel::<Vec<Packet>>(1);
+        // Capacity of 15 frames handles keyframe bursts cleanly without dropping frames.
+        let (packet_tx, mut packet_rx) = tokio::sync::mpsc::channel::<Vec<Packet>>(15);
 
         // Spawn a dedicated writer task to write the RTP packets.
-        // This decouples packetization from async IO writes on the WebRTC socket.
+        // This task assigns RTP sequence numbers to ensure no gaps ever occur on drops.
         tokio::spawn(async move {
-            while let Some(packets) = packet_rx.recv().await {
-                for packet in packets {
-                    if let Err(e) = video_track_clone.write_rtp(&packet).await {
+            let mut seq: u16 = 0;
+            while let Some(mut packets) = packet_rx.recv().await {
+                for packet in &mut packets {
+                    packet.header.sequence_number = seq;
+                    seq = seq.wrapping_add(1);
+                    if let Err(e) = video_track_clone.write_rtp(packet).await {
                         debug!("Failed to write video RTP packet: {:?}", e);
                     }
                 }
@@ -669,14 +685,13 @@ pub async fn setup_bridge_session(
                             padding: false,
                             extension: false,
                             marker: peekable.peek().is_none() && i == len - 1,
-                            sequence_number: seq,
+                            sequence_number: 0, // Assigned dynamically by the writer task
                             timestamp,
                             payload_type: payload_type_clone,
                             ..Default::default()
                         },
                         payload,
                     };
-                    seq = seq.wrapping_add(1);
                     packets.push(packet);
                 }
             }
@@ -711,6 +726,7 @@ pub async fn setup_bridge_session(
         frame_count: 0,
         start_time: std::time::Instant::now(),
         format: None,
+        last_idr_time: std::time::Instant::now() - std::time::Duration::from_secs(5),
     };
 
     let audio_decoder = StreamAudioDecoder {

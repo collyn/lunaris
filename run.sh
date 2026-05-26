@@ -27,16 +27,17 @@ run_dev() {
     check_web_deps
     
     # Run the backend server
-    echo "[Backend] Starting Rust signaling server..."
-    cargo run --release --manifest-path server/Cargo.toml --bin server &
+    echo "[Backend] Starting Rust signaling server (Debug)..."
+    cargo run --manifest-path server/Cargo.toml --bin server &
 
-    # Run the frontend in dev mode
-    echo "[Frontend] Starting Vite development server..."
+    # Run the React frontend in dev mode
+    echo "[React Frontend] Starting Vite development server..."
     npm --prefix web run dev &
 
     # Wait for background jobs to finish
     wait
 }
+
 
 build_web() {
     echo "=================================================="

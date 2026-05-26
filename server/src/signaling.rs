@@ -786,10 +786,28 @@ async fn get_agentless_app_list(
     let apps = host.app_list().await?;
     let current_game = host.current_game().await?;
 
-    let app_infos = apps.into_iter().map(|app| common::AppInfo {
-        id: app.id,
-        title: app.title,
-    }).collect();
+    let host_ref = &host;
+    let mut futures = Vec::new();
+    for app in apps {
+        futures.push(async move {
+            let icon_base64 = match host_ref.request_app_image(app.id).await {
+                Ok(bytes) => {
+                    use common::base64::Engine;
+                    Some(common::base64::prelude::BASE64_STANDARD.encode(bytes))
+                }
+                Err(e) => {
+                    error!("Failed to fetch icon for app {}: {:?}", app.id, e);
+                    None
+                }
+            };
+            common::AppInfo {
+                id: app.id,
+                title: app.title,
+                icon_base64,
+            }
+        });
+    }
+    let app_infos = futures_util::future::join_all(futures).await;
 
     Ok((app_infos, current_game))
 }

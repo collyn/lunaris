@@ -19,26 +19,15 @@ use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
 use webrtc::data_channel::RTCDataChannel;
 use webrtc::track::track_remote::TrackRemote;
 
-use openh264::decoder::Decoder as OpenH264Decoder;
-use openh264::formats::YUVSource;
+// We now use ffmpeg-next HardwareDecoder instead of OpenH264 software decoder
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
 mod protocol;
 mod input;
 mod ui;
+mod decoder;
 
-// SDL2 Window Dimensions
-
-struct YUVFrame {
-    width: i32,
-    height: i32,
-    y: Vec<u8>,
-    u: Vec<u8>,
-    v: Vec<u8>,
-    y_stride: i32,
-    u_stride: i32,
-    v_stride: i32,
-}
+use decoder::{YUVFrame, HardwareDecoder, CodecType};
 
 #[derive(Clone, Debug)]
 struct AppArgs {
@@ -352,6 +341,12 @@ async fn run_client(args: AppArgs) -> Result<Option<AppArgs>, anyhow::Error> {
     // -------------------------------------------------------------------------
     // SDL2 Initialization
     // -------------------------------------------------------------------------
+    // Configure SDL2 relative mouse mode hints
+    sdl2::hint::set("SDL_MOUSE_RELATIVE_SCALING", "0");
+    sdl2::hint::set("SDL_MOUSE_RELATIVE_MODE_WARP", "0");
+    sdl2::hint::set("SDL_MOUSE_AUTO_CAPTURE", "0");
+    sdl2::hint::set("SDL_VIDEO_WAYLAND_EMULATE_MOUSE_WARP", "0");
+
     let sdl_context = sdl2::init().map_err(|e| anyhow::anyhow!("SDL init err: {}", e))?;
     let video_subsystem = sdl_context.video().map_err(|e| anyhow::anyhow!("SDL video err: {}", e))?;
     
@@ -361,7 +356,7 @@ async fn run_client(args: AppArgs) -> Result<Option<AppArgs>, anyhow::Error> {
         .build()
         .map_err(|e| anyhow::anyhow!("SDL window err: {}", e))?;
         
-    let mut canvas = window.into_canvas().present_vsync().build().map_err(|e| anyhow::anyhow!("SDL canvas err: {}", e))?;
+    let mut canvas = window.into_canvas().build().map_err(|e| anyhow::anyhow!("SDL canvas err: {}", e))?;
     let texture_creator = canvas.texture_creator();
 
     // -------------------------------------------------------------------------
@@ -445,10 +440,28 @@ async fn run_client(args: AppArgs) -> Result<Option<AppArgs>, anyhow::Error> {
         
         tokio::spawn(async move {
             let codec = track_clone.codec();
-            if codec.capability.mime_type.to_lowercase() == "video/h264" {
-                info!("Starting H.264 video decoding worker...");
-                let mut decoder = OpenH264Decoder::new().unwrap();
+            let mime = codec.capability.mime_type.to_lowercase();
+            let is_video = mime == "video/h264" || mime == "video/h265" || mime == "video/hevc" || mime == "video/av1";
+            
+            if is_video {
+                let codec_type = match mime.as_str() {
+                    "video/h264" => CodecType::H264,
+                    "video/h265" | "video/hevc" => CodecType::H265,
+                    "video/av1" => CodecType::AV1,
+                    _ => unreachable!(),
+                };
+                
+                info!("Starting video decoding worker for {:?}...", codec_type);
+                let mut decoder = match HardwareDecoder::new(codec_type) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        error!("Failed to initialize HardwareDecoder: {:?}", e);
+                        return;
+                    }
+                };
+                
                 let mut annex_b_buf = Vec::<u8>::new();
+                let mut av1_obu_buf = Vec::<u8>::new();
                 let mut packet_count = 0u64;
                 let mut decoded_count = 0u64;
                 
@@ -486,99 +499,306 @@ async fn run_client(args: AppArgs) -> Result<Option<AppArgs>, anyhow::Error> {
                         info!("Video receiver stats: received {} RTP packets, decoded {} frames", packet_count, decoded_count);
                     }
                     
-                    let nal_type = payload[0] & 0x1F;
-                    if nal_type >= 1 && nal_type <= 23 {
-                        // Single NAL unit
-                        annex_b_buf.clear();
-                        annex_b_buf.extend_from_slice(&[0, 0, 0, 1]);
-                        annex_b_buf.extend_from_slice(&payload);
-                        
-                        match decoder.decode(&annex_b_buf) {
-                            Ok(Some(decoded)) => {
-                                if decoded_count == 0 {
-                                    has_decoded.store(true, std::sync::atomic::Ordering::SeqCst);
-                                }
-                                decoded_count += 1;
-                                let frame = YUVFrame {
-                                    width: decoded.width(),
-                                    height: decoded.height(),
-                                    y: decoded.y().to_vec(),
-                                    u: decoded.u().to_vec(),
-                                    v: decoded.v().to_vec(),
-                                    y_stride: decoded.y_stride(),
-                                    u_stride: decoded.u_stride(),
-                                    v_stride: decoded.v_stride(),
-                                };
-                                let _ = video_tx_inner.try_send(frame);
-                            }
-                            Ok(None) => {}
-                            Err(e) => {
-                                warn!("OpenH264 decode error (Single NAL): {:?}", e);
-                            }
-                        }
-                    } else if nal_type == 24 {
-                        // STAP-A Aggregation Packet
-                        let mut offset = 1;
-                        while offset + 2 <= payload.len() {
-                            let nalu_size = ((payload[offset] as usize) << 8) | (payload[offset + 1] as usize);
-                            offset += 2;
-                            if offset + nalu_size > payload.len() {
-                                break;
-                            }
-                            let nalu_data = &payload[offset..offset + nalu_size];
-                            offset += nalu_size;
-                            
-                            if !nalu_data.is_empty() {
+                    match codec_type {
+                        CodecType::H264 => {
+                            let nal_type = payload[0] & 0x1F;
+                            if nal_type >= 1 && nal_type <= 23 {
+                                // Single NAL unit
                                 annex_b_buf.clear();
                                 annex_b_buf.extend_from_slice(&[0, 0, 0, 1]);
-                                annex_b_buf.extend_from_slice(nalu_data);
-                                if let Err(e) = decoder.decode(&annex_b_buf) {
-                                    warn!("OpenH264 decode error (STAP-A sub-NALU): {:?}", e);
+                                annex_b_buf.extend_from_slice(&payload);
+                                
+                                match decoder.decode(&annex_b_buf) {
+                                    Ok(frames) => {
+                                        for frame in frames {
+                                            if decoded_count == 0 {
+                                                has_decoded.store(true, std::sync::atomic::Ordering::SeqCst);
+                                            }
+                                            decoded_count += 1;
+                                            let _ = video_tx_inner.try_send(frame);
+                                        }
+                                    }
+                                    Err(e) => {
+                                        warn!("H.264 decode error (Single NAL): {:?}", e);
+                                    }
+                                }
+                            } else if nal_type == 24 {
+                                // STAP-A Aggregation Packet
+                                let mut offset = 1;
+                                while offset + 2 <= payload.len() {
+                                    let nalu_size = ((payload[offset] as usize) << 8) | (payload[offset + 1] as usize);
+                                    offset += 2;
+                                    if offset + nalu_size > payload.len() {
+                                        break;
+                                    }
+                                    let nalu_data = &payload[offset..offset + nalu_size];
+                                    offset += nalu_size;
+                                    
+                                    if !nalu_data.is_empty() {
+                                        annex_b_buf.clear();
+                                        annex_b_buf.extend_from_slice(&[0, 0, 0, 1]);
+                                        annex_b_buf.extend_from_slice(nalu_data);
+                                        match decoder.decode(&annex_b_buf) {
+                                            Ok(frames) => {
+                                                for frame in frames {
+                                                    if decoded_count == 0 {
+                                                        has_decoded.store(true, std::sync::atomic::Ordering::SeqCst);
+                                                    }
+                                                    decoded_count += 1;
+                                                    let _ = video_tx_inner.try_send(frame);
+                                                }
+                                            }
+                                            Err(e) => {
+                                                warn!("H.264 decode error (STAP-A sub-NALU): {:?}", e);
+                                            }
+                                        }
+                                    }
+                                }
+                            } else if nal_type == 28 {
+                                // FU-A Fragmentation Unit
+                                if payload.len() < 2 {
+                                    continue;
+                                }
+                                let fu_indicator = payload[0];
+                                let fu_header = payload[1];
+                                let start_bit = (fu_header & 0x80) != 0;
+                                let end_bit = (fu_header & 0x40) != 0;
+                                let inner_nal_type = fu_header & 0x1F;
+                                let reconstructed_header = (fu_indicator & 0xE0) | inner_nal_type;
+                                
+                                if start_bit {
+                                    annex_b_buf.clear();
+                                    annex_b_buf.extend_from_slice(&[0, 0, 0, 1, reconstructed_header]);
+                                    annex_b_buf.extend_from_slice(&payload[2..]);
+                                } else {
+                                    annex_b_buf.extend_from_slice(&payload[2..]);
+                                }
+                                
+                                if end_bit {
+                                    match decoder.decode(&annex_b_buf) {
+                                        Ok(frames) => {
+                                            for frame in frames {
+                                                if decoded_count == 0 {
+                                                    has_decoded.store(true, std::sync::atomic::Ordering::SeqCst);
+                                                }
+                                                decoded_count += 1;
+                                                let _ = video_tx_inner.try_send(frame);
+                                            }
+                                        }
+                                        Err(e) => {
+                                            warn!("H.264 decode error (FU-A): {:?}", e);
+                                        }
+                                    }
                                 }
                             }
                         }
-                    } else if nal_type == 28 {
-                        // FU-A Fragmentation Unit
-                        if payload.len() < 2 {
-                            continue;
-                        }
-                        let fu_indicator = payload[0];
-                        let fu_header = payload[1];
-                        let start_bit = (fu_header & 0x80) != 0;
-                        let end_bit = (fu_header & 0x40) != 0;
-                        let inner_nal_type = fu_header & 0x1F;
-                        let reconstructed_header = (fu_indicator & 0xE0) | inner_nal_type;
-                        
-                        if start_bit {
-                            annex_b_buf.clear();
-                            annex_b_buf.extend_from_slice(&[0, 0, 0, 1, reconstructed_header]);
-                            annex_b_buf.extend_from_slice(&payload[2..]);
-                        } else {
-                            annex_b_buf.extend_from_slice(&payload[2..]);
-                        }
-                        
-                        if end_bit {
-                            match decoder.decode(&annex_b_buf) {
-                                Ok(Some(decoded)) => {
-                                    if decoded_count == 0 {
-                                        has_decoded.store(true, std::sync::atomic::Ordering::SeqCst);
+                        CodecType::H265 => {
+                            let nal_type = (payload[0] & 0x7E) >> 1;
+                            if nal_type <= 47 {
+                                // Single NAL unit
+                                annex_b_buf.clear();
+                                annex_b_buf.extend_from_slice(&[0, 0, 0, 1]);
+                                annex_b_buf.extend_from_slice(&payload);
+                                
+                                match decoder.decode(&annex_b_buf) {
+                                    Ok(frames) => {
+                                        for frame in frames {
+                                            if decoded_count == 0 {
+                                                has_decoded.store(true, std::sync::atomic::Ordering::SeqCst);
+                                            }
+                                            decoded_count += 1;
+                                            let _ = video_tx_inner.try_send(frame);
+                                        }
                                     }
-                                    decoded_count += 1;
-                                    let frame = YUVFrame {
-                                        width: decoded.width(),
-                                        height: decoded.height(),
-                                        y: decoded.y().to_vec(),
-                                        u: decoded.u().to_vec(),
-                                        v: decoded.v().to_vec(),
-                                        y_stride: decoded.y_stride(),
-                                        u_stride: decoded.u_stride(),
-                                        v_stride: decoded.v_stride(),
-                                    };
-                                    let _ = video_tx_inner.try_send(frame);
+                                    Err(e) => {
+                                        warn!("H.265 decode error (Single NAL): {:?}", e);
+                                    }
                                 }
-                                Ok(None) => {}
-                                Err(e) => {
-                                    warn!("OpenH264 decode error (FU-A): {:?}", e);
+                            } else if nal_type == 48 {
+                                // AP (Aggregation Packet)
+                                let mut offset = 2; // HEVC payload header is 2 bytes
+                                while offset + 2 <= payload.len() {
+                                    let nalu_size = ((payload[offset] as usize) << 8) | (payload[offset + 1] as usize);
+                                    offset += 2;
+                                    if offset + nalu_size > payload.len() {
+                                        break;
+                                    }
+                                    let nalu_data = &payload[offset..offset + nalu_size];
+                                    offset += nalu_size;
+                                    
+                                    if !nalu_data.is_empty() {
+                                        annex_b_buf.clear();
+                                        annex_b_buf.extend_from_slice(&[0, 0, 0, 1]);
+                                        annex_b_buf.extend_from_slice(nalu_data);
+                                        match decoder.decode(&annex_b_buf) {
+                                            Ok(frames) => {
+                                                for frame in frames {
+                                                    if decoded_count == 0 {
+                                                        has_decoded.store(true, std::sync::atomic::Ordering::SeqCst);
+                                                    }
+                                                    decoded_count += 1;
+                                                    let _ = video_tx_inner.try_send(frame);
+                                                }
+                                            }
+                                            Err(e) => {
+                                                warn!("H.265 decode error (AP sub-NALU): {:?}", e);
+                                            }
+                                        }
+                                    }
+                                }
+                            } else if nal_type == 49 {
+                                // FU (Fragmentation Unit)
+                                if payload.len() < 3 {
+                                    continue;
+                                }
+                                let fu_indicator_1 = payload[0];
+                                let fu_indicator_2 = payload[1];
+                                let fu_header = payload[2];
+                                let start_bit = (fu_header & 0x80) != 0;
+                                let end_bit = (fu_header & 0x40) != 0;
+                                let original_nal_type = fu_header & 0x3F;
+                                
+                                let reconstructed_header_1 = (fu_indicator_1 & 0x81) | (original_nal_type << 1);
+                                let reconstructed_header_2 = fu_indicator_2;
+                                
+                                if start_bit {
+                                    annex_b_buf.clear();
+                                    annex_b_buf.extend_from_slice(&[0, 0, 0, 1, reconstructed_header_1, reconstructed_header_2]);
+                                    annex_b_buf.extend_from_slice(&payload[3..]);
+                                } else {
+                                    annex_b_buf.extend_from_slice(&payload[3..]);
+                                }
+                                
+                                if end_bit {
+                                    match decoder.decode(&annex_b_buf) {
+                                        Ok(frames) => {
+                                            for frame in frames {
+                                                if decoded_count == 0 {
+                                                    has_decoded.store(true, std::sync::atomic::Ordering::SeqCst);
+                                                }
+                                                decoded_count += 1;
+                                                let _ = video_tx_inner.try_send(frame);
+                                            }
+                                        }
+                                        Err(e) => {
+                                            warn!("H.265 decode error (FU): {:?}", e);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        CodecType::AV1 => {
+                            let h = payload[0];
+                            let z = (h & 0x80) != 0;
+                            let y = (h & 0x40) != 0;
+                            let w = (h & 0x30) >> 4;
+                            
+                            let mut offset = 1;
+                            
+                            let read_leb128 = |off: &mut usize| -> Option<usize> {
+                                let mut value = 0;
+                                let mut shift = 0;
+                                while *off < payload.len() {
+                                    let b = payload[*off];
+                                    *off += 1;
+                                    value |= ((b & 0x7F) as usize) << shift;
+                                    if (b & 0x80) == 0 {
+                                        return Some(value);
+                                    }
+                                    shift += 7;
+                                    if shift >= 35 {
+                                        return None;
+                                    }
+                                }
+                                None
+                            };
+                            
+                            let mut first = true;
+                            
+                            // Process AV1 OBU fragment
+                            let process_fragment = |element_data: &[u8], is_first_elem: bool, is_last_elem: bool, av1_obu_buf: &mut Vec<u8>, decoder: &mut HardwareDecoder, decoded_count: &mut u64, has_decoded: &Arc<std::sync::atomic::AtomicBool>, video_tx_inner: &mpsc::Sender<YUVFrame>| {
+                                if is_first_elem && z {
+                                    av1_obu_buf.extend_from_slice(element_data);
+                                } else {
+                                    if !av1_obu_buf.is_empty() {
+                                        match decoder.decode(av1_obu_buf) {
+                                            Ok(frames) => {
+                                                for frame in frames {
+                                                    if *decoded_count == 0 {
+                                                        has_decoded.store(true, std::sync::atomic::Ordering::SeqCst);
+                                                    }
+                                                    *decoded_count += 1;
+                                                    let _ = video_tx_inner.try_send(frame);
+                                                }
+                                            }
+                                            Err(e) => {
+                                                warn!("AV1 decode error (completed OBU): {:?}", e);
+                                            }
+                                        }
+                                        av1_obu_buf.clear();
+                                    }
+                                    av1_obu_buf.extend_from_slice(element_data);
+                                }
+                                
+                                if is_last_elem && y {
+                                    // Fragment continues in next packet
+                                } else {
+                                    match decoder.decode(av1_obu_buf) {
+                                        Ok(frames) => {
+                                            for frame in frames {
+                                                if *decoded_count == 0 {
+                                                    has_decoded.store(true, std::sync::atomic::Ordering::SeqCst);
+                                                }
+                                                *decoded_count += 1;
+                                                let _ = video_tx_inner.try_send(frame);
+                                            }
+                                        }
+                                        Err(e) => {
+                                            warn!("AV1 decode error (complete OBU): {:?}", e);
+                                        }
+                                    }
+                                    av1_obu_buf.clear();
+                                }
+                            };
+                            
+                            if w == 0 {
+                                while offset < payload.len() {
+                                    if let Some(size) = read_leb128(&mut offset) {
+                                        if offset + size <= payload.len() {
+                                            let element_data = &payload[offset..offset + size];
+                                            offset += size;
+                                            let is_last = offset >= payload.len();
+                                            process_fragment(element_data, first, is_last, &mut av1_obu_buf, &mut decoder, &mut decoded_count, &has_decoded, &video_tx_inner);
+                                            first = false;
+                                        } else {
+                                            break;
+                                        }
+                                    } else {
+                                        break;
+                                    }
+                                }
+                            } else {
+                                for i in 0..w {
+                                    let is_first = i == 0;
+                                    let is_last = i == w - 1;
+                                    if !is_last {
+                                        if let Some(size) = read_leb128(&mut offset) {
+                                            if offset + size <= payload.len() {
+                                                let element_data = &payload[offset..offset + size];
+                                                offset += size;
+                                                process_fragment(element_data, is_first, is_last, &mut av1_obu_buf, &mut decoder, &mut decoded_count, &has_decoded, &video_tx_inner);
+                                            } else {
+                                                break;
+                                            }
+                                        } else {
+                                            break;
+                                        }
+                                    } else {
+                                        if offset < payload.len() {
+                                            let element_data = &payload[offset..];
+                                            process_fragment(element_data, is_first, is_last, &mut av1_obu_buf, &mut decoder, &mut decoded_count, &has_decoded, &video_tx_inner);
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -643,6 +863,94 @@ async fn run_client(args: AppArgs) -> Result<Option<AppArgs>, anyhow::Error> {
         
         Box::pin(async {})
     }));
+
+    let (kb_tx, mut kb_rx) = tokio::sync::mpsc::unbounded_channel::<bytes::Bytes>();
+    let (ma_tx, mut ma_rx) = tokio::sync::mpsc::unbounded_channel::<bytes::Bytes>();
+    let (mr_tx, mut mr_rx) = tokio::sync::mpsc::unbounded_channel::<bytes::Bytes>();
+
+    let senders = input::InputSenders {
+        keyboard: kb_tx,
+        mouse_abs: ma_tx,
+        mouse_rel: mr_tx,
+    };
+
+    let k_chan = Arc::clone(&keyboard_chan);
+    tokio::spawn(async move {
+        while let Some(buf) = kb_rx.recv().await {
+            let chan = { k_chan.lock().unwrap().clone() };
+            if let Some(chan) = chan {
+                let _ = chan.send(&buf).await;
+            }
+        }
+    });
+
+    let ma_chan = Arc::clone(&mouse_abs_chan);
+    tokio::spawn(async move {
+        while let Some(buf) = ma_rx.recv().await {
+            let chan = { ma_chan.lock().unwrap().clone() };
+            if let Some(chan) = chan {
+                let mut final_buf = buf;
+                while let Ok(next_buf) = ma_rx.try_recv() {
+                    final_buf = next_buf;
+                }
+                if chan.buffered_amount().await < 1024 {
+                    let _ = chan.send(&final_buf).await;
+                }
+            }
+        }
+    });
+
+    let mr_chan = Arc::clone(&mouse_rel_chan);
+    tokio::spawn(async move {
+        while let Some(buf) = mr_rx.recv().await {
+            let chan = { mr_chan.lock().unwrap().clone() };
+            if let Some(chan) = chan {
+                let mut final_buf = buf;
+                
+                // If this is a relative mouse motion event (Type 0), coalesce it with consecutive motions in the queue
+                if final_buf[0] == 0 {
+                    let mut dx = i16::from_be_bytes([final_buf[1], final_buf[2]]);
+                    let mut dy = i16::from_be_bytes([final_buf[3], final_buf[4]]);
+                    let mut coalesced = false;
+
+                    while let Ok(next_buf) = mr_rx.try_recv() {
+                        if next_buf[0] == 0 {
+                            dx = dx.wrapping_add(i16::from_be_bytes([next_buf[1], next_buf[2]]));
+                            dy = dy.wrapping_add(i16::from_be_bytes([next_buf[3], next_buf[4]]));
+                            coalesced = true;
+                        } else {
+                            // Non-motion event (e.g. click, scroll) - send current accumulated motion first
+                            let mut motion_buf = vec![0u8; 5];
+                            motion_buf[0] = 0;
+                            motion_buf[1..3].copy_from_slice(&dx.to_be_bytes());
+                            motion_buf[3..5].copy_from_slice(&dy.to_be_bytes());
+                            
+                            if chan.buffered_amount().await < 1024 {
+                                let _ = chan.send(&bytes::Bytes::from(motion_buf)).await;
+                            }
+
+                            // Now transition final_buf to this non-motion event
+                            final_buf = next_buf;
+                            coalesced = false;
+                            break;
+                        }
+                    }
+
+                    if coalesced {
+                        let mut motion_buf = vec![0u8; 5];
+                        motion_buf[0] = 0;
+                        motion_buf[1..3].copy_from_slice(&dx.to_be_bytes());
+                        motion_buf[3..5].copy_from_slice(&dy.to_be_bytes());
+                        final_buf = bytes::Bytes::from(motion_buf);
+                    }
+                }
+
+                if chan.buffered_amount().await < 1024 {
+                    let _ = chan.send(&final_buf).await;
+                }
+            }
+        }
+    });
 
     // -------------------------------------------------------------------------
     // Peer Connection State Change Handler
@@ -788,6 +1096,13 @@ async fn run_client(args: AppArgs) -> Result<Option<AppArgs>, anyhow::Error> {
     // Enable alpha blend mode for translucent notch and settings overlays
     canvas.set_blend_mode(sdl2::render::BlendMode::Blend);
 
+    let mut has_motion = false;
+    let mut latest_x = 0i32;
+    let mut latest_y = 0i32;
+    let mut accumulated_xrel = 0i32;
+    let mut accumulated_yrel = 0i32;
+    let mut latest_state = event_pump.mouse_state();
+
     info!("Starting SDL2 Event loop...");
     'running: loop {
         let mut had_activity = false;
@@ -815,51 +1130,73 @@ async fn run_client(args: AppArgs) -> Result<Option<AppArgs>, anyhow::Error> {
             }
         }
 
+        macro_rules! flush_motion {
+            () => {
+                if has_motion {
+                    let motion_event = sdl2::event::Event::MouseMotion {
+                        timestamp: 0,
+                        window_id: 0,
+                        which: 0,
+                        mousestate: latest_state,
+                        x: latest_x,
+                        y: latest_y,
+                        xrel: accumulated_xrel,
+                        yrel: accumulated_yrel,
+                    };
+
+                    let menu_rect = ui::get_menu_rect(win_w as i32, menu_y_offset);
+                    let trigger_rect = ui::get_trigger_rect(win_w as i32);
+
+                    if show_menu {
+                        if is_inside(latest_x, latest_y, menu_rect) {
+                            last_activity_time = std::time::Instant::now();
+                        }
+                    } else {
+                        if is_inside(latest_x, latest_y, trigger_rect) {
+                            show_menu = true;
+                            last_activity_time = std::time::Instant::now();
+                        }
+                    }
+
+                    input::handle_sdl_event(
+                        &motion_event,
+                        win_w,
+                        win_h,
+                        &senders,
+                        pointer_locked,
+                    );
+
+                    has_motion = false;
+                    accumulated_xrel = 0;
+                    accumulated_yrel = 0;
+                }
+            };
+        }
+
         // Poll and process SDL2 Events
         for event in event_pump.poll_iter() {
             had_activity = true;
             match event {
                 sdl2::event::Event::Quit { .. } => {
+                    flush_motion!();
                     break 'running;
                 }
                 sdl2::event::Event::Window { win_event: sdl2::event::WindowEvent::SizeChanged(w, h), .. } => {
+                    flush_motion!();
                     win_w = w as i16;
                     win_h = h as i16;
                     info!("Window resized to {}x{}", win_w, win_h);
                 }
-                sdl2::event::Event::MouseMotion { x, y, .. } => {
-                    let mx = x;
-                    let my = y;
-                    
-                    let menu_rect = ui::get_menu_rect(win_w as i32, menu_y_offset);
-                    let trigger_rect = ui::get_trigger_rect(win_w as i32);
-                    
-                    if show_menu {
-                        if is_inside(mx, my, menu_rect) {
-                            last_activity_time = std::time::Instant::now();
-                        }
-                    } else {
-                        if is_inside(mx, my, trigger_rect) {
-                            show_menu = true;
-                            last_activity_time = std::time::Instant::now();
-                        }
-                    }
-                    
-                    let k_lock = keyboard_chan.lock().unwrap();
-                    let ma_lock = mouse_abs_chan.lock().unwrap();
-                    let mr_lock = mouse_rel_chan.lock().unwrap();
-                    
-                    input::handle_sdl_event(
-                        &event,
-                        win_w,
-                        win_h,
-                        k_lock.as_ref(),
-                        ma_lock.as_ref(),
-                        mr_lock.as_ref(),
-                        pointer_locked,
-                    );
+                sdl2::event::Event::MouseMotion { x, y, xrel, yrel, mousestate, .. } => {
+                    latest_x = x;
+                    latest_y = y;
+                    accumulated_xrel += xrel;
+                    accumulated_yrel += yrel;
+                    latest_state = mousestate;
+                    has_motion = true;
                 }
                 sdl2::event::Event::MouseButtonDown { x, y, .. } => {
+                    flush_motion!();
                     let mx = x;
                     let my = y;
                     let mut click_handled = false;
@@ -971,21 +1308,17 @@ async fn run_client(args: AppArgs) -> Result<Option<AppArgs>, anyhow::Error> {
                     }
                     
                     if !click_handled {
-                        let k_lock = keyboard_chan.lock().unwrap();
-                        let ma_lock = mouse_abs_chan.lock().unwrap();
-                        let mr_lock = mouse_rel_chan.lock().unwrap();
                         input::handle_sdl_event(
                             &event,
                             win_w,
                             win_h,
-                            k_lock.as_ref(),
-                            ma_lock.as_ref(),
-                            mr_lock.as_ref(),
+                            &senders,
                             pointer_locked,
                         );
                     }
                 }
                 sdl2::event::Event::KeyDown { keycode: Some(kc), keymod, .. } => {
+                    flush_motion!();
                     let ctrl = keymod.contains(sdl2::keyboard::Mod::LCTRLMOD) || keymod.contains(sdl2::keyboard::Mod::RCTRLMOD);
                     let alt = keymod.contains(sdl2::keyboard::Mod::LALTMOD) || keymod.contains(sdl2::keyboard::Mod::RALTMOD);
                     if ctrl && alt && (kc == sdl2::keyboard::Keycode::Escape || kc == sdl2::keyboard::Keycode::M || kc == sdl2::keyboard::Keycode::Z) {
@@ -996,37 +1329,28 @@ async fn run_client(args: AppArgs) -> Result<Option<AppArgs>, anyhow::Error> {
                         last_activity_time = std::time::Instant::now();
                         info!("Pointer lock released and menu opened via hotkey shortcut");
                     } else {
-                        let k_lock = keyboard_chan.lock().unwrap();
-                        let ma_lock = mouse_abs_chan.lock().unwrap();
-                        let mr_lock = mouse_rel_chan.lock().unwrap();
                         input::handle_sdl_event(
                             &event,
                             win_w,
                             win_h,
-                            k_lock.as_ref(),
-                            ma_lock.as_ref(),
-                            mr_lock.as_ref(),
+                            &senders,
                             pointer_locked,
                         );
                     }
                 }
                 other => {
-                    let k_lock = keyboard_chan.lock().unwrap();
-                    let ma_lock = mouse_abs_chan.lock().unwrap();
-                    let mr_lock = mouse_rel_chan.lock().unwrap();
-                    
+                    flush_motion!();
                     input::handle_sdl_event(
                         &other,
                         win_w,
                         win_h,
-                        k_lock.as_ref(),
-                        ma_lock.as_ref(),
-                        mr_lock.as_ref(),
+                        &senders,
                         pointer_locked,
                     );
                 }
             }
         }
+        flush_motion!();
 
         // Pull decoded video frames from the WebRTC channel and render (drain to only render the latest frame)
         let mut latest_yuv = None;

@@ -1,8 +1,6 @@
 use sdl2::event::Event;
 use sdl2::keyboard::Keycode;
 use sdl2::mouse::MouseButton as SdlMouseButton;
-use webrtc::data_channel::RTCDataChannel;
-use std::sync::Arc;
 use bytes::Bytes;
 
 pub fn map_keycode_to_vk(keycode: Keycode) -> u16 {
@@ -82,163 +80,132 @@ pub fn map_keycode_to_vk(keycode: Keycode) -> u16 {
     }
 }
 
+pub struct InputSenders {
+    pub keyboard: tokio::sync::mpsc::UnboundedSender<Bytes>,
+    pub mouse_abs: tokio::sync::mpsc::UnboundedSender<Bytes>,
+    pub mouse_rel: tokio::sync::mpsc::UnboundedSender<Bytes>,
+}
+
 pub fn handle_sdl_event(
     event: &Event,
     window_width: i16,
     window_height: i16,
-    keyboard_chan: Option<&Arc<RTCDataChannel>>,
-    mouse_abs_chan: Option<&Arc<RTCDataChannel>>,
-    mouse_rel_chan: Option<&Arc<RTCDataChannel>>,
+    senders: &InputSenders,
     pointer_locked: bool,
 ) {
     match event {
         Event::KeyDown { keycode: Some(kc), keymod, .. } => {
-            if let Some(chan) = keyboard_chan {
-                let vk = map_keycode_to_vk(*kc);
-                if vk > 0 {
-                    let mut modifiers = 0u8;
-                    if keymod.contains(sdl2::keyboard::Mod::LSHIFTMOD) || keymod.contains(sdl2::keyboard::Mod::RSHIFTMOD) {
-                        modifiers |= 1;
-                    }
-                    if keymod.contains(sdl2::keyboard::Mod::LCTRLMOD) || keymod.contains(sdl2::keyboard::Mod::RCTRLMOD) {
-                        modifiers |= 2;
-                    }
-                    if keymod.contains(sdl2::keyboard::Mod::LALTMOD) || keymod.contains(sdl2::keyboard::Mod::RALTMOD) {
-                        modifiers |= 4;
-                    }
-                    if keymod.contains(sdl2::keyboard::Mod::LGUIMOD) || keymod.contains(sdl2::keyboard::Mod::RGUIMOD) {
-                        modifiers |= 8;
-                    }
-                    
-                    let mut buf = vec![0u8; 5];
-                    buf[0] = 0; // Type 0: Key Event
-                    buf[1] = 1; // 1 = Down
-                    buf[2] = modifiers;
-                    buf[3] = (vk >> 8) as u8;
-                    buf[4] = (vk & 0xFF) as u8;
-                    let chan_clone = Arc::clone(chan);
-                    tokio::spawn(async move {
-                        let _ = chan_clone.send(&Bytes::from(buf)).await;
-                    });
+            let vk = map_keycode_to_vk(*kc);
+            if vk > 0 {
+                let mut modifiers = 0u8;
+                if keymod.contains(sdl2::keyboard::Mod::LSHIFTMOD) || keymod.contains(sdl2::keyboard::Mod::RSHIFTMOD) {
+                    modifiers |= 1;
                 }
+                if keymod.contains(sdl2::keyboard::Mod::LCTRLMOD) || keymod.contains(sdl2::keyboard::Mod::RCTRLMOD) {
+                    modifiers |= 2;
+                }
+                if keymod.contains(sdl2::keyboard::Mod::LALTMOD) || keymod.contains(sdl2::keyboard::Mod::RALTMOD) {
+                    modifiers |= 4;
+                }
+                if keymod.contains(sdl2::keyboard::Mod::LGUIMOD) || keymod.contains(sdl2::keyboard::Mod::RGUIMOD) {
+                    modifiers |= 8;
+                }
+                
+                let mut buf = vec![0u8; 5];
+                buf[0] = 0; // Type 0: Key Event
+                buf[1] = 1; // 1 = Down
+                buf[2] = modifiers;
+                buf[3] = (vk >> 8) as u8;
+                buf[4] = (vk & 0xFF) as u8;
+                let _ = senders.keyboard.send(Bytes::from(buf));
             }
         }
         Event::KeyUp { keycode: Some(kc), keymod, .. } => {
-            if let Some(chan) = keyboard_chan {
-                let vk = map_keycode_to_vk(*kc);
-                if vk > 0 {
-                    let mut modifiers = 0u8;
-                    if keymod.contains(sdl2::keyboard::Mod::LSHIFTMOD) || keymod.contains(sdl2::keyboard::Mod::RSHIFTMOD) {
-                        modifiers |= 1;
-                    }
-                    if keymod.contains(sdl2::keyboard::Mod::LCTRLMOD) || keymod.contains(sdl2::keyboard::Mod::RCTRLMOD) {
-                        modifiers |= 2;
-                    }
-                    if keymod.contains(sdl2::keyboard::Mod::LALTMOD) || keymod.contains(sdl2::keyboard::Mod::RALTMOD) {
-                        modifiers |= 4;
-                    }
-                    if keymod.contains(sdl2::keyboard::Mod::LGUIMOD) || keymod.contains(sdl2::keyboard::Mod::RGUIMOD) {
-                        modifiers |= 8;
-                    }
-                    
-                    let mut buf = vec![0u8; 5];
-                    buf[0] = 0; // Type 0: Key Event
-                    buf[1] = 0; // 0 = Up
-                    buf[2] = modifiers;
-                    buf[3] = (vk >> 8) as u8;
-                    buf[4] = (vk & 0xFF) as u8;
-                    let chan_clone = Arc::clone(chan);
-                    tokio::spawn(async move {
-                        let _ = chan_clone.send(&Bytes::from(buf)).await;
-                    });
+            let vk = map_keycode_to_vk(*kc);
+            if vk > 0 {
+                let mut modifiers = 0u8;
+                if keymod.contains(sdl2::keyboard::Mod::LSHIFTMOD) || keymod.contains(sdl2::keyboard::Mod::RSHIFTMOD) {
+                    modifiers |= 1;
                 }
+                if keymod.contains(sdl2::keyboard::Mod::LCTRLMOD) || keymod.contains(sdl2::keyboard::Mod::RCTRLMOD) {
+                    modifiers |= 2;
+                }
+                if keymod.contains(sdl2::keyboard::Mod::LALTMOD) || keymod.contains(sdl2::keyboard::Mod::RALTMOD) {
+                    modifiers |= 4;
+                }
+                if keymod.contains(sdl2::keyboard::Mod::LGUIMOD) || keymod.contains(sdl2::keyboard::Mod::RGUIMOD) {
+                    modifiers |= 8;
+                }
+                
+                let mut buf = vec![0u8; 5];
+                buf[0] = 0; // Type 0: Key Event
+                buf[1] = 0; // 0 = Up
+                buf[2] = modifiers;
+                buf[3] = (vk >> 8) as u8;
+                buf[4] = (vk & 0xFF) as u8;
+                let _ = senders.keyboard.send(Bytes::from(buf));
             }
         }
         Event::MouseMotion { x, y, xrel, yrel, .. } => {
             // Send absolute coordinates (only if pointer is not locked)
             if !pointer_locked {
-                if let Some(chan) = mouse_abs_chan {
-                    let mut buf = vec![0u8; 9];
-                    buf[0] = 1; // Type 1: Absolute Mouse Position
-                    buf[1..3].copy_from_slice(&(*x as i16).to_be_bytes());
-                    buf[3..5].copy_from_slice(&(*y as i16).to_be_bytes());
-                    buf[5..7].copy_from_slice(&window_width.to_be_bytes());
-                    buf[7..9].copy_from_slice(&window_height.to_be_bytes());
-                    let chan_clone = Arc::clone(chan);
-                    tokio::spawn(async move {
-                        let _ = chan_clone.send(&Bytes::from(buf)).await;
-                    });
-                }
+                let mut buf = vec![0u8; 9];
+                buf[0] = 1; // Type 1: Absolute Mouse Position
+                buf[1..3].copy_from_slice(&(*x as i16).to_be_bytes());
+                buf[3..5].copy_from_slice(&(*y as i16).to_be_bytes());
+                buf[5..7].copy_from_slice(&window_width.to_be_bytes());
+                buf[7..9].copy_from_slice(&window_height.to_be_bytes());
+                let _ = senders.mouse_abs.send(Bytes::from(buf));
             }
             // Send relative coordinates (only if pointer is locked)
             if pointer_locked {
-                if let Some(chan) = mouse_rel_chan {
-                    let mut buf = vec![0u8; 5];
-                    buf[0] = 0; // Type 0: Relative Mouse Move
-                    buf[1..3].copy_from_slice(&(*xrel as i16).to_be_bytes());
-                    buf[3..5].copy_from_slice(&(*yrel as i16).to_be_bytes());
-                    let chan_clone = Arc::clone(chan);
-                    tokio::spawn(async move {
-                        let _ = chan_clone.send(&Bytes::from(buf)).await;
-                    });
-                }
+                let mut buf = vec![0u8; 5];
+                buf[0] = 0; // Type 0: Relative Mouse Move
+                buf[1..3].copy_from_slice(&(*xrel as i16).to_be_bytes());
+                buf[3..5].copy_from_slice(&(*yrel as i16).to_be_bytes());
+                let _ = senders.mouse_rel.send(Bytes::from(buf));
             }
         }
         Event::MouseButtonDown { mouse_btn, .. } => {
-            if let Some(chan) = mouse_rel_chan {
-                let button_id = match mouse_btn {
-                    SdlMouseButton::Left => 1,
-                    SdlMouseButton::Middle => 2,
-                    SdlMouseButton::Right => 3,
-                    SdlMouseButton::X1 => 4,
-                    SdlMouseButton::X2 => 5,
-                    _ => 0,
-                };
-                if button_id > 0 {
-                    let mut buf = vec![0u8; 3];
-                    buf[0] = 2; // Type 2: Mouse Button Event
-                    buf[1] = 1; // 1 = Press
-                    buf[2] = button_id;
-                    let chan_clone = Arc::clone(chan);
-                    tokio::spawn(async move {
-                        let _ = chan_clone.send(&Bytes::from(buf)).await;
-                    });
-                }
+            let button_id = match mouse_btn {
+                SdlMouseButton::Left => 1,
+                SdlMouseButton::Middle => 2,
+                SdlMouseButton::Right => 3,
+                SdlMouseButton::X1 => 4,
+                SdlMouseButton::X2 => 5,
+                _ => 0,
+            };
+            if button_id > 0 {
+                let mut buf = vec![0u8; 3];
+                buf[0] = 2; // Type 2: Mouse Button Event
+                buf[1] = 1; // 1 = Press
+                buf[2] = button_id;
+                let _ = senders.mouse_rel.send(Bytes::from(buf));
             }
         }
         Event::MouseButtonUp { mouse_btn, .. } => {
-            if let Some(chan) = mouse_rel_chan {
-                let button_id = match mouse_btn {
-                    SdlMouseButton::Left => 1,
-                    SdlMouseButton::Middle => 2,
-                    SdlMouseButton::Right => 3,
-                    SdlMouseButton::X1 => 4,
-                    SdlMouseButton::X2 => 5,
-                    _ => 0,
-                };
-                if button_id > 0 {
-                    let mut buf = vec![0u8; 3];
-                    buf[0] = 2; // Type 2: Mouse Button Event
-                    buf[1] = 0; // 0 = Release
-                    buf[2] = button_id;
-                    let chan_clone = Arc::clone(chan);
-                    tokio::spawn(async move {
-                        let _ = chan_clone.send(&Bytes::from(buf)).await;
-                    });
-                }
+            let button_id = match mouse_btn {
+                SdlMouseButton::Left => 1,
+                SdlMouseButton::Middle => 2,
+                SdlMouseButton::Right => 3,
+                SdlMouseButton::X1 => 4,
+                SdlMouseButton::X2 => 5,
+                _ => 0,
+            };
+            if button_id > 0 {
+                let mut buf = vec![0u8; 3];
+                buf[0] = 2; // Type 2: Mouse Button Event
+                buf[1] = 0; // 0 = Release
+                buf[2] = button_id;
+                let _ = senders.mouse_rel.send(Bytes::from(buf));
             }
         }
         Event::MouseWheel { x, y, .. } => {
-            if let Some(chan) = mouse_rel_chan {
-                let mut buf = vec![0u8; 3];
-                buf[0] = 4; // Type 4: Scroll Event
-                buf[1] = *x as i8 as u8;
-                buf[2] = *y as i8 as u8;
-                let chan_clone = Arc::clone(chan);
-                tokio::spawn(async move {
-                    let _ = chan_clone.send(&Bytes::from(buf)).await;
-                });
-            }
+            let mut buf = vec![0u8; 3];
+            buf[0] = 4; // Type 4: Scroll Event
+            buf[1] = *x as i8 as u8;
+            buf[2] = *y as i8 as u8;
+            let _ = senders.mouse_rel.send(Bytes::from(buf));
         }
         _ => {}
     }

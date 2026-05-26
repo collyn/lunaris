@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+pub use base64;
+
 // --- REST API TYPES ---
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -37,6 +39,7 @@ pub struct HostInfo {
     pub status: HostStatus,
     pub ip_address: Option<String>,
     pub server_codec_mode_support: Option<u32>,
+    pub agent_connected: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
@@ -76,6 +79,7 @@ pub struct RtcIceCandidate {
 pub struct AppInfo {
     pub id: u32,
     pub title: String,
+    pub icon_base64: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

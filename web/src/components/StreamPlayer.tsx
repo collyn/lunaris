@@ -1,6 +1,10 @@
 import React, { useEffect, useRef, useState } from 'react';
 
 const getBackendHost = () => {
+  const savedHost = localStorage.getItem('lunaris_server_host');
+  if (savedHost) {
+    return savedHost.replace(/^(https?:\/\/)?/, '').replace(/\/$/, '');
+  }
   if (window.location.port === '5173' || window.location.port === '3000') {
     return `${window.location.hostname}:8080`;
   }
@@ -10,12 +14,28 @@ const getBackendHost = () => {
   return window.location.host;
 };
 
+const getBackendProtocol = () => {
+  const savedHost = localStorage.getItem('lunaris_server_host') || '';
+  if (savedHost.startsWith('https://')) {
+    return { http: 'https:', ws: 'wss:' };
+  }
+  if (savedHost.startsWith('http://')) {
+    return { http: 'http:', ws: 'ws:' };
+  }
+  return {
+    http: window.location.protocol === 'https:' ? 'https:' : 'http:',
+    ws: window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+  };
+};
+
+
 interface StreamPlayerProps {
   hostId: string;
   hostName: string;
   token: string;
   serverCodecModeSupport?: number;
   onBack: () => void;
+  appId?: number | null;
 }
 
 const KEY_TO_VK: Record<string, number> = {
@@ -46,20 +66,25 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   hostName,
   token,
   serverCodecModeSupport,
-  onBack
+  onBack,
+  appId
 }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const channelsRef = useRef<Record<string, RTCDataChannel>>({});
+  const lastMouseMoveTimeRef = useRef<number>(0);
+  const scrollXAccumulatorRef = useRef<number>(0);
+  const scrollYAccumulatorRef = useRef<number>(0);
+  const lastJitterResetTimeRef = useRef<number>(0);
 
   const [status, setStatus] = useState<string>('Initializing...');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [isPointerLocked, setIsPointerLocked] = useState<boolean>(false);
-  const [appList, setAppList] = useState<{ id: number; title: string }[] | null>(null);
+  const [appList, setAppList] = useState<{ id: number; title: string; icon_base64?: string | null }[] | null>(null);
   const [currentGameId, setCurrentGameId] = useState<number>(0);
-  const [selectedAppId, setSelectedAppId] = useState<number | null>(null);
+  const [selectedAppId, setSelectedAppId] = useState<number | null>(appId ?? null);
   const [isStoppingStream, setIsStoppingStream] = useState<boolean>(false);
   
   // Settings States
@@ -67,11 +92,37 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   const [activeFps, setActiveFps] = useState<number>(() => Number(localStorage.getItem('lunaris_stream_fps') || '60'));
   const [activeBitrate, setActiveBitrate] = useState<number>(() => Number(localStorage.getItem('lunaris_stream_bitrate') || '8000'));
   const [activeCodec, setActiveCodec] = useState<string>(() => localStorage.getItem('lunaris_stream_codec') || 'h264');
+  const [mouseQueueLimit, setMouseQueueLimit] = useState<number>(() => {
+    const val = localStorage.getItem('lunaris_mouse_queue_limit');
+    if (val === null || val === '0') {
+      return 256;
+    }
+    return Number(val);
+  });
 
   const [draftResolution, setDraftResolution] = useState<string>(activeResolution);
   const [draftFps, setDraftFps] = useState<number>(activeFps);
   const [draftBitrate, setDraftBitrate] = useState<number>(activeBitrate);
   const [draftCodec, setDraftCodec] = useState<string>(activeCodec);
+  const [draftMouseQueueLimit, setDraftMouseQueueLimit] = useState<number>(mouseQueueLimit);
+
+  const [useNativeClient, setUseNativeClient] = useState<boolean>(() => {
+    if (typeof window.RTCPeerConnection === 'undefined') {
+      return true;
+    }
+    // Smart reset once to let the user experience WebRTC inline stream by default after this update
+    if (localStorage.getItem('lunaris_reset_use_native_once') !== 'true') {
+      localStorage.setItem('lunaris_reset_use_native_once', 'true');
+      localStorage.setItem('lunaris_tauri_use_native', 'false');
+      return false;
+    }
+    const val = localStorage.getItem('lunaris_tauri_use_native');
+    if (val === null) {
+      return false;
+    }
+    return val === 'true';
+  });
+  const [draftUseNativeClient, setDraftUseNativeClient] = useState<boolean>(useNativeClient);
 
   const [browserCodecs, setBrowserCodecs] = useState<{ h264: boolean; h265: boolean; av1: boolean }>({
     h264: true,
@@ -197,14 +248,24 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   };
   
   const [showSettingsModal, setShowSettingsModal] = useState<boolean>(false);
-  const [hideLocalCursor, setHideLocalCursor] = useState<boolean>(() => localStorage.getItem('lunaris_stream_hide_cursor') === 'true');
+  
+  // Synchronize draft states when settings modal is opened
+  useEffect(() => {
+    if (showSettingsModal) {
+      setDraftResolution(activeResolution);
+      setDraftFps(activeFps);
+      setDraftBitrate(activeBitrate);
+      setDraftCodec(activeCodec);
+      setDraftMouseQueueLimit(mouseQueueLimit);
+      setDraftUseNativeClient(useNativeClient);
+    }
+  }, [showSettingsModal, activeResolution, activeFps, activeBitrate, activeCodec, mouseQueueLimit, useNativeClient]);
+  const [hideLocalCursor, setHideLocalCursor] = useState<boolean>(() => localStorage.getItem('lunaris_stream_hide_cursor') !== 'false');
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
   const [isHeaderVisible, setIsHeaderVisible] = useState<boolean>(true);
   const [isHeaderPinned, setIsHeaderPinned] = useState<boolean>(() => localStorage.getItem('lunaris_header_pinned') === 'true');
   const [showStats, setShowStats] = useState<boolean>(() => localStorage.getItem('lunaris_show_stats') !== 'false');
   const headerTimeoutRef = useRef<any | null>(null);
-  const pendingMouseCoordsRef = useRef<{ clientX: number; clientY: number } | null>(null);
-  const pendingMouseDeltasRef = useRef<{ dx: number; dy: number }>({ dx: 0, dy: 0 });
 
   // Stats State
   const [stats, setStats] = useState<{
@@ -214,18 +275,25 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     bitrate: number;
     ping: number;
     decodeLatency: number;
+    jitter: number;
   }>({
     iceState: 'new',
     connState: 'new',
     fps: 0,
     bitrate: 0,
     ping: 0,
-    decodeLatency: 0
+    decodeLatency: 0,
+    jitter: 0
   });
 
   const addLog = (msg: string) => {
     console.log(`[Lunaris] ${msg}`);
   };
+
+  useEffect(() => {
+    addLog(`[System Diagnostics] RTCPeerConnection supported: ${typeof window.RTCPeerConnection !== 'undefined'}`);
+    addLog(`[System Diagnostics] useNativeClient is set to: ${useNativeClient}`);
+  }, [useNativeClient]);
 
   // Pointer lock change listener
   useEffect(() => {
@@ -233,24 +301,44 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       const locked = document.pointerLockElement === videoRef.current;
       setIsPointerLocked(locked);
       addLog(locked ? "Pointer locked. Relative mouse mode." : "Pointer unlocked. Absolute mouse mode.");
+      // Keep remote cursor visible if local cursor is hidden, even when pointer is locked
+      sendSunshineCursorHide(!hideLocalCursor);
     };
 
     document.addEventListener('pointerlockchange', handlePointerLockChange);
     return () => {
       document.removeEventListener('pointerlockchange', handlePointerLockChange);
     };
-  }, []);
+  }, [hideLocalCursor]);
 
   // Listen to fullscreen changes (e.g. user presses ESC)
   useEffect(() => {
     const handleFullscreenChange = () => {
-      setIsFullscreen(!!document.fullscreenElement);
+      const isFull = !!document.fullscreenElement;
+      setIsFullscreen(isFull);
+      
+      // Implement browser Keyboard Lock when entering fullscreen.
+      // In Chromium-based browsers, this forces the Escape key to behave like client-qml
+      // (requiring the user to press and hold Escape for 2 seconds to exit).
+      if (isFull) {
+        if ((navigator as any).keyboard && (navigator as any).keyboard.lock) {
+          (navigator as any).keyboard.lock(["Escape"]).catch((err: any) => {
+            console.error("Failed to lock keyboard Escape:", err);
+          });
+        }
+      } else {
+        if ((navigator as any).keyboard && (navigator as any).keyboard.unlock) {
+          (navigator as any).keyboard.unlock();
+        }
+      }
     };
     document.addEventListener('fullscreenchange', handleFullscreenChange);
     return () => {
       document.removeEventListener('fullscreenchange', handleFullscreenChange);
     };
   }, []);
+
+
 
   // Auto-hide header menu logic
   useEffect(() => {
@@ -284,116 +372,67 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     };
   }, [isHeaderVisible, isHeaderPinned, showSettingsModal, status]);
 
-  // requestAnimationFrame loop for throttled mouse movements
+  // Sync to live edge on focus, tab visibility change, or mouse enter
   useEffect(() => {
     if (status !== "Streaming") return;
 
-    let animationFrameId: number;
+    const handleFocusSync = () => {
+      addLog("Stream area active or window focused, synchronizing video stream...");
+      const video = videoRef.current;
+      if (video) {
+        // Ensure play state is active
+        video.play().catch(e => console.error("Play error on focus sync:", e));
 
-    const tick = () => {
-      if (isPointerLocked) {
-        // Relative mouse mode: process accumulated deltas
-        const dx = pendingMouseDeltasRef.current.dx;
-        const dy = pendingMouseDeltasRef.current.dy;
-        if (dx !== 0 || dy !== 0) {
-          const mouseRelativeChannel = channelsRef.current["mouse_relative"];
-          if (mouseRelativeChannel && mouseRelativeChannel.readyState === "open") {
-            if (mouseRelativeChannel.bufferedAmount < 16384) {
-              // Reset deltas only if we successfully send them
-              pendingMouseDeltasRef.current = { dx: 0, dy: 0 };
-
-              const buffer = new ArrayBuffer(5);
-              const view = new DataView(buffer);
-              view.setUint8(0, 0); // Type 0: MouseMove
-              view.setInt16(1, dx, false); // big-endian
-              view.setInt16(3, dy, false); // big-endian
-              mouseRelativeChannel.send(buffer);
-            }
-          }
-        }
-      } else {
-        // Absolute mouse mode: process latest coordinates
-        const coords = pendingMouseCoordsRef.current;
-        if (coords) {
-          const mouseAbsoluteChannel = channelsRef.current["mouse_absolute"];
-          if (mouseAbsoluteChannel && mouseAbsoluteChannel.readyState === "open" && videoRef.current) {
-            if (mouseAbsoluteChannel.bufferedAmount < 16384) {
-              pendingMouseCoordsRef.current = null;
-
-              const video = videoRef.current;
-              const rect = video.getBoundingClientRect();
-              
-              const elWidth = rect.width;
-              const elHeight = rect.height;
-              const vidWidth = video.videoWidth;
-              const vidHeight = video.videoHeight;
-              
-              let xNorm = 0.5;
-              let yNorm = 0.5;
-              
-              if (vidWidth > 0 && vidHeight > 0) {
-                const elAspectRatio = elWidth / elHeight;
-                const vidAspectRatio = vidWidth / vidHeight;
-                
-                let actualVidWidth = elWidth;
-                let actualVidHeight = elHeight;
-                let offsetX = 0;
-                let offsetY = 0;
-                
-                if (elAspectRatio > vidAspectRatio) {
-                  // Pillarbox: video is narrower than container
-                  actualVidHeight = elHeight;
-                  actualVidWidth = elHeight * vidAspectRatio;
-                  offsetX = (elWidth - actualVidWidth) / 2;
-                } else {
-                  // Letterbox: video is wider than container
-                  actualVidWidth = elWidth;
-                  actualVidHeight = elWidth / vidAspectRatio;
-                  offsetY = (elHeight - actualVidHeight) / 2;
-                }
-                
-                const xLocal = coords.clientX - rect.left;
-                const yLocal = coords.clientY - rect.top;
-                
-                xNorm = (xLocal - offsetX) / actualVidWidth;
-                yNorm = (yLocal - offsetY) / actualVidHeight;
-              } else {
-                xNorm = (coords.clientX - rect.left) / elWidth;
-                yNorm = (coords.clientY - rect.top) / elHeight;
-              }
-
-              const scaledX = Math.max(0, Math.min(4096, Math.round(xNorm * 4096)));
-              const scaledY = Math.max(0, Math.min(4096, Math.round(yNorm * 4096)));
-
-              const buffer = new ArrayBuffer(9);
-              const view = new DataView(buffer);
-              view.setUint8(0, 1); // Type 1: MousePosition
-              view.setInt16(1, scaledX, false);
-              view.setInt16(3, scaledY, false);
-              view.setInt16(5, 4096, false);
-              view.setInt16(7, 4096, false);
-              mouseAbsoluteChannel.send(buffer);
-            }
+        // Seek video to latest buffered frame to flush HTMLMediaElement queue
+        if (video.buffered.length > 0) {
+          try {
+            const end = video.buffered.end(video.buffered.length - 1);
+            video.currentTime = end;
+          } catch (e) {
+            // Ignore if seeking on MediaStream is not supported by browser
           }
         }
       }
 
-      animationFrameId = requestAnimationFrame(tick);
+      // Reset playoutDelayHint to force WebRTC jitter buffer re-alignment
+      if (pcRef.current) {
+        pcRef.current.getReceivers().forEach(receiver => {
+          if ('playoutDelayHint' in receiver) {
+            const currentHint = (receiver as any).playoutDelayHint;
+            (receiver as any).playoutDelayHint = 0;
+            setTimeout(() => {
+              (receiver as any).playoutDelayHint = currentHint;
+            }, 50);
+          }
+        });
+      }
     };
 
-    animationFrameId = requestAnimationFrame(tick);
+    window.addEventListener("focus", handleFocusSync);
+    document.addEventListener("visibilitychange", handleFocusSync);
+
+    const videoElement = videoRef.current;
+    if (videoElement) {
+      videoElement.addEventListener("mouseenter", handleFocusSync);
+    }
 
     return () => {
-      cancelAnimationFrame(animationFrameId);
+      window.removeEventListener("focus", handleFocusSync);
+      document.removeEventListener("visibilitychange", handleFocusSync);
+      if (videoElement) {
+        videoElement.removeEventListener("mouseenter", handleFocusSync);
+      }
     };
-  }, [status, isPointerLocked]);
+  }, [status]);
+
+
 
   // Establish WebRTC Signaling Session
   useEffect(() => {
     if (!hostId || !token) return;
 
     const tauri = (window as any).__TAURI__;
-    if (tauri && selectedAppId !== null) {
+    if (tauri && useNativeClient && selectedAppId !== null) {
       const resolvedCodec = activeCodec === 'h265' ? 'h265' : activeCodec === 'av1' ? 'av1' : 'h264';
       const resStr = activeResolution === '720p' ? '1280x720' : activeResolution === '540p' ? '960x540' : '1920x1080';
       const backendHost = getBackendHost();
@@ -407,7 +446,9 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
         fps: String(activeFps),
         bitrate: String(activeBitrate),
         codec: resolvedCodec,
-        appId: selectedAppId
+        appId: selectedAppId,
+        mouseQueueLimit: String(mouseQueueLimit),
+        hostName
       }).then(() => {
         onBack();
       }).catch((err: any) => {
@@ -426,7 +467,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
 
     addLog(`Initiating session with host: ${hostName} (${hostId}) using codec ${resolvedCodec}`);
     
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const protocol = getBackendProtocol().ws;
     const host = getBackendHost();
     const wsUrl = `${protocol}//${host}/ws/client?token=${encodeURIComponent(token)}`;
     
@@ -578,7 +619,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     return () => {
       cleanup();
     };
-  }, [hostId, activeResolution, activeFps, activeBitrate, activeCodec, token, hostName, selectedAppId]);
+  }, [hostId, activeResolution, activeFps, activeBitrate, activeCodec, token, hostName, selectedAppId, useNativeClient]);
 
   // Send keyboard event helper (global/unified)
   const sendKeyEvent = (code: string, shiftKey: boolean, ctrlKey: boolean, altKey: boolean, metaKey: boolean, isDown: boolean) => {
@@ -601,6 +642,44 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       view.setUint16(3, vk, false); // big-endian
       keyboardChannel.send(buffer);
     }
+  };
+
+  const sendRawKeyEvent = (vk: number, isDown: boolean, modifiers: number) => {
+    const keyboardChannel = channelsRef.current["keyboard"];
+    if (keyboardChannel && keyboardChannel.readyState === "open") {
+      const buffer = new ArrayBuffer(5);
+      const view = new DataView(buffer);
+      view.setUint8(0, 0); // Type 0: Key Event
+      view.setUint8(1, isDown ? 1 : 0);
+      view.setUint8(2, modifiers);
+      view.setUint16(3, vk, false); // big-endian
+      keyboardChannel.send(buffer);
+    }
+  };
+
+  const sunshineHideCursorRef = useRef<boolean>(false);
+  const sendSunshineCursorHide = (hide: boolean) => {
+    if (hide === sunshineHideCursorRef.current) return;
+
+    const ctrlMod = 2;
+    const caMod = 2 | 4;
+    const casMod = 2 | 4 | 1;
+
+    // 1. Press Ctrl
+    sendRawKeyEvent(17, true, 0);
+    // 2. Press Alt
+    sendRawKeyEvent(18, true, ctrlMod);
+    // 3. Press Shift
+    sendRawKeyEvent(16, true, caMod);
+    // 4. Press N
+    sendRawKeyEvent(78, true, casMod);
+    sendRawKeyEvent(78, false, casMod);
+    // 5. Release Modifiers
+    sendRawKeyEvent(16, false, caMod);
+    sendRawKeyEvent(18, false, ctrlMod);
+    sendRawKeyEvent(17, false, 0);
+
+    sunshineHideCursorRef.current = hide;
   };
 
   // Global window-level keyboard listeners when streaming is active
@@ -669,6 +748,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
         let videoDecodeLatency = 0;
         let videoFps = 0;
         let videoBitrate = 0;
+        let videoJitter = 0;
 
         statsReport.forEach((report) => {
           if (report.type === 'candidate-pair') {
@@ -698,6 +778,34 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
             if (report.framesPerSecond !== undefined) {
               videoFps = report.framesPerSecond;
             }
+            if (report.jitter !== undefined) {
+              videoJitter = Number(report.jitter) * 1000.0;
+            }
+
+            // Check for jitter buffer delay drift and auto-reset if it exceeds 80ms
+            const jbDelay = report.jitterBufferDelay;
+            const jbEmitted = report.jitterBufferEmittedCount;
+            if (jbDelay !== undefined && jbEmitted !== undefined && jbEmitted > 0) {
+              const avgDelay = Number(jbDelay) / Number(jbEmitted); // in seconds
+              if (avgDelay > 0.080) { // 80ms threshold
+                const now = performance.now();
+                if (now - lastJitterResetTimeRef.current > 15000) { // 15s cooldown
+                  lastJitterResetTimeRef.current = now;
+                  addLog(`Auto-resetting WebRTC jitter buffer (detected drift delay: ${(avgDelay * 1000).toFixed(1)}ms)`);
+                  if (pcRef.current) {
+                    pcRef.current.getReceivers().forEach(receiver => {
+                      if ('playoutDelayHint' in receiver) {
+                        const currentHint = (receiver as any).playoutDelayHint;
+                        (receiver as any).playoutDelayHint = 0;
+                        setTimeout(() => {
+                          (receiver as any).playoutDelayHint = currentHint;
+                        }, 50);
+                      }
+                    });
+                  }
+                }
+              }
+            }
 
             const bytes = report.bytesReceived || 0;
             const timestamp = report.timestamp;
@@ -726,7 +834,8 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
           ping: currentRtt,
           decodeLatency: videoDecodeLatency,
           fps: videoFps || prev.fps,
-          bitrate: videoBitrate || prev.bitrate
+          bitrate: videoBitrate || prev.bitrate,
+          jitter: videoJitter || prev.jitter
         }));
       } catch (err) {
         console.error("Error fetching WebRTC stats:", err);
@@ -773,7 +882,14 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       addLog(`Data Channel established: ${channel.label}`);
       channelsRef.current[channel.label] = channel;
       
-      channel.onopen = () => addLog(`Data Channel ${channel.label} opened.`);
+      channel.onopen = () => {
+        addLog(`Data Channel ${channel.label} opened.`);
+        if (channel.label === "keyboard") {
+          setTimeout(() => {
+            sendSunshineCursorHide(!hideLocalCursor);
+          }, 1000);
+        }
+      };
       channel.onclose = () => addLog(`Data Channel ${channel.label} closed.`);
       channel.onerror = (e) => addLog(`Data Channel ${channel.label} error: ${e}`);
     };
@@ -787,6 +903,17 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     pc.ontrack = (event) => {
       addLog(`Media track received: ${event.track.kind}`);
       mediaStream.addTrack(event.track);
+      
+      if (event.receiver) {
+        try {
+          if ('playoutDelayHint' in event.receiver) {
+            (event.receiver as any).playoutDelayHint = 0.02;
+            addLog(`Set playoutDelayHint = 0.02 on receiver for track kind: ${event.track.kind}`);
+          }
+        } catch (e) {
+          addLog(`Error setting playoutDelayHint: ${e}`);
+        }
+      }
       
       // Auto play video when track is added
       if (videoRef.current) {
@@ -895,18 +1022,139 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     }
   };
 
-  // Send mouse position (absolute)
+  const updateSetting = (key: string, value: any) => {
+    if (key === 'res') {
+      localStorage.setItem('lunaris_stream_res', value);
+      setActiveResolution(value);
+      setDraftResolution(value);
+      if (value !== activeResolution) setStatus("Connecting...");
+    } else if (key === 'fps') {
+      const numValue = Number(value);
+      localStorage.setItem('lunaris_stream_fps', String(numValue));
+      setActiveFps(numValue);
+      setDraftFps(numValue);
+      if (numValue !== activeFps) setStatus("Connecting...");
+    } else if (key === 'bitrate') {
+      const numValue = Number(value);
+      localStorage.setItem('lunaris_stream_bitrate', String(numValue));
+      setActiveBitrate(numValue);
+      setDraftBitrate(numValue);
+      if (numValue !== activeBitrate) setStatus("Connecting...");
+    } else if (key === 'codec') {
+      localStorage.setItem('lunaris_stream_codec', value);
+      setActiveCodec(value);
+      setDraftCodec(value);
+      if (value !== activeCodec) setStatus("Connecting...");
+    } else if (key === 'mouseQueueLimit') {
+      const numValue = Number(value);
+      localStorage.setItem('lunaris_mouse_queue_limit', String(numValue));
+      setMouseQueueLimit(numValue);
+      setDraftMouseQueueLimit(numValue);
+    }
+  };
+
+  const handleMinimize = () => {
+    const tauri = (window as any).__TAURI__;
+    if (tauri && tauri.window) {
+      try {
+        const appWindow = tauri.window.getCurrentWindow();
+        appWindow.minimize();
+      } catch (err) {
+        console.error("Failed to minimize Tauri window:", err);
+      }
+    }
+  };
+
+  // Send mouse position (absolute or relative) with throttling and backpressure
   const handleMouseMove = (e: React.MouseEvent<HTMLVideoElement>) => {
+    if (status !== "Streaming") return;
+
+    const now = performance.now();
+    if (now - lastMouseMoveTimeRef.current < 2) {
+      // Throttle mouse moves to max 500Hz (once every 2ms) to prevent extreme event loop flooding
+      // while maintaining maximum cursor smoothness on high refresh rate monitors.
+      return;
+    }
+    lastMouseMoveTimeRef.current = now;
+
     if (isPointerLocked) {
-      // Relative mouse mode: accumulate movement deltas
-      pendingMouseDeltasRef.current.dx += e.movementX;
-      pendingMouseDeltasRef.current.dy += e.movementY;
+      // Relative mouse mode: send deltas if buffer is below limit
+      const mouseRelativeChannel = channelsRef.current["mouse_relative"];
+      if (mouseRelativeChannel && mouseRelativeChannel.readyState === "open") {
+        const isBufferOk = mouseQueueLimit === 0 ? true : mouseRelativeChannel.bufferedAmount < mouseQueueLimit;
+        if (isBufferOk) {
+          const buffer = new ArrayBuffer(5);
+          const view = new DataView(buffer);
+          view.setUint8(0, 0); // Type 0: MouseMove
+          view.setInt16(1, e.movementX, false); // big-endian
+          view.setInt16(3, e.movementY, false); // big-endian
+          mouseRelativeChannel.send(buffer);
+        }
+      }
     } else {
-      // Absolute mouse mode: store latest coordinates
-      pendingMouseCoordsRef.current = {
-        clientX: e.clientX,
-        clientY: e.clientY
-      };
+      // Absolute mouse mode: send coordinates if buffer is below limit
+      const mouseAbsoluteChannel = channelsRef.current["mouse_absolute"];
+      if (mouseAbsoluteChannel && mouseAbsoluteChannel.readyState === "open" && videoRef.current) {
+        const isBufferOk = mouseQueueLimit === 0 ? mouseAbsoluteChannel.bufferedAmount === 0 : mouseAbsoluteChannel.bufferedAmount < mouseQueueLimit;
+        if (isBufferOk) {
+          const video = videoRef.current;
+          const rect = video.getBoundingClientRect();
+          
+          const elWidth = rect.width;
+          const elHeight = rect.height;
+          const vidWidth = video.videoWidth;
+          const vidHeight = video.videoHeight;
+          
+          let xNorm = 0.5;
+          let yNorm = 0.5;
+          
+          if (vidWidth > 0 && vidHeight > 0) {
+            const elAspectRatio = elWidth / elHeight;
+            const vidAspectRatio = vidWidth / vidHeight;
+            
+            let actualVidWidth = elWidth;
+            let actualVidHeight = elHeight;
+            let offsetX = 0;
+            let offsetY = 0;
+            
+            if (elAspectRatio > vidAspectRatio) {
+              // Pillarbox: video is narrower than container
+              actualVidHeight = elHeight;
+              actualVidWidth = elHeight * vidAspectRatio;
+              offsetX = (elWidth - actualVidWidth) / 2;
+            } else {
+              // Letterbox: video is wider than container
+              actualVidWidth = elWidth;
+              actualVidHeight = elWidth / vidAspectRatio;
+              offsetY = (elHeight - actualVidHeight) / 2;
+            }
+            
+            const xLocal = e.clientX - rect.left;
+            const yLocal = e.clientY - rect.top;
+            
+            xNorm = (xLocal - offsetX) / actualVidWidth;
+            yNorm = (yLocal - offsetY) / actualVidHeight;
+          } else {
+            xNorm = (e.clientX - rect.left) / elWidth;
+            yNorm = (e.clientY - rect.top) / elHeight;
+          }
+
+          const refWidth = vidWidth > 0 ? vidWidth : 1920;
+          const refHeight = vidHeight > 0 ? vidHeight : 1080;
+
+          const scaledX = Math.max(0, Math.min(refWidth, Math.round(xNorm * refWidth)));
+          const scaledY = Math.max(0, Math.min(refHeight, Math.round(yNorm * refHeight)));
+
+          const buffer = new ArrayBuffer(9);
+          const view = new DataView(buffer);
+          view.setUint8(0, 1); // Type 1: MousePosition
+          view.setInt16(1, scaledX, false);
+          view.setInt16(3, scaledY, false);
+          view.setInt16(5, refWidth, false);
+          view.setInt16(7, refHeight, false);
+          mouseAbsoluteChannel.send(buffer);
+        }
+      }
     }
   };
 
@@ -934,15 +1182,33 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   const handleWheel = (e: React.WheelEvent<HTMLVideoElement>) => {
     const mouseReliableChannel = channelsRef.current["mouse_reliable"];
     if (mouseReliableChannel && mouseReliableChannel.readyState === "open") {
-      const dx = Math.max(-127, Math.min(127, Math.round(e.deltaX / 120)));
-      const dy = Math.max(-127, Math.min(127, Math.round(-e.deltaY / 120)));
+      scrollXAccumulatorRef.current += e.deltaX;
+      scrollYAccumulatorRef.current += -e.deltaY; // Invert deltaY to match system scroll direction
 
-      const buffer = new ArrayBuffer(3);
-      const view = new DataView(buffer);
-      view.setUint8(0, 4); // Type 4: Scroll
-      view.setInt8(1, dx);
-      view.setInt8(2, dy);
-      mouseReliableChannel.send(buffer);
+      let dx = 0;
+      let dy = 0;
+
+      if (Math.abs(scrollXAccumulatorRef.current) >= 120) {
+        dx = Math.trunc(scrollXAccumulatorRef.current / 120);
+        scrollXAccumulatorRef.current -= dx * 120;
+      }
+
+      if (Math.abs(scrollYAccumulatorRef.current) >= 120) {
+        dy = Math.trunc(scrollYAccumulatorRef.current / 120);
+        scrollYAccumulatorRef.current -= dy * 120;
+      }
+
+      if (dx !== 0 || dy !== 0) {
+        const clampedDx = Math.max(-127, Math.min(127, dx));
+        const clampedDy = Math.max(-127, Math.min(127, dy));
+
+        const buffer = new ArrayBuffer(3);
+        const view = new DataView(buffer);
+        view.setUint8(0, 4); // Type 4: Scroll
+        view.setInt8(1, clampedDx);
+        view.setInt8(2, clampedDy);
+        mouseReliableChannel.send(buffer);
+      }
     }
   };
 
@@ -1086,11 +1352,45 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
                     </span>
                   </div>
                 </div>
+                <div className="settings-group full-width">
+                  <label htmlFor="mouseQueueLimit">Mouse Queue Limit (Backpressure)</label>
+                  <select 
+                    id="mouseQueueLimit" 
+                    value={draftMouseQueueLimit} 
+                    onChange={(e) => setDraftMouseQueueLimit(Number(e.target.value))}
+                  >
+                    <option value={0}>0 B (Strict No Queue - High Lag Risk)</option>
+                    <option value={64}>64 B (Ultra Low Buffer)</option>
+                    <option value={256}>256 B (Recommended - Smooth & Responsive)</option>
+                    <option value={1024}>1024 B (Moderate Buffer)</option>
+                    <option value={4096}>4096 B (High Buffer)</option>
+                    <option value={16384}>16384 B (Previous Default - High Latency Risk)</option>
+                  </select>
+                </div>
+                {!!(window as any).__TAURI__ && (
+                  <div className="settings-group full-width" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginTop: '0.5rem' }}>
+                    <input 
+                      type="checkbox" 
+                      id="useNativeClient"
+                      checked={typeof window.RTCPeerConnection === 'undefined' ? true : draftUseNativeClient} 
+                      disabled={typeof window.RTCPeerConnection === 'undefined'}
+                      onChange={(e) => setDraftUseNativeClient(e.target.checked)}
+                      style={{ width: 'auto', margin: 0, cursor: typeof window.RTCPeerConnection === 'undefined' ? 'not-allowed' : 'pointer' }}
+                    />
+                    <label htmlFor="useNativeClient" style={{ cursor: typeof window.RTCPeerConnection === 'undefined' ? 'not-allowed' : 'pointer', margin: 0, userSelect: 'none', fontWeight: 'normal' }}>
+                      Use native client binary {typeof window.RTCPeerConnection === 'undefined' ? "(Forced: Webview WebRTC unsupported on Linux WebKitGTK)" : "(bypasses WebView-based WebRTC, recommended for Desktop)"}
+                    </label>
+                  </div>
+                )}
               </div>
 
               <div className="settings-actions">
                 <button 
-                  onClick={() => setShowSettingsModal(false)}
+                  onClick={() => {
+                    setDraftMouseQueueLimit(mouseQueueLimit);
+                    setDraftUseNativeClient(useNativeClient);
+                    setShowSettingsModal(false);
+                  }}
                   className="btn-secondary"
                 >
                   Cancel
@@ -1101,14 +1401,18 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
                     setActiveFps(draftFps);
                     setActiveBitrate(draftBitrate);
                     setActiveCodec(draftCodec);
+                    setMouseQueueLimit(draftMouseQueueLimit);
+                    setUseNativeClient(draftUseNativeClient);
                     
                     localStorage.setItem('lunaris_stream_res', draftResolution);
                     localStorage.setItem('lunaris_stream_fps', String(draftFps));
                     localStorage.setItem('lunaris_stream_bitrate', String(draftBitrate));
                     localStorage.setItem('lunaris_stream_codec', draftCodec);
+                    localStorage.setItem('lunaris_mouse_queue_limit', String(draftMouseQueueLimit));
+                    localStorage.setItem('lunaris_tauri_use_native', String(draftUseNativeClient));
                     
                     setShowSettingsModal(false);
-                    addLog(`Applied settings: res=${draftResolution}, fps=${draftFps}, bitrate=${draftBitrate}Kbps, codec=${draftCodec}`);
+                    addLog(`Applied settings: res=${draftResolution}, fps=${draftFps}, bitrate=${draftBitrate}Kbps, codec=${draftCodec}, mouseQueueLimit=${draftMouseQueueLimit}B, useNative=${draftUseNativeClient}`);
                   }}
                   className="btn-primary"
                 >
@@ -1160,7 +1464,18 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
                       )}
                       
                       <div className="app-icon-wrapper">
-                        {app.title.toLowerCase().includes('desktop') ? (
+                        {app.icon_base64 ? (
+                          <img 
+                            src={`data:image/png;base64,${app.icon_base64}`} 
+                            alt={app.title} 
+                            style={{
+                              width: '100%',
+                              height: '100%',
+                              objectFit: 'cover',
+                              borderRadius: '8px'
+                            }}
+                          />
+                        ) : app.title.toLowerCase().includes('desktop') ? (
                           <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                             <rect x="2" y="3" width="20" height="14" rx="2" ry="2" />
                             <line x1="8" y1="21" x2="16" y2="21" />
@@ -1281,22 +1596,38 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
                 </select>
               </div>
 
+              <div className="settings-group">
+                <label htmlFor="bitrate">Bitrate (Kbps)</label>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                  <input 
+                    type="range" 
+                    id="bitrate" 
+                    min={1000} 
+                    max={150000} 
+                    step={500}
+                    value={draftBitrate} 
+                    onChange={(e) => setDraftBitrate(Number(e.target.value))}
+                    style={{ flex: 1 }}
+                  />
+                  <span style={{ minWidth: '70px', textAlign: 'right', fontWeight: 'bold', color: 'var(--accent-cyan)' }}>
+                    {(draftBitrate / 1000).toFixed(1)} Mbps
+                  </span>
+                </div>
+              </div>
+
               <div className="settings-group full-width">
-                <label htmlFor="bitrate">Bitrate</label>
-                <select 
-                  id="bitrate" 
-                  value={draftBitrate} 
-                  onChange={(e) => setDraftBitrate(Number(e.target.value))}
+                <label htmlFor="mouseQueueLimit">Mouse Queue Limit (Backpressure)</label>
+                <select
+                  id="mouseQueueLimit"
+                  value={draftMouseQueueLimit}
+                  onChange={(e) => setDraftMouseQueueLimit(Number(e.target.value))}
                 >
-                  <option value={2000}>2 Mbps</option>
-                  <option value={4000}>4 Mbps (Standard quality)</option>
-                  <option value={8000}>8 Mbps (High quality)</option>
-                  <option value={15000}>15 Mbps</option>
-                  <option value={30000}>30 Mbps</option>
-                  <option value={50000}>50 Mbps</option>
-                  <option value={80000}>80 Mbps</option>
-                  <option value={100000}>100 Mbps</option>
-                  <option value={150000}>150 Mbps</option>
+                  <option value={0}>0 B (Strict No Queue - High Lag Risk)</option>
+                  <option value={64}>64 B (Ultra Low Buffer)</option>
+                  <option value={256}>256 B (Recommended - Smooth & Responsive)</option>
+                  <option value={1024}>1024 B (Moderate Buffer)</option>
+                  <option value={4096}>4096 B (High Buffer)</option>
+                  <option value={16384}>16384 B (Previous Default - High Latency Risk)</option>
                 </select>
               </div>
             </div>
@@ -1308,6 +1639,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
                   setDraftFps(activeFps);
                   setDraftBitrate(activeBitrate);
                   setDraftCodec(activeCodec);
+                  setDraftMouseQueueLimit(mouseQueueLimit);
                   setShowSettingsModal(false);
                 }} 
                 className="btn-secondary"
@@ -1321,21 +1653,33 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
                   localStorage.setItem('lunaris_stream_fps', String(draftFps));
                   localStorage.setItem('lunaris_stream_bitrate', String(draftBitrate));
                   localStorage.setItem('lunaris_stream_codec', draftCodec);
+                  localStorage.setItem('lunaris_mouse_queue_limit', String(draftMouseQueueLimit));
                   
-                  // Update active values to trigger reconnect
-                  setActiveResolution(draftResolution);
-                  setActiveFps(draftFps);
-                  setActiveBitrate(draftBitrate);
-                  setActiveCodec(draftCodec);
-                  
-                  // Reset states for connection indicator
-                  setStatus("Connecting...");
+                  // Check if media parameters changed
+                  const mediaChanged = 
+                    draftResolution !== activeResolution ||
+                    draftFps !== activeFps ||
+                    draftBitrate !== activeBitrate ||
+                    draftCodec !== activeCodec;
+
+                  setMouseQueueLimit(draftMouseQueueLimit);
+
+                  if (mediaChanged) {
+                    // Update active values to trigger reconnect
+                    setActiveResolution(draftResolution);
+                    setActiveFps(draftFps);
+                    setActiveBitrate(draftBitrate);
+                    setActiveCodec(draftCodec);
+                    
+                    // Reset states for connection indicator
+                    setStatus("Connecting...");
+                  }
                   
                   setShowSettingsModal(false);
                 }} 
                 className="btn-primary"
               >
-                Apply & Reconnect
+                Apply
               </button>
             </div>
           </div>
@@ -1377,146 +1721,222 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
           }
         }}
       >
-        <button onClick={onBack} className="btn-secondary stream-back-btn" title="Leave Session">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <path d="M19 12H5M12 19l-7-7 7-7" />
+        <button onClick={onBack} className="stream-action-btn" title="Leave Session" style={{ marginRight: '0.25rem' }}>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+            <polyline points="15 18 9 12 15 6" />
           </svg>
         </button>
-        <div className="stream-host-info">
-          <div className={`status-pulse ${isStreaming ? 'online' : 'busy'}`}></div>
-          <span className="stream-host-title">{hostName}</span>
-          <span className="badge-tech">{status.toUpperCase()}</span>
-        </div>
-        <div className="stream-actions" style={{ display: 'flex', gap: '0.75rem' }}>
-          <button 
-            onClick={toggleFullscreen}
-            className={`cursor-toggle-btn ${isFullscreen ? 'active' : ''}`}
-            title={isFullscreen ? "Exit Fullscreen" : "Fullscreen"}
-          >
-            {isFullscreen ? (
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M4 14h6v6M20 10h-6V4M14 10l7-7M10 14l-7 7" />
-              </svg>
-            ) : (
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M8 3H5a2 2 0 0 0-2 2v3M21 8V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3M16 21h3a2 2 0 0 0 2-2v-3M10 21V14H3M21 10h-7V3" />
-              </svg>
-            )}
-          </button>
 
-          <button 
-            onClick={() => setShowSettingsModal(true)}
-            className="cursor-toggle-btn"
-            title="Settings"
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        {/* Resolution Dropdown */}
+        <select
+          value={activeResolution}
+          onChange={(e) => updateSetting('res', e.target.value)}
+          className="stream-select"
+          title="Resolution"
+        >
+          <option value="1080p">1080p</option>
+          <option value="720p">720p</option>
+          <option value="540p">540p</option>
+        </select>
+
+        {/* FPS Dropdown */}
+        <select
+          value={activeFps}
+          onChange={(e) => updateSetting('fps', e.target.value)}
+          className="stream-select"
+          title="Frame Rate"
+        >
+          <option value={240}>240 FPS</option>
+          <option value={144}>144 FPS</option>
+          <option value={120}>120 FPS</option>
+          <option value={90}>90 FPS</option>
+          <option value={60}>60 FPS</option>
+          <option value={30}>30 FPS</option>
+        </select>
+
+        {/* Bitrate Dropdown */}
+        <select
+          value={activeBitrate}
+          onChange={(e) => updateSetting('bitrate', e.target.value)}
+          className="stream-select"
+          title="Bitrate"
+        >
+          <option value={2000}>2 Mbps</option>
+          <option value={5000}>5 Mbps</option>
+          <option value={10000}>10 Mbps</option>
+          <option value={15000}>15 Mbps</option>
+          <option value={20000}>20 Mbps</option>
+          <option value={30000}>30 Mbps</option>
+          <option value={40000}>40 Mbps</option>
+          <option value={50000}>50 Mbps</option>
+          <option value={75000}>75 Mbps</option>
+          <option value={100000}>100 Mbps</option>
+          <option value={150000}>150 Mbps</option>
+          {![2000, 5000, 10000, 15000, 20000, 30000, 40000, 50000, 75000, 100000, 150000].includes(activeBitrate) && (
+            <option value={activeBitrate}>{(activeBitrate / 1000).toFixed(1)} Mbps</option>
+          )}
+        </select>
+
+        {/* Codec Dropdown */}
+        <select
+          value={activeCodec}
+          onChange={(e) => updateSetting('codec', e.target.value)}
+          className="stream-select"
+          title="Video Codec"
+        >
+          <option value="h264" disabled={!supportedCodecs.h264}>
+            H264
+          </option>
+          <option value="h265" disabled={!supportedCodecs.h265}>
+            H265
+          </option>
+          <option value="av1" disabled={!supportedCodecs.av1}>
+            AV1
+          </option>
+        </select>
+
+        {/* Mouse Queue Limit Dropdown */}
+        <select
+          value={mouseQueueLimit}
+          onChange={(e) => updateSetting('mouseQueueLimit', e.target.value)}
+          className="stream-select"
+          title="Mouse Queue Limit"
+        >
+          <option value={0}>0 B</option>
+          <option value={64}>64 B</option>
+          <option value={256}>256 B</option>
+          <option value={1024}>1024 B</option>
+          <option value={4096}>4096 B</option>
+          <option value={16384}>16 KB</option>
+        </select>
+
+        {/* Separator */}
+        <div className="stream-menu-separator"></div>
+
+        {/* Pointer Lock Action */}
+        <button 
+          onClick={togglePointerLock}
+          className={`stream-action-btn ${isPointerLocked ? 'active' : ''}`}
+          title={isPointerLocked ? "Release Pointer Lock (ESC)" : "Lock Pointer"}
+        >
+          {isPointerLocked ? (
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+              <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+              <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+            </svg>
+          ) : (
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+              <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+              <path d="M7 11V7a5 5 0 0 1 9.9-1" />
+            </svg>
+          )}
+        </button>
+
+        {/* Local Cursor Action */}
+        <button 
+          onClick={() => {
+            const newValue = !hideLocalCursor;
+            setHideLocalCursor(newValue);
+            localStorage.setItem('lunaris_stream_hide_cursor', String(newValue));
+            sendSunshineCursorHide(!newValue);
+          }}
+          className={`stream-action-btn ${!hideLocalCursor ? 'active' : ''}`}
+          title={hideLocalCursor ? "Show Local Cursor" : "Hide Local Cursor"}
+        >
+          {hideLocalCursor ? (
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" opacity="0.4">
+              <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
               <circle cx="12" cy="12" r="3" />
-              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+              <line x1="1" y1="1" x2="23" y2="23" />
             </svg>
-          </button>
-          
-          <button 
-            onClick={() => {
-              const newValue = !showStats;
-              setShowStats(newValue);
-              localStorage.setItem('lunaris_show_stats', String(newValue));
-            }}
-            disabled={!isStreaming}
-            className={`cursor-toggle-btn ${showStats ? 'active' : ''}`}
-            title={showStats ? "Hide Stats" : "Show Stats"}
-          >
-            {showStats ? (
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <line x1="18" y1="20" x2="18" y2="10" />
-                <line x1="12" y1="20" x2="12" y2="4" />
-                <line x1="6" y1="20" x2="6" y2="14" />
-              </svg>
-            ) : (
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <line x1="18" y1="20" x2="18" y2="10" opacity="0.4" />
-                <line x1="12" y1="20" x2="12" y2="4" opacity="0.4" />
-                <line x1="6" y1="20" x2="6" y2="14" opacity="0.4" />
-              </svg>
-            )}
-          </button>
-          
-          <button 
-            onClick={() => {
-              const newValue = !hideLocalCursor;
-              setHideLocalCursor(newValue);
-              localStorage.setItem('lunaris_stream_hide_cursor', String(newValue));
-            }}
-            disabled={!isStreaming}
-            className={`cursor-toggle-btn ${hideLocalCursor ? 'active' : ''}`}
-            title={hideLocalCursor ? "Show Local Cursor" : "Hide Local Cursor"}
-          >
-            {hideLocalCursor ? (
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <line x1="1" y1="1" x2="23" y2="23" />
-                <path d="M3 3l7.07 16.97 2.51-7.39 7.39-2.51L3 3z" />
-              </svg>
-            ) : (
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M3 3l7.07 16.97 2.51-7.39 7.39-2.51L3 3z" />
-                <path d="M13 13l6 6" />
-              </svg>
-            )}
-          </button>
-          <button 
-            onClick={togglePointerLock} 
-            disabled={!isStreaming}
-            className={`cursor-toggle-btn ${isPointerLocked ? 'active' : ''}`}
-            title={isPointerLocked ? "Release Pointer Lock (ESC)" : "Lock Pointer"}
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <circle cx="12" cy="12" r="10" />
-              <line x1="22" y1="12" x2="18" y2="12" />
-              <line x1="6" y1="12" x2="2" y2="12" />
-              <line x1="12" y1="6" x2="12" y2="2" />
-              <line x1="12" y1="22" x2="12" y2="18" />
+          ) : (
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+              <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+              <circle cx="12" cy="12" r="3" />
             </svg>
-          </button>
+          )}
+        </button>
 
-          <button 
-            onClick={() => {
-              const newValue = !isHeaderPinned;
-              setIsHeaderPinned(newValue);
-              localStorage.setItem('lunaris_header_pinned', String(newValue));
-            }}
-            disabled={!isStreaming}
-            className={`cursor-toggle-btn ${isHeaderPinned ? 'active' : ''}`}
-            title={isHeaderPinned ? "Unlock menu (auto-hide)" : "Lock menu (always visible)"}
-          >
-            {isHeaderPinned ? (
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
-                <path d="M7 11V7a5 5 0 0 1 10 0v4" />
-              </svg>
-            ) : (
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
-                <path d="M7 11V7a5 5 0 0 1 9.9-1" />
-              </svg>
-            )}
-          </button>
+        {/* Stats Action */}
+        <button 
+          onClick={() => {
+            const newValue = !showStats;
+            setShowStats(newValue);
+            localStorage.setItem('lunaris_show_stats', String(newValue));
+          }}
+          className={`stream-action-btn ${showStats ? 'active' : ''}`}
+          title={showStats ? "Hide Stats" : "Show Stats"}
+        >
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+            <line x1="18" y1="20" x2="18" y2="10" />
+            <line x1="12" y1="20" x2="12" y2="4" />
+            <line x1="6" y1="20" x2="6" y2="14" />
+          </svg>
+        </button>
 
+        {/* Pin Header Action */}
+        <button 
+          onClick={() => {
+            const newValue = !isHeaderPinned;
+            setIsHeaderPinned(newValue);
+            localStorage.setItem('lunaris_header_pinned', String(newValue));
+          }}
+          className={`stream-action-btn ${isHeaderPinned ? 'active' : ''}`}
+          title={isHeaderPinned ? "Unlock menu (auto-hide)" : "Lock menu (always visible)"}
+        >
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+            <line x1="12" y1="17" x2="12" y2="22" />
+            <path d="M5 12h14" />
+            <path d="M19 5H5v3l3 4h8l3-4z" />
+          </svg>
+        </button>
+
+        {/* Tauri Window Minimize Action */}
+        {!!(window as any).__TAURI__ && (
           <button 
-            onClick={() => {
-              setIsHeaderVisible(false);
-              if (headerTimeoutRef.current) {
-                clearTimeout(headerTimeoutRef.current);
-              }
-            }}
-            disabled={!isStreaming}
-            className="cursor-toggle-btn"
-            title="Collapse Menu"
-            style={{ padding: '0.4rem 0.6rem' }}
+            onClick={handleMinimize}
+            className="stream-action-btn"
+            title="Minimize Window"
           >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M18 15l-6-6-6 6" />
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+              <line x1="5" y1="12" x2="19" y2="12" />
             </svg>
           </button>
-        </div>
+        )}
+
+        {/* Fullscreen/Maximize Action */}
+        <button 
+          onClick={toggleFullscreen}
+          className={`stream-action-btn ${isFullscreen ? 'active' : ''}`}
+          title={isFullscreen ? "Exit Fullscreen" : "Fullscreen"}
+        >
+          {isFullscreen ? (
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+              <rect x="4" y="4" width="16" height="16" rx="2" />
+              <rect x="9" y="9" width="11" height="11" rx="2" fill="var(--bg-primary)" style={{ opacity: 0.8 }} />
+            </svg>
+          ) : (
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+              <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+            </svg>
+          )}
+        </button>
+
+        {/* Collapse Header Action */}
+        <button 
+          onClick={() => {
+            setIsHeaderVisible(false);
+            if (headerTimeoutRef.current) {
+              clearTimeout(headerTimeoutRef.current);
+            }
+          }}
+          className="stream-action-btn"
+          title="Collapse Menu"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+            <polyline points="18 15 12 9 6 15" />
+          </svg>
+        </button>
       </div>
 
       {/* Main Stream Area */}
@@ -1539,6 +1959,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
         {isStreaming && showStats && (
           <div className="stream-stats-overlay">
             <div>Ping (RTT): <span className="stat-value">{stats.ping.toFixed(1)} ms</span></div>
+            <div>Jitter: <span className="stat-value">{stats.jitter.toFixed(1)} ms</span></div>
             <div>Decode Latency: <span className="stat-value">{stats.decodeLatency.toFixed(1)} ms</span></div>
             <div>Encode Latency: <span className="stat-value">{(2.2 + (new Date().getMilliseconds() % 5) * 0.1).toFixed(1)} ms</span></div>
             <div>FPS: <span className="stat-value">{stats.fps}</span></div>

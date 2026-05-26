@@ -40,9 +40,9 @@ pub extern "C" fn __cpu_indicator_init() -> i32 {
     0
 }
 
-fn find_web_dist() -> Option<std::path::PathBuf> {
+fn find_dist_path(dir_name: &str) -> Option<std::path::PathBuf> {
     // Candidate 1: Current Working Directory
-    let cwd_path = std::path::PathBuf::from("web/dist");
+    let cwd_path = std::path::PathBuf::from(dir_name);
     if cwd_path.exists() {
         return Some(cwd_path);
     }
@@ -50,7 +50,7 @@ fn find_web_dist() -> Option<std::path::PathBuf> {
     // Candidate 2: Relative to Executable Path
     if let Ok(exe_path) = std::env::current_exe() {
         if let Some(exe_dir) = exe_path.parent() {
-            let path = exe_dir.join("web/dist");
+            let path = exe_dir.join(dir_name);
             if path.exists() {
                 return Some(path);
             }
@@ -58,7 +58,7 @@ fn find_web_dist() -> Option<std::path::PathBuf> {
             // If executable is in target/release/ or target/debug/
             if let Some(target_dir) = exe_dir.parent() {
                 if let Some(workspace_dir) = target_dir.parent() {
-                    let path = workspace_dir.join("web/dist");
+                    let path = workspace_dir.join(dir_name);
                     if path.exists() {
                         return Some(path);
                     }
@@ -148,16 +148,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .allow_methods(Any)
         .allow_headers(Any);
 
-    // Verify and configure static web assets serving
-    let (serve_dir, _web_dir_found) = if let Some(path) = find_web_dist() {
-        info!("Serving static files from {:?}", path);
-        let serve = ServeDir::new(&path)
-            .not_found_service(ServeFile::new(path.join("index.html")));
-        (Some(serve), true)
-    } else {
-        error!("Directory 'web/dist' not found! Make sure you build the web interface first via 'npm run build' inside the 'web' directory.");
-        (None, false)
-    };
+    // Find React build directory
+    let react_path = find_dist_path("web/dist");
 
     // Build routes
     let mut app = Router::new()
@@ -170,8 +162,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/ws/agent", get(agent_ws_handler))
         .route("/ws/client", get(client_ws_handler));
 
-    if let Some(serve) = serve_dir {
-        app = app.fallback_service(serve);
+    if let Some(ref path) = react_path {
+        info!("Serving React client from {:?}", path);
+        let serve_react = ServeDir::new(path)
+            .not_found_service(ServeFile::new(path.join("index.html")));
+        app = app.fallback_service(serve_react);
+    } else {
+        error!("Directory 'web/dist' not found! Build the React client via 'npm run build' inside the 'web' directory.");
     }
 
     let app = app.layer(cors)
@@ -389,6 +386,7 @@ async fn hosts_handler(
                 status,
                 ip_address: ip_address_clone,
                 server_codec_mode_support: server_codec_mode_support.map(|v| v as u32),
+                agent_connected: is_agent_online,
             }
         };
         futures.push(fut);

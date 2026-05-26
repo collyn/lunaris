@@ -7,6 +7,7 @@ edition = "2021"
 tauri = { version = "2.0.0", features = [] }
 url = "2.5"
 urlencoding = "2.1"
+webkit2gtk = "2.0.2"
 
 [build-dependencies]
 tauri-build = "2.0.0"
