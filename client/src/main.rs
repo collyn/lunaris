@@ -289,10 +289,12 @@ async fn main() {
         .with(tracing_subscriber::fmt::layer())
         .try_init();
 
-    // Try registering custom URI scheme
+    // Try registering custom URI scheme (Disabled: new QML client registers this scheme)
+    /*
     if let Err(e) = protocol::register_protocol() {
         warn!("Failed to auto-register protocol handler: {:?}", e);
     }
+    */
 
     let current_args = parse_args();
     if current_args.is_none() {

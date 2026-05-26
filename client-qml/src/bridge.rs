@@ -49,6 +49,9 @@ pub enum PendingDashboardEvent {
         error_msg: String,
         token: String,
     },
+    DeepLinkReceived {
+        url: String,
+    },
 
 }
 
@@ -460,6 +463,12 @@ pub mod qobject {
             success: bool,
             error_msg: QString,
             token: QString,
+        );
+
+        #[qsignal]
+        fn deeplink_received(
+            self: Pin<&mut StreamBridge>,
+            url: QString,
         );
 
 
@@ -1400,6 +1409,10 @@ impl qobject::StreamBridge {
                     let err_qstr = QString::from(&error_msg);
                     let tok_qstr = QString::from(&token);
                     self.as_mut().agent_token_result(success, err_qstr, tok_qstr);
+                }
+                PendingDashboardEvent::DeepLinkReceived { url } => {
+                    let url_qstr = QString::from(&url);
+                    self.as_mut().deeplink_received(url_qstr);
                 }
             }
 

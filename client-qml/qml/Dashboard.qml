@@ -32,7 +32,7 @@ Rectangle {
 
     // Settings Modal state
     property var activeConfigHost: null
-    property string configRes: "1280x720"
+    property string configRes: "1920x1080"
     property int configFps: 60
     property string configCodec: "h264"
     property int configBitrate: 8000
@@ -220,6 +220,10 @@ Rectangle {
         Item {
             anchors.fill: parent
 
+            Component.onCompleted: {
+                serverInput.forceActiveFocus();
+            }
+
             // Central glass card
             Rectangle {
                 anchors.centerIn: parent
@@ -278,6 +282,10 @@ Rectangle {
                                     text: "http://127.0.0.1:8080"
                                     verticalAlignment: Text.AlignVCenter
                                     selectByMouse: true
+                                    activeFocusOnTab: true
+                                    KeyNavigation.tab: usernameInput
+                                    Keys.onReturnPressed: submitButton.clicked()
+                                    Keys.onEnterPressed: submitButton.clicked()
                                 }
                             }
                         }
@@ -297,6 +305,10 @@ Rectangle {
                                     text: ""
                                     verticalAlignment: Text.AlignVCenter
                                     selectByMouse: true
+                                    activeFocusOnTab: true
+                                    KeyNavigation.tab: passwordInput
+                                    Keys.onReturnPressed: submitButton.clicked()
+                                    Keys.onEnterPressed: submitButton.clicked()
                                 }
                             }
                         }
@@ -317,6 +329,10 @@ Rectangle {
                                     echoMode: TextInput.Password
                                     verticalAlignment: Text.AlignVCenter
                                     selectByMouse: true
+                                    activeFocusOnTab: true
+                                    KeyNavigation.tab: dashboardRoot.isRegisterMode ? confirmPasswordInput : serverInput
+                                    Keys.onReturnPressed: { if (!dashboardRoot.isRegisterMode) submitButton.clicked(); else confirmPasswordInput.forceActiveFocus(); }
+                                    Keys.onEnterPressed: { if (!dashboardRoot.isRegisterMode) submitButton.clicked(); else confirmPasswordInput.forceActiveFocus(); }
                                 }
                             }
                         }
@@ -339,6 +355,10 @@ Rectangle {
                                     verticalAlignment: Text.AlignVCenter
                                     selectByMouse: true
                                     visible: dashboardRoot.isRegisterMode
+                                    activeFocusOnTab: true
+                                    KeyNavigation.tab: serverInput
+                                    Keys.onReturnPressed: submitButton.clicked()
+                                    Keys.onEnterPressed: submitButton.clicked()
                                 }
                             }
                         }
@@ -682,12 +702,13 @@ Rectangle {
                 anchors.bottom: parent.bottom
                 anchors.left: parent.left
                 anchors.right: parent.right
-                anchors.topMargin: 24
+                anchors.topMargin: 32
                 clip: true
 
                 GridView {
                     id: hostsGrid
                     anchors.fill: parent
+                    topMargin: 8
                     cellWidth: 260
                     cellHeight: 180
                     model: dashboardRoot.hostsList.length > 0 ? dashboardRoot.hostsList : 0
@@ -825,12 +846,15 @@ Rectangle {
                                         id: gearBtn
                                         visible: modelData.status === "Online" || modelData.status === "Busy"
                                         onClicked: {
+                                            // Only reset to defaults when switching to a different host
+                                            if (dashboardRoot.activeConfigHost === null || dashboardRoot.activeConfigHost.id !== modelData.id) {
+                                                dashboardRoot.configRes = "1920x1080";
+                                                dashboardRoot.configFps = 60;
+                                                dashboardRoot.configCodec = "h264";
+                                                dashboardRoot.configBitrate = 8000;
+                                                dashboardRoot.configQueueLimit = 256;
+                                            }
                                             dashboardRoot.activeConfigHost = modelData;
-                                            dashboardRoot.configRes = "1280x720";
-                                            dashboardRoot.configFps = 60;
-                                            dashboardRoot.configCodec = "h264";
-                                            dashboardRoot.configBitrate = 8000;
-                                            dashboardRoot.configQueueLimit = 256;
                                             settingsModal.setCurrentSettings(dashboardRoot.configRes, dashboardRoot.configFps, dashboardRoot.configCodec, dashboardRoot.configBitrate, dashboardRoot.configQueueLimit);
                                             settingsModal.open();
                                         }
@@ -1446,12 +1470,13 @@ Rectangle {
                 anchors.bottom: parent.bottom
                 anchors.left: parent.left
                 anchors.right: parent.right
-                anchors.topMargin: 24
+                anchors.topMargin: 32
                 clip: true
 
                 GridView {
                     id: appsGrid
                     anchors.fill: parent
+                    topMargin: 8
                     cellWidth: 200
                     cellHeight: 270
                     model: dashboardRoot.appsList.length > 0 ? dashboardRoot.appsList : 0

@@ -4,12 +4,32 @@ import QtQuick.Controls
 Rectangle {
     id: settingsRoot
     width: 480
-    height: 480
+    height: 520
     radius: 16
-    color: Qt.rgba(15/255, 22/255, 38/255, 0.92)
-    border.color: Qt.rgba(0, 240/255, 255/255, 0.3)
-    border.width: 1.5
+    color: Qt.rgba(11/255, 17/255, 32/255, 0.96)
+    border.color: Qt.rgba(0, 240/255, 255/255, 0.35)
+    border.width: 1
     visible: false
+
+    // Multi-layered glow border for a premium glow/shadow effect
+    Rectangle {
+        anchors.fill: parent
+        anchors.margins: -4
+        radius: parent.radius + 4
+        color: "transparent"
+        border.color: Qt.rgba(0, 240/255, 255/255, 0.1)
+        border.width: 1.5
+        z: -1
+    }
+    Rectangle {
+        anchors.fill: parent
+        anchors.margins: -8
+        radius: parent.radius + 8
+        color: "transparent"
+        border.color: Qt.rgba(0, 240/255, 255/255, 0.04)
+        border.width: 3
+        z: -2
+    }
 
     // Signals
     signal applySettings(string res, int fps, string codec, int bitrate, int queueLimit)
@@ -31,14 +51,17 @@ Rectangle {
             resCombo.currentIndex = 2;
         }
 
+        // Set FPS: check if value matches a preset, otherwise set custom
         var fpsVal = parseInt(fps);
-        if (fpsVal === 240) fpsCombo.currentIndex = 0;
-        else if (fpsVal === 144) fpsCombo.currentIndex = 1;
-        else if (fpsVal === 120) fpsCombo.currentIndex = 2;
-        else if (fpsVal === 90) fpsCombo.currentIndex = 3;
-        else if (fpsVal === 60) fpsCombo.currentIndex = 4;
-        else if (fpsVal === 30) fpsCombo.currentIndex = 5;
-        else fpsCombo.currentIndex = 4; // Default to 60
+        var fpsPresets = [240, 144, 120, 90, 60, 30];
+        var foundIndex = fpsPresets.indexOf(fpsVal);
+        if (foundIndex !== -1) {
+            fpsCombo.currentIndex = foundIndex;
+        } else {
+            // Custom value: set text directly
+            fpsCombo.currentIndex = -1;
+        }
+        fpsInput.text = String(fpsVal);
 
         var codecLower = codec.toLowerCase();
         if (codecLower.indexOf("264") !== -1) {
@@ -49,7 +72,7 @@ Rectangle {
             codecCombo.currentIndex = 2;
         }
 
-        bitrateSpin.value = bitrate;
+        bitrateSlider.value = bitrate;
 
         var qlVal = parseInt(queueLimit);
         if (qlVal === 0) queueCombo.currentIndex = 0;
@@ -67,21 +90,31 @@ Rectangle {
         propagateComposedEvents: false
     }
 
-    // Gradient bar at the top for premium look
+    // Subtle header background area highlight for premium look
     Rectangle {
-        id: accentBar
-        width: parent.width
-        height: 4
+        id: headerHighlight
+        width: parent.width - 2
+        height: 72
         anchors.top: parent.top
-        radius: 16
-        color: "#00f0ff"
+        anchors.topMargin: 1
+        anchors.horizontalCenter: parent.horizontalCenter
+        radius: 15
+        color: Qt.rgba(255, 255, 255, 0.02)
         
-        // Hide the rounded bottom corners of the accent bar by overlaying a rect
+        // Hide the rounded bottom corners of the header highlight to keep it top-only
         Rectangle {
             width: parent.width
-            height: 2
+            height: 15
             anchors.bottom: parent.bottom
-            color: "#00f0ff"
+            color: Qt.rgba(255, 255, 255, 0.02)
+        }
+        
+        // A thin separator line under the header
+        Rectangle {
+            width: parent.width
+            height: 1
+            anchors.bottom: parent.bottom
+            color: Qt.rgba(255, 255, 255, 0.06)
         }
     }
 
@@ -180,62 +213,89 @@ Rectangle {
             }
         }
 
-        // FPS
+        // FPS — Editable ComboBox with presets + custom input
         Text { text: "Target FPS:"; color: "#cbd5e1"; font.pixelSize: 13; font.bold: true; width: 120 }
-        ComboBox {
-            id: fpsCombo
+        Item {
             width: 260
-            model: ["240", "144", "120", "90", "60", "30"]
-            currentIndex: 4
+            height: 38
 
-            delegate: ItemDelegate {
-                width: fpsCombo.width
-                contentItem: Text {
-                    text: modelData
-                    color: fpsCombo.highlightedIndex === index ? "#ffffff" : "#cbd5e1"
+            ComboBox {
+                id: fpsCombo
+                width: parent.width
+                height: parent.height
+                model: ["240", "144", "120", "90", "60", "30"]
+                currentIndex: 4
+                editable: false
+
+                onActivated: {
+                    fpsInput.text = fpsCombo.currentText;
+                }
+
+                delegate: ItemDelegate {
+                    width: fpsCombo.width
+                    contentItem: Text {
+                        text: modelData
+                        color: fpsCombo.highlightedIndex === index ? "#ffffff" : "#cbd5e1"
+                        font.pixelSize: 13
+                        verticalAlignment: Text.AlignVCenter
+                    }
+                    background: Rectangle {
+                        color: fpsCombo.highlightedIndex === index ? "#4f46e5" : "transparent"
+                    }
+                    highlighted: fpsCombo.highlightedIndex === index
+                }
+
+                // Override the contentItem to show our custom editable input
+                contentItem: TextInput {
+                    id: fpsInput
+                    leftPadding: 12
+                    rightPadding: 36
+                    text: "60"
                     font.pixelSize: 13
+                    color: "#ffffff"
                     verticalAlignment: Text.AlignVCenter
-                }
-                background: Rectangle {
-                    color: fpsCombo.highlightedIndex === index ? "#4f46e5" : "transparent"
-                }
-                highlighted: fpsCombo.highlightedIndex === index
-            }
+                    selectByMouse: true
+                    validator: IntValidator { bottom: 1; top: 999 }
+                    inputMethodHints: Qt.ImhDigitsOnly
 
-            contentItem: Text {
-                leftPadding: 12
-                text: fpsCombo.displayText
-                font.pixelSize: 13
-                color: "#ffffff"
-                verticalAlignment: Text.AlignVCenter
-            }
-
-            background: Rectangle {
-                implicitHeight: 38
-                color: "#0f1626"
-                border.color: fpsCombo.activeFocus ? "#00f0ff" : Qt.rgba(1, 1, 1, 0.08)
-                border.width: 1
-                radius: 8
-            }
-
-            popup: Popup {
-                y: fpsCombo.height + 4
-                width: fpsCombo.width
-                implicitHeight: contentItem.implicitHeight
-                padding: 1
-
-                contentItem: ListView {
-                    clip: true
-                    implicitHeight: contentHeight
-                    model: fpsCombo.popup.visible ? fpsCombo.delegateModel : null
-                    currentIndex: fpsCombo.highlightedIndex
+                    // Update combobox selection when user types a preset value
+                    onTextChanged: {
+                        var val = parseInt(text);
+                        var presets = [240, 144, 120, 90, 60, 30];
+                        var idx = presets.indexOf(val);
+                        if (idx !== -1 && fpsCombo.currentIndex !== idx) {
+                            fpsCombo.currentIndex = idx;
+                        }
+                    }
                 }
 
                 background: Rectangle {
+                    implicitHeight: 38
                     color: "#0f1626"
-                    border.color: Qt.rgba(1, 1, 1, 0.15)
+                    border.color: fpsInput.activeFocus || fpsCombo.activeFocus ? "#00f0ff" : Qt.rgba(1, 1, 1, 0.08)
                     border.width: 1
                     radius: 8
+                }
+
+                popup: Popup {
+                    y: fpsCombo.height + 4
+                    width: fpsCombo.width
+                    implicitHeight: contentItem.implicitHeight
+                    padding: 1
+
+                    contentItem: ListView {
+                        clip: true
+                        implicitHeight: contentHeight
+                        model: fpsCombo.popup.visible ? fpsCombo.delegateModel : null
+                        currentIndex: fpsCombo.highlightedIndex
+                    }
+
+                    background: Rectangle {
+                        color: "#0f1626"
+                        border.color: Qt.rgba(1, 1, 1, 0.15)
+                        border.width: 1
+                        radius: 8
+                    }
                 }
             }
         }
@@ -300,69 +360,76 @@ Rectangle {
             }
         }
 
-        // Bitrate
-        Text { text: "Bitrate (Kbps):"; color: "#cbd5e1"; font.pixelSize: 13; font.bold: true; width: 120 }
-        SpinBox {
-            id: bitrateSpin
+        // Bitrate — Slider
+        Text { text: "Bitrate:"; color: "#cbd5e1"; font.pixelSize: 13; font.bold: true; width: 120 }
+        Column {
             width: 260
-            from: 1000
-            to: 150000
-            stepSize: 1000
-            value: 8000
-            editable: true
+            spacing: 6
 
-            contentItem: TextInput {
-                z: 2
-                text: bitrateSpin.value + " Kbps"
-                font.pixelSize: 13
-                color: "#ffffff"
-                selectionColor: "#4f46e5"
-                selectedTextColor: "#ffffff"
-                horizontalAlignment: Qt.AlignHCenter
-                verticalAlignment: Qt.AlignVCenter
-                readOnly: !bitrateSpin.editable
-                validator: bitrateSpin.validator
-                inputMethodHints: Qt.ImhFormattedNumbersOnly
-            }
+            Slider {
+                id: bitrateSlider
+                width: parent.width
+                from: 1000
+                to: 150000
+                stepSize: 500
+                value: 8000
 
-            up.indicator: Rectangle {
-                x: bitrateSpin.width - width
-                height: bitrateSpin.height
-                width: 36
-                radius: 8
-                color: bitrateSpin.up.pressed ? Qt.rgba(99/255, 102/255, 241/255, 0.2) : "transparent"
-                
-                Text {
-                    text: "+"
-                    color: bitrateSpin.up.hovered ? "#00f0ff" : "#cbd5e1"
-                    font.pixelSize: 15
-                    font.bold: true
-                    anchors.centerIn: parent
+                background: Rectangle {
+                    x: bitrateSlider.leftPadding
+                    y: bitrateSlider.topPadding + bitrateSlider.availableHeight / 2 - height / 2
+                    implicitWidth: 260
+                    implicitHeight: 4
+                    width: bitrateSlider.availableWidth
+                    height: implicitHeight
+                    radius: 2
+                    color: Qt.rgba(1, 1, 1, 0.08)
+
+                    Rectangle {
+                        width: bitrateSlider.visualPosition * parent.width
+                        height: parent.height
+                        color: "#00f0ff"
+                        radius: 2
+                    }
+                }
+
+                handle: Rectangle {
+                    x: bitrateSlider.leftPadding + bitrateSlider.visualPosition * (bitrateSlider.availableWidth - width)
+                    y: bitrateSlider.topPadding + bitrateSlider.availableHeight / 2 - height / 2
+                    implicitWidth: 16
+                    implicitHeight: 16
+                    radius: 8
+                    color: bitrateSlider.pressed ? "#00d8e8" : "#00f0ff"
+                    border.color: Qt.rgba(0, 0, 0, 0.3)
+                    border.width: 1
                 }
             }
 
-            down.indicator: Rectangle {
-                x: 0
-                height: bitrateSpin.height
-                width: 36
-                radius: 8
-                color: bitrateSpin.down.pressed ? Qt.rgba(99/255, 102/255, 241/255, 0.2) : "transparent"
-                
-                Text {
-                    text: "-"
-                    color: bitrateSpin.down.hovered ? "#00f0ff" : "#cbd5e1"
-                    font.pixelSize: 15
-                    font.bold: true
-                    anchors.centerIn: parent
-                }
-            }
+            // Bitrate value label row
+            Row {
+                width: parent.width
+                spacing: 0
 
-            background: Rectangle {
-                implicitHeight: 38
-                color: "#0f1626"
-                border.color: bitrateSpin.activeFocus ? "#00f0ff" : Qt.rgba(1, 1, 1, 0.08)
-                border.width: 1
-                radius: 8
+                Text {
+                    text: {
+                        var val = bitrateSlider.value;
+                        if (val >= 1000) {
+                            var mbps = val / 1000;
+                            return mbps % 1 === 0 ? mbps.toFixed(0) + " Mbps" : mbps.toFixed(1) + " Mbps";
+                        }
+                        return val + " Kbps";
+                    }
+                    color: "#00f0ff"
+                    font.pixelSize: 12
+                    font.bold: true
+                }
+
+                Item { width: parent.width - parent.childrenRect.width }
+
+                Text {
+                    text: "(" + bitrateSlider.value + " Kbps)"
+                    color: "#64748b"
+                    font.pixelSize: 11
+                }
             }
         }
 
@@ -474,9 +541,12 @@ Rectangle {
                 if (resCombo.currentIndex === 1) selectedRes = "1280x720"
                 else if (resCombo.currentIndex === 2) selectedRes = "960x540"
 
-                var fps = parseInt(fpsCombo.currentText)
+                var fps = parseInt(fpsInput.text) || 60
+                if (fps < 1) fps = 1;
+                if (fps > 999) fps = 999;
+
                 var codec = codecCombo.currentText.toLowerCase()
-                var bitrate = bitrateSpin.value
+                var bitrate = Math.round(bitrateSlider.value)
 
                 var queueLimit = 256
                 if (queueCombo.currentIndex === 0) queueLimit = 0

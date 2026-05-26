@@ -29,11 +29,17 @@ fn register_linux(exe_path: &str) -> Result<(), anyhow::Error> {
         std::fs::create_dir_all(&dest_dir)?;
     }
 
-    let dest_file = dest_dir.join("lunaris-client-qml.desktop");
+    // Clean up old QML desktop entry file if it exists to avoid duplicates/confusion
+    let old_file = dest_dir.join("lunaris-client-qml.desktop");
+    if old_file.exists() {
+        let _ = std::fs::remove_file(&old_file);
+    }
+
+    let dest_file = dest_dir.join("lunaris-client.desktop");
     let content = format!(
         r#"[Desktop Entry]
 Type=Application
-Name=Lunaris QML Client
+Name=Lunaris Client
 Exec='{}' %u
 Terminal=false
 MimeType=x-scheme-handler/lunaris;
@@ -47,7 +53,7 @@ Categories=Network;
 
     // Register mimetype handler via xdg-mime
     let status = std::process::Command::new("xdg-mime")
-        .args(&["default", "lunaris-client-qml.desktop", "x-scheme-handler/lunaris"])
+        .args(&["default", "lunaris-client.desktop", "x-scheme-handler/lunaris"])
         .status();
 
     match status {

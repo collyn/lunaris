@@ -9,7 +9,6 @@ ApplicationWindow {
     width: 1280
     height: 720
     visible: false
-    visibility: Window.Windowed
     flags: Qt.Window
     title: "Lunaris Player Client"
     color: "#0a0b10"
@@ -17,6 +16,9 @@ ApplicationWindow {
     property bool exitRequested: false
 
     onClosing: (close) => {
+        if (bridge.hasConnectionArgs()) {
+            window.exitRequested = true;
+        }
         if (!exitRequested && closeToTray) {
             close.accepted = false;
             window.hide();
@@ -209,6 +211,21 @@ ApplicationWindow {
 
         onSettingsLoaded: (res, fps, codec, bitrate, queueLimit, hostName) => {
             menuBar.initializeSettings(res, fps, codec, bitrate, queueLimit, hostName);
+        }
+
+        onDeeplinkReceived: (url) => {
+            console.log("Deep link activation received. URL: " + url)
+            window.show();
+            window.raise();
+            window.requestActivate();
+
+            if (url !== "") {
+                window.isStreamMode = true;
+                bridge.setVideoSink(videoOutput.videoSink);
+                bridge.startStream();
+                bridge.requestSettings();
+                rootContainer.forceActiveFocus();
+            }
         }
     }
 
@@ -588,6 +605,7 @@ ApplicationWindow {
         onExitTriggered: {
             bridge.stopStream();
             if (bridge.hasConnectionArgs()) {
+                window.exitRequested = true;
                 Qt.quit();
             } else {
                 window.isStreamMode = false;
@@ -688,6 +706,7 @@ ApplicationWindow {
             window.isStreamMode = true;
             bridge.startGameSession(server, token, hostId, hostName, appId, res, fps, codec, bitrate, queueLimit);
             bridge.setVideoSink(videoOutput.videoSink);
+            bridge.requestSettings();
             rootContainer.forceActiveFocus();
         }
     }

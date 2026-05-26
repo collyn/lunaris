@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use tracing::{info, warn};
 
 pub fn register_protocol() -> Result<(), anyhow::Error> {

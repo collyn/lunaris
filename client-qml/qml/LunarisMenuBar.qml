@@ -109,28 +109,22 @@ Item {
         }
 
         // Set FPS combobox
-        if (fps === 60) {
-            fpsComboBox.currentIndex = 0;
-        } else if (fps === 30) {
-            fpsComboBox.currentIndex = 1;
-        }
+        var fpsPresets = [240, 144, 120, 90, 60, 30];
+        var fpsIdx = fpsPresets.indexOf(fps);
+        fpsComboBox.currentIndex = fpsIdx !== -1 ? fpsIdx : 4; // Default to 60
 
-        // Set Bitrate combobox (bitrate is in kbps, e.g. 5000, 10000, 15000, etc.)
-        if (bitrate <= 5000) {
-            bitrateComboBox.currentIndex = 0;
-        } else if (bitrate <= 10000) {
-            bitrateComboBox.currentIndex = 1;
-        } else if (bitrate <= 15000) {
-            bitrateComboBox.currentIndex = 2;
-        } else if (bitrate <= 20000) {
-            bitrateComboBox.currentIndex = 3;
-        } else if (bitrate <= 30000) {
-            bitrateComboBox.currentIndex = 4;
-        } else if (bitrate <= 50000) {
-            bitrateComboBox.currentIndex = 5;
-        } else {
-            bitrateComboBox.currentIndex = 6;
+        // Set Bitrate combobox (bitrate is in kbps)
+        var bitratePresets = [2000, 5000, 8000, 10000, 15000, 20000, 30000, 50000, 75000, 100000, 150000];
+        var brIdx = -1;
+        var closestDiff = 999999;
+        for (var i = 0; i < bitratePresets.length; i++) {
+            var diff = Math.abs(bitratePresets[i] - bitrate);
+            if (diff < closestDiff) {
+                closestDiff = diff;
+                brIdx = i;
+            }
         }
+        bitrateComboBox.currentIndex = brIdx !== -1 ? brIdx : 2; // Default to 8 Mbps
 
         // Set Codec combobox
         var c = codec.toLowerCase();
@@ -162,10 +156,10 @@ Item {
         var resMap = ["1920x1080", "1280x720", "960x540"];
         var selectedRes = resMap[resComboBox.currentIndex];
 
-        var fpsMap = [60, 30];
+        var fpsMap = [240, 144, 120, 90, 60, 30];
         var selectedFps = fpsMap[fpsComboBox.currentIndex];
 
-        var bitrateMap = [5000, 10000, 15000, 20000, 30000, 50000, 100000];
+        var bitrateMap = [2000, 5000, 8000, 10000, 15000, 20000, 30000, 50000, 75000, 100000, 150000];
         var selectedBitrate = bitrateMap[bitrateComboBox.currentIndex];
 
         var codecMap = ["h264", "h265", "av1"];
@@ -263,8 +257,8 @@ Item {
             // FPS Dropdown
             LunarisComboBox {
                 id: fpsComboBox
-                customWidth: 85
-                model: ["60 FPS", "30 FPS"]
+                customWidth: 95
+                model: ["240 FPS", "144 FPS", "120 FPS", "90 FPS", "60 FPS", "30 FPS"]
                 anchors.verticalCenter: parent.verticalCenter
                 LunarisToolTip { text: "Stream Frame Rate (FPS)" }
                 onActivated: menuContainer.applyCurrentSettings()
@@ -274,7 +268,7 @@ Item {
             LunarisComboBox {
                 id: bitrateComboBox
                 customWidth: 95
-                model: ["5 Mbps", "10 Mbps", "15 Mbps", "20 Mbps", "30 Mbps", "50 Mbps", "100 Mbps"]
+                model: ["2 Mbps", "5 Mbps", "8 Mbps", "10 Mbps", "15 Mbps", "20 Mbps", "30 Mbps", "50 Mbps", "75 Mbps", "100 Mbps", "150 Mbps"]
                 anchors.verticalCenter: parent.verticalCenter
                 LunarisToolTip { text: "Stream Bitrate Limit" }
                 onActivated: menuContainer.applyCurrentSettings()

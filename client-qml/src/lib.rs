@@ -1,6 +1,8 @@
 use tracing::{info, error, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use url::Url;
+use std::io::{Write, Read};
+use std::net::{TcpStream, TcpListener};
 
 use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QUrl};
 
@@ -10,7 +12,139 @@ pub mod audio;
 pub mod decoder;
 pub mod bridge;
 
-use bridge::{AppArgs, APP_ARGS};
+use bridge::{AppArgs, APP_ARGS, PendingDashboardEvent};
+
+pub fn parse_deeplink_url(url_str: &str) -> Option<AppArgs> {
+    if !url_str.starts_with("lunaris://") {
+        return None;
+    }
+    if let Ok(parsed_url) = Url::parse(url_str) {
+        let mut host_id = String::new();
+        let mut server_url = String::new();
+        let mut token = String::new();
+        
+        let mut width = 1920; // Default resolution
+        let mut height = 1080;
+        let mut fps = 60;
+        let mut bitrate = 8000;
+        let mut codec = "h264".to_string();
+        let mut app_id: Option<u32> = None;
+        let mut mouse_queue_limit = 256;
+        let mut host_name = "Desktop • Host".to_string();
+
+        for (k, v) in parsed_url.query_pairs() {
+            match k.as_ref() {
+                "host_id" => host_id = v.into_owned(),
+                "server" => server_url = v.into_owned(),
+                "token" => token = v.into_owned(),
+                "host_name" => host_name = v.into_owned(),
+                "app_id" => {
+                    if let Ok(id) = v.parse::<u32>() {
+                        app_id = Some(id);
+                    }
+                }
+                "res" => {
+                    let parts: Vec<&str> = v.split('x').collect();
+                    if parts.len() == 2 {
+                        if let (Ok(w), Ok(h)) = (parts[0].parse::<u32>(), parts[1].parse::<u32>()) {
+                            width = w;
+                            height = h;
+                        }
+                    }
+                }
+                "fps" => {
+                    if let Ok(f) = v.parse::<u32>() {
+                        fps = f;
+                    }
+                }
+                "bitrate" => {
+                    if let Ok(b) = v.parse::<u32>() {
+                        bitrate = b;
+                    }
+                }
+                "codec" => {
+                    codec = v.into_owned().to_lowercase();
+                }
+                "mouse_queue_limit" => {
+                    if let Ok(limit) = v.parse::<u32>() {
+                        mouse_queue_limit = limit;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        if !host_id.is_empty() && !server_url.is_empty() && !token.is_empty() {
+            return Some(AppArgs { host_id, server_url, token, width, height, fps, bitrate, codec, app_id, mouse_queue_limit, host_name });
+        }
+    }
+    None
+}
+
+fn handle_single_instance() -> bool {
+    let args: Vec<String> = std::env::args().collect();
+    let message = if args.len() >= 2 && args[1].starts_with("lunaris://") {
+        format!("CONNECT {}\n", args[1])
+    } else {
+        "FOCUS\n".to_string()
+    };
+
+    // Try to connect to the existing instance
+    if let Ok(mut stream) = TcpStream::connect("127.0.0.1:28435") {
+        let _ = stream.write_all(message.as_bytes());
+        let _ = stream.flush();
+        info!("Sent activation command to running instance. Exiting.");
+        return true; // Should exit
+    }
+
+    // No running instance found, start listener thread
+    std::thread::spawn(move || {
+        let listener = match TcpListener::bind("127.0.0.1:28435") {
+            Ok(l) => l,
+            Err(e) => {
+                error!("Failed to bind single-instance listener: {:?}", e);
+                return;
+            }
+        };
+
+        for stream in listener.incoming() {
+            let mut stream = match stream {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+
+            let mut buffer = [0; 4096];
+            let n = match stream.read(&mut buffer) {
+                Ok(n) => n,
+                Err(_) => continue,
+            };
+
+            let msg = String::from_utf8_lossy(&buffer[..n]);
+            let msg = msg.trim();
+
+            if msg == "FOCUS" {
+                info!("Single-instance: Received FOCUS command");
+                bridge::PENDING_EVENTS.lock().unwrap().push(PendingDashboardEvent::DeepLinkReceived {
+                    url: "".to_string(),
+                });
+            } else if msg.starts_with("CONNECT ") {
+                let url = msg["CONNECT ".len()..].to_string();
+                info!("Single-instance: Received CONNECT command with url: {}", url);
+                
+                if let Some(args) = parse_deeplink_url(&url) {
+                    let mut active_config_lock = bridge::ACTIVE_CONFIG.lock().unwrap();
+                    *active_config_lock = Some(args);
+                }
+
+                bridge::PENDING_EVENTS.lock().unwrap().push(PendingDashboardEvent::DeepLinkReceived {
+                    url,
+                });
+            }
+        }
+    });
+
+    false
+}
 
 fn parse_args() -> Option<AppArgs> {
     let args: Vec<String> = std::env::args().collect();
@@ -20,66 +154,7 @@ fn parse_args() -> Option<AppArgs> {
 
     // Check if deep linked: lunaris://connect?host_id=...&server=...&token=...
     if args[1].starts_with("lunaris://") {
-        if let Ok(parsed_url) = Url::parse(&args[1]) {
-            let mut host_id = String::new();
-            let mut server_url = String::new();
-            let mut token = String::new();
-            
-            let mut width = 1920; // Default resolution
-            let mut height = 1080;
-            let mut fps = 60;
-            let mut bitrate = 8000;
-            let mut codec = "h264".to_string();
-            let mut app_id: Option<u32> = None;
-            let mut mouse_queue_limit = 256;
-            let mut host_name = "Desktop • Host".to_string();
-
-            for (k, v) in parsed_url.query_pairs() {
-                match k.as_ref() {
-                    "host_id" => host_id = v.into_owned(),
-                    "server" => server_url = v.into_owned(),
-                    "token" => token = v.into_owned(),
-                    "host_name" => host_name = v.into_owned(),
-                    "app_id" => {
-                        if let Ok(id) = v.parse::<u32>() {
-                            app_id = Some(id);
-                        }
-                    }
-                    "res" => {
-                        let parts: Vec<&str> = v.split('x').collect();
-                        if parts.len() == 2 {
-                            if let (Ok(w), Ok(h)) = (parts[0].parse::<u32>(), parts[1].parse::<u32>()) {
-                                width = w;
-                                height = h;
-                            }
-                        }
-                    }
-                    "fps" => {
-                        if let Ok(f) = v.parse::<u32>() {
-                            fps = f;
-                        }
-                    }
-                    "bitrate" => {
-                        if let Ok(b) = v.parse::<u32>() {
-                            bitrate = b;
-                        }
-                    }
-                    "codec" => {
-                        codec = v.into_owned().to_lowercase();
-                    }
-                    "mouse_queue_limit" => {
-                        if let Ok(limit) = v.parse::<u32>() {
-                            mouse_queue_limit = limit;
-                        }
-                    }
-                    _ => {}
-                }
-            }
-
-            if !host_id.is_empty() && !server_url.is_empty() && !token.is_empty() {
-                return Some(AppArgs { host_id, server_url, token, width, height, fps, bitrate, codec, app_id, mouse_queue_limit, host_name });
-            }
-        }
+        return parse_deeplink_url(&args[1]);
     }
 
     // Fallback to normal CLI arguments: client --host-id ID --server URL --token TOKEN ...
@@ -174,6 +249,9 @@ fn parse_args() -> Option<AppArgs> {
 }
 
 pub fn run() {
+    if handle_single_instance() {
+        return;
+    }
     // Disable GStreamer device provider features that cause periodic thread stalls
     // and critical GLib log spam on Linux.
     std::env::set_var(
