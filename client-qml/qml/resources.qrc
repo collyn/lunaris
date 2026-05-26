@@ -3,5 +3,7 @@
     <file>main.qml</file>
     <file>LunarisMenuBar.qml</file>
     <file>LunarisComboBox.qml</file>
+    <file>Dashboard.qml</file>
+    <file>Settings.qml</file>
 </qresource>
 </RCC>

@@ -4,7 +4,7 @@ members = [
     "agent",
     "common",
     "client",
-    "client-tauri",
+    "client-desktop",
     "client-qml",
 ]
 resolver = "2"

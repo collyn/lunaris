@@ -57,53 +57,45 @@ impl HardwareDecoder {
         }
 
         let mut hw_device_ctx: *mut ffi::AVBufferRef = std::ptr::null_mut();
-        let hw_device_type = if cfg!(target_os = "linux") {
-            ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_VAAPI
-        } else if cfg!(target_os = "windows") {
-            ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_D3D11VA
-        } else if cfg!(target_os = "macos") {
-            ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_VIDEOTOOLBOX
-        } else {
-            ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_NONE
-        };
+        let mut hw_device_type = ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_NONE;
 
-        if hw_device_type != ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_NONE {
-            #[allow(unused_mut)]
-            let mut err = unsafe {
+        let mut candidates = Vec::new();
+        if cfg!(target_os = "linux") {
+            candidates.push(ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_CUDA);
+            candidates.push(ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_VAAPI);
+            candidates.push(ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_VDPAU);
+        } else if cfg!(target_os = "windows") {
+            candidates.push(ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_D3D11VA);
+            candidates.push(ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_DXVA2);
+        } else if cfg!(target_os = "macos") {
+            candidates.push(ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_VIDEOTOOLBOX);
+        }
+
+        for &dev_type in &candidates {
+            let err = unsafe {
                 ffi::av_hwdevice_ctx_create(
                     &mut hw_device_ctx,
-                    hw_device_type,
+                    dev_type,
                     std::ptr::null(),
                     std::ptr::null_mut(),
                     0,
                 )
             };
-
-            #[cfg(target_os = "windows")]
-            if err < 0 {
-                err = unsafe {
-                    ffi::av_hwdevice_ctx_create(
-                        &mut hw_device_ctx,
-                        ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_DXVA2,
-                        std::ptr::null(),
-                        std::ptr::null_mut(),
-                        0,
-                    )
-                };
-            }
-
             if err >= 0 && !hw_device_ctx.is_null() {
-                unsafe {
-                    (*codec_ctx).hw_device_ctx = ffi::av_buffer_ref(hw_device_ctx);
-                    let name = std::ffi::CStr::from_ptr(ffi::av_hwdevice_get_type_name(hw_device_type))
-                        .to_string_lossy();
-                    println!("Successfully initialized GPU hardware decoding context: {}", name);
-                }
-            } else {
-                println!("Failed to create GPU hardware decoding context (err code: {}). Falling back to software decoding.", err);
+                hw_device_type = dev_type;
+                break;
+            }
+        }
+
+        if hw_device_type != ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_NONE {
+            unsafe {
+                (*codec_ctx).hw_device_ctx = ffi::av_buffer_ref(hw_device_ctx);
+                let name = std::ffi::CStr::from_ptr(ffi::av_hwdevice_get_type_name(hw_device_type))
+                    .to_string_lossy();
+                println!("Successfully initialized GPU hardware decoding context: {}", name);
             }
         } else {
-            println!("No supported GPU hardware decoding API found for this platform. Falling back to software decoding.");
+            println!("Failed to create GPU hardware decoding context. Falling back to software decoding.");
         }
 
         let open_err = unsafe { ffi::avcodec_open2(codec_ctx, codec, std::ptr::null_mut()) };

@@ -8,7 +8,6 @@ ApplicationWindow {
     width: 1280
     height: 720
     visible: true
-    flags: Qt.FramelessWindowHint
     visibility: Window.Windowed
     title: "Lunaris Player Client (Qt6/QML)"
     color: "#0a0b10"
@@ -66,6 +65,10 @@ ApplicationWindow {
 
         // Capture keyboard events globally within root Item
         Keys.onPressed: (event) => {
+            if (!window.isStreamMode) {
+                event.accepted = false;
+                return;
+            }
             // Escape pointer lock by holding ESC
             if (event.key === Qt.Key_Escape && window.isPointerLocked) {
                 if (!event.isAutoRepeat) {
@@ -81,6 +84,10 @@ ApplicationWindow {
         }
 
         Keys.onReleased: (event) => {
+            if (!window.isStreamMode) {
+                event.accepted = false;
+                return;
+            }
             if (event.key === Qt.Key_Escape) {
                 if (window.wasUnlockedByHold) {
                     window.wasUnlockedByHold = false;
@@ -125,10 +132,20 @@ ApplicationWindow {
     // Periodic timer to poll statistics from Rust backend
     Timer {
         interval: 1000
-        running: true
+        running: window.isStreamMode
         repeat: true
         onTriggered: {
             bridge.pollStats();
+        }
+    }
+
+    // Periodic timer to poll events (REST / WS login / pairing results) from Rust backend
+    Timer {
+        interval: 100
+        running: true
+        repeat: true
+        onTriggered: {
+            bridge.pollEvents();
         }
     }
 
@@ -181,11 +198,18 @@ ApplicationWindow {
         }
     }
 
-    // Video Output Area
-    VideoOutput {
-        id: videoOutput
+    // Streaming Player View Container
+    Item {
+        id: streamView
         anchors.fill: parent
-        fillMode: VideoOutput.Stretch
+        visible: window.isStreamMode
+        focus: window.isStreamMode
+
+        // Video Output Area
+        VideoOutput {
+            id: videoOutput
+            anchors.fill: parent
+            fillMode: VideoOutput.Stretch
 
         // Overlay element to capture all mouse inputs
         MouseArea {
@@ -480,7 +504,13 @@ ApplicationWindow {
 
         onExitTriggered: {
             bridge.stopStream();
-            Qt.quit();
+            if (bridge.hasConnectionArgs()) {
+                Qt.quit();
+            } else {
+                window.isStreamMode = false;
+                bridge.fetchHosts();
+                dashboardView.forceActiveFocus();
+            }
         }
     }
 
@@ -564,16 +594,37 @@ ApplicationWindow {
     }
     }
 
+    // Dashboard View
+    Dashboard {
+        id: dashboardView
+        anchors.fill: parent
+        visible: !window.isStreamMode
+        focus: !window.isStreamMode
+
+        onStartSessionRequested: (server, token, hostId, hostName, appId, res, fps, codec, bitrate, queueLimit) => {
+            window.isStreamMode = true;
+            bridge.startGameSession(server, token, hostId, hostName, appId, res, fps, codec, bitrate, queueLimit);
+            bridge.setVideoSink(videoOutput.videoSink);
+            rootContainer.forceActiveFocus();
+        }
+    }
+    }
+
+    property bool isStreamMode: false
+
     Component.onCompleted: {
         // Center window procedurally on startup to avoid permanent bindings
         window.x = (Screen.width - window.width) / 2;
         window.y = (Screen.height - window.height) / 2;
 
-        // Automatically start the connection when loaded
-        // Arguments will be parsed from Rust CLI and passed via initialization properties if needed
-        bridge.setVideoSink(videoOutput.videoSink);
-        bridge.startStream();
-        bridge.requestSettings();
-        rootContainer.forceActiveFocus();
+        if (bridge.hasConnectionArgs()) {
+            window.isStreamMode = true;
+            bridge.setVideoSink(videoOutput.videoSink);
+            bridge.startStream();
+            bridge.requestSettings();
+            rootContainer.forceActiveFocus();
+        } else {
+            window.isStreamMode = false;
+        }
     }
 }

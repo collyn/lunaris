@@ -221,4 +221,8 @@ pub fn run() {
         error!("Failed to execute QGuiApplication event loop.");
         std::process::exit(1);
     }
+
+    // Clean up local agent if running
+    bridge::stop_local_agent();
 }
+

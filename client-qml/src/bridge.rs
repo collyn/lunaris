@@ -4,6 +4,57 @@ use bytes::Bytes;
 use cxx_qt::CxxQtType;
 
 #[derive(Debug, Clone)]
+pub enum PendingDashboardEvent {
+    LoginResult {
+        success: bool,
+        error_msg: String,
+        token: String,
+        username: String,
+        server: String,
+    },
+    RegisterResult {
+        success: bool,
+        error_msg: String,
+        token: String,
+        username: String,
+        server: String,
+    },
+    HostsResult {
+        success: bool,
+        error_msg: String,
+        hosts_json: String,
+    },
+    PairResult {
+        success: bool,
+        error_msg: String,
+    },
+    UnpairResult {
+        success: bool,
+        error_msg: String,
+    },
+    AppsResult {
+        success: bool,
+        error_msg: String,
+        host_id: String,
+        apps_json: String,
+    },
+    CredentialsLoaded {
+        success: bool,
+        server: String,
+        token: String,
+        username: String,
+    },
+    AgentTokenResult {
+        success: bool,
+        error_msg: String,
+        token: String,
+    },
+
+}
+
+pub static PENDING_EVENTS: std::sync::Mutex<Vec<PendingDashboardEvent>> = std::sync::Mutex::new(Vec::new());
+
+#[derive(Debug, Clone)]
 pub struct AppArgs {
     pub host_id: String,
     pub server_url: String,
@@ -60,7 +111,101 @@ impl Default for StreamBridgeRust {
     }
 }
 
+impl StreamBridgeRust {
+    pub fn get_or_init_runtime(&mut self) -> &tokio::runtime::Runtime {
+        if self.tokio_runtime.is_none() {
+            self.tokio_runtime = Some(tokio::runtime::Runtime::new().unwrap());
+        }
+        self.tokio_runtime.as_ref().unwrap()
+    }
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+struct SavedSettings {
+    server_url: String,
+    token: String,
+    username: String,
+}
+
+fn get_config_path() -> std::path::PathBuf {
+    let mut path = if let Ok(home) = std::env::var("HOME") {
+        std::path::PathBuf::from(home)
+    } else if let Ok(user_profile) = std::env::var("USERPROFILE") {
+        std::path::PathBuf::from(user_profile)
+    } else {
+        std::path::PathBuf::from(".")
+    };
+    path.push(".lunaris");
+    let _ = std::fs::create_dir_all(&path);
+    path.push("client_config.json");
+    path
+}
+
+fn load_settings() -> Option<SavedSettings> {
+    let path = get_config_path();
+    if !path.exists() {
+        return None;
+    }
+    let data = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str(&data).ok()
+}
+
+fn save_settings(server_url: &str, token: &str, username: &str) {
+    let path = get_config_path();
+    let settings = SavedSettings {
+        server_url: server_url.to_string(),
+        token: token.to_string(),
+        username: username.to_string(),
+    };
+    if let Ok(data) = serde_json::to_string_pretty(&settings) {
+        let _ = std::fs::write(path, data);
+    }
+}
+
+fn clear_settings() {
+    let path = get_config_path();
+    let _ = std::fs::remove_file(path);
+}
+
+pub static LOCAL_AGENT_CHILD: std::sync::Mutex<Option<std::process::Child>> = std::sync::Mutex::new(None);
+
+fn get_agent_config_path() -> std::path::PathBuf {
+    let mut path = if let Ok(home) = std::env::var("HOME") {
+        std::path::PathBuf::from(home)
+    } else if let Ok(user_profile) = std::env::var("USERPROFILE") {
+        std::path::PathBuf::from(user_profile)
+    } else {
+        std::path::PathBuf::from(".")
+    };
+    path.push(".lunaris");
+    let _ = std::fs::create_dir_all(&path);
+    path.push("agent_config.json");
+    path
+}
+
+fn prepare_agent_config(server_url: &str, server_token: &str) -> std::path::PathBuf {
+    let path = get_agent_config_path();
+    let mut config_json = if path.exists() {
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            serde_json::from_str::<serde_json::Value>(&content).unwrap_or_else(|_| serde_json::json!({}))
+        } else {
+            serde_json::json!({})
+        }
+    } else {
+        serde_json::json!({})
+    };
+
+    config_json["server_url"] = serde_json::json!(server_url);
+    config_json["server_token"] = serde_json::json!(server_token);
+
+    if let Ok(data) = serde_json::to_string_pretty(&config_json) {
+        let _ = std::fs::write(&path, data);
+    }
+    path
+}
+
 #[cxx_qt::bridge]
+
 pub mod qobject {
     unsafe extern "C++" {
         include!("QtMultimedia/QVideoSink");
@@ -116,6 +261,75 @@ pub mod qobject {
             host_name: QString,
         );
 
+        #[qsignal]
+        fn login_result(
+            self: Pin<&mut StreamBridge>,
+            success: bool,
+            error_msg: QString,
+            token: QString,
+            username: QString,
+            server: QString,
+        );
+
+        #[qsignal]
+        fn register_result(
+            self: Pin<&mut StreamBridge>,
+            success: bool,
+            error_msg: QString,
+            token: QString,
+            username: QString,
+            server: QString,
+        );
+
+        #[qsignal]
+        fn hosts_result(
+            self: Pin<&mut StreamBridge>,
+            success: bool,
+            error_msg: QString,
+            hosts_json: QString,
+        );
+
+        #[qsignal]
+        fn pair_result(
+            self: Pin<&mut StreamBridge>,
+            success: bool,
+            error_msg: QString,
+        );
+
+        #[qsignal]
+        fn unpair_result(
+            self: Pin<&mut StreamBridge>,
+            success: bool,
+            error_msg: QString,
+        );
+
+        #[qsignal]
+        fn apps_result(
+            self: Pin<&mut StreamBridge>,
+            success: bool,
+            error_msg: QString,
+            host_id: QString,
+            apps_json: QString,
+        );
+
+        #[qsignal]
+        fn credentials_loaded(
+            self: Pin<&mut StreamBridge>,
+            success: bool,
+            server: QString,
+            token: QString,
+            username: QString,
+        );
+
+        #[qsignal]
+        fn agent_token_result(
+            self: Pin<&mut StreamBridge>,
+            success: bool,
+            error_msg: QString,
+            token: QString,
+        );
+
+
         #[qinvokable]
         unsafe fn set_video_sink(self: Pin<&mut StreamBridge>, sink: *mut QVideoSink);
 
@@ -151,8 +365,85 @@ pub mod qobject {
 
         #[qinvokable]
         fn poll_stats(self: Pin<&mut StreamBridge>);
+
+        #[qinvokable]
+        fn has_connection_args(self: Pin<&mut StreamBridge>) -> bool;
+
+        #[qinvokable]
+        fn load_saved_credentials(self: Pin<&mut StreamBridge>);
+
+        #[qinvokable]
+        fn login(
+            self: Pin<&mut StreamBridge>,
+            server: QString,
+            username: QString,
+            password: QString,
+        );
+
+        #[qinvokable]
+        fn register_user(
+            self: Pin<&mut StreamBridge>,
+            server: QString,
+            username: QString,
+            password: QString,
+        );
+
+        #[qinvokable]
+        fn logout(self: Pin<&mut StreamBridge>);
+
+        #[qinvokable]
+        fn fetch_hosts(self: Pin<&mut StreamBridge>);
+
+        #[qinvokable]
+        fn pair_host(
+            self: Pin<&mut StreamBridge>,
+            name: QString,
+            ip: QString,
+            user: QString,
+            pass: QString,
+        );
+
+        #[qinvokable]
+        fn unpair_host(self: Pin<&mut StreamBridge>, host_id: QString);
+
+        #[qinvokable]
+        fn fetch_apps(self: Pin<&mut StreamBridge>, host_id: QString);
+
+        #[qinvokable]
+        fn start_game_session(
+            self: Pin<&mut StreamBridge>,
+            server: QString,
+            token: QString,
+            host_id: QString,
+            host_name: QString,
+            app_id: i32,
+            res: QString,
+            fps: i32,
+            codec: QString,
+            bitrate: i32,
+            mouse_queue_limit: i32,
+        );
+
+        #[qinvokable]
+        fn poll_events(self: Pin<&mut StreamBridge>);
+
+        #[qinvokable]
+        fn fetch_agent_token(self: Pin<&mut StreamBridge>, server: QString, token: QString);
+
+        #[qinvokable]
+        fn start_local_agent(self: Pin<&mut StreamBridge>, server: QString, token: QString, name: QString);
+
+        #[qinvokable]
+        fn stop_local_agent(self: Pin<&mut StreamBridge>);
+
+        #[qinvokable]
+        fn is_local_agent_running(self: Pin<&mut StreamBridge>) -> bool;
+
+        #[qinvokable]
+        fn get_local_hostname(self: Pin<&mut StreamBridge>) -> QString;
     }
 }
+
 
 
 use qobject::deliver_yuv_frame;
@@ -363,7 +654,777 @@ impl qobject::StreamBridge {
             );
         }
     }
+
+    pub fn has_connection_args(self: Pin<&mut Self>) -> bool {
+        APP_ARGS.get().is_some()
+    }
+
+    pub fn load_saved_credentials(self: Pin<&mut Self>) {
+        if let Some(settings) = load_settings() {
+            PENDING_EVENTS.lock().unwrap().push(PendingDashboardEvent::CredentialsLoaded {
+                success: true,
+                server: settings.server_url,
+                token: settings.token,
+                username: settings.username,
+            });
+        } else {
+            PENDING_EVENTS.lock().unwrap().push(PendingDashboardEvent::CredentialsLoaded {
+                success: false,
+                server: "".to_string(),
+                token: "".to_string(),
+                username: "".to_string(),
+            });
+        }
+    }
+
+    pub fn login(
+        self: Pin<&mut Self>,
+        server: QString,
+        username: QString,
+        password: QString,
+    ) {
+        let server_str = server.to_string();
+        let username_str = username.to_string();
+        let password_str = password.to_string();
+
+        let mut rust_obj = self.rust_mut();
+        let rt = rust_obj.get_or_init_runtime();
+
+        rt.spawn(async move {
+            let client = reqwest::Client::new();
+            let url = format!("{}/api/auth/login", server_str);
+            let res = client.post(&url)
+                .json(&serde_json::json!({
+                    "username": username_str,
+                    "password": password_str
+                }))
+                .send()
+                .await;
+
+            match res {
+                Ok(resp) => {
+                    let status = resp.status();
+                    let text = resp.text().await.unwrap_or_default();
+                    if status.is_success() {
+                        if let Ok(data) = serde_json::from_str::<common::AuthResponse>(&text) {
+                            save_settings(&server_str, &data.token, &data.username);
+                            
+                            PENDING_EVENTS.lock().unwrap().push(PendingDashboardEvent::LoginResult {
+                                success: true,
+                                error_msg: "".to_string(),
+                                token: data.token,
+                                username: data.username,
+                                server: server_str,
+                            });
+                            return;
+                        }
+                    }
+                    
+                    let err_msg = if let Ok(err_data) = serde_json::from_str::<serde_json::Value>(&text) {
+                        err_data.get("error")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("Login failed")
+                            .to_string()
+                    } else {
+                        "Login failed".to_string()
+                    };
+
+                    PENDING_EVENTS.lock().unwrap().push(PendingDashboardEvent::LoginResult {
+                        success: false,
+                        error_msg: err_msg,
+                        token: "".to_string(),
+                        username: "".to_string(),
+                        server: "".to_string(),
+                    });
+                }
+                Err(e) => {
+                    let err_msg = format!("Connection failed: {}", e);
+                    PENDING_EVENTS.lock().unwrap().push(PendingDashboardEvent::LoginResult {
+                        success: false,
+                        error_msg: err_msg,
+                        token: "".to_string(),
+                        username: "".to_string(),
+                        server: "".to_string(),
+                    });
+                }
+            }
+        });
+    }
+
+    pub fn register_user(
+        self: Pin<&mut Self>,
+        server: QString,
+        username: QString,
+        password: QString,
+    ) {
+        let server_str = server.to_string();
+        let username_str = username.to_string();
+        let password_str = password.to_string();
+
+        let mut rust_obj = self.rust_mut();
+        let rt = rust_obj.get_or_init_runtime();
+
+        rt.spawn(async move {
+            let client = reqwest::Client::new();
+            let url = format!("{}/api/auth/register", server_str);
+            let res = client.post(&url)
+                .json(&serde_json::json!({
+                    "username": username_str,
+                    "password": password_str
+                }))
+                .send()
+                .await;
+
+            match res {
+                Ok(resp) => {
+                    let status = resp.status();
+                    let text = resp.text().await.unwrap_or_default();
+                    if status.is_success() {
+                        if let Ok(data) = serde_json::from_str::<common::AuthResponse>(&text) {
+                            save_settings(&server_str, &data.token, &data.username);
+                            
+                            PENDING_EVENTS.lock().unwrap().push(PendingDashboardEvent::RegisterResult {
+                                success: true,
+                                error_msg: "".to_string(),
+                                token: data.token,
+                                username: data.username,
+                                server: server_str,
+                            });
+                            return;
+                        }
+                    }
+                    
+                    let err_msg = if let Ok(err_data) = serde_json::from_str::<serde_json::Value>(&text) {
+                        err_data.get("error")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("Registration failed")
+                            .to_string()
+                    } else {
+                        "Registration failed".to_string()
+                    };
+
+                    PENDING_EVENTS.lock().unwrap().push(PendingDashboardEvent::RegisterResult {
+                        success: false,
+                        error_msg: err_msg,
+                        token: "".to_string(),
+                        username: "".to_string(),
+                        server: "".to_string(),
+                    });
+                }
+                Err(e) => {
+                    let err_msg = format!("Connection failed: {}", e);
+                    PENDING_EVENTS.lock().unwrap().push(PendingDashboardEvent::RegisterResult {
+                        success: false,
+                        error_msg: err_msg,
+                        token: "".to_string(),
+                        username: "".to_string(),
+                        server: "".to_string(),
+                    });
+                }
+            }
+        });
+    }
+
+    pub fn logout(self: Pin<&mut Self>) {
+        clear_settings();
+    }
+
+    pub fn fetch_hosts(self: Pin<&mut Self>) {
+        let settings = match load_settings() {
+            Some(s) => s,
+            None => {
+                PENDING_EVENTS.lock().unwrap().push(PendingDashboardEvent::HostsResult {
+                    success: false,
+                    error_msg: "Not authenticated".to_string(),
+                    hosts_json: "".to_string(),
+                });
+                return;
+            }
+        };
+
+        let server_str = settings.server_url;
+        let token_str = settings.token;
+        
+        let mut rust_obj = self.rust_mut();
+        let rt = rust_obj.get_or_init_runtime();
+
+        rt.spawn(async move {
+            let client = reqwest::Client::new();
+            let url = format!("{}/api/hosts", server_str);
+            let res = client.get(&url)
+                .header("Authorization", format!("Bearer {}", token_str))
+                .send()
+                .await;
+
+            match res {
+                Ok(resp) => {
+                    if resp.status().is_success() {
+                        if let Ok(hosts) = resp.json::<Vec<common::HostInfo>>().await {
+                            if let Ok(hosts_json) = serde_json::to_string(&hosts) {
+                                PENDING_EVENTS.lock().unwrap().push(PendingDashboardEvent::HostsResult {
+                                    success: true,
+                                    error_msg: "".to_string(),
+                                    hosts_json,
+                                });
+                                return;
+                            }
+                        }
+                    } else if resp.status() == 401 {
+                        PENDING_EVENTS.lock().unwrap().push(PendingDashboardEvent::HostsResult {
+                            success: false,
+                            error_msg: "Unauthorized".to_string(),
+                            hosts_json: "".to_string(),
+                        });
+                        return;
+                    }
+                    PENDING_EVENTS.lock().unwrap().push(PendingDashboardEvent::HostsResult {
+                        success: false,
+                        error_msg: "Failed to fetch host list".to_string(),
+                        hosts_json: "".to_string(),
+                    });
+                }
+                Err(e) => {
+                    let err_msg = format!("Connection failed: {}", e);
+                    PENDING_EVENTS.lock().unwrap().push(PendingDashboardEvent::HostsResult {
+                        success: false,
+                        error_msg: err_msg,
+                        hosts_json: "".to_string(),
+                    });
+                }
+            }
+        });
+    }
+
+    pub fn pair_host(
+        self: Pin<&mut Self>,
+        name: QString,
+        ip: QString,
+        user: QString,
+        pass: QString,
+    ) {
+        let name_str = name.to_string();
+        let ip_str = ip.to_string();
+        let user_str = user.to_string();
+        let pass_str = pass.to_string();
+
+        let settings = match load_settings() {
+            Some(s) => s,
+            None => {
+                PENDING_EVENTS.lock().unwrap().push(PendingDashboardEvent::PairResult {
+                    success: false,
+                    error_msg: "Not authenticated".to_string(),
+                });
+                return;
+            }
+        };
+
+        let server_str = settings.server_url;
+        let token_str = settings.token;
+        
+        let mut rust_obj = self.rust_mut();
+        let rt = rust_obj.get_or_init_runtime();
+
+        rt.spawn(async move {
+            let client = reqwest::Client::new();
+            let url = format!("{}/api/hosts/pair", server_str);
+            
+            let pair_req = common::PairHostRequest {
+                name: name_str,
+                ip_address: ip_str,
+                sunshine_username: if user_str.is_empty() { None } else { Some(user_str) },
+                sunshine_password: if pass_str.is_empty() { None } else { Some(pass_str) },
+            };
+
+            let res = client.post(&url)
+                .header("Authorization", format!("Bearer {}", token_str))
+                .json(&pair_req)
+                .send()
+                .await;
+
+            match res {
+                Ok(resp) => {
+                    if resp.status().is_success() {
+                        PENDING_EVENTS.lock().unwrap().push(PendingDashboardEvent::PairResult {
+                            success: true,
+                            error_msg: "".to_string(),
+                        });
+                    } else {
+                        let err_msg = if let Ok(err_data) = resp.json::<serde_json::Value>().await {
+                            err_data.get("error").and_then(|v| v.as_str()).unwrap_or("Pairing failed").to_string()
+                        } else {
+                            "Pairing failed".to_string()
+                        };
+                        PENDING_EVENTS.lock().unwrap().push(PendingDashboardEvent::PairResult {
+                            success: false,
+                            error_msg: err_msg,
+                        });
+                    }
+                }
+                Err(e) => {
+                    let err_msg = format!("Connection failed: {}", e);
+                    PENDING_EVENTS.lock().unwrap().push(PendingDashboardEvent::PairResult {
+                        success: false,
+                        error_msg: err_msg,
+                    });
+                }
+            }
+        });
+    }
+
+    pub fn unpair_host(self: Pin<&mut Self>, host_id: QString) {
+        let host_id_str = host_id.to_string();
+
+        let settings = match load_settings() {
+            Some(s) => s,
+            None => {
+                PENDING_EVENTS.lock().unwrap().push(PendingDashboardEvent::UnpairResult {
+                    success: false,
+                    error_msg: "Not authenticated".to_string(),
+                });
+                return;
+            }
+        };
+
+        let server_str = settings.server_url;
+        let token_str = settings.token;
+        
+        let mut rust_obj = self.rust_mut();
+        let rt = rust_obj.get_or_init_runtime();
+
+        rt.spawn(async move {
+            let client = reqwest::Client::new();
+            let url = format!("{}/api/hosts/{}", server_str, host_id_str);
+
+            let res = client.delete(&url)
+                .header("Authorization", format!("Bearer {}", token_str))
+                .send()
+                .await;
+
+            match res {
+                Ok(resp) => {
+                    if resp.status().is_success() {
+                        PENDING_EVENTS.lock().unwrap().push(PendingDashboardEvent::UnpairResult {
+                            success: true,
+                            error_msg: "".to_string(),
+                        });
+                    } else {
+                        PENDING_EVENTS.lock().unwrap().push(PendingDashboardEvent::UnpairResult {
+                            success: false,
+                            error_msg: "Failed to unpair host".to_string(),
+                        });
+                    }
+                }
+                Err(e) => {
+                    let err_msg = format!("Connection failed: {}", e);
+                    PENDING_EVENTS.lock().unwrap().push(PendingDashboardEvent::UnpairResult {
+                        success: false,
+                        error_msg: err_msg,
+                    });
+                }
+            }
+        });
+    }
+
+    pub fn fetch_apps(self: Pin<&mut Self>, host_id: QString) {
+        let host_id_str = host_id.to_string();
+
+        let settings = match load_settings() {
+            Some(s) => s,
+            None => {
+                PENDING_EVENTS.lock().unwrap().push(PendingDashboardEvent::AppsResult {
+                    success: false,
+                    error_msg: "Not authenticated".to_string(),
+                    host_id: host_id_str,
+                    apps_json: "".to_string(),
+                });
+                return;
+            }
+        };
+
+        let server_str = settings.server_url;
+        let token_str = settings.token;
+        
+        let mut rust_obj = self.rust_mut();
+        let rt = rust_obj.get_or_init_runtime();
+
+        rt.spawn(async move {
+            let encoded_token: String = url::form_urlencoded::byte_serialize(token_str.as_bytes()).collect();
+            let ws_url = format!("{}/ws/client?token={}", server_str.replace("http", "ws"), encoded_token);
+            println!("fetch_apps connecting to ws at: {}", ws_url);
+            
+            let connect_result = connect_async(&ws_url).await;
+            let (mut ws_stream, _) = match connect_result {
+                Ok(c) => c,
+                Err(e) => {
+                    let err_msg = format!("WebSocket connection failed: {}", e);
+                    PENDING_EVENTS.lock().unwrap().push(PendingDashboardEvent::AppsResult {
+                        success: false,
+                        error_msg: err_msg,
+                        host_id: host_id_str,
+                        apps_json: "".to_string(),
+                    });
+                    return;
+                }
+            };
+
+            let get_app_msg = ClientMessage::Signaling(SignalingMessage::GetAppList {
+                target_id: host_id_str.clone(),
+            });
+
+            if let Ok(text) = serde_json::to_string(&get_app_msg) {
+                if let Err(e) = ws_stream.send(WsMessage::Text(text)).await {
+                    let err_msg = format!("Failed to send GetAppList request: {}", e);
+                    PENDING_EVENTS.lock().unwrap().push(PendingDashboardEvent::AppsResult {
+                        success: false,
+                        error_msg: err_msg,
+                        host_id: host_id_str,
+                        apps_json: "".to_string(),
+                    });
+                    return;
+                }
+            }
+
+            let result = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                while let Some(msg_result) = ws_stream.next().await {
+                    match msg_result {
+                        Ok(WsMessage::Text(text)) => {
+                            if let Ok(server_msg) = serde_json::from_str::<common::ServerToClientMessage>(&text) {
+                                match server_msg {
+                                    common::ServerToClientMessage::Signaling(sig) => match sig {
+                                        SignalingMessage::AppListResponse { apps, .. } => {
+                                            return Ok(apps);
+                                        }
+                                        SignalingMessage::Error { message } => {
+                                            return Err(message);
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                            }
+                        }
+                        Ok(_) => {}
+                        Err(e) => {
+                            return Err(format!("WebSocket error: {}", e));
+                        }
+                    }
+                }
+                Err("Connection closed before response received".to_string())
+            }).await;
+
+            let _ = ws_stream.close(None).await;
+
+            match result {
+                Ok(Ok(apps)) => {
+                    if let Ok(apps_json) = serde_json::to_string(&apps) {
+                        PENDING_EVENTS.lock().unwrap().push(PendingDashboardEvent::AppsResult {
+                            success: true,
+                            error_msg: "".to_string(),
+                            host_id: host_id_str,
+                            apps_json,
+                        });
+                    } else {
+                        PENDING_EVENTS.lock().unwrap().push(PendingDashboardEvent::AppsResult {
+                            success: false,
+                            error_msg: "Failed to serialize apps".to_string(),
+                            host_id: host_id_str,
+                            apps_json: "".to_string(),
+                        });
+                    }
+                }
+                Ok(Err(e)) => {
+                    PENDING_EVENTS.lock().unwrap().push(PendingDashboardEvent::AppsResult {
+                        success: false,
+                        error_msg: e,
+                        host_id: host_id_str,
+                        apps_json: "".to_string(),
+                    });
+                }
+                Err(_) => {
+                    PENDING_EVENTS.lock().unwrap().push(PendingDashboardEvent::AppsResult {
+                        success: false,
+                        error_msg: "Timed out waiting for application list".to_string(),
+                        host_id: host_id_str,
+                        apps_json: "".to_string(),
+                    });
+                }
+            }
+        });
+    }
+
+    pub fn start_game_session(
+        mut self: Pin<&mut Self>,
+        server: QString,
+        token: QString,
+        host_id: QString,
+        host_name: QString,
+        app_id: i32,
+        res: QString,
+        fps: i32,
+        codec: QString,
+        bitrate: i32,
+        mouse_queue_limit: i32,
+    ) {
+        let server_str = server.to_string();
+        let token_str = token.to_string();
+        let host_id_str = host_id.to_string();
+        let host_name_str = host_name.to_string();
+        let res_str = res.to_string();
+        let codec_str = codec.to_string().to_lowercase();
+
+        let mut width = 1280;
+        let mut height = 720;
+        if res_str.contains('x') {
+            let parts: Vec<&str> = res_str.split('x').collect();
+            if parts.len() == 2 {
+                if let (Ok(w), Ok(h)) = (parts[0].parse::<u32>(), parts[1].parse::<u32>()) {
+                    width = w;
+                    height = h;
+                }
+            }
+        }
+
+        let app_id_opt = if app_id < 0 { None } else { Some(app_id as u32) };
+
+        let args = AppArgs {
+            host_id: host_id_str,
+            server_url: server_str,
+            token: token_str,
+            width,
+            height,
+            fps: fps as u32,
+            bitrate: bitrate as u32,
+            codec: codec_str,
+            app_id: app_id_opt,
+            mouse_queue_limit: mouse_queue_limit as u32,
+            host_name: host_name_str,
+        };
+
+        {
+            let mut active_config_lock = ACTIVE_CONFIG.lock().unwrap();
+            *active_config_lock = Some(args);
+        }
+
+        println!("Configuring session from dashboard. Launching stream...");
+        self.as_mut().start_stream();
+    }
+
+    pub fn poll_events(mut self: Pin<&mut Self>) {
+        let events = {
+            let mut lock = PENDING_EVENTS.lock().unwrap();
+            std::mem::take(&mut *lock)
+        };
+        for event in events {
+            match event {
+                PendingDashboardEvent::LoginResult { success, error_msg, token, username, server } => {
+                    let err_qstr = QString::from(&error_msg);
+                    let tok_qstr = QString::from(&token);
+                    let user_qstr = QString::from(&username);
+                    let srv_qstr = QString::from(&server);
+                    self.as_mut().login_result(success, err_qstr, tok_qstr, user_qstr, srv_qstr);
+                }
+                PendingDashboardEvent::RegisterResult { success, error_msg, token, username, server } => {
+                    let err_qstr = QString::from(&error_msg);
+                    let tok_qstr = QString::from(&token);
+                    let user_qstr = QString::from(&username);
+                    let srv_qstr = QString::from(&server);
+                    self.as_mut().register_result(success, err_qstr, tok_qstr, user_qstr, srv_qstr);
+                }
+                PendingDashboardEvent::HostsResult { success, error_msg, hosts_json } => {
+                    let err_qstr = QString::from(&error_msg);
+                    let hosts_qstr = QString::from(&hosts_json);
+                    self.as_mut().hosts_result(success, err_qstr, hosts_qstr);
+                }
+                PendingDashboardEvent::PairResult { success, error_msg } => {
+                    let err_qstr = QString::from(&error_msg);
+                    self.as_mut().pair_result(success, err_qstr);
+                }
+                PendingDashboardEvent::UnpairResult { success, error_msg } => {
+                    let err_qstr = QString::from(&error_msg);
+                    self.as_mut().unpair_result(success, err_qstr);
+                }
+                PendingDashboardEvent::AppsResult { success, error_msg, host_id, apps_json } => {
+                    let err_qstr = QString::from(&error_msg);
+                    let host_qstr = QString::from(&host_id);
+                    let apps_qstr = QString::from(&apps_json);
+                    self.as_mut().apps_result(success, err_qstr, host_qstr, apps_qstr);
+                }
+                PendingDashboardEvent::CredentialsLoaded { success, server, token, username } => {
+                    let srv_qstr = QString::from(&server);
+                    let tok_qstr = QString::from(&token);
+                    let user_qstr = QString::from(&username);
+                    self.as_mut().credentials_loaded(success, srv_qstr, tok_qstr, user_qstr);
+                }
+                PendingDashboardEvent::AgentTokenResult { success, error_msg, token } => {
+                    let err_qstr = QString::from(&error_msg);
+                    let tok_qstr = QString::from(&token);
+                    self.as_mut().agent_token_result(success, err_qstr, tok_qstr);
+                }
+            }
+
+        }
+    }
+
+    pub fn fetch_agent_token(
+        self: Pin<&mut Self>,
+        server: QString,
+        token: QString,
+    ) {
+        let server_str = server.to_string();
+        let token_str = token.to_string();
+
+        let mut rust_obj = self.rust_mut();
+        let rt = rust_obj.get_or_init_runtime();
+
+        rt.spawn(async move {
+            let client = reqwest::Client::new();
+            let url = format!("{}/api/agent/token", server_str.trim_end_matches('/'));
+            let res = client.get(&url)
+                .header("Authorization", format!("Bearer {}", token_str))
+                .send()
+                .await;
+
+            match res {
+                Ok(resp) => {
+                    let status = resp.status();
+                    let text = resp.text().await.unwrap_or_default();
+                    if status.is_success() {
+                        if let Ok(data) = serde_json::from_str::<serde_json::Value>(&text) {
+                            if let Some(agent_tok) = data.get("token").and_then(|t| t.as_str()) {
+                                PENDING_EVENTS.lock().unwrap().push(PendingDashboardEvent::AgentTokenResult {
+                                    success: true,
+                                    error_msg: "".to_string(),
+                                    token: agent_tok.to_string(),
+                                });
+                                return;
+                            }
+                        }
+                    }
+                    
+                    let err_msg = if let Ok(err_data) = serde_json::from_str::<serde_json::Value>(&text) {
+                        err_data.get("error")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("Failed to fetch agent token")
+                            .to_string()
+                    } else {
+                        "Failed to fetch agent token".to_string()
+                    };
+
+                    PENDING_EVENTS.lock().unwrap().push(PendingDashboardEvent::AgentTokenResult {
+                        success: false,
+                        error_msg: err_msg,
+                        token: "".to_string(),
+                    });
+                }
+                Err(e) => {
+                    let err_msg = format!("Connection failed: {}", e);
+                    PENDING_EVENTS.lock().unwrap().push(PendingDashboardEvent::AgentTokenResult {
+                        success: false,
+                        error_msg: err_msg,
+                        token: "".to_string(),
+                    });
+                }
+            }
+        });
+    }
+
+    pub fn start_local_agent(
+        self: Pin<&mut Self>,
+        server: QString,
+        token: QString,
+        name: QString,
+    ) {
+        let server_str = server.to_string();
+        let token_str = token.to_string();
+        let name_str = name.to_string();
+
+        // 1. Prepare agent config json
+        let config_path = prepare_agent_config(&server_str, &token_str);
+
+        // 2. Locate agent executable
+        let exe_dir = std::env::current_exe().ok().and_then(|mut path| {
+            path.pop();
+            Some(path)
+        });
+
+        if let Some(mut path) = exe_dir {
+            #[cfg(target_os = "windows")]
+            let agent_name = "agent.exe";
+            #[cfg(not(target_os = "windows"))]
+            let agent_name = "agent";
+            path.push(agent_name);
+
+            if path.exists() {
+                let config_path_str = config_path.to_string_lossy().to_string();
+                
+                // Stop any running local agent first
+                stop_local_agent();
+
+                // Spawn subprocess
+                let child = std::process::Command::new(path)
+                    .arg("--config")
+                    .arg(config_path_str)
+                    .arg("--name")
+                    .arg(&name_str)
+                    .arg("--server")
+                    .arg(&server_str)
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn();
+
+                match child {
+                    Ok(c) => {
+                        let mut lock = LOCAL_AGENT_CHILD.lock().unwrap();
+                        *lock = Some(c);
+                        println!("Spawned local agent process successfully.");
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to spawn local agent: {:?}", e);
+                    }
+                }
+            } else {
+                eprintln!("Local agent executable not found at: {:?}", path);
+            }
+        }
+    }
+
+    pub fn stop_local_agent(self: Pin<&mut Self>) {
+        stop_local_agent();
+    }
+
+    pub fn is_local_agent_running(self: Pin<&mut Self>) -> bool {
+        let mut lock = LOCAL_AGENT_CHILD.lock().unwrap();
+        if let Some(child) = lock.as_mut() {
+            match child.try_wait() {
+                Ok(None) => true,
+                _ => {
+                    *lock = None;
+                    false
+                }
+            }
+        } else {
+            false
+        }
+    }
+
+    pub fn get_local_hostname(self: Pin<&mut Self>) -> QString {
+        let name = hostname::get()
+            .ok()
+            .and_then(|s| s.into_string().ok())
+            .unwrap_or_else(|| "Local Host".to_string());
+        QString::from(&name)
+    }
 }
+
+pub fn stop_local_agent() {
+    let mut lock = LOCAL_AGENT_CHILD.lock().unwrap();
+    if let Some(mut child) = lock.take() {
+        let _ = child.kill();
+        let _ = child.wait();
+        println!("Local agent stopped.");
+    }
+}
+
+
 
 // -----------------------------------------------------------------------------
 // WebRTC and network handling logic (Tokio Task)
