@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -30,7 +31,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Build
-        run: cargo build --release --workspace
+        run: cargo build --release --bin server --bin agent
 
       - name: Upload Server Artifact
         uses: actions/upload-artifact@v4
