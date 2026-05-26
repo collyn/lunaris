@@ -75,12 +75,47 @@ jobs:
           name: client-linux
           path: target/release/client
 
+      - name: Upload Client Desktop Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: client-desktop-linux
+          path: target/release/client-desktop
+
   build-windows:
     name: Build Windows
     runs-on: windows-latest
+    env:
+      VCPKG_ROOT: ${{ github.workspace }}\vcpkg-dirs
+      VCPKG_DEFAULT_TRIPLET: x64-windows
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: web/package-lock.json
+
+      - name: Setup vcpkg path
+        run: |
+          mkdir -p ${{ env.VCPKG_ROOT }}
+          echo "VCPKG_ROOT=${{ env.VCPKG_ROOT }}" >> $GITHUB_ENV
+        shell: bash
+
+      - name: Install dependencies via vcpkg
+        run: |
+          vcpkg install sdl2:x64-windows ffmpeg:x64-windows
+        shell: pwsh
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v3
+        with:
+          version: '6.5.3'
+          host: 'windows'
+          target: 'desktop'
+          arch: 'win64_msvc2019_64'
 
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@v1
@@ -90,14 +125,50 @@ jobs:
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
 
-      - name: Build
-        run: cargo build --release --bin agent
+      - name: Build Web Frontend
+        run: |
+          cd web
+          npm ci || npm install
+          npm run build
+        shell: bash
+
+      - name: Build Rust Workspace
+        run: cargo build --release --workspace
+        env:
+          VCPKG_ROOT: ${{ env.VCPKG_ROOT }}
+        shell: bash
+
+      - name: Package Server and Web
+        run: |
+          mkdir -p lunaris-server/web
+          cp target/release/server.exe lunaris-server/
+          cp -r web/dist lunaris-server/web/dist
+          compress-archive -Path lunaris-server/* -DestinationPath lunaris-server-windows.zip
+        shell: pwsh
+
+      - name: Upload Server Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: server-windows
+          path: lunaris-server-windows.zip
 
       - name: Upload Agent Artifact
         uses: actions/upload-artifact@v4
         with:
           name: agent-windows
           path: target/release/agent.exe
+
+      - name: Upload Client Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: client-windows
+          path: target/release/client.exe
+
+      - name: Upload Client Desktop Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: client-desktop-windows
+          path: target/release/client-desktop.exe
 
   build-macos:
     name: Build macOS
@@ -108,6 +179,18 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install system dependencies
+        run: |
+          brew update
+          brew install qt6 sdl2 ffmpeg pkg-config
+
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@v1
         with:
@@ -117,22 +200,53 @@ jobs:
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
 
-      - name: Build Apple Silicon (M1/M2/M3)
-        run: cargo build --release --bin agent --target aarch64-apple-darwin
+      - name: Build Web Frontend
+        run: |
+          cd web
+          npm ci || npm install
+          npm run build
 
-      - name: Build Intel x86_64
+      - name: Build Rust Workspace (Native Target)
+        run: cargo build --release --workspace
+
+      - name: Build Agent for Intel x86_64 (Cross-Compile)
         run: cargo build --release --bin agent --target x86_64-apple-darwin
 
-      - name: Create Universal Binary
+      - name: Create Universal Agent Binary
         run: |
           mkdir -p target/release/macos
-          lipo -create target/aarch64-apple-darwin/release/agent target/x86_64-apple-darwin/release/agent -output target/release/macos/agent
+          lipo -create target/release/agent target/x86_64-apple-darwin/release/agent -output target/release/macos/agent
+
+      - name: Package Server and Web
+        run: |
+          mkdir -p lunaris-server/web
+          cp target/release/server lunaris-server/
+          cp -r web/dist lunaris-server/web/dist
+          tar -czf lunaris-server-macos.tar.gz -C lunaris-server .
+
+      - name: Upload Server Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: server-macos
+          path: lunaris-server-macos.tar.gz
 
       - name: Upload Agent Artifact
         uses: actions/upload-artifact@v4
         with:
           name: agent-macos
           path: target/release/macos/agent
+
+      - name: Upload Client Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: client-macos
+          path: target/release/client
+
+      - name: Upload Client Desktop Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: client-desktop-macos
+          path: target/release/client-desktop
 
   release:
     name: Create Release
@@ -142,6 +256,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # Download Linux Artifacts
       - name: Download Linux Server Artifact
         uses: actions/download-artifact@v4
         with:
@@ -160,11 +275,43 @@ jobs:
           name: client-linux
           path: ./artifacts/linux-client
 
+      - name: Download Linux Client Desktop Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: client-desktop-linux
+          path: ./artifacts/linux-client-desktop
+
+      # Download Windows Artifacts
+      - name: Download Windows Server Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: server-windows
+          path: ./artifacts/windows-server
+
       - name: Download Windows Agent Artifact
         uses: actions/download-artifact@v4
         with:
           name: agent-windows
           path: ./artifacts/windows-agent
+
+      - name: Download Windows Client Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: client-windows
+          path: ./artifacts/windows-client
+
+      - name: Download Windows Client Desktop Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: client-desktop-windows
+          path: ./artifacts/windows-client-desktop
+
+      # Download macOS Artifacts
+      - name: Download macOS Server Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: server-macos
+          path: ./artifacts/macos-server
 
       - name: Download macOS Agent Artifact
         uses: actions/download-artifact@v4
@@ -172,17 +319,46 @@ jobs:
           name: agent-macos
           path: ./artifacts/macos-agent
 
+      - name: Download macOS Client Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: client-macos
+          path: ./artifacts/macos-client
+
+      - name: Download macOS Client Desktop Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: client-desktop-macos
+          path: ./artifacts/macos-client-desktop
+
       - name: Organize Release Files
         run: |
           mkdir -p release-files
+          
+          # Linux
           mv ./artifacts/linux-server/lunaris-server-linux.tar.gz ./release-files/
-          mv ./artifacts/linux-client/client ./release-files/lunaris-client-linux
           mv ./artifacts/linux-agent/agent ./release-files/lunaris-agent-linux
+          mv ./artifacts/linux-client/client ./release-files/lunaris-client-linux
+          mv ./artifacts/linux-client-desktop/client-desktop ./release-files/lunaris-client-desktop-linux
+          
+          # Windows
+          mv ./artifacts/windows-server/lunaris-server-windows.zip ./release-files/
           mv ./artifacts/windows-agent/agent.exe ./release-files/lunaris-agent-windows.exe
+          mv ./artifacts/windows-client/client.exe ./release-files/lunaris-client-windows.exe
+          mv ./artifacts/windows-client-desktop/client-desktop.exe ./release-files/lunaris-client-desktop-windows.exe
+          
+          # macOS
+          mv ./artifacts/macos-server/lunaris-server-macos.tar.gz ./release-files/
           mv ./artifacts/macos-agent/agent ./release-files/lunaris-agent-macos
-          chmod +x ./release-files/lunaris-client-linux
+          mv ./artifacts/macos-client/client ./release-files/lunaris-client-macos
+          mv ./artifacts/macos-client-desktop/client-desktop ./release-files/lunaris-client-desktop-macos
+          
           chmod +x ./release-files/lunaris-agent-linux
+          chmod +x ./release-files/lunaris-client-linux
+          chmod +x ./release-files/lunaris-client-desktop-linux
           chmod +x ./release-files/lunaris-agent-macos
+          chmod +x ./release-files/lunaris-client-macos
+          chmod +x ./release-files/lunaris-client-desktop-macos
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -194,8 +370,15 @@ jobs:
           files: |
             release-files/lunaris-server-linux.tar.gz
             release-files/lunaris-client-linux
+            release-files/lunaris-client-desktop-linux
             release-files/lunaris-agent-linux
+            release-files/lunaris-server-windows.zip
+            release-files/lunaris-client-windows.exe
+            release-files/lunaris-client-desktop-windows.exe
             release-files/lunaris-agent-windows.exe
+            release-files/lunaris-server-macos.tar.gz
+            release-files/lunaris-client-macos
+            release-files/lunaris-client-desktop-macos
             release-files/lunaris-agent-macos
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
