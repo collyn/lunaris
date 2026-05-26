@@ -19,7 +19,7 @@ Rectangle {
     property bool isLoggedIn: false
     property string authError: ""
     property bool authLoading: false
-    property bool isRegisterMode: false
+
 
     property var hostsList: []
     property bool hostsLoading: false
@@ -81,19 +81,7 @@ Rectangle {
             }
         }
 
-        function onRegisterResult(success, errorMsg, tok, user, srv) {
-            dashboardRoot.authLoading = false;
-            if (success) {
-                dashboardRoot.token = tok;
-                dashboardRoot.username = user;
-                dashboardRoot.serverUrl = srv;
-                dashboardRoot.isLoggedIn = true;
-                dashboardRoot.authError = "";
-                bridge.fetchHosts();
-            } else {
-                dashboardRoot.authError = errorMsg;
-            }
-        }
+
 
         function onCredentialsLoaded(success, srv, tok, user) {
             if (success) {
@@ -228,7 +216,7 @@ Rectangle {
             Rectangle {
                 anchors.centerIn: parent
                 width: 420
-                height: dashboardRoot.isRegisterMode ? 520 : 440
+                height: 440
                 radius: 20
                 color: Qt.rgba(15/255, 22/255, 38/255, 0.8)
                 border.color: Qt.rgba(255/255, 255/255, 255/255, 0.08)
@@ -254,7 +242,7 @@ Rectangle {
                     }
 
                     Text {
-                        text: dashboardRoot.isRegisterMode ? "Create an account to begin streaming" : "Sign in to connect to hosts"
+                        text: "Sign in to connect to hosts"
                         font.pixelSize: 12
                         color: "#94a3b8"
                         anchors.horizontalCenter: parent.horizontalCenter
@@ -330,38 +318,14 @@ Rectangle {
                                     verticalAlignment: Text.AlignVCenter
                                     selectByMouse: true
                                     activeFocusOnTab: true
-                                    KeyNavigation.tab: dashboardRoot.isRegisterMode ? confirmPasswordInput : serverInput
-                                    Keys.onReturnPressed: { if (!dashboardRoot.isRegisterMode) submitButton.clicked(); else confirmPasswordInput.forceActiveFocus(); }
-                                    Keys.onEnterPressed: { if (!dashboardRoot.isRegisterMode) submitButton.clicked(); else confirmPasswordInput.forceActiveFocus(); }
-                                }
-                            }
-                        }
-
-                        // Confirm Password (Register mode only)
-                        Column {
-                            width: parent.width
-                            spacing: 6
-                            visible: dashboardRoot.isRegisterMode
-                            Text { text: "Confirm Password"; color: "#cbd5e1"; font.pixelSize: 11; font.bold: true }
-                            Rectangle {
-                                width: parent.width; height: 38; color: "#0f172a"; radius: 8; border.color: confirmPasswordInput.activeFocus ? "#00f0ff" : Qt.rgba(255, 255, 255, 0.08)
-                                border.width: 1
-                                TextInput {
-                                    id: confirmPasswordInput
-                                    anchors.fill: parent; anchors.margins: 10
-                                    color: "#ffffff"; font.pixelSize: 13
-                                    text: ""
-                                    echoMode: TextInput.Password
-                                    verticalAlignment: Text.AlignVCenter
-                                    selectByMouse: true
-                                    visible: dashboardRoot.isRegisterMode
-                                    activeFocusOnTab: true
                                     KeyNavigation.tab: serverInput
                                     Keys.onReturnPressed: submitButton.clicked()
                                     Keys.onEnterPressed: submitButton.clicked()
                                 }
                             }
                         }
+
+
                     }
 
                     // Error text
@@ -386,17 +350,8 @@ Rectangle {
                                 dashboardRoot.authError = "All fields are required";
                                 return;
                             }
-                            if (dashboardRoot.isRegisterMode && passwordInput.text !== confirmPasswordInput.text) {
-                                dashboardRoot.authError = "Passwords do not match";
-                                return;
-                            }
-
                             dashboardRoot.authLoading = true;
-                            if (dashboardRoot.isRegisterMode) {
-                                bridge.registerUser(serverInput.text.trim(), usernameInput.text.trim(), passwordInput.text);
-                            } else {
-                                bridge.login(serverInput.text.trim(), usernameInput.text.trim(), passwordInput.text);
-                            }
+                            bridge.login(serverInput.text.trim(), usernameInput.text.trim(), passwordInput.text);
                         }
 
                         background: Rectangle {
@@ -409,7 +364,7 @@ Rectangle {
                         contentItem: Item {
                             anchors.fill: parent
                             Text {
-                                text: dashboardRoot.authLoading ? "Authenticating..." : (dashboardRoot.isRegisterMode ? "REGISTER" : "LOGIN")
+                                text: dashboardRoot.authLoading ? "Authenticating..." : "LOGIN"
                                 color: "#000000"
                                 font.bold: true
                                 font.pixelSize: 13
@@ -419,23 +374,7 @@ Rectangle {
                         }
                     }
 
-                    // Toggle Link
-                    Text {
-                        text: dashboardRoot.isRegisterMode ? "Already have an account? Login" : "Don't have an account? Register"
-                        font.pixelSize: 12
-                        color: toggleMouseArea.containsMouse ? "#00f0ff" : "#818cf8"
-                        anchors.horizontalCenter: parent.horizontalCenter
 
-                        MouseArea {
-                            id: toggleMouseArea
-                            anchors.fill: parent
-                            hoverEnabled: true
-                            onClicked: {
-                                dashboardRoot.authError = "";
-                                dashboardRoot.isRegisterMode = !dashboardRoot.isRegisterMode;
-                            }
-                        }
-                    }
                 }
             }
         }

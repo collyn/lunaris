@@ -20,6 +20,7 @@ pub struct LoginRequest {
 pub struct AuthResponse {
     pub token: String,
     pub username: String,
+    pub role: String,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -47,6 +48,83 @@ pub enum HostStatus {
     Online,
     Offline,
     Busy,
+}
+
+// --- ADMIN API TYPES ---
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct UserInfo {
+    pub id: String,
+    pub username: String,
+    pub role: String,
+    pub is_active: bool,
+    pub groups: Vec<GroupBrief>,
+    pub created_at: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct GroupBrief {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct GroupInfo {
+    pub id: String,
+    pub name: String,
+    pub note: String,
+    pub user_count: i64,
+    pub host_count: i64,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct GroupDetail {
+    pub id: String,
+    pub name: String,
+    pub note: String,
+    pub users: Vec<UserBrief>,
+    pub hosts: Vec<HostBrief>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct UserBrief {
+    pub id: String,
+    pub username: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct HostBrief {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct CreateUserRequest {
+    pub username: String,
+    pub password: String,
+    pub role: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct UpdateUserRequest {
+    pub role: Option<String>,
+    pub is_active: Option<bool>,
+    pub password: Option<String>,
+    pub group_ids: Option<Vec<String>>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct CreateGroupRequest {
+    pub name: String,
+    pub note: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct UpdateGroupRequest {
+    pub name: Option<String>,
+    pub note: Option<String>,
+    pub user_ids: Option<Vec<String>>,
+    pub host_ids: Option<Vec<String>>,
 }
 
 // --- WEBSOCKET SIGNALING TYPES ---

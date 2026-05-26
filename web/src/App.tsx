@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { StreamPlayer } from './components/StreamPlayer';
+import { AdminUsers } from './components/AdminUsers';
+import { AdminGroups } from './components/AdminGroups';
 import './App.css';
 
 interface Host {
@@ -89,13 +91,15 @@ function App() {
   }, []);
   
   // Auth Form State
-  const [isRegister, setIsRegister] = useState<boolean>(false);
   const [authUsername, setAuthUsername] = useState<string>('');
   const [authPassword, setAuthPassword] = useState<string>('');
-  const [authConfirmPassword, setAuthConfirmPassword] = useState<string>('');
   const [authServerHost, setAuthServerHost] = useState<string>(() => localStorage.getItem('lunaris_server_host') || 'http://localhost:8080');
   const [authError, setAuthError] = useState<string | null>(null);
   const [authLoading, setAuthLoading] = useState<boolean>(false);
+
+  // Admin State
+  const [userRole, setUserRole] = useState<string | null>(localStorage.getItem('lunaris_role'));
+  const [activeTab, setActiveTab] = useState<'devices' | 'users' | 'groups'>('devices');
 
   // Dashboard State
   const [hosts, setHosts] = useState<Host[]>([]);
@@ -377,6 +381,28 @@ function App() {
     }
   }, [token]);
 
+  // Fetch user role on mount
+  useEffect(() => {
+    if (token) {
+      const fetchMe = async () => {
+        try {
+          const serverHost = getBackendHost();
+          const response = await fetch(`${getBackendProtocol().http}//${serverHost}/api/auth/me`, {
+            headers: { 'Authorization': `Bearer ${token}` }
+          });
+          if (response.ok) {
+            const data = await response.json();
+            setUserRole(data.role);
+            localStorage.setItem('lunaris_role', data.role);
+          }
+        } catch (err) {
+          console.error('Failed to fetch user info:', err);
+        }
+      };
+      fetchMe();
+    }
+  }, [token]);
+
   useEffect(() => {
     if (!viewingHost || !token) {
       setViewingApps(null);
@@ -459,13 +485,9 @@ function App() {
       setAuthError("Password must be at least 6 characters long");
       return;
     }
-    if (isRegister && authPassword !== authConfirmPassword) {
-      setAuthError("Passwords do not match");
-      return;
-    }
 
     setAuthLoading(true);
-    const endpoint = isRegister ? '/api/auth/register' : '/api/auth/login';
+    const endpoint = '/api/auth/login';
     
     // Save to localStorage so getBackendHost/getBackendProtocol resolves correctly
     localStorage.setItem('lunaris_server_host', authServerHost);
@@ -493,12 +515,15 @@ function App() {
         localStorage.setItem('lunaris_token', data.token);
         localStorage.setItem('lunaris_username', data.username);
         localStorage.setItem('lunaris_server_host', authServerHost);
+        if (data.role) {
+          localStorage.setItem('lunaris_role', data.role);
+          setUserRole(data.role);
+        }
         setToken(data.token);
         setUsername(data.username);
         // Clear fields
         setAuthUsername('');
         setAuthPassword('');
-        setAuthConfirmPassword('');
       } else {
         setAuthError(data.error || "Authentication failed");
       }
@@ -512,8 +537,11 @@ function App() {
   const handleLogout = () => {
     localStorage.removeItem('lunaris_token');
     localStorage.removeItem('lunaris_username');
+    localStorage.removeItem('lunaris_role');
     setToken(null);
     setUsername(null);
+    setUserRole(null);
+    setActiveTab('devices');
     setHosts([]);
     setSelectedHost(null);
   };
@@ -689,8 +717,8 @@ function App() {
           <div className="auth-card-wrapper">
             <div className="auth-card">
               <div className="auth-header">
-                <h2>{isRegister ? 'Create Account' : 'Welcome Back'}</h2>
-                <p>{isRegister ? 'Register your Lunaris account' : 'Access your remote desktop network'}</p>
+                <h2>Welcome Back</h2>
+                <p>Access your remote desktop network</p>
               </div>
 
               {authError && (
@@ -735,47 +763,18 @@ function App() {
                     onChange={(e) => setAuthPassword(e.target.value)}
                     placeholder="Enter password (min 6 chars)"
                     required
-                    autoComplete={isRegister ? "new-password" : "current-password"}
+                    autoComplete="current-password"
                   />
                 </div>
-
-                {isRegister && (
-                  <div className="form-group">
-                    <label htmlFor="confirmPassword">Confirm Password</label>
-                    <input
-                      type="password"
-                      id="confirmPassword"
-                      value={authConfirmPassword}
-                      onChange={(e) => setAuthConfirmPassword(e.target.value)}
-                      placeholder="Verify password"
-                      required
-                      autoComplete="new-password"
-                    />
-                  </div>
-                )}
 
                 <button type="submit" disabled={authLoading} className="btn-primary auth-submit-btn">
                   {authLoading ? (
                     <div className="inline-loader"></div>
                   ) : (
-                    isRegister ? 'Register' : 'Connect Account'
+                    'Sign In'
                   )}
                 </button>
               </form>
-
-              <div className="auth-switch-prompt">
-                <span>{isRegister ? 'Already have an account?' : 'New to Lunaris?'}</span>
-                <button 
-                  type="button" 
-                  onClick={() => {
-                    setIsRegister(!isRegister);
-                    setAuthError(null);
-                  }}
-                  className="btn-link"
-                >
-                  {isRegister ? 'Login' : 'Create an account'}
-                </button>
-              </div>
             </div>
           </div>
         ) : showPairingPage ? (
@@ -944,363 +943,412 @@ function App() {
           /* Main Dashboard - Full Width */
           <div className="dashboard-full-width">
             <div className="dashboard-main full-width">
-              {viewingHost ? (
-                <div className="apps-directory-view">
-                  <div className="apps-navigation">
-                    <button 
-                      onClick={() => setViewingHost(null)} 
-                      className="btn-back-nav"
-                      title="Back to Device Directory"
-                    >
-                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{ marginRight: '6px' }}>
-                        <line x1="19" y1="12" x2="5" y2="12"></line>
-                        <polyline points="12 19 5 12 12 5"></polyline>
-                      </svg>
-                      Back to Directory
-                    </button>
-                    <div className="breadcrumbs">
-                      <span className="breadcrumb-item">Device Directory</span>
-                      <span className="breadcrumb-separator">/</span>
-                      <span className="breadcrumb-item active">{viewingHost.name}</span>
-                    </div>
-                  </div>
+              {/* Navigation Tabs */}
+              {userRole === 'admin' && !viewingHost && !showPairingPage && (
+                <div className="admin-nav-tabs">
+                  <button
+                    className={`nav-tab ${activeTab === 'devices' ? 'active' : ''}`}
+                    onClick={() => setActiveTab('devices')}
+                  >
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/>
+                      <line x1="8" y1="21" x2="16" y2="21"/>
+                      <line x1="12" y1="17" x2="12" y2="21"/>
+                    </svg>
+                    Devices
+                  </button>
+                  <button
+                    className={`nav-tab ${activeTab === 'users' ? 'active' : ''}`}
+                    onClick={() => setActiveTab('users')}
+                  >
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
+                      <circle cx="12" cy="7" r="4"/>
+                    </svg>
+                    Users
+                  </button>
+                  <button
+                    className={`nav-tab ${activeTab === 'groups' ? 'active' : ''}`}
+                    onClick={() => setActiveTab('groups')}
+                  >
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
+                      <circle cx="9" cy="7" r="4"/>
+                      <path d="M23 21v-2a4 4 0 0 0-3-3.87"/>
+                      <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+                    </svg>
+                    Groups
+                  </button>
+                </div>
+              )}
 
-                  <div className="section-header">
-                    <div>
-                      <h1 className="section-title">Applications Directory</h1>
-                      <p className="section-subtitle">Select and stream Sunshine-configured apps from <strong>{viewingHost.name}</strong></p>
-                    </div>
-                  </div>
+              {activeTab === 'devices' && (
+                <>
+                  {viewingHost ? (
+                    <div className="apps-directory-view">
+                      <div className="apps-navigation">
+                        <button 
+                          onClick={() => setViewingHost(null)} 
+                          className="btn-back-nav"
+                          title="Back to Device Directory"
+                        >
+                          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{ marginRight: '6px' }}>
+                            <line x1="19" y1="12" x2="5" y2="12"></line>
+                            <polyline points="12 19 5 12 12 5"></polyline>
+                          </svg>
+                          Back to Directory
+                        </button>
+                        <div className="breadcrumbs">
+                          <span className="breadcrumb-item">Device Directory</span>
+                          <span className="breadcrumb-separator">/</span>
+                          <span className="breadcrumb-item active">{viewingHost.name}</span>
+                        </div>
+                      </div>
 
-                  {viewingAppsLoading ? (
-                    <div className="loading-card">
-                      <div className="tech-loader"></div>
-                      <div>Scanning applications on {viewingHost.name}...</div>
-                    </div>
-                  ) : viewingAppsError ? (
-                    <div className="error-card">
-                      <div className="error-title">⚠️ Connection Error</div>
-                      <div className="error-desc">{viewingAppsError}</div>
-                      <button 
-                        onClick={() => {
-                          const h = viewingHost;
-                          setViewingHost(null);
-                          setTimeout(() => setViewingHost(h), 50);
-                        }} 
-                        className="btn-secondary"
-                      >
-                        Retry Scan
-                      </button>
-                    </div>
-                  ) : viewingApps && viewingApps.length === 0 ? (
-                    <div className="empty-card">
-                      <div className="empty-icon">🎮</div>
-                      <h3>No Applications Found</h3>
-                      <p>There are no Sunshine applications configured on {viewingHost.name}.</p>
-                      <p className="empty-hint">Please open Sunshine Web UI on the host and add applications first.</p>
-                    </div>
-                  ) : viewingApps ? (
-                    <div className="apps-card-grid">
-                      {viewingApps.map((app) => (
-                        <div key={app.id} className="app-portrait-card">
-                          <div className="app-card-glow"></div>
-                          
-                          {/* Box Art Cover */}
-                          <div className="app-cover-wrapper">
-                            {app.icon_base64 ? (
-                              <img 
-                                src={`data:image/png;base64,${app.icon_base64}`} 
-                                alt={app.title} 
-                                className="app-cover-image"
-                              />
-                            ) : (
-                              <div className="app-cover-placeholder">
-                                <div className="fallback-card-gradient">
-                                  <div className="fallback-icon">
-                                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                                      <rect x="2" y="6" width="20" height="12" rx="3" />
-                                      <line x1="6" y1="12" x2="10" y2="12" />
-                                      <line x1="8" y1="10" x2="8" y2="14" />
-                                      <line x1="15" y1="13" x2="15.01" y2="13" />
-                                      <line x1="18" y1="11" x2="18.01" y2="11" />
-                                    </svg>
+                      <div className="section-header">
+                        <div>
+                          <h1 className="section-title">Applications Directory</h1>
+                          <p className="section-subtitle">Select and stream Sunshine-configured apps from <strong>{viewingHost.name}</strong></p>
+                        </div>
+                      </div>
+
+                      {viewingAppsLoading ? (
+                        <div className="loading-card">
+                          <div className="tech-loader"></div>
+                          <div>Scanning applications on {viewingHost.name}...</div>
+                        </div>
+                      ) : viewingAppsError ? (
+                        <div className="error-card">
+                          <div className="error-title">⚠️ Connection Error</div>
+                          <div className="error-desc">{viewingAppsError}</div>
+                          <button 
+                            onClick={() => {
+                              const h = viewingHost;
+                              setViewingHost(null);
+                              setTimeout(() => setViewingHost(h), 50);
+                            }} 
+                            className="btn-secondary"
+                          >
+                            Retry Scan
+                          </button>
+                        </div>
+                      ) : viewingApps && viewingApps.length === 0 ? (
+                        <div className="empty-card">
+                          <div className="empty-icon">🎮</div>
+                          <h3>No Applications Found</h3>
+                          <p>There are no Sunshine applications configured on {viewingHost.name}.</p>
+                          <p className="empty-hint">Please open Sunshine Web UI on the host and add applications first.</p>
+                        </div>
+                      ) : viewingApps ? (
+                        <div className="apps-card-grid">
+                          {viewingApps.map((app) => (
+                            <div key={app.id} className="app-portrait-card">
+                              <div className="app-card-glow"></div>
+                              
+                              {/* Box Art Cover */}
+                              <div className="app-cover-wrapper">
+                                {app.icon_base64 ? (
+                                  <img 
+                                    src={`data:image/png;base64,${app.icon_base64}`} 
+                                    alt={app.title} 
+                                    className="app-cover-image"
+                                  />
+                                ) : (
+                                  <div className="app-cover-placeholder">
+                                    <div className="fallback-card-gradient">
+                                      <div className="fallback-icon">
+                                        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                                          <rect x="2" y="6" width="20" height="12" rx="3" />
+                                          <line x1="6" y1="12" x2="10" y2="12" />
+                                          <line x1="8" y1="10" x2="8" y2="14" />
+                                          <line x1="15" y1="13" x2="15.01" y2="13" />
+                                          <line x1="18" y1="11" x2="18.01" y2="11" />
+                                        </svg>
+                                      </div>
+                                      <span className="fallback-title">{app.title}</span>
+                                    </div>
                                   </div>
-                                  <span className="fallback-title">{app.title}</span>
-                                </div>
-                              </div>
-                            )}
-                          </div>
-
-                          {/* Hover Overlay */}
-                          <div className="app-hover-overlay">
-                            <div className="overlay-content">
-                              {/* Play Button - Launch Stream in browser */}
-                              <button 
-                                onClick={() => {
-                                  setSelectedAppId(app.id);
-                                  setSelectedHost(currentViewingHost || viewingHost);
-                                }}
-                                className="overlay-btn btn-play"
-                                title="Launch Web Stream (In Browser)"
-                              >
-                                <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
-                                  <polygon points="6 4 20 12 6 20 6 4" />
-                                </svg>
-                              </button>
-
-                              {/* Title overlay in Moonlight style */}
-                              <div className="overlay-app-title" title={app.title}>
-                                {app.title}
-                              </div>
-
-                              {/* Action Row */}
-                              <div className="overlay-bottom-actions">
-                                {/* Launch Native App */}
-                                <button 
-                                  onClick={() => {
-                                    const protocol = getBackendProtocol().http;
-                                    const serverHost = getBackendHost();
-                                    const serverUrl = `${protocol}//${serverHost}`;
-                                    const rawRes = localStorage.getItem('lunaris_stream_res') || '1080p';
-                                    const resStr = rawRes === '720p' ? '1280x720' : rawRes === '540p' ? '960x540' : (rawRes.includes('x') ? rawRes : '1920x1080');
-                                    const fps = localStorage.getItem('lunaris_stream_fps') || '60';
-                                    const bitrate = localStorage.getItem('lunaris_stream_bitrate') || '8000';
-                                    const codec = localStorage.getItem('lunaris_stream_codec') || 'h264';
-                                    const mouseQueueLimit = localStorage.getItem('lunaris_mouse_queue_limit') || '256';
-                                    const hostToUse = currentViewingHost || viewingHost;
-                                    
-                                    if (!hostToUse) return;
-
-                                    const tauri = (window as any).__TAURI__;
-                                    if (tauri) {
-                                      tauri.core.invoke('launch_native_client', {
-                                        hostId: hostToUse.id,
-                                        serverUrl,
-                                        token,
-                                        res: resStr,
-                                        fps: String(fps),
-                                        bitrate: String(bitrate),
-                                        codec,
-                                        appId: app.id,
-                                        mouseQueueLimit: String(mouseQueueLimit),
-                                        hostName: hostToUse.name
-                                      }).catch((err: any) => {
-                                        console.error("Failed to launch native client:", err);
-                                        alert("Failed to launch native client: " + err);
-                                      });
-                                    } else {
-                                      const wsProtocol = getBackendProtocol().ws;
-                                      const wsServerUrl = `${wsProtocol}//${serverHost}`;
-                                      window.location.href = `lunaris://connect?host_id=${hostToUse.id}&server=${wsServerUrl}&token=${token}&res=${resStr}&fps=${fps}&bitrate=${bitrate}&codec=${codec}&mouse_queue_limit=${mouseQueueLimit}&host_name=${encodeURIComponent(hostToUse.name)}&app_id=${app.id}`;
-                                    }
-                                  }}
-                                  className="overlay-btn btn-launch-app"
-                                  title="Launch in Moonlight Native Client"
-                                >
-                                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                                    <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
-                                    <polyline points="15 3 21 3 21 9" />
-                                    <line x1="10" y1="14" x2="21" y2="3" />
-                                  </svg>
-                                </button>
-
-                                {/* Stop active stream (if host is Busy) */}
-                                {currentViewingHost?.status === "Busy" && (
-                                  <button 
-                                    onClick={() => handleStopStream(currentViewingHost.id)}
-                                    className="overlay-btn btn-stop-stream"
-                                    title="Terminate Active Stream Session"
-                                  >
-                                    <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
-                                      <rect x="4" y="4" width="16" height="16" rx="2" />
-                                    </svg>
-                                  </button>
                                 )}
                               </div>
-                            </div>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  ) : null}
-                </div>
-              ) : (
-                <>
-                  <div className="section-header">
-                    <div>
-                      <h1 className="section-title">Device Directory</h1>
-                      <p className="section-subtitle">Manage and connect to active remote agent streams</p>
-                    </div>
-                    <div style={{ display: 'flex', gap: '0.75rem' }}>
-                      <button 
-                        onClick={fetchHosts} 
-                        disabled={hostsLoading} 
-                        className="btn-secondary refresh-btn"
-                        title="Refresh device status"
-                      >
-                        <svg 
-                          width="16" 
-                          height="16" 
-                          viewBox="0 0 24 24" 
-                          fill="none" 
-                          stroke="currentColor" 
-                          strokeWidth="2"
-                          className={hostsLoading ? 'spin' : ''}
-                        >
-                          <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67" />
-                        </svg>
-                        Sync Devices
-                      </button>
-                      <button 
-                        onClick={() => setShowPairingPage(true)} 
-                        className="btn-primary"
-                        style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.6rem 1.2rem', fontSize: '0.9rem' }}
-                        title="Pair a new Sunshine host or setup an agent"
-                      >
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                          <line x1="12" y1="5" x2="12" y2="19" />
-                          <line x1="5" y1="12" x2="19" y2="12" />
-                        </svg>
-                        Add Device
-                      </button>
-                    </div>
-                  </div>
 
-                  {hostsError && (
-                    <div className="error-card">
-                      <div className="error-title">⚠️ Sync Error</div>
-                      <div className="error-desc">{hostsError}</div>
-                      <button onClick={fetchHosts} className="btn-secondary">Retry Sync</button>
-                    </div>
-                  )}
+                              {/* Hover Overlay */}
+                              <div className="app-hover-overlay">
+                                <div className="overlay-content">
+                                  {/* Play Button - Launch Stream in browser */}
+                                  <button 
+                                    onClick={() => {
+                                      setSelectedAppId(app.id);
+                                      setSelectedHost(currentViewingHost || viewingHost);
+                                    }}
+                                    className="overlay-btn btn-play"
+                                    title="Launch Web Stream (In Browser)"
+                                  >
+                                    <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
+                                      <polygon points="6 4 20 12 6 20 6 4" />
+                                    </svg>
+                                  </button>
 
-                  {hostsLoading && hosts.length === 0 ? (
-                    <div className="loading-card">
-                      <div className="tech-loader"></div>
-                      <div>Syncing active host agent list...</div>
-                    </div>
-                  ) : hosts.length === 0 ? (
-                    <div className="empty-card">
-                      <div className="empty-icon">🖥️</div>
-                      <h3>No host devices paired</h3>
-                      <p>There are no paired host devices registered with the server.</p>
-                      <p className="empty-hint" style={{ marginBottom: '1.25rem' }}>Click the button below to pair and setup a new remote device.</p>
-                      <button 
-                        onClick={() => setShowPairingPage(true)} 
-                        className="btn-primary"
-                        style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem' }}
-                      >
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                          <line x1="12" y1="5" x2="12" y2="19" />
-                          <line x1="5" y1="12" x2="19" y2="12" />
-                        </svg>
-                        Pair & Setup Device
-                      </button>
-                    </div>
-                  ) : (
-                    <div className="hosts-card-grid">
-                      {hosts.map((host) => {
-                        const isOnline = host.status === 'Online';
-                        const isBusy = host.status === 'Busy';
-                        
-                        return (
-                          <div 
-                            key={host.id} 
-                            className={`host-card ${host.status.toLowerCase()} ${isOnline ? 'clickable-host-card' : ''}`}
-                            onClick={() => {
-                              if (isOnline) {
-                                setViewingHost(host);
-                              }
-                            }}
-                          >
-                            <div className="host-card-glow"></div>
-                            <div className="host-card-header">
-                              <div>
-                                <h3 className="host-name">{host.name}</h3>
-                                <span className="host-id">ID: {host.id.slice(0, 8)}...</span>
-                              </div>
-                            </div>
+                                  {/* Title overlay in Moonlight style */}
+                                  <div className="overlay-app-title" title={app.title}>
+                                    {app.title}
+                                  </div>
 
-                            <div className="host-card-body">
-                              <div className="host-meta-item">
-                                <span className="meta-label">IP Address</span>
-                                <span className="meta-value">{host.ip_address || 'Signaling Tunnel'}</span>
-                              </div>
-                              <div className="host-meta-item">
-                                <span className="meta-label">Status</span>
-                                <div className="host-status-badge">
-                                  <span className={`status-indicator ${host.status.toLowerCase()}`}></span>
-                                  <span className="status-label">{host.status}</span>
+                                  {/* Action Row */}
+                                  <div className="overlay-bottom-actions">
+                                    {/* Launch Native App */}
+                                    <button 
+                                      onClick={() => {
+                                        const protocol = getBackendProtocol().http;
+                                        const serverHost = getBackendHost();
+                                        const serverUrl = `${protocol}//${serverHost}`;
+                                        const rawRes = localStorage.getItem('lunaris_stream_res') || '1080p';
+                                        const resStr = rawRes === '720p' ? '1280x720' : rawRes === '540p' ? '960x540' : (rawRes.includes('x') ? rawRes : '1920x1080');
+                                        const fps = localStorage.getItem('lunaris_stream_fps') || '60';
+                                        const bitrate = localStorage.getItem('lunaris_stream_bitrate') || '8000';
+                                        const codec = localStorage.getItem('lunaris_stream_codec') || 'h264';
+                                        const mouseQueueLimit = localStorage.getItem('lunaris_mouse_queue_limit') || '256';
+                                        const hostToUse = currentViewingHost || viewingHost;
+                                        
+                                        if (!hostToUse) return;
+
+                                        const tauri = (window as any).__TAURI__;
+                                        if (tauri) {
+                                          tauri.core.invoke('launch_native_client', {
+                                            hostId: hostToUse.id,
+                                            serverUrl,
+                                            token,
+                                            res: resStr,
+                                            fps: String(fps),
+                                            bitrate: String(bitrate),
+                                            codec,
+                                            appId: app.id,
+                                            mouseQueueLimit: String(mouseQueueLimit),
+                                            hostName: hostToUse.name
+                                          }).catch((err: any) => {
+                                            console.error("Failed to launch native client:", err);
+                                            alert("Failed to launch native client: " + err);
+                                          });
+                                        } else {
+                                          const wsProtocol = getBackendProtocol().ws;
+                                          const wsServerUrl = `${wsProtocol}//${serverHost}`;
+                                          window.location.href = `lunaris://connect?host_id=${hostToUse.id}&server=${wsServerUrl}&token=${token}&res=${resStr}&fps=${fps}&bitrate=${bitrate}&codec=${codec}&mouse_queue_limit=${mouseQueueLimit}&host_name=${encodeURIComponent(hostToUse.name)}&app_id=${app.id}`;
+                                        }
+                                      }}
+                                      className="overlay-btn btn-launch-app"
+                                      title="Launch in Moonlight Native Client"
+                                    >
+                                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                                        <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+                                        <polyline points="15 3 21 3 21 9" />
+                                        <line x1="10" y1="14" x2="21" y2="3" />
+                                      </svg>
+                                    </button>
+
+                                    {/* Stop active stream (if host is Busy) */}
+                                    {currentViewingHost?.status === "Busy" && (
+                                      <button 
+                                        onClick={() => handleStopStream(currentViewingHost.id)}
+                                        className="overlay-btn btn-stop-stream"
+                                        title="Terminate Active Stream Session"
+                                      >
+                                        <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+                                          <rect x="4" y="4" width="16" height="16" rx="2" />
+                                        </svg>
+                                      </button>
+                                    )}
+                                  </div>
                                 </div>
                               </div>
                             </div>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : (
+                    <>
+                      <div className="section-header">
+                        <div>
+                          <h1 className="section-title">Device Directory</h1>
+                          <p className="section-subtitle">Manage and connect to active remote agent streams</p>
+                        </div>
+                        <div style={{ display: 'flex', gap: '0.75rem' }}>
+                          <button 
+                            onClick={fetchHosts} 
+                            disabled={hostsLoading} 
+                            className="btn-secondary refresh-btn"
+                            title="Refresh device status"
+                          >
+                            <svg 
+                              width="16" 
+                              height="16" 
+                              viewBox="0 0 24 24" 
+                              fill="none" 
+                              stroke="currentColor" 
+                              strokeWidth="2"
+                              className={hostsLoading ? 'spin' : ''}
+                            >
+                              <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67" />
+                            </svg>
+                            Sync Devices
+                          </button>
+                          <button 
+                            onClick={() => setShowPairingPage(true)} 
+                            className="btn-primary"
+                            style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.6rem 1.2rem', fontSize: '0.9rem' }}
+                            title="Pair a new Sunshine host or setup an agent"
+                          >
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                              <line x1="12" y1="5" x2="12" y2="19" />
+                              <line x1="5" y1="12" x2="19" y2="12" />
+                            </svg>
+                            Add Device
+                          </button>
+                        </div>
+                      </div>
 
-                            <div className="host-card-footer" style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', width: '100%', gap: '8px' }}>
-                              {(isOnline || isBusy) && (
-                                <button
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    openHostSettings(host);
-                                  }}
-                                  className="btn-settings-icon"
-                                  title="Sunshine Configuration"
-                                  style={{
-                                    padding: '8px',
-                                    borderRadius: '6px',
-                                    background: 'rgba(0, 240, 255, 0.1)',
-                                    border: '1px solid rgba(0, 240, 255, 0.2)',
-                                    color: 'var(--accent-cyan)',
-                                    cursor: 'pointer',
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    justifyContent: 'center',
-                                    transition: 'all 0.2s',
-                                    height: '42px',
-                                    width: '42px'
-                                  }}
-                                >
-                                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                    <circle cx="12" cy="12" r="3" />
-                                    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
-                                  </svg>
-                                </button>
-                              )}
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleUnpairHost(host.id);
-                                }}
-                                className="btn-danger-icon"
-                                title="Unpair & Remove Host"
-                                style={{
-                                  padding: '8px',
-                                  borderRadius: '6px',
-                                  background: 'rgba(239, 68, 68, 0.1)',
-                                  border: '1px solid rgba(239, 68, 68, 0.2)',
-                                  color: '#ef4444',
-                                  cursor: 'pointer',
-                                  display: 'flex',
-                                  alignItems: 'center',
-                                  justifyContent: 'center',
-                                  transition: 'all 0.2s',
-                                  height: '42px',
-                                  width: '42px'
+                      {hostsError && (
+                        <div className="error-card">
+                          <div className="error-title">⚠️ Sync Error</div>
+                          <div className="error-desc">{hostsError}</div>
+                          <button onClick={fetchHosts} className="btn-secondary">Retry Sync</button>
+                        </div>
+                      )}
+
+                      {hostsLoading && hosts.length === 0 ? (
+                        <div className="loading-card">
+                          <div className="tech-loader"></div>
+                          <div>Syncing active host agent list...</div>
+                        </div>
+                      ) : hosts.length === 0 ? (
+                        <div className="empty-card">
+                          <div className="empty-icon">🖥️</div>
+                          <h3>No host devices paired</h3>
+                          <p>There are no paired host devices registered with the server.</p>
+                          <p className="empty-hint" style={{ marginBottom: '1.25rem' }}>Click the button below to pair and setup a new remote device.</p>
+                          <button 
+                            onClick={() => setShowPairingPage(true)} 
+                            className="btn-primary"
+                            style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem' }}
+                          >
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                              <line x1="12" y1="5" x2="12" y2="19" />
+                              <line x1="5" y1="12" x2="19" y2="12" />
+                            </svg>
+                            Pair & Setup Device
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="hosts-card-grid">
+                          {hosts.map((host) => {
+                            const isOnline = host.status === 'Online';
+                            const isBusy = host.status === 'Busy';
+                            
+                            return (
+                              <div 
+                                key={host.id} 
+                                className={`host-card ${host.status.toLowerCase()} ${isOnline ? 'clickable-host-card' : ''}`}
+                                onClick={() => {
+                                  if (isOnline) {
+                                    setViewingHost(host);
+                                  }
                                 }}
                               >
-                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                  <polyline points="3 6 5 6 21 6" />
-                                  <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-                                  <line x1="10" y1="11" x2="10" y2="17" />
-                                  <line x1="14" y1="11" x2="14" y2="17" />
-                                </svg>
-                              </button>
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
+                                <div className="host-card-glow"></div>
+                                <div className="host-card-header">
+                                  <div>
+                                    <h3 className="host-name">{host.name}</h3>
+                                    <span className="host-id">ID: {host.id.slice(0, 8)}...</span>
+                                  </div>
+                                </div>
+
+                                <div className="host-card-body">
+                                  <div className="host-meta-item">
+                                    <span className="meta-label">IP Address</span>
+                                    <span className="meta-value">{host.ip_address || 'Signaling Tunnel'}</span>
+                                  </div>
+                                  <div className="host-meta-item">
+                                    <span className="meta-label">Status</span>
+                                    <div className="host-status-badge">
+                                      <span className={`status-indicator ${host.status.toLowerCase()}`}></span>
+                                      <span className="status-label">{host.status}</span>
+                                    </div>
+                                  </div>
+                                </div>
+
+                                <div className="host-card-footer" style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', width: '100%', gap: '8px' }}>
+                                  {(isOnline || isBusy) && (
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        openHostSettings(host);
+                                      }}
+                                      className="btn-settings-icon"
+                                      title="Sunshine Configuration"
+                                      style={{
+                                        padding: '8px',
+                                        borderRadius: '6px',
+                                        background: 'rgba(0, 240, 255, 0.1)',
+                                        border: '1px solid rgba(0, 240, 255, 0.2)',
+                                        color: 'var(--accent-cyan)',
+                                        cursor: 'pointer',
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        justifyContent: 'center',
+                                        transition: 'all 0.2s',
+                                        height: '42px',
+                                        width: '42px'
+                                      }}
+                                    >
+                                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                        <circle cx="12" cy="12" r="3" />
+                                        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+                                      </svg>
+                                    </button>
+                                  )}
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleUnpairHost(host.id);
+                                    }}
+                                    className="btn-danger-icon"
+                                    title="Unpair & Remove Host"
+                                    style={{
+                                      padding: '8px',
+                                      borderRadius: '6px',
+                                      background: 'rgba(239, 68, 68, 0.1)',
+                                      border: '1px solid rgba(239, 68, 68, 0.2)',
+                                      color: '#ef4444',
+                                      cursor: 'pointer',
+                                      display: 'flex',
+                                      alignItems: 'center',
+                                      justifyContent: 'center',
+                                      transition: 'all 0.2s',
+                                      height: '42px',
+                                      width: '42px'
+                                    }}
+                                  >
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                      <polyline points="3 6 5 6 21 6" />
+                                      <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                                      <line x1="10" y1="11" x2="10" y2="17" />
+                                      <line x1="14" y1="11" x2="14" y2="17" />
+                                    </svg>
+                                  </button>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </>
                   )}
                 </>
+              )}
+              {activeTab === 'users' && (
+                <AdminUsers token={token!} getBackendHost={getBackendHost} getBackendProtocol={getBackendProtocol} />
+              )}
+              {activeTab === 'groups' && (
+                <AdminGroups token={token!} getBackendHost={getBackendHost} getBackendProtocol={getBackendProtocol} />
               )}
             </div>
           </div>

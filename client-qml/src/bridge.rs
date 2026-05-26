@@ -12,13 +12,7 @@ pub enum PendingDashboardEvent {
         username: String,
         server: String,
     },
-    RegisterResult {
-        success: bool,
-        error_msg: String,
-        token: String,
-        username: String,
-        server: String,
-    },
+
     HostsResult {
         success: bool,
         error_msg: String,
@@ -407,15 +401,7 @@ pub mod qobject {
             server: QString,
         );
 
-        #[qsignal]
-        fn register_result(
-            self: Pin<&mut StreamBridge>,
-            success: bool,
-            error_msg: QString,
-            token: QString,
-            username: QString,
-            server: QString,
-        );
+
 
         #[qsignal]
         fn hosts_result(
@@ -522,13 +508,7 @@ pub mod qobject {
             password: QString,
         );
 
-        #[qinvokable]
-        fn register_user(
-            self: Pin<&mut StreamBridge>,
-            server: QString,
-            username: QString,
-            password: QString,
-        );
+
 
         #[qinvokable]
         fn logout(self: Pin<&mut StreamBridge>);
@@ -902,79 +882,7 @@ impl qobject::StreamBridge {
         });
     }
 
-    pub fn register_user(
-        self: Pin<&mut Self>,
-        server: QString,
-        username: QString,
-        password: QString,
-    ) {
-        let server_str = server.to_string();
-        let username_str = username.to_string();
-        let password_str = password.to_string();
 
-        let mut rust_obj = self.rust_mut();
-        let rt = rust_obj.get_or_init_runtime();
-
-        rt.spawn(async move {
-            let client = reqwest::Client::new();
-            let url = format!("{}/api/auth/register", server_str);
-            let res = client.post(&url)
-                .json(&serde_json::json!({
-                    "username": username_str,
-                    "password": password_str
-                }))
-                .send()
-                .await;
-
-            match res {
-                Ok(resp) => {
-                    let status = resp.status();
-                    let text = resp.text().await.unwrap_or_default();
-                    if status.is_success() {
-                        if let Ok(data) = serde_json::from_str::<common::AuthResponse>(&text) {
-                            save_settings(&server_str, &data.token, &data.username);
-                            
-                            PENDING_EVENTS.lock().unwrap().push(PendingDashboardEvent::RegisterResult {
-                                success: true,
-                                error_msg: "".to_string(),
-                                token: data.token,
-                                username: data.username,
-                                server: server_str,
-                            });
-                            return;
-                        }
-                    }
-                    
-                    let err_msg = if let Ok(err_data) = serde_json::from_str::<serde_json::Value>(&text) {
-                        err_data.get("error")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("Registration failed")
-                            .to_string()
-                    } else {
-                        "Registration failed".to_string()
-                    };
-
-                    PENDING_EVENTS.lock().unwrap().push(PendingDashboardEvent::RegisterResult {
-                        success: false,
-                        error_msg: err_msg,
-                        token: "".to_string(),
-                        username: "".to_string(),
-                        server: "".to_string(),
-                    });
-                }
-                Err(e) => {
-                    let err_msg = format!("Connection failed: {}", e);
-                    PENDING_EVENTS.lock().unwrap().push(PendingDashboardEvent::RegisterResult {
-                        success: false,
-                        error_msg: err_msg,
-                        token: "".to_string(),
-                        username: "".to_string(),
-                        server: "".to_string(),
-                    });
-                }
-            }
-        });
-    }
 
     pub fn logout(self: Pin<&mut Self>) {
         clear_settings();
@@ -1373,13 +1281,7 @@ impl qobject::StreamBridge {
                     let srv_qstr = QString::from(&server);
                     self.as_mut().login_result(success, err_qstr, tok_qstr, user_qstr, srv_qstr);
                 }
-                PendingDashboardEvent::RegisterResult { success, error_msg, token, username, server } => {
-                    let err_qstr = QString::from(&error_msg);
-                    let tok_qstr = QString::from(&token);
-                    let user_qstr = QString::from(&username);
-                    let srv_qstr = QString::from(&server);
-                    self.as_mut().register_result(success, err_qstr, tok_qstr, user_qstr, srv_qstr);
-                }
+
                 PendingDashboardEvent::HostsResult { success, error_msg, hosts_json } => {
                     let err_qstr = QString::from(&error_msg);
                     let hosts_qstr = QString::from(&hosts_json);

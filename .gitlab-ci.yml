@@ -1,0 +1,75 @@
+stages:
+  - build
+
+variables:
+  DEBIAN_FRONTEND: noninteractive
+  CARGO_HOME: "${CI_PROJECT_DIR}/.cargo"
+  CARGO_TERM_COLOR: always
+
+build-all:
+  stage: build
+  image: ubuntu:22.04
+  before_script:
+    # 1. Cập nhật và cài đặt các dependencies hệ thống cần thiết cho Rust và Qt6/SDL2/FFmpeg
+    - apt-get update -y && apt-get install -y --no-install-recommends
+        curl
+        git
+        build-essential
+        cmake
+        clang
+        pkg-config
+        ca-certificates
+        libssl-dev
+        libavahi-compat-libdnssd-dev
+        libasound2-dev
+        libsdl2-dev
+        libavcodec-dev
+        libavformat-dev
+        libavutil-dev
+        libswscale-dev
+        libswresample-dev
+        libopus-dev
+        qt6-base-dev
+        qt6-declarative-dev
+        qt6-multimedia-dev
+        libgl1-mesa-dev
+    
+    # 2. Cài đặt Node.js (v20.x LTS) để build web frontend
+    - curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+    - apt-get install -y nodejs
+    
+    # 3. Cài đặt Rust toolchain (nightly-2026-04-17) như yêu cầu của dự án
+    - curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain nightly-2026-04-17
+    - export PATH="${CARGO_HOME}/bin:${PATH}"
+    - rustc --version
+    - cargo --version
+
+  script:
+    # 4. Build Web Frontend (để server có static assets trong web/dist)
+    - echo "Building Web Frontend..."
+    - cd web
+    - npm ci || npm install
+    - npm run build
+    - cd ..
+
+    # 5. Build Rust Workspace (gồm server, agent, client...)
+    - echo "Building Rust Workspace..."
+    - export PATH="${CARGO_HOME}/bin:${PATH}"
+    - cargo build --release --workspace
+
+  cache:
+    key: "${CI_COMMIT_REF_SLUG}"
+    paths:
+      - .cargo/
+      - target/
+      - web/node_modules/
+      - web/dist/
+
+  artifacts:
+    name: "lunaris-release-$CI_COMMIT_REF_SLUG"
+    paths:
+      - target/release/server
+      - target/release/agent
+      - target/release/client
+      - target/release/client-desktop
+    expire_in: 1 week

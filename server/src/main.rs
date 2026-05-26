@@ -5,14 +5,15 @@ use axum::{
     routing::{get, post, delete},
     Json, Router,
 };
-use common::{AuthResponse, HostInfo, HostStatus, LoginRequest, RegisterRequest, PairHostRequest};
+use common::{AuthResponse, HostInfo, HostStatus, LoginRequest, PairHostRequest};
 use std::sync::Arc;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
 use tracing::{error, info};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
-use uuid::Uuid;
 
+
+mod admin;
 mod auth;
 mod db;
 pub mod signaling;
@@ -23,7 +24,7 @@ pub mod video;
 pub mod bridge;
 
 use crate::{
-    auth::{create_jwt, hash_password, verify_password, AuthenticatedUser},
+    auth::{create_jwt, verify_password, AuthenticatedUser},
     db::init_db,
     signaling::{agent_ws_handler, client_ws_handler, SignalingState},
 };
@@ -153,12 +154,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Build routes
     let mut app = Router::new()
-        .route("/api/auth/register", post(register_handler))
         .route("/api/auth/login", post(login_handler))
+        .route("/api/auth/me", get(admin::get_current_user))
         .route("/api/hosts", get(hosts_handler))
         .route("/api/hosts/pair", post(pair_host_handler))
         .route("/api/hosts/:id", delete(unpair_host_handler))
         .route("/api/agent/token", get(agent_token_handler))
+        .route("/api/admin/users", get(admin::list_users).post(admin::create_user))
+        .route("/api/admin/users/:id", axum::routing::put(admin::update_user).delete(admin::delete_user))
+        .route("/api/admin/groups", get(admin::list_groups).post(admin::create_group))
+        .route("/api/admin/groups/:id", axum::routing::put(admin::update_group).delete(admin::delete_group))
         .route("/ws/agent", get(agent_ws_handler))
         .route("/ws/client", get(client_ws_handler));
 
@@ -184,84 +189,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-async fn register_handler(
-    State(state): State<Arc<SignalingState>>,
-    Json(payload): Json<RegisterRequest>,
-) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    if payload.username.trim().is_empty() || payload.password.len() < 6 {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "error": "Invalid username or password must be at least 6 characters" })),
-        ));
-    }
-
-    // Check if user already exists
-    let existing: Option<String> = sqlx::query_scalar("SELECT id FROM users WHERE username = ?")
-        .bind(&payload.username)
-        .fetch_optional(&state.db)
-        .await
-        .map_err(|e| {
-            error!("Database error: {}", e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({ "error": "Internal Database Error" })),
-            )
-        })?;
-
-    if existing.is_some() {
-        return Err((
-            StatusCode::CONFLICT,
-            Json(serde_json::json!({ "error": "Username already taken" })),
-        ));
-    }
-
-    let hashed = hash_password(&payload.password).map_err(|e| {
-        error!("Hashing error: {}", e);
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({ "error": "Internal Hashing Error" })),
-        )
-    })?;
-
-    let user_id = Uuid::new_v4().to_string();
-
-    sqlx::query("INSERT INTO users (id, username, password_hash) VALUES (?, ?, ?)")
-        .bind(&user_id)
-        .bind(&payload.username)
-        .bind(&hashed)
-        .execute(&state.db)
-        .await
-        .map_err(|e| {
-            error!("Database error: {}", e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({ "error": "Failed to create user" })),
-            )
-        })?;
-
-    let token = create_jwt(&user_id, &payload.username).map_err(|e| {
-        error!("Token error: {}", e);
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({ "error": "Failed to generate token" })),
-        )
-    })?;
-
-    Ok((
-        StatusCode::CREATED,
-        Json(AuthResponse {
-            token,
-            username: payload.username,
-        }),
-    ))
-}
-
 async fn login_handler(
     State(state): State<Arc<SignalingState>>,
     Json(payload): Json<LoginRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    let row: Option<(String, String)> =
-        sqlx::query_as("SELECT id, password_hash FROM users WHERE username = ?")
+    let row: Option<(String, String, String)> =
+        sqlx::query_as("SELECT id, password_hash, COALESCE(role, 'user') as role FROM users WHERE username = ?")
             .bind(&payload.username)
             .fetch_optional(&state.db)
             .await
@@ -273,8 +206,8 @@ async fn login_handler(
                 )
             })?;
 
-    let (user_id, hash) = match row {
-        Some((id, hash)) => (id, hash),
+    let (user_id, hash, role) = match row {
+        Some((id, hash, role)) => (id, hash, role),
         None => {
             return Err((
                 StatusCode::UNAUTHORIZED,
@@ -290,7 +223,7 @@ async fn login_handler(
         ));
     }
 
-    let token = create_jwt(&user_id, &payload.username).map_err(|e| {
+    let token = create_jwt(&user_id, &payload.username, &role).map_err(|e| {
         error!("Token error: {}", e);
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -303,6 +236,7 @@ async fn login_handler(
         Json(AuthResponse {
             token,
             username: payload.username,
+            role,
         }),
     ))
 }
@@ -320,10 +254,11 @@ async fn check_host_online(ip: &str, port: u16) -> bool {
 }
 
 async fn hosts_handler(
-    _user: AuthenticatedUser,
+    user: AuthenticatedUser,
     State(state): State<Arc<SignalingState>>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    let rows: Vec<(String, String, String, Option<String>, Option<i64>)> =
+    let rows: Vec<(String, String, String, Option<String>, Option<i64>)> = if user.role == "admin" {
+        // Admin sees all hosts
         sqlx::query_as("SELECT id, name, status, ip_address, server_codec_mode_support FROM hosts")
             .fetch_all(&state.db)
             .await
@@ -333,7 +268,27 @@ async fn hosts_handler(
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(serde_json::json!({ "error": "Internal Database Error" })),
                 )
-            })?;
+            })?
+    } else {
+        // Regular user only sees hosts in their groups
+        sqlx::query_as(
+            "SELECT DISTINCT h.id, h.name, h.status, h.ip_address, h.server_codec_mode_support 
+             FROM hosts h
+             INNER JOIN host_groups hg ON h.id = hg.host_id
+             INNER JOIN user_groups ug ON hg.group_id = ug.group_id
+             WHERE ug.user_id = ?"
+        )
+        .bind(&user.user_id)
+        .fetch_all(&state.db)
+        .await
+        .map_err(|e| {
+            error!("Database error: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": "Internal Database Error" })),
+            )
+        })?
+    };
 
     let active_host_ids: std::collections::HashSet<String> = {
         let sessions = state.local_sessions.read().unwrap();

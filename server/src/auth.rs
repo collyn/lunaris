@@ -15,6 +15,7 @@ static JWT_SECRET: Lazy<String> = Lazy::new(|| {
 pub struct Claims {
     pub sub: String, // User ID
     pub username: String,
+    pub role: String,
     pub exp: u64,
 }
 
@@ -26,7 +27,7 @@ pub fn verify_password(password: &str, hash: &str) -> bool {
     bcrypt::verify(password, hash).unwrap_or(false)
 }
 
-pub fn create_jwt(user_id: &str, username: &str) -> Result<String, jsonwebtoken::errors::Error> {
+pub fn create_jwt(user_id: &str, username: &str, role: &str) -> Result<String, jsonwebtoken::errors::Error> {
     let expiration = chrono::Utc::now()
         .checked_add_signed(chrono::Duration::days(7))
         .expect("valid timestamp")
@@ -35,6 +36,7 @@ pub fn create_jwt(user_id: &str, username: &str) -> Result<String, jsonwebtoken:
     let claims = Claims {
         sub: user_id.to_string(),
         username: username.to_string(),
+        role: role.to_string(),
         exp: expiration,
     };
 
@@ -61,6 +63,7 @@ use crate::signaling::SignalingState;
 pub struct AuthenticatedUser {
     pub user_id: String,
     pub username: String,
+    pub role: String,
 }
 
 #[async_trait]
@@ -81,8 +84,8 @@ impl FromRequestParts<Arc<SignalingState>> for AuthenticatedUser {
         let token = &auth_header[7..];
         let claims = verify_jwt(token).map_err(|_| (StatusCode::UNAUTHORIZED, "Invalid Token"))?;
 
-        // Verify that the user exists in the database to prevent foreign key errors
-        let user_exists: Option<String> = sqlx::query_scalar("SELECT id FROM users WHERE id = ?")
+        // Verify that the user exists in the database and fetch role
+        let row: Option<(String, String)> = sqlx::query_as("SELECT id, role FROM users WHERE id = ?")
             .bind(&claims.sub)
             .fetch_optional(&state.db)
             .await
@@ -91,13 +94,34 @@ impl FromRequestParts<Arc<SignalingState>> for AuthenticatedUser {
                 (StatusCode::INTERNAL_SERVER_ERROR, "Database Error")
             })?;
 
-        if user_exists.is_none() {
-            return Err((StatusCode::UNAUTHORIZED, "User does not exist in database"));
+        match row {
+            Some((id, role)) => Ok(AuthenticatedUser {
+                user_id: id,
+                username: claims.username,
+                role,
+            }),
+            None => Err((StatusCode::UNAUTHORIZED, "User does not exist in database")),
         }
+    }
+}
 
-        Ok(AuthenticatedUser {
-            user_id: claims.sub,
-            username: claims.username,
+pub struct AdminUser {
+    pub user_id: String,
+    pub username: String,
+}
+
+#[async_trait]
+impl FromRequestParts<Arc<SignalingState>> for AdminUser {
+    type Rejection = (StatusCode, &'static str);
+
+    async fn from_request_parts(parts: &mut Parts, state: &Arc<SignalingState>) -> Result<Self, Self::Rejection> {
+        let user = AuthenticatedUser::from_request_parts(parts, state).await?;
+        if user.role != "admin" {
+            return Err((StatusCode::FORBIDDEN, "Admin access required"));
+        }
+        Ok(AdminUser {
+            user_id: user.user_id,
+            username: user.username,
         })
     }
 }
