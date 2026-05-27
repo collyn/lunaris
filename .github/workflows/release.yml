@@ -202,54 +202,40 @@ jobs:
 
       - name: Install system dependencies
         run: |
-          brew install ffmpeg pkg-config opus
-
-      - name: Install Qt6
-        uses: jurplel/install-qt-action@v4
-        with:
-          version: '6.7.3'
-          host: 'mac'
-          target: 'desktop'
-          arch: 'clang_64'
-          modules: 'qtmultimedia qtshadertools'
+          brew install ffmpeg pkg-config opus qt
 
       - name: Configure library paths
         run: |
           FFMPEG_PREFIX=$(brew --prefix ffmpeg)
           OPUS_PREFIX=$(brew --prefix opus)
+          QT_PREFIX=$(brew --prefix qt)
 
-          # Qt6 — Use QT_ROOT_DIR set by install-qt-action
-          echo "QMAKE=${QT_ROOT_DIR}/bin/qmake" >> $GITHUB_ENV
+          # Qt6 via Homebrew — has proper include/ symlinks to framework headers
+          echo "QMAKE=${QT_PREFIX}/bin/qmake" >> $GITHUB_ENV
+          echo "CMAKE_PREFIX_PATH=${QT_PREFIX}" >> $GITHUB_ENV
 
-          # macOS Qt uses frameworks — compiler needs -F (framework search path)
-          # to find headers inside QtCore.framework/Headers/, QtGui.framework/Headers/ etc.
-          echo "CXXFLAGS=-F${QT_ROOT_DIR}/lib" >> $GITHUB_ENV
-          echo "CFLAGS=-F${QT_ROOT_DIR}/lib" >> $GITHUB_ENV
+          # Framework search path for C++ compiler (macOS Qt uses frameworks)
+          echo "CXXFLAGS=-F${QT_PREFIX}/lib" >> $GITHUB_ENV
+          echo "CFLAGS=-F${QT_PREFIX}/lib" >> $GITHUB_ENV
 
           echo "FFMPEG_DIR=${FFMPEG_PREFIX}" >> $GITHUB_ENV
-          echo "PKG_CONFIG_PATH=${FFMPEG_PREFIX}/lib/pkgconfig:${OPUS_PREFIX}/lib/pkgconfig:$PKG_CONFIG_PATH" >> $GITHUB_ENV
-          echo "BINDGEN_EXTRA_CLANG_ARGS=-F${QT_ROOT_DIR}/lib -I${FFMPEG_PREFIX}/include -I${OPUS_PREFIX}/include" >> $GITHUB_ENV
-          echo "LIBRARY_PATH=${FFMPEG_PREFIX}/lib:${OPUS_PREFIX}/lib:$LIBRARY_PATH" >> $GITHUB_ENV
+          echo "PKG_CONFIG_PATH=${FFMPEG_PREFIX}/lib/pkgconfig:${OPUS_PREFIX}/lib/pkgconfig:${QT_PREFIX}/lib/pkgconfig:$PKG_CONFIG_PATH" >> $GITHUB_ENV
+          echo "BINDGEN_EXTRA_CLANG_ARGS=-F${QT_PREFIX}/lib -I${QT_PREFIX}/include -I${FFMPEG_PREFIX}/include -I${OPUS_PREFIX}/include" >> $GITHUB_ENV
+          echo "LIBRARY_PATH=${QT_PREFIX}/lib:${FFMPEG_PREFIX}/lib:${OPUS_PREFIX}/lib:$LIBRARY_PATH" >> $GITHUB_ENV
 
       - name: Debug environment
         run: |
-          echo "=== Qt ==="
-          echo "QT_ROOT_DIR: $QT_ROOT_DIR"
+          QT_PREFIX=$(brew --prefix qt)
+          echo "=== Qt (Homebrew) ==="
+          echo "QT_PREFIX: $QT_PREFIX"
           echo "QMAKE: $QMAKE"
-          which qmake || echo "qmake not in PATH"
-          qmake --version || echo "qmake --version failed"
-          echo "=== Qt layout ==="
-          echo "include/ dir:"
-          ls "$QT_ROOT_DIR/include/" 2>/dev/null | head -5 || echo "  (no include/ dir — using framework layout)"
-          echo "lib/ frameworks:"
-          ls "$QT_ROOT_DIR/lib/" 2>/dev/null | grep -i "\.framework" | head -5 || echo "  (no frameworks found)"
-          echo "QtCore framework headers:"
-          ls "$QT_ROOT_DIR/lib/QtCore.framework/Headers/" 2>/dev/null | head -5 || echo "  (no QtCore.framework/Headers/)"
-          echo "=== Compiler flags ==="
-          echo "CXXFLAGS: $CXXFLAGS"
-          echo "BINDGEN_EXTRA_CLANG_ARGS: $BINDGEN_EXTRA_CLANG_ARGS"
+          $QMAKE --version || echo "qmake --version failed"
+          echo "=== Qt include dir ==="
+          ls "$QT_PREFIX/include/" 2>/dev/null | head -10 || echo "  (no include/ dir)"
+          echo "=== QtCore headers ==="
+          ls "$QT_PREFIX/include/QtCore/" 2>/dev/null | head -5 || echo "  (no QtCore headers)"
+          test -f "$QT_PREFIX/include/QtCore/QtGlobal" && echo "QtGlobal: FOUND" || echo "QtGlobal: NOT FOUND"
           echo "=== FFmpeg ==="
-          echo "FFMPEG_DIR: $FFMPEG_DIR"
           pkg-config --libs libavcodec || echo "libavcodec.pc not found"
           echo "=== Opus ==="
           pkg-config --libs opus || echo "opus.pc not found"
