@@ -1417,8 +1417,11 @@ impl qobject::StreamBridge {
                 stop_local_agent();
 
                 // Spawn subprocess
-                let child = std::process::Command::new(path)
-                    .arg("--config")
+                #[cfg(target_os = "windows")]
+                use std::os::windows::process::CommandExt;
+
+                let mut cmd = std::process::Command::new(path);
+                cmd.arg("--config")
                     .arg(config_path_str)
                     .arg("--name")
                     .arg(&name_str)
@@ -1426,8 +1429,12 @@ impl qobject::StreamBridge {
                     .arg(&server_str)
                     .arg("--cli")
                     .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .spawn();
+                    .stderr(std::process::Stdio::null());
+
+                #[cfg(target_os = "windows")]
+                cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+
+                let child = cmd.spawn();
 
                 match child {
                     Ok(c) => {

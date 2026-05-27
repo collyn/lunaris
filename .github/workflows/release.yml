@@ -72,7 +72,6 @@ jobs:
 
           # Copy binaries
           cp target/release/client-desktop lunaris-client-desktop/
-          cp target/release/agent lunaris-client-desktop/
 
           QT_LIB_DIR="/usr/lib/x86_64-linux-gnu"
           QT_PLUGIN_DIR="/usr/lib/x86_64-linux-gnu/qt6/plugins"
@@ -279,7 +278,6 @@ LAUNCHER
         run: |
           New-Item -ItemType Directory -Force -Path lunaris-client-desktop
           Copy-Item target/release/client-desktop.exe -Destination lunaris-client-desktop/
-          Copy-Item target/release/agent.exe -Destination lunaris-client-desktop/
           & "${env:QT_ROOT_DIR}/bin/windeployqt.exe" --qmldir client-qml/qml --no-translations --compiler-runtime lunaris-client-desktop/client-desktop.exe
           Copy-Item "C:/vcpkg/installed/x64-windows/bin/*.dll" -Destination lunaris-client-desktop/
           Compress-Archive -Path lunaris-client-desktop/* -DestinationPath lunaris-client-desktop-windows.zip
@@ -409,7 +407,6 @@ LAUNCHER
         run: |
           mkdir -p lunaris-client-desktop
           cp target/release/client-desktop lunaris-client-desktop/
-          cp target/release/agent lunaris-client-desktop/
           tar -czf lunaris-client-desktop-macos.tar.gz -C lunaris-client-desktop .
 
       - name: Upload Client Desktop Artifact

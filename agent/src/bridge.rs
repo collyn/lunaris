@@ -484,9 +484,7 @@ pub async fn setup_bridge_session(
     let webrtc_connected = Arc::new(AtomicBool::new(false));
     let webrtc_connected_clone = webrtc_connected.clone();
     // Handle Peer Connection state changes to clean up session
-    let ml_stream_state_change = moonlight_stream_rwlock.clone();
     peer_connection.on_peer_connection_state_change(Box::new(move |state: RTCPeerConnectionState| {
-        let ml_stream = ml_stream_state_change.clone();
         let webrtc_connected = webrtc_connected_clone.clone();
         Box::pin(async move {
             info!("WebRTC connection state changed to: {}", state);
@@ -494,12 +492,6 @@ pub async fn setup_bridge_session(
                 webrtc_connected.store(true, Ordering::SeqCst);
             } else if state == RTCPeerConnectionState::Closed || state == RTCPeerConnectionState::Failed || state == RTCPeerConnectionState::Disconnected {
                 webrtc_connected.store(false, Ordering::SeqCst);
-                if let Ok(mut lock) = ml_stream.write() {
-                    if let Some(stream) = lock.take() {
-                        info!("WebRTC connection closed, failed, or disconnected, stopping Moonlight stream...");
-                        stream.stop();
-                    }
-                }
             }
         })
     }));

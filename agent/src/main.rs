@@ -302,6 +302,12 @@ fn check_and_start_sunshine(path: &str, ip: &str, port: u16) -> Option<tokio::pr
         }
     }
 
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+
     match cmd.spawn() {
         Ok(child) => {
             info!("Local Sunshine process spawned successfully (PID: {:?})", child.id());
@@ -352,7 +358,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             // Init tracing logger with custom MakeWriter to stream logs to GUI
             let _ = tracing_subscriber::registry()
                 .with(tracing_subscriber::EnvFilter::new(
-                    std::env::var("RUST_LOG").unwrap_or_else(|_| "info,agent=debug".into()),
+                    std::env::var("RUST_LOG").unwrap_or_else(|_| {
+                        if cfg!(debug_assertions) {
+                            "info,agent=debug"
+                        } else {
+                            "warn"
+                        }
+                    }.into()),
                 ))
                 .with(tracing_subscriber::fmt::layer()
                     .with_writer(gui::ChannelMakeWriter)
@@ -369,7 +381,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Init standard tracing logger
     let _ = tracing_subscriber::registry()
         .with(tracing_subscriber::EnvFilter::new(
-            std::env::var("RUST_LOG").unwrap_or_else(|_| "info,agent=debug".into()),
+            std::env::var("RUST_LOG").unwrap_or_else(|_| {
+                if cfg!(debug_assertions) {
+                    "info,agent=debug"
+                } else {
+                    "warn"
+                }
+            }.into()),
         ))
         .with(tracing_subscriber::fmt::layer())
         .try_init();

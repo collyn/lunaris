@@ -8,6 +8,10 @@ members = [
 ]
 resolver = "2"
 
+[workspace.package]
+version = "0.1.3"
+edition = "2026"
+
 [profile.release]
 opt-level = 3
 lto = true
