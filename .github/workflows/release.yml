@@ -154,11 +154,11 @@ jobs:
           cd web
           npm ci || npm install
           npm run build
-        shell: bash
+        shell: pwsh
 
       - name: Build Rust Workspace
         run: cargo build --release --workspace
-        shell: bash
+        shell: pwsh
 
       - name: Package Server and Web
         run: |
