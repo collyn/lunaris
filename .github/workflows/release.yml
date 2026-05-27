@@ -126,23 +126,19 @@ jobs:
             -name "*.so*" -type f -exec patchelf --force-rpath --set-rpath '$ORIGIN:$ORIGIN/../lib:$ORIGIN/../../lib' {} \; 2>/dev/null || true
 
           # Create qt.conf for Qt plugin/QML discovery
-          cat > lunaris-client-desktop/qt.conf << 'QTCONF'
-[Paths]
-Prefix = .
-Libraries = lib
-Plugins = plugins
-QmlImports = qml
-QTCONF
+          echo "[Paths]" > lunaris-client-desktop/qt.conf
+          echo "Prefix = ." >> lunaris-client-desktop/qt.conf
+          echo "Libraries = lib" >> lunaris-client-desktop/qt.conf
+          echo "Plugins = plugins" >> lunaris-client-desktop/qt.conf
+          echo "QmlImports = qml" >> lunaris-client-desktop/qt.conf
 
           # Create launcher script
-          cat > lunaris-client-desktop/launch.sh << 'LAUNCHER'
-#!/bin/bash
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-export LD_LIBRARY_PATH="$SCRIPT_DIR/lib:$LD_LIBRARY_PATH"
-export QT_PLUGIN_PATH="$SCRIPT_DIR/plugins"
-export QML2_IMPORT_PATH="$SCRIPT_DIR/qml"
-exec "$SCRIPT_DIR/client-desktop" "$@"
-LAUNCHER
+          echo '#!/bin/bash' > lunaris-client-desktop/launch.sh
+          echo 'SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"' >> lunaris-client-desktop/launch.sh
+          echo 'export LD_LIBRARY_PATH="$SCRIPT_DIR/lib:$LD_LIBRARY_PATH"' >> lunaris-client-desktop/launch.sh
+          echo 'export QT_PLUGIN_PATH="$SCRIPT_DIR/plugins"' >> lunaris-client-desktop/launch.sh
+          echo 'export QML2_IMPORT_PATH="$SCRIPT_DIR/qml"' >> lunaris-client-desktop/launch.sh
+          echo 'exec "$SCRIPT_DIR/client-desktop" "$@"' >> lunaris-client-desktop/launch.sh
           chmod +x lunaris-client-desktop/launch.sh
 
           # Show bundle contents for debugging
