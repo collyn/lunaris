@@ -1,3 +1,5 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 use futures_util::{StreamExt, SinkExt};
