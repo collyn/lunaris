@@ -221,9 +221,14 @@ jobs:
           # Qt6 — Use QT_ROOT_DIR set by install-qt-action
           echo "QMAKE=${QT_ROOT_DIR}/bin/qmake" >> $GITHUB_ENV
 
+          # macOS Qt uses frameworks — compiler needs -F (framework search path)
+          # to find headers inside QtCore.framework/Headers/, QtGui.framework/Headers/ etc.
+          echo "CXXFLAGS=-F${QT_ROOT_DIR}/lib" >> $GITHUB_ENV
+          echo "CFLAGS=-F${QT_ROOT_DIR}/lib" >> $GITHUB_ENV
+
           echo "FFMPEG_DIR=${FFMPEG_PREFIX}" >> $GITHUB_ENV
           echo "PKG_CONFIG_PATH=${FFMPEG_PREFIX}/lib/pkgconfig:${OPUS_PREFIX}/lib/pkgconfig:$PKG_CONFIG_PATH" >> $GITHUB_ENV
-          echo "BINDGEN_EXTRA_CLANG_ARGS=-I${FFMPEG_PREFIX}/include -I${OPUS_PREFIX}/include" >> $GITHUB_ENV
+          echo "BINDGEN_EXTRA_CLANG_ARGS=-F${QT_ROOT_DIR}/lib -I${FFMPEG_PREFIX}/include -I${OPUS_PREFIX}/include" >> $GITHUB_ENV
           echo "LIBRARY_PATH=${FFMPEG_PREFIX}/lib:${OPUS_PREFIX}/lib:$LIBRARY_PATH" >> $GITHUB_ENV
 
       - name: Debug environment
@@ -233,7 +238,16 @@ jobs:
           echo "QMAKE: $QMAKE"
           which qmake || echo "qmake not in PATH"
           qmake --version || echo "qmake --version failed"
-          ls "$QT_ROOT_DIR/bin/" | head -10 || echo "Cannot list QT_ROOT_DIR/bin"
+          echo "=== Qt layout ==="
+          echo "include/ dir:"
+          ls "$QT_ROOT_DIR/include/" 2>/dev/null | head -5 || echo "  (no include/ dir — using framework layout)"
+          echo "lib/ frameworks:"
+          ls "$QT_ROOT_DIR/lib/" 2>/dev/null | grep -i "\.framework" | head -5 || echo "  (no frameworks found)"
+          echo "QtCore framework headers:"
+          ls "$QT_ROOT_DIR/lib/QtCore.framework/Headers/" 2>/dev/null | head -5 || echo "  (no QtCore.framework/Headers/)"
+          echo "=== Compiler flags ==="
+          echo "CXXFLAGS: $CXXFLAGS"
+          echo "BINDGEN_EXTRA_CLANG_ARGS: $BINDGEN_EXTRA_CLANG_ARGS"
           echo "=== FFmpeg ==="
           echo "FFMPEG_DIR: $FFMPEG_DIR"
           pkg-config --libs libavcodec || echo "libavcodec.pc not found"
