@@ -77,10 +77,15 @@ jobs:
 
   build-windows:
     name: Build Windows
-    runs-on: windows-latest
+    runs-on: windows-2022
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Setup MSVC Developer Command Prompt
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -95,16 +100,18 @@ jobs:
         shell: pwsh
 
       - name: Install pkg-config
-        run: choco install pkgconfiglite
+        run: |
+          choco install pkgconfiglite -y
         shell: pwsh
 
       - name: Install Qt6
-        uses: jurplel/install-qt-action@v3
+        uses: jurplel/install-qt-action@v4
         with:
-          version: '6.5.3'
+          version: '6.7.3'
           host: 'windows'
           target: 'desktop'
           arch: 'win64_msvc2019_64'
+          modules: 'qtmultimedia qtshadertools'
 
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@v1
@@ -114,6 +121,32 @@ jobs:
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
 
+      - name: Configure environment
+        run: |
+          echo "PKG_CONFIG_PATH=C:/vcpkg/installed/x64-windows/lib/pkgconfig" >> $GITHUB_ENV
+          echo "VCPKG_ROOT=C:/vcpkg" >> $GITHUB_ENV
+          echo "FFMPEG_DIR=C:/vcpkg/installed/x64-windows" >> $GITHUB_ENV
+          echo "OPENSSL_NO_VENDOR=1" >> $GITHUB_ENV
+          echo "OPENSSL_DIR=C:/vcpkg/installed/x64-windows" >> $GITHUB_ENV
+          echo "QMAKE=${QT_ROOT_DIR}/bin/qmake.exe" >> $GITHUB_ENV
+        shell: bash
+
+      - name: Debug environment
+        run: |
+          echo "=== Qt ==="
+          echo "QT_ROOT_DIR: $QT_ROOT_DIR"
+          echo "QMAKE: $QMAKE"
+          which qmake.exe || which qmake || echo "qmake not in PATH"
+          ls "$QT_ROOT_DIR/bin/" | head -10 || echo "Cannot list QT_ROOT_DIR/bin"
+          echo "=== pkg-config ==="
+          which pkg-config || echo "pkg-config not found"
+          pkg-config --list-all 2>/dev/null | grep -i opus || echo "opus.pc not found via pkg-config"
+          echo "PKG_CONFIG_PATH: $PKG_CONFIG_PATH"
+          ls C:/vcpkg/installed/x64-windows/lib/pkgconfig/ || echo "Cannot list pkgconfig dir"
+          echo "=== FFmpeg ==="
+          pkg-config --libs libavcodec 2>/dev/null || echo "libavcodec.pc not found"
+        shell: bash
+
       - name: Build Web Frontend
         run: |
           cd web
@@ -122,14 +155,7 @@ jobs:
         shell: bash
 
       - name: Build Rust Workspace
-        run: |
-          export PKG_CONFIG_PATH="C:/vcpkg/installed/x64-windows/lib/pkgconfig"
-          cargo build --release --workspace --exclude client
-        env:
-          VCPKG_ROOT: C:\vcpkg
-          FFMPEG_DIR: C:\vcpkg\installed\x64-windows
-          OPENSSL_NO_VENDOR: "1"
-          OPENSSL_DIR: C:\vcpkg\installed\x64-windows
+        run: cargo build --release --workspace --exclude client
         shell: bash
 
       - name: Package Server and Web
@@ -160,9 +186,9 @@ jobs:
 
   build-macos:
     name: Build macOS
-    runs-on: macos-latest
+    runs-on: macos-15
     env:
-      MACOSX_DEPLOYMENT_TARGET: "11.0"
+      MACOSX_DEPLOYMENT_TARGET: "13.0"
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -179,34 +205,40 @@ jobs:
           brew install ffmpeg pkg-config opus
 
       - name: Install Qt6
-        uses: jurplel/install-qt-action@v3
+        uses: jurplel/install-qt-action@v4
         with:
-          version: '6.7.0'
+          version: '6.7.3'
           host: 'mac'
           target: 'desktop'
+          arch: 'clang_64'
+          modules: 'qtmultimedia qtshadertools'
 
       - name: Configure library paths
         run: |
           FFMPEG_PREFIX=$(brew --prefix ffmpeg)
           OPUS_PREFIX=$(brew --prefix opus)
 
-          # Qt6 — Set QMAKE path for cxx-qt dynamically
-          if [ -n "$QT_ROOT_DIR" ]; then
-            echo "QMAKE=${QT_ROOT_DIR}/bin/qmake" >> $GITHUB_ENV
-          elif [ -n "$Qt6_DIR" ]; then
-            if [ -f "${Qt6_DIR}/bin/qmake" ]; then
-              echo "QMAKE=${Qt6_DIR}/bin/qmake" >> $GITHUB_ENV
-            else
-              echo "QMAKE=${Qt6_DIR}/../../../bin/qmake" >> $GITHUB_ENV
-            fi
-          else
-            echo "QMAKE=qmake" >> $GITHUB_ENV
-          fi
+          # Qt6 — Use QT_ROOT_DIR set by install-qt-action
+          echo "QMAKE=${QT_ROOT_DIR}/bin/qmake" >> $GITHUB_ENV
 
           echo "FFMPEG_DIR=${FFMPEG_PREFIX}" >> $GITHUB_ENV
           echo "PKG_CONFIG_PATH=${FFMPEG_PREFIX}/lib/pkgconfig:${OPUS_PREFIX}/lib/pkgconfig:$PKG_CONFIG_PATH" >> $GITHUB_ENV
           echo "BINDGEN_EXTRA_CLANG_ARGS=-I${FFMPEG_PREFIX}/include -I${OPUS_PREFIX}/include" >> $GITHUB_ENV
           echo "LIBRARY_PATH=${FFMPEG_PREFIX}/lib:${OPUS_PREFIX}/lib:$LIBRARY_PATH" >> $GITHUB_ENV
+
+      - name: Debug environment
+        run: |
+          echo "=== Qt ==="
+          echo "QT_ROOT_DIR: $QT_ROOT_DIR"
+          echo "QMAKE: $QMAKE"
+          which qmake || echo "qmake not in PATH"
+          qmake --version || echo "qmake --version failed"
+          ls "$QT_ROOT_DIR/bin/" | head -10 || echo "Cannot list QT_ROOT_DIR/bin"
+          echo "=== FFmpeg ==="
+          echo "FFMPEG_DIR: $FFMPEG_DIR"
+          pkg-config --libs libavcodec || echo "libavcodec.pc not found"
+          echo "=== Opus ==="
+          pkg-config --libs opus || echo "opus.pc not found"
 
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@v1
