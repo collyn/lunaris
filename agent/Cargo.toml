@@ -18,7 +18,7 @@ moonlight-common = { git = "https://github.com/MrCreativ3001/moonlight-common-ru
 ], default-features = false }
 
 tokio = { version = "1.0", features = ["full"] }
-tokio-tungstenite = { version = "0.21", features = ["rustls-native-certs"] }
+tokio-tungstenite = { version = "0.21", features = ["rustls-tls-native-roots"] }
 webrtc = "0.17.1"
 pem = "3.0"
 uuid = { version = "1.0", features = ["v4"] }
