@@ -100,11 +100,12 @@ jobs:
         id: vcpkg-cache
         with:
           path: C:\vcpkg\installed
-          key: vcpkg-win-x64-ffmpeg-opus-openssl-v1
+          key: vcpkg-win-x64-ffmpeg-opus-openssl-v2
 
       - name: Install C/C++ libraries via vcpkg
         if: steps.vcpkg-cache.outputs.cache-hit != 'true'
         run: |
+          Add-Content -Path "C:\vcpkg\triplets\x64-windows.cmake" -Value "`nset(VCPKG_BUILD_TYPE release)"
           vcpkg install ffmpeg:x64-windows opus:x64-windows openssl:x64-windows
         shell: pwsh
 
