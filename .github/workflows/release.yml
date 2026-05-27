@@ -48,7 +48,7 @@ jobs:
           npm run build
 
       - name: Build Rust Workspace
-        run: cargo build --release --workspace --exclude client
+        run: cargo build --release --workspace
 
       - name: Package Server and Web
         run: |
@@ -163,7 +163,7 @@ jobs:
         shell: bash
 
       - name: Build Rust Workspace
-        run: cargo build --release --workspace --exclude client
+        run: cargo build --release --workspace
         shell: bash
 
       - name: Package Server and Web
@@ -285,7 +285,7 @@ jobs:
           npm run build
 
       - name: Build Rust Workspace (Native Target)
-        run: cargo build --release --workspace --exclude client
+        run: cargo build --release --workspace
 
       - name: Build Agent for Intel x86_64 (Cross-Compile)
         run: cargo build --release --bin agent --target x86_64-apple-darwin
