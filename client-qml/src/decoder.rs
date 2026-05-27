@@ -1,5 +1,9 @@
 use ffmpeg_next::sys as ffi;
 
+// SWS_BILINEAR is 2 in FFmpeg. We define it locally because on some platforms/FFmpeg versions
+// bindgen generates it as a global constant, while on others it is an enum variant (SwsFlags::SWS_BILINEAR).
+const SWS_BILINEAR: i32 = 2;
+
 #[derive(Debug, Clone, Copy)]
 pub enum CodecType {
     H264,
@@ -221,7 +225,7 @@ impl HardwareDecoder {
                     width,
                     height,
                     ffi::AVPixelFormat::AV_PIX_FMT_YUV420P,
-                    ffi::SWS_BILINEAR,
+                    SWS_BILINEAR,
                     std::ptr::null_mut(),
                     std::ptr::null_mut(),
                     std::ptr::null(),

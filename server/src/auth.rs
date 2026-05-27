@@ -105,6 +105,7 @@ impl FromRequestParts<Arc<SignalingState>> for AuthenticatedUser {
     }
 }
 
+#[allow(dead_code)]
 pub struct AdminUser {
     pub user_id: String,
     pub username: String,

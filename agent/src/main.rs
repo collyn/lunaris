@@ -68,6 +68,7 @@ struct Args {
     import_config: Option<String>,
 }
 
+#[allow(dead_code)]
 const LINUX_SUNSHINE_URL: &str = "https://github.com/LizardByte/Sunshine/releases/latest/download/sunshine.AppImage";
 #[allow(dead_code)]
 const WINDOWS_SUNSHINE_URL: &str = "https://github.com/LizardByte/Sunshine/releases/latest/download/Sunshine-Windows-AMD64-portable.zip";
@@ -84,6 +85,7 @@ fn which_sunshine() -> Result<(), &'static str> {
     }
 }
 
+#[allow(dead_code)]
 async fn download_file(url: &str, dest: &std::path::Path) -> Result<(), anyhow::Error> {
     info!("Downloading {} to {:?}", url, dest);
     let client = reqwest::Client::builder()

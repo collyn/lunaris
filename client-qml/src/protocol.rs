@@ -1,17 +1,21 @@
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 use tracing::{info, warn};
 
 pub fn register_protocol() -> Result<(), anyhow::Error> {
-    let current_exe = std::env::current_exe()?;
-    let exe_path = current_exe.to_string_lossy().into_owned();
-
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     {
-        register_linux(&exe_path)?;
-    }
+        let current_exe = std::env::current_exe()?;
+        let exe_path = current_exe.to_string_lossy().into_owned();
 
-    #[cfg(target_os = "windows")]
-    {
-        register_windows(&exe_path)?;
+        #[cfg(target_os = "linux")]
+        {
+            register_linux(&exe_path)?;
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            register_windows(&exe_path)?;
+        }
     }
 
     Ok(())

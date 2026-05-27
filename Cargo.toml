@@ -3,7 +3,6 @@ members = [
     "server",
     "agent",
     "common",
-    "client",
     "client-desktop",
     "client-qml",
 ]
