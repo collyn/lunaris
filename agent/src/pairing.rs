@@ -33,6 +33,16 @@ pub struct AgentConfig {
 }
 
 pub fn get_sunshine_dir() -> Option<PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(pg_files) = std::env::var("ProgramFiles") {
+            let p = PathBuf::from(pg_files).join("Sunshine").join("config");
+            if p.exists() {
+                return Some(p);
+            }
+        }
+    }
+
     dirs::config_dir().map(|mut p| {
         p.push("sunshine");
         p
@@ -173,7 +183,9 @@ pub fn auto_pair_local_sunshine(
 
     if needs_write {
         let updated_state = serde_json::to_string_pretty(&state_json)?;
-        fs::write(&state_file_path, updated_state)?;
+        if let Err(e) = fs::write(&state_file_path, updated_state) {
+            eprintln!("Warning: Failed to write to Sunshine state file at {:?}: {:?}. You may need to run as Administrator or pair manually.", state_file_path, e);
+        }
     }
 
     // 3. Try to read server_certificate (cacert.pem) if available
