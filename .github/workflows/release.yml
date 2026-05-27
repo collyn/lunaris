@@ -94,6 +94,10 @@ jobs:
           vcpkg install ffmpeg:x64-windows opus:x64-windows openssl:x64-windows
         shell: pwsh
 
+      - name: Install pkg-config
+        run: choco install pkgconfiglite
+        shell: pwsh
+
       - name: Install Qt6
         uses: jurplel/install-qt-action@v3
         with:
@@ -119,7 +123,7 @@ jobs:
 
       - name: Build Rust Workspace
         run: |
-          export PKG_CONFIG_PATH="/c/vcpkg/installed/x64-windows/lib/pkgconfig:$PKG_CONFIG_PATH"
+          export PKG_CONFIG_PATH="C:/vcpkg/installed/x64-windows/lib/pkgconfig"
           cargo build --release --workspace --exclude client
         env:
           VCPKG_ROOT: C:\vcpkg
@@ -186,8 +190,18 @@ jobs:
           FFMPEG_PREFIX=$(brew --prefix ffmpeg)
           OPUS_PREFIX=$(brew --prefix opus)
 
-          # Qt6 — install-qt-action đã set Qt6_DIR, thêm QMAKE cho cxx-qt
-          echo "QMAKE=${Qt6_DIR}/../../../bin/qmake" >> $GITHUB_ENV
+          # Qt6 — Set QMAKE path for cxx-qt dynamically
+          if [ -n "$QT_ROOT_DIR" ]; then
+            echo "QMAKE=${QT_ROOT_DIR}/bin/qmake" >> $GITHUB_ENV
+          elif [ -n "$Qt6_DIR" ]; then
+            if [ -f "${Qt6_DIR}/bin/qmake" ]; then
+              echo "QMAKE=${Qt6_DIR}/bin/qmake" >> $GITHUB_ENV
+            else
+              echo "QMAKE=${Qt6_DIR}/../../../bin/qmake" >> $GITHUB_ENV
+            fi
+          else
+            echo "QMAKE=qmake" >> $GITHUB_ENV
+          fi
 
           echo "FFMPEG_DIR=${FFMPEG_PREFIX}" >> $GITHUB_ENV
           echo "PKG_CONFIG_PATH=${FFMPEG_PREFIX}/lib/pkgconfig:${OPUS_PREFIX}/lib/pkgconfig:$PKG_CONFIG_PATH" >> $GITHUB_ENV
