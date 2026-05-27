@@ -76,4 +76,5 @@ build-all:
     paths:
       - target/release/server
       - target/release/client-desktop
+      - target/release/agent
     expire_in: 1 week

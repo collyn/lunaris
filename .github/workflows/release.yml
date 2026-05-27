@@ -63,11 +63,18 @@ jobs:
           name: server-linux
           path: lunaris-server-linux.tar.gz
 
+      - name: Package Client Desktop
+        run: |
+          mkdir -p lunaris-client-desktop
+          cp target/release/client-desktop lunaris-client-desktop/
+          cp target/release/agent lunaris-client-desktop/
+          tar -czf lunaris-client-desktop-linux.tar.gz -C lunaris-client-desktop .
+
       - name: Upload Client Desktop Artifact
         uses: actions/upload-artifact@v4
         with:
           name: client-desktop-linux
-          path: target/release/client-desktop
+          path: lunaris-client-desktop-linux.tar.gz
 
   build-windows:
     name: Build Windows
@@ -181,6 +188,7 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path lunaris-client-desktop
           Copy-Item target/release/client-desktop.exe -Destination lunaris-client-desktop/
+          Copy-Item target/release/agent.exe -Destination lunaris-client-desktop/
           & "${env:QT_ROOT_DIR}/bin/windeployqt.exe" --qmldir client-qml/qml --no-translations --compiler-runtime lunaris-client-desktop/client-desktop.exe
           Copy-Item "C:/vcpkg/installed/x64-windows/bin/*.dll" -Destination lunaris-client-desktop/
           Compress-Archive -Path lunaris-client-desktop/* -DestinationPath lunaris-client-desktop-windows.zip
@@ -300,11 +308,18 @@ jobs:
           name: server-macos
           path: lunaris-server-macos.tar.gz
 
+      - name: Package Client Desktop
+        run: |
+          mkdir -p lunaris-client-desktop
+          cp target/release/client-desktop lunaris-client-desktop/
+          cp target/release/agent lunaris-client-desktop/
+          tar -czf lunaris-client-desktop-macos.tar.gz -C lunaris-client-desktop .
+
       - name: Upload Client Desktop Artifact
         uses: actions/upload-artifact@v4
         with:
           name: client-desktop-macos
-          path: target/release/client-desktop
+          path: lunaris-client-desktop-macos.tar.gz
 
   release:
     name: Create Release
@@ -356,7 +371,7 @@ jobs:
 
           # Linux
           mv ./artifacts/linux-server/lunaris-server-linux.tar.gz ./release-files/
-          mv ./artifacts/linux-client-desktop/client-desktop ./release-files/lunaris-client-desktop-linux
+          mv ./artifacts/linux-client-desktop/lunaris-client-desktop-linux.tar.gz ./release-files/
 
           # Windows
           mv ./artifacts/windows-server/lunaris-server-windows.zip ./release-files/
@@ -364,10 +379,7 @@ jobs:
 
           # macOS
           mv ./artifacts/macos-server/lunaris-server-macos.tar.gz ./release-files/
-          mv ./artifacts/macos-client-desktop/client-desktop ./release-files/lunaris-client-desktop-macos
-
-          chmod +x ./release-files/lunaris-client-desktop-linux
-          chmod +x ./release-files/lunaris-client-desktop-macos
+          mv ./artifacts/macos-client-desktop/lunaris-client-desktop-macos.tar.gz ./release-files/
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -378,10 +390,10 @@ jobs:
           prerelease: false
           files: |
             release-files/lunaris-server-linux.tar.gz
-            release-files/lunaris-client-desktop-linux
+            release-files/lunaris-client-desktop-linux.tar.gz
             release-files/lunaris-server-windows.zip
             release-files/lunaris-client-desktop-windows.zip
             release-files/lunaris-server-macos.tar.gz
-            release-files/lunaris-client-desktop-macos
+            release-files/lunaris-client-desktop-macos.tar.gz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
