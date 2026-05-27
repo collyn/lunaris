@@ -211,9 +211,6 @@ jobs:
       - name: Install system dependencies
         run: |
           brew install ffmpeg pkg-config opus qt
-          # Qt is keg-only — force-link to create symlinks at /opt/homebrew/include/
-          # so qmake's reported include paths actually contain headers
-          brew link --force qt
 
       - name: Configure library paths
         run: |
@@ -221,31 +218,50 @@ jobs:
           OPUS_PREFIX=$(brew --prefix opus)
           QT_PREFIX=$(brew --prefix qt)
 
-          # Qt6 via Homebrew — has proper include/ symlinks to framework headers
+          # Qt6 via Homebrew (keg-only)
           echo "QMAKE=${QT_PREFIX}/bin/qmake" >> $GITHUB_ENV
           echo "CMAKE_PREFIX_PATH=${QT_PREFIX}" >> $GITHUB_ENV
 
-          # Framework search path for C++ compiler (macOS Qt uses frameworks)
-          echo "CXXFLAGS=-F${QT_PREFIX}/lib" >> $GITHUB_ENV
-          echo "CFLAGS=-F${QT_PREFIX}/lib" >> $GITHUB_ENV
+          # cxx-qt-lib includes bare headers like <QtGlobal> (not <QtCore/QtGlobal>).
+          # qmake reports /opt/homebrew/include as QT_INSTALL_HEADERS, but Qt is
+          # keg-only so that dir is empty. We must add the keg's include dirs directly
+          # so the compiler can find bare Qt headers.
+          # -F for framework-style includes (<QtCore/QByteArray>)
+          # -I for bare includes (<QtGlobal>, <QByteArray>)
+          QT_CXX_FLAGS="-F${QT_PREFIX}/lib"
+          QT_CXX_FLAGS="${QT_CXX_FLAGS} -I${QT_PREFIX}/include"
+          QT_CXX_FLAGS="${QT_CXX_FLAGS} -I${QT_PREFIX}/include/QtCore"
+          QT_CXX_FLAGS="${QT_CXX_FLAGS} -I${QT_PREFIX}/include/QtGui"
+          QT_CXX_FLAGS="${QT_CXX_FLAGS} -I${QT_PREFIX}/include/QtQml"
+          QT_CXX_FLAGS="${QT_CXX_FLAGS} -I${QT_PREFIX}/include/QtQuick"
+          QT_CXX_FLAGS="${QT_CXX_FLAGS} -I${QT_PREFIX}/include/QtMultimedia"
+          QT_CXX_FLAGS="${QT_CXX_FLAGS} -I${QT_PREFIX}/include/QtNetwork"
+          echo "CXXFLAGS=${QT_CXX_FLAGS}" >> $GITHUB_ENV
+          echo "CFLAGS=${QT_CXX_FLAGS}" >> $GITHUB_ENV
 
           echo "FFMPEG_DIR=${FFMPEG_PREFIX}" >> $GITHUB_ENV
           echo "PKG_CONFIG_PATH=${FFMPEG_PREFIX}/lib/pkgconfig:${OPUS_PREFIX}/lib/pkgconfig:${QT_PREFIX}/lib/pkgconfig:$PKG_CONFIG_PATH" >> $GITHUB_ENV
-          echo "BINDGEN_EXTRA_CLANG_ARGS=-F${QT_PREFIX}/lib -I${QT_PREFIX}/include -I${FFMPEG_PREFIX}/include -I${OPUS_PREFIX}/include" >> $GITHUB_ENV
+          echo "BINDGEN_EXTRA_CLANG_ARGS=${QT_CXX_FLAGS} -I${FFMPEG_PREFIX}/include -I${OPUS_PREFIX}/include" >> $GITHUB_ENV
           echo "LIBRARY_PATH=${QT_PREFIX}/lib:${FFMPEG_PREFIX}/lib:${OPUS_PREFIX}/lib:$LIBRARY_PATH" >> $GITHUB_ENV
 
       - name: Debug environment
         run: |
           QT_PREFIX=$(brew --prefix qt)
-          echo "=== Qt (Homebrew) ==="
+          echo "=== Qt (Homebrew keg) ==="
           echo "QT_PREFIX: $QT_PREFIX"
           echo "QMAKE: $QMAKE"
           $QMAKE --version || echo "qmake --version failed"
-          echo "=== Qt include dir ==="
-          ls "$QT_PREFIX/include/" 2>/dev/null | head -10 || echo "  (no include/ dir)"
-          echo "=== QtCore headers ==="
-          ls "$QT_PREFIX/include/QtCore/" 2>/dev/null | head -5 || echo "  (no QtCore headers)"
-          test -f "$QT_PREFIX/include/QtCore/QtGlobal" && echo "QtGlobal: FOUND" || echo "QtGlobal: NOT FOUND"
+          echo "=== qmake query ==="
+          $QMAKE -query QT_INSTALL_HEADERS || true
+          $QMAKE -query QT_INSTALL_LIBS || true
+          echo "=== Qt keg include dir ==="
+          ls "$QT_PREFIX/include/" 2>/dev/null | head -10 || echo "  (EMPTY or MISSING)"
+          echo "=== QtCore/QtGlobal check ==="
+          test -f "$QT_PREFIX/include/QtCore/QtGlobal" && echo "  FOUND: $QT_PREFIX/include/QtCore/QtGlobal" || echo "  NOT FOUND at keg path"
+          echo "=== Linked path check ==="
+          test -f "/opt/homebrew/include/QtCore/QtGlobal" && echo "  FOUND: /opt/homebrew/include/QtCore/QtGlobal" || echo "  NOT FOUND at linked path (expected — keg-only)"
+          echo "=== CXXFLAGS ==="
+          echo "$CXXFLAGS"
           echo "=== FFmpeg ==="
           pkg-config --libs libavcodec || echo "libavcodec.pc not found"
           echo "=== Opus ==="
