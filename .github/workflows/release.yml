@@ -177,11 +177,20 @@ jobs:
           name: server-windows
           path: lunaris-server-windows.zip
 
+      - name: Package Client Desktop
+        run: |
+          New-Item -ItemType Directory -Force -Path lunaris-client-desktop
+          Copy-Item target/release/client-desktop.exe -Destination lunaris-client-desktop/
+          & "${env:QT_ROOT_DIR}/bin/windeployqt.exe" --qmldir client-qml/qml --no-translations --compiler-runtime lunaris-client-desktop/client-desktop.exe
+          Copy-Item "C:/vcpkg/installed/x64-windows/bin/*.dll" -Destination lunaris-client-desktop/
+          Compress-Archive -Path lunaris-client-desktop/* -DestinationPath lunaris-client-desktop-windows.zip
+        shell: pwsh
+
       - name: Upload Client Desktop Artifact
         uses: actions/upload-artifact@v4
         with:
           name: client-desktop-windows
-          path: target/release/client-desktop.exe
+          path: lunaris-client-desktop-windows.zip
 
   build-macos:
     name: Build macOS
@@ -351,7 +360,7 @@ jobs:
 
           # Windows
           mv ./artifacts/windows-server/lunaris-server-windows.zip ./release-files/
-          mv ./artifacts/windows-client-desktop/client-desktop.exe ./release-files/lunaris-client-desktop-windows.exe
+          mv ./artifacts/windows-client-desktop/lunaris-client-desktop-windows.zip ./release-files/
 
           # macOS
           mv ./artifacts/macos-server/lunaris-server-macos.tar.gz ./release-files/
@@ -371,7 +380,7 @@ jobs:
             release-files/lunaris-server-linux.tar.gz
             release-files/lunaris-client-desktop-linux
             release-files/lunaris-server-windows.zip
-            release-files/lunaris-client-desktop-windows.exe
+            release-files/lunaris-client-desktop-windows.zip
             release-files/lunaris-server-macos.tar.gz
             release-files/lunaris-client-desktop-macos
         env:
