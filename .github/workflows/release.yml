@@ -94,7 +94,15 @@ jobs:
           cache: 'npm'
           cache-dependency-path: web/package-lock.json
 
+      - name: Cache vcpkg installed packages
+        uses: actions/cache@v4
+        id: vcpkg-cache
+        with:
+          path: C:\vcpkg\installed
+          key: vcpkg-win-x64-ffmpeg-opus-openssl-v1
+
       - name: Install C/C++ libraries via vcpkg
+        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
         run: |
           vcpkg install ffmpeg:x64-windows opus:x64-windows openssl:x64-windows
         shell: pwsh
@@ -203,6 +211,9 @@ jobs:
       - name: Install system dependencies
         run: |
           brew install ffmpeg pkg-config opus qt
+          # Qt is keg-only — force-link to create symlinks at /opt/homebrew/include/
+          # so qmake's reported include paths actually contain headers
+          brew link --force qt
 
       - name: Configure library paths
         run: |
