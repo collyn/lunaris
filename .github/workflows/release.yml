@@ -63,11 +63,95 @@ jobs:
           name: server-linux
           path: lunaris-server-linux.tar.gz
 
+      - name: Install packaging tools
+        run: sudo apt-get install -y patchelf
+
       - name: Package Client Desktop
         run: |
-          mkdir -p lunaris-client-desktop
+          mkdir -p lunaris-client-desktop/{lib,plugins/platforms,plugins/multimedia,plugins/imageformats,plugins/xcbglintegrations,qml}
+
+          # Copy binaries
           cp target/release/client-desktop lunaris-client-desktop/
           cp target/release/agent lunaris-client-desktop/
+
+          QT_LIB_DIR="/usr/lib/x86_64-linux-gnu"
+          QT_PLUGIN_DIR="/usr/lib/x86_64-linux-gnu/qt6/plugins"
+          QT_QML_DIR="/usr/lib/x86_64-linux-gnu/qt6/qml"
+
+          # Copy Qt6 shared libraries
+          for lib in Qt6Core Qt6Gui Qt6Qml Qt6QmlModels Qt6QmlWorkerScript \
+                     Qt6Quick Qt6QuickControls2 Qt6QuickControls2Impl \
+                     Qt6QuickLayouts Qt6QuickShapes Qt6QuickTemplates2 \
+                     Qt6Multimedia Qt6MultimediaQuick \
+                     Qt6Network Qt6OpenGL Qt6ShaderTools Qt6DBus \
+                     Qt6Svg Qt6LabsSettings Qt6WaylandClient Qt6WlShellIntegration \
+                     Qt6WaylandEglClientHwIntegration; do
+            find "$QT_LIB_DIR" -maxdepth 1 -name "lib${lib}.so*" -exec cp -aL {} lunaris-client-desktop/lib/ \; 2>/dev/null || true
+          done
+
+          # Copy transitive dependencies (ICU, etc.) detected via ldd
+          ldd target/release/client-desktop | grep "=> /" | awk '{print $3}' | while read lib; do
+            case "$lib" in
+              */libicu*|*/libdouble*|*/libpcre2*|*/libharfbuzz*|*/libfreetype*|*/libfontconfig*|*/libpng*|*/libjpeg*|*/libmd4c*|*/libxkb*)
+                cp -nL "$lib" lunaris-client-desktop/lib/ 2>/dev/null || true
+                ;;
+            esac
+          done
+
+          # Copy FFmpeg and Opus shared libraries
+          for lib in avcodec avformat avutil swscale swresample avfilter avdevice postproc opus; do
+            find "$QT_LIB_DIR" -maxdepth 1 -name "lib${lib}.so*" -exec cp -aL {} lunaris-client-desktop/lib/ \; 2>/dev/null || true
+          done
+
+          # Copy platform plugins (CRITICAL for X11/Wayland)
+          cp -L "$QT_PLUGIN_DIR/platforms/libqxcb.so" lunaris-client-desktop/plugins/platforms/ 2>/dev/null || true
+          cp -L "$QT_PLUGIN_DIR/platforms/libqwayland"*.so lunaris-client-desktop/plugins/platforms/ 2>/dev/null || true
+
+          # Copy other plugins
+          cp -rL "$QT_PLUGIN_DIR/multimedia/"* lunaris-client-desktop/plugins/multimedia/ 2>/dev/null || true
+          cp -rL "$QT_PLUGIN_DIR/imageformats/"* lunaris-client-desktop/plugins/imageformats/ 2>/dev/null || true
+          cp -rL "$QT_PLUGIN_DIR/xcbglintegrations/"* lunaris-client-desktop/plugins/xcbglintegrations/ 2>/dev/null || true
+
+          # Copy QML modules
+          for mod in QtQuick QtMultimedia QtQml Qt; do
+            if [ -d "$QT_QML_DIR/$mod" ]; then
+              cp -rL "$QT_QML_DIR/$mod" lunaris-client-desktop/qml/ 2>/dev/null || true
+            fi
+          done
+
+          # Set RPATH on main binary
+          patchelf --force-rpath --set-rpath '$ORIGIN/lib' lunaris-client-desktop/client-desktop
+
+          # Set RPATH on all bundled .so files
+          find lunaris-client-desktop/lib lunaris-client-desktop/plugins lunaris-client-desktop/qml \
+            -name "*.so*" -type f -exec patchelf --force-rpath --set-rpath '$ORIGIN:$ORIGIN/../lib:$ORIGIN/../../lib' {} \; 2>/dev/null || true
+
+          # Create qt.conf for Qt plugin/QML discovery
+          cat > lunaris-client-desktop/qt.conf << 'QTCONF'
+[Paths]
+Prefix = .
+Libraries = lib
+Plugins = plugins
+QmlImports = qml
+QTCONF
+
+          # Create launcher script
+          cat > lunaris-client-desktop/launch.sh << 'LAUNCHER'
+#!/bin/bash
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+export LD_LIBRARY_PATH="$SCRIPT_DIR/lib:$LD_LIBRARY_PATH"
+export QT_PLUGIN_PATH="$SCRIPT_DIR/plugins"
+export QML2_IMPORT_PATH="$SCRIPT_DIR/qml"
+exec "$SCRIPT_DIR/client-desktop" "$@"
+LAUNCHER
+          chmod +x lunaris-client-desktop/launch.sh
+
+          # Show bundle contents for debugging
+          echo "=== Bundle contents ==="
+          find lunaris-client-desktop -type f | head -50
+          echo "=== Bundle size ==="
+          du -sh lunaris-client-desktop/
+
           tar -czf lunaris-client-desktop-linux.tar.gz -C lunaris-client-desktop .
 
       - name: Upload Client Desktop Artifact

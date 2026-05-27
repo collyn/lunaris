@@ -660,7 +660,7 @@ pub async fn run_agent_loop(
                                 if let Some(old_session) = lock.take() {
                                     info!("Cleaning up previous active session before setting up new one...");
                                     let _ = old_session.peer_connection.close().await;
-                                    let mut stream_lock = old_session.moonlight_stream.lock().await;
+                                    let mut stream_lock = old_session.moonlight_stream.write().unwrap();
                                     if let Some(stream) = stream_lock.take() {
                                         info!("Stopping Moonlight stream for previous session...");
                                         stream.stop();
@@ -759,7 +759,7 @@ pub async fn run_agent_loop(
                             let mut lock = active_session.lock().await;
                             if let Some(session) = lock.take() {
                                 let _ = session.peer_connection.close().await;
-                                let mut stream_lock = session.moonlight_stream.lock().await;
+                                let mut stream_lock = session.moonlight_stream.write().unwrap();
                                 if let Some(stream) = stream_lock.take() {
                                     info!("Stopping Moonlight stream...");
                                     stream.stop();
@@ -798,7 +798,7 @@ pub async fn run_agent_loop(
                                 let mut lock = active_session.lock().await;
                                 if let Some(session) = lock.take() {
                                     let _ = session.peer_connection.close().await;
-                                    let mut stream_lock = session.moonlight_stream.lock().await;
+                                    let mut stream_lock = session.moonlight_stream.write().unwrap();
                                     if let Some(stream) = stream_lock.take() {
                                         info!("Stopping Moonlight stream...");
                                         stream.stop();
@@ -912,7 +912,7 @@ pub async fn run_agent_loop(
         if let Some(session) = session_lock.take() {
             info!("Stopping active remote streaming session on agent exit...");
             let _ = session.peer_connection.close().await;
-            let mut stream_lock = session.moonlight_stream.lock().await;
+            let mut stream_lock = session.moonlight_stream.write().unwrap();
             if let Some(stream) = stream_lock.take() {
                 info!("Stopping Moonlight stream...");
                 stream.stop();

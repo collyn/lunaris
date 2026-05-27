@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use bytes::Bytes;
-use tokio::sync::{mpsc, Mutex as TokioMutex};
+use tokio::sync::mpsc;
 use tracing::{debug, error, info, trace, warn};
 
 use webrtc::ice_transport::ice_candidate::RTCIceCandidate;
@@ -69,27 +69,19 @@ use crate::input::TransportChannelId;
 
 pub struct BridgeSession {
     pub peer_connection: Arc<RTCPeerConnection>,
-    pub moonlight_stream: Arc<TokioMutex<Option<MoonlightStream>>>,
+    pub moonlight_stream: Arc<std::sync::RwLock<Option<MoonlightStream>>>,
 }
 
 impl Drop for BridgeSession {
     fn drop(&mut self) {
         info!("BridgeSession is being dropped, ensuring Moonlight stream is stopped...");
-        if let Ok(mut lock) = self.moonlight_stream.try_lock() {
+        if let Ok(mut lock) = self.moonlight_stream.write() {
             if let Some(stream) = lock.take() {
-                info!("Stopping Moonlight stream in BridgeSession Drop (try_lock)...");
+                info!("Stopping Moonlight stream in BridgeSession Drop...");
                 stream.stop();
             }
         } else {
-            warn!("Moonlight stream Mutex was locked, spawning async task to stop stream...");
-            let stream_mutex = self.moonlight_stream.clone();
-            tokio::spawn(async move {
-                let mut lock = stream_mutex.lock().await;
-                if let Some(stream) = lock.take() {
-                    info!("Stopping Moonlight stream in BridgeSession Drop (async)...");
-                    stream.stop();
-                }
-            });
+            warn!("Moonlight stream RwLock was poisoned, cannot stop stream in Drop.");
         }
     }
 }
@@ -486,13 +478,13 @@ pub async fn setup_bridge_session(
         }
     });
 
-    let moonlight_stream_mutex: Arc<TokioMutex<Option<MoonlightStream>>> = Arc::new(TokioMutex::new(None));
-    let ml_stream_clone = moonlight_stream_mutex.clone();
+    let moonlight_stream_rwlock: Arc<std::sync::RwLock<Option<MoonlightStream>>> = Arc::new(std::sync::RwLock::new(None));
+    let ml_stream_clone = moonlight_stream_rwlock.clone();
 
     let webrtc_connected = Arc::new(AtomicBool::new(false));
     let webrtc_connected_clone = webrtc_connected.clone();
     // Handle Peer Connection state changes to clean up session
-    let ml_stream_state_change = moonlight_stream_mutex.clone();
+    let ml_stream_state_change = moonlight_stream_rwlock.clone();
     peer_connection.on_peer_connection_state_change(Box::new(move |state: RTCPeerConnectionState| {
         let ml_stream = ml_stream_state_change.clone();
         let webrtc_connected = webrtc_connected_clone.clone();
@@ -502,10 +494,11 @@ pub async fn setup_bridge_session(
                 webrtc_connected.store(true, Ordering::SeqCst);
             } else if state == RTCPeerConnectionState::Closed || state == RTCPeerConnectionState::Failed || state == RTCPeerConnectionState::Disconnected {
                 webrtc_connected.store(false, Ordering::SeqCst);
-                let mut lock = ml_stream.lock().await;
-                if let Some(stream) = lock.take() {
-                    info!("WebRTC connection closed, failed, or disconnected, stopping Moonlight stream...");
-                    stream.stop();
+                if let Ok(mut lock) = ml_stream.write() {
+                    if let Some(stream) = lock.take() {
+                        info!("WebRTC connection closed, failed, or disconnected, stopping Moonlight stream...");
+                        stream.stop();
+                    }
                 }
             }
         })
@@ -778,7 +771,7 @@ pub async fn setup_bridge_session(
     let moonlight = MoonlightInstance::global().expect("failed to find moonlight");
     
     // Start C connection in background thread since it is blocking
-    let ml_stream_mutex_clone = moonlight_stream_mutex.clone();
+    let ml_stream_rwlock_clone = moonlight_stream_rwlock.clone();
     std::thread::spawn(move || {
         match moonlight.start_connection(
             stream_config,
@@ -790,7 +783,7 @@ pub async fn setup_bridge_session(
         ) {
             Ok(stream) => {
                 info!("Moonlight C connection successfully started!");
-                let mut lock = ml_stream_mutex_clone.blocking_lock();
+                let mut lock = ml_stream_rwlock_clone.write().unwrap();
                 *lock = Some(stream);
             }
             Err(e) => {
@@ -801,14 +794,14 @@ pub async fn setup_bridge_session(
 
     Ok(Arc::new(BridgeSession {
         peer_connection,
-        moonlight_stream: moonlight_stream_mutex,
+        moonlight_stream: moonlight_stream_rwlock,
     }))
 }
 
 fn setup_data_channel_handler(
     data_channel: Arc<RTCDataChannel>,
     channel: TransportChannel,
-    ml_stream: Arc<TokioMutex<Option<MoonlightStream>>>,
+    ml_stream: Arc<std::sync::RwLock<Option<MoonlightStream>>>,
 ) {
     data_channel.on_message(Box::new(move |msg: DataChannelMessage| {
         let ml_stream = ml_stream.clone();
@@ -818,8 +811,8 @@ fn setup_data_channel_handler(
                 return;
             };
 
-            let stream_lock = ml_stream.lock().await;
-            let Some(stream) = stream_lock.as_ref() else {
+            let stream_guard = ml_stream.read().unwrap();
+            let Some(stream) = stream_guard.as_ref() else {
                 return;
             };
 
