@@ -130,6 +130,9 @@ jobs:
           echo "FFMPEG_DIR=C:/vcpkg/installed/x64-windows" >> $GITHUB_ENV
           echo "OPENSSL_NO_VENDOR=1" >> $GITHUB_ENV
           echo "OPENSSL_DIR=C:/vcpkg/installed/x64-windows" >> $GITHUB_ENV
+          echo "OPENSSL_ROOT_DIR=C:/vcpkg/installed/x64-windows" >> $GITHUB_ENV
+          echo "OPENSSL_INCLUDE=C:/vcpkg/installed/x64-windows/include" >> $GITHUB_ENV
+          echo "OPENSSL_LIB_DIR=C:/vcpkg/installed/x64-windows/lib" >> $GITHUB_ENV
           echo "QMAKE=${QT_ROOT_DIR}/bin/qmake.exe" >> $GITHUB_ENV
         shell: bash
 
