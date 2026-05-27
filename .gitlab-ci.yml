@@ -58,7 +58,7 @@ build-all:
     - npm run build
     - cd ..
 
-    # 5. Build Rust Workspace (gồm server, agent, client...)
+    # 5. Build Rust Workspace (gồm server, client-desktop...)
     - echo "Building Rust Workspace..."
     - export PATH="${CARGO_HOME}/bin:${PATH}"
     - cargo build --release --workspace

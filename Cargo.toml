@@ -1,7 +1,6 @@
 [workspace]
 members = [
     "server",
-    "agent",
     "common",
     "client-desktop",
     "client-qml",
