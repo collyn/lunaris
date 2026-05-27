@@ -228,14 +228,15 @@ jobs:
           # so the compiler can find bare Qt headers.
           # -F for framework-style includes (<QtCore/QByteArray>)
           # -I for bare includes (<QtGlobal>, <QByteArray>)
+          # On macOS, Qt headers are in QtCore.framework/Headers etc. under lib/.
           QT_CXX_FLAGS="-F${QT_PREFIX}/lib"
           QT_CXX_FLAGS="${QT_CXX_FLAGS} -I${QT_PREFIX}/include"
-          QT_CXX_FLAGS="${QT_CXX_FLAGS} -I${QT_PREFIX}/include/QtCore"
-          QT_CXX_FLAGS="${QT_CXX_FLAGS} -I${QT_PREFIX}/include/QtGui"
-          QT_CXX_FLAGS="${QT_CXX_FLAGS} -I${QT_PREFIX}/include/QtQml"
-          QT_CXX_FLAGS="${QT_CXX_FLAGS} -I${QT_PREFIX}/include/QtQuick"
-          QT_CXX_FLAGS="${QT_CXX_FLAGS} -I${QT_PREFIX}/include/QtMultimedia"
-          QT_CXX_FLAGS="${QT_CXX_FLAGS} -I${QT_PREFIX}/include/QtNetwork"
+          QT_CXX_FLAGS="${QT_CXX_FLAGS} -I${QT_PREFIX}/include/QtCore -I${QT_PREFIX}/lib/QtCore.framework/Headers"
+          QT_CXX_FLAGS="${QT_CXX_FLAGS} -I${QT_PREFIX}/include/QtGui -I${QT_PREFIX}/lib/QtGui.framework/Headers"
+          QT_CXX_FLAGS="${QT_CXX_FLAGS} -I${QT_PREFIX}/include/QtQml -I${QT_PREFIX}/lib/QtQml.framework/Headers"
+          QT_CXX_FLAGS="${QT_CXX_FLAGS} -I${QT_PREFIX}/include/QtQuick -I${QT_PREFIX}/lib/QtQuick.framework/Headers"
+          QT_CXX_FLAGS="${QT_CXX_FLAGS} -I${QT_PREFIX}/include/QtMultimedia -I${QT_PREFIX}/lib/QtMultimedia.framework/Headers"
+          QT_CXX_FLAGS="${QT_CXX_FLAGS} -I${QT_PREFIX}/include/QtNetwork -I${QT_PREFIX}/lib/QtNetwork.framework/Headers"
           echo "CXXFLAGS=${QT_CXX_FLAGS}" >> $GITHUB_ENV
           echo "CFLAGS=${QT_CXX_FLAGS}" >> $GITHUB_ENV
 
@@ -257,7 +258,8 @@ jobs:
           echo "=== Qt keg include dir ==="
           ls "$QT_PREFIX/include/" 2>/dev/null | head -10 || echo "  (EMPTY or MISSING)"
           echo "=== QtCore/QtGlobal check ==="
-          test -f "$QT_PREFIX/include/QtCore/QtGlobal" && echo "  FOUND: $QT_PREFIX/include/QtCore/QtGlobal" || echo "  NOT FOUND at keg path"
+          test -f "$QT_PREFIX/include/QtCore/QtGlobal" && echo "  FOUND in include/QtCore/QtGlobal" || echo "  NOT FOUND in include/QtCore/QtGlobal"
+          test -f "$QT_PREFIX/lib/QtCore.framework/Headers/QtGlobal" && echo "  FOUND in QtCore.framework/Headers/QtGlobal" || echo "  NOT FOUND in QtCore.framework/Headers/QtGlobal"
           echo "=== Linked path check ==="
           test -f "/opt/homebrew/include/QtCore/QtGlobal" && echo "  FOUND: /opt/homebrew/include/QtCore/QtGlobal" || echo "  NOT FOUND at linked path (expected — keg-only)"
           echo "=== CXXFLAGS ==="
