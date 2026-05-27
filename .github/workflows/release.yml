@@ -118,11 +118,12 @@ jobs:
         shell: bash
 
       - name: Build Rust Workspace
-        run: cargo build --release --workspace --exclude client
+        run: |
+          export PKG_CONFIG_PATH="/c/vcpkg/installed/x64-windows/lib/pkgconfig:$PKG_CONFIG_PATH"
+          cargo build --release --workspace --exclude client
         env:
           VCPKG_ROOT: C:\vcpkg
           FFMPEG_DIR: C:\vcpkg\installed\x64-windows
-          PKG_CONFIG_PATH: C:\vcpkg\installed\x64-windows\lib\pkgconfig
           OPENSSL_NO_VENDOR: "1"
           OPENSSL_DIR: C:\vcpkg\installed\x64-windows
         shell: bash
@@ -171,15 +172,22 @@ jobs:
 
       - name: Install system dependencies
         run: |
-          brew install qt ffmpeg pkg-config opus
-          # Qt là keg-only trên Homebrew, force link để symlink headers/libs
-          # vào /opt/homebrew/include/ — nơi qmake báo cho cxx-qt-lib
-          brew link --force qt
+          brew install ffmpeg pkg-config opus
+
+      - name: Install Qt6
+        uses: jurplel/install-qt-action@v3
+        with:
+          version: '6.7.0'
+          host: 'mac'
+          target: 'desktop'
 
       - name: Configure library paths
         run: |
           FFMPEG_PREFIX=$(brew --prefix ffmpeg)
           OPUS_PREFIX=$(brew --prefix opus)
+
+          # Qt6 — install-qt-action đã set Qt6_DIR, thêm QMAKE cho cxx-qt
+          echo "QMAKE=${Qt6_DIR}/../../../bin/qmake" >> $GITHUB_ENV
 
           echo "FFMPEG_DIR=${FFMPEG_PREFIX}" >> $GITHUB_ENV
           echo "PKG_CONFIG_PATH=${FFMPEG_PREFIX}/lib/pkgconfig:${OPUS_PREFIX}/lib/pkgconfig:$PKG_CONFIG_PATH" >> $GITHUB_ENV
