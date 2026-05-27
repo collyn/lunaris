@@ -63,12 +63,6 @@ jobs:
           name: server-linux
           path: lunaris-server-linux.tar.gz
 
-      - name: Upload Agent Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: agent-linux
-          path: target/release/agent
-
       - name: Upload Client Desktop Artifact
         uses: actions/upload-artifact@v4
         with:
@@ -180,12 +174,6 @@ jobs:
           name: server-windows
           path: lunaris-server-windows.zip
 
-      - name: Upload Agent Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: agent-windows
-          path: target/release/agent.exe
-
       - name: Upload Client Desktop Artifact
         uses: actions/upload-artifact@v4
         with:
@@ -287,14 +275,6 @@ jobs:
       - name: Build Rust Workspace (Native Target)
         run: cargo build --release --workspace
 
-      - name: Build Agent for Intel x86_64 (Cross-Compile)
-        run: cargo build --release --bin agent --target x86_64-apple-darwin
-
-      - name: Create Universal Agent Binary
-        run: |
-          mkdir -p target/release/macos
-          lipo -create target/release/agent target/x86_64-apple-darwin/release/agent -output target/release/macos/agent
-
       - name: Package Server and Web
         run: |
           mkdir -p lunaris-server/web
@@ -307,12 +287,6 @@ jobs:
         with:
           name: server-macos
           path: lunaris-server-macos.tar.gz
-
-      - name: Upload Agent Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: agent-macos
-          path: target/release/macos/agent
 
       - name: Upload Client Desktop Artifact
         uses: actions/upload-artifact@v4
@@ -334,12 +308,6 @@ jobs:
           name: server-linux
           path: ./artifacts/linux-server
 
-      - name: Download Linux Agent Artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: agent-linux
-          path: ./artifacts/linux-agent
-
       - name: Download Linux Client Desktop Artifact
         uses: actions/download-artifact@v4
         with:
@@ -351,12 +319,6 @@ jobs:
         with:
           name: server-windows
           path: ./artifacts/windows-server
-
-      - name: Download Windows Agent Artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: agent-windows
-          path: ./artifacts/windows-agent
 
       - name: Download Windows Client Desktop Artifact
         uses: actions/download-artifact@v4
@@ -370,12 +332,6 @@ jobs:
           name: server-macos
           path: ./artifacts/macos-server
 
-      - name: Download macOS Agent Artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: agent-macos
-          path: ./artifacts/macos-agent
-
       - name: Download macOS Client Desktop Artifact
         uses: actions/download-artifact@v4
         with:
@@ -388,22 +344,17 @@ jobs:
 
           # Linux
           mv ./artifacts/linux-server/lunaris-server-linux.tar.gz ./release-files/
-          mv ./artifacts/linux-agent/agent ./release-files/lunaris-agent-linux
           mv ./artifacts/linux-client-desktop/client-desktop ./release-files/lunaris-client-desktop-linux
 
           # Windows
           mv ./artifacts/windows-server/lunaris-server-windows.zip ./release-files/
-          mv ./artifacts/windows-agent/agent.exe ./release-files/lunaris-agent-windows.exe
           mv ./artifacts/windows-client-desktop/client-desktop.exe ./release-files/lunaris-client-desktop-windows.exe
 
           # macOS
           mv ./artifacts/macos-server/lunaris-server-macos.tar.gz ./release-files/
-          mv ./artifacts/macos-agent/agent ./release-files/lunaris-agent-macos
           mv ./artifacts/macos-client-desktop/client-desktop ./release-files/lunaris-client-desktop-macos
 
-          chmod +x ./release-files/lunaris-agent-linux
           chmod +x ./release-files/lunaris-client-desktop-linux
-          chmod +x ./release-files/lunaris-agent-macos
           chmod +x ./release-files/lunaris-client-desktop-macos
 
       - name: Create GitHub Release
@@ -416,12 +367,9 @@ jobs:
           files: |
             release-files/lunaris-server-linux.tar.gz
             release-files/lunaris-client-desktop-linux
-            release-files/lunaris-agent-linux
             release-files/lunaris-server-windows.zip
             release-files/lunaris-client-desktop-windows.exe
-            release-files/lunaris-agent-windows.exe
             release-files/lunaris-server-macos.tar.gz
             release-files/lunaris-client-desktop-macos
-            release-files/lunaris-agent-macos
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

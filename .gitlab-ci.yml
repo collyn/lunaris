@@ -75,6 +75,5 @@ build-all:
     name: "lunaris-release-$CI_COMMIT_REF_SLUG"
     paths:
       - target/release/server
-      - target/release/agent
       - target/release/client-desktop
     expire_in: 1 week
