@@ -258,6 +258,7 @@ pub async fn setup_bridge_session(
     bitrate: Option<u32>,
     codec: Option<String>,
     app_id: Option<u32>,
+    ice_servers: Option<Vec<common::RtcIceServer>>,
 ) -> Result<Arc<BridgeSession>> {
     // 1. Setup WebRTC PeerConnection
     let mut api_settings = SettingEngine::default();
@@ -350,8 +351,15 @@ pub async fn setup_bridge_session(
         .with_interceptor_registry(registry)
         .build();
 
-    let rtc_config = webrtc::peer_connection::configuration::RTCConfiguration {
-        ice_servers: vec![
+    let webrtc_ice_servers = if let Some(servers) = ice_servers {
+        servers.into_iter().map(|s| webrtc::ice_transport::ice_server::RTCIceServer {
+            urls: s.urls,
+            username: s.username.unwrap_or_default(),
+            credential: s.credential.unwrap_or_default(),
+            ..Default::default()
+        }).collect()
+    } else {
+        vec![
             webrtc::ice_transport::ice_server::RTCIceServer {
                 urls: vec!["stun:stun.l.google.com:19302".to_string()],
                 ..Default::default()
@@ -360,7 +368,11 @@ pub async fn setup_bridge_session(
                 urls: vec!["stun:stun1.l.google.com:19302".to_string()],
                 ..Default::default()
             },
-        ],
+        ]
+    };
+
+    let rtc_config = webrtc::peer_connection::configuration::RTCConfiguration {
+        ice_servers: webrtc_ice_servers,
         ..Default::default()
     };
     let peer_connection = Arc::new(api.new_peer_connection(rtc_config).await?);
@@ -613,11 +625,20 @@ pub async fn setup_bridge_session(
         // Capacity of 30 frames handles keyframe bursts cleanly without dropping frames.
         let (packet_tx, mut packet_rx) = tokio::sync::mpsc::channel::<Vec<Packet>>(30);
 
-        // Spawn a dedicated writer task to write the RTP packets.
-        // This task assigns RTP sequence numbers to ensure no gaps ever occur on drops.
+        let need_idr_clone_writer = need_idr_clone_worker.clone();
         tokio::spawn(async move {
             let mut seq: u16 = 0;
             while let Some(mut packets) = packet_rx.recv().await {
+                let mut discarded = false;
+                while let Ok(next_packets) = packet_rx.try_recv() {
+                    packets = next_packets;
+                    discarded = true;
+                }
+                if discarded {
+                    warn!("Discarding obsolete queued video frames to prevent latency and congestion");
+                    need_idr_clone_writer.store(true, Ordering::SeqCst);
+                }
+
                 for packet in &mut packets {
                     packet.header.sequence_number = seq;
                     seq = seq.wrapping_add(1);

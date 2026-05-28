@@ -671,6 +671,7 @@ pub async fn run_agent_loop(
                             bitrate,
                             codec,
                             app_id,
+                            ice_servers,
                         } => {
                             info!("Incoming session request from client: {}", client_id);
                             
@@ -701,6 +702,7 @@ pub async fn run_agent_loop(
                                 bitrate,
                                 codec,
                                 app_id,
+                                ice_servers,
                             ).await {
                                 Ok(s) => s,
                                 Err(e) => {
@@ -733,6 +735,7 @@ pub async fn run_agent_loop(
                                     ty: RtcSdpType::Offer,
                                     sdp: offer.sdp,
                                 },
+                                ice_servers: None,
                             });
                             let _ = agent_tx.send(sdp_msg);
 
@@ -740,7 +743,7 @@ pub async fn run_agent_loop(
                             *lock = Some(session);
                             info!("SDP Offer sent to client: {}", client_id);
                         }
-                        SignalingMessage::Sdp { target_id, sdp } => {
+                        SignalingMessage::Sdp { target_id, sdp, .. } => {
                             info!("Received SDP description from client: {}", target_id);
                             let lock = active_session.lock().await;
                             if let Some(session) = lock.as_ref() {

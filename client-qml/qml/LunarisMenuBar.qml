@@ -3,7 +3,7 @@ import QtQuick.Controls
 
 Item {
     id: menuContainer
-    width: 830
+    width: 950
     height: 48
     
     // Custom signals
@@ -11,7 +11,7 @@ Item {
     signal lockToggled()
     signal statsToggled()
     signal cursorHideToggled()
-    signal settingsChanged(string res, int fps, string codec, int bitrate, int queueLimit)
+    signal settingsChanged(string res, int fps, string codec, int bitrate, int queueLimit, bool disableCuda)
     signal exitTriggered()
     signal collapsed()
     signal minimizeTriggered()
@@ -94,7 +94,7 @@ Item {
     // To prevent onActivated from firing when programmatically updating the values
     property bool isInitializing: false
 
-    function initializeSettings(res, fps, codec, bitrate, queueLimit, host) {
+    function initializeSettings(res, fps, codec, bitrate, queueLimit, host, disableCuda) {
         isInitializing = true;
         
         hostName = host;
@@ -147,6 +147,8 @@ Item {
             queueComboBox.currentIndex = 3;
         }
 
+        decoderComboBox.currentIndex = (disableCuda === true) ? 1 : 0;
+
         isInitializing = false;
     }
 
@@ -168,8 +170,10 @@ Item {
         var queueMap = [128, 256, 512, 1024];
         var selectedQueue = queueMap[queueComboBox.currentIndex];
 
-        console.log("Applying menu settings: " + selectedRes + ", " + selectedFps + ", " + selectedCodec + ", " + selectedBitrate + ", " + selectedQueue);
-        menuContainer.settingsChanged(selectedRes, selectedFps, selectedCodec, selectedBitrate, selectedQueue);
+        var selectedDisableCuda = (decoderComboBox.currentIndex === 1);
+
+        console.log("Applying menu settings: " + selectedRes + ", " + selectedFps + ", " + selectedCodec + ", " + selectedBitrate + ", " + selectedQueue + ", disableCuda=" + selectedDisableCuda);
+        menuContainer.settingsChanged(selectedRes, selectedFps, selectedCodec, selectedBitrate, selectedQueue, selectedDisableCuda);
     }
 
     // Pill background
@@ -281,6 +285,16 @@ Item {
                 model: ["H264", "H265", "AV1"]
                 anchors.verticalCenter: parent.verticalCenter
                 LunarisToolTip { text: "Video Decoder Codec" }
+                onActivated: menuContainer.applyCurrentSettings()
+            }
+
+            // Decoder Dropdown
+            LunarisComboBox {
+                id: decoderComboBox
+                customWidth: 105
+                model: ["GPU (CUDA)", "Software"]
+                anchors.verticalCenter: parent.verticalCenter
+                LunarisToolTip { text: "Decoding Backend" }
                 onActivated: menuContainer.applyCurrentSettings()
             }
 

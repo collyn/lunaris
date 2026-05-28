@@ -79,6 +79,43 @@ impl SignalingState {
         .execute(&self.db)
         .await;
     }
+
+    pub async fn fetch_ice_servers(&self) -> Vec<common::RtcIceServer> {
+        let rows: Result<Vec<(String, Option<String>, Option<String>)>, _> = sqlx::query_as(
+            "SELECT urls, username, credential FROM turn_servers"
+        )
+        .fetch_all(&self.db)
+        .await;
+
+        match rows {
+            Ok(rows) if !rows.is_empty() => {
+                rows.into_iter()
+                    .map(|(urls, username, credential)| {
+                        let urls_vec = urls.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+                        common::RtcIceServer {
+                            urls: urls_vec,
+                            username,
+                            credential,
+                        }
+                    })
+                    .collect()
+            }
+            _ => {
+                vec![
+                    common::RtcIceServer {
+                        urls: vec!["stun:stun.l.google.com:19302".to_string()],
+                        username: None,
+                        credential: None,
+                    },
+                    common::RtcIceServer {
+                        urls: vec!["stun:stun1.l.google.com:19302".to_string()],
+                        username: None,
+                        credential: None,
+                    },
+                ]
+            }
+        }
+    }
 }
 
 // WS Agent query params
@@ -333,11 +370,14 @@ async fn handle_client_socket(socket: WebSocket, client_id: String, state: Arc<S
 // --- Route Signaling from Agent -> Client ---
 async fn handle_agent_signaling(sig: SignalingMessage, agent_id: &str, state: Arc<SignalingState>) {
     match sig {
-        SignalingMessage::Sdp { target_id, sdp } => {
-            if let Some(client_tx) = state.clients.read().unwrap().get(&target_id) {
+        SignalingMessage::Sdp { target_id, sdp, .. } => {
+            let client_tx_opt = state.clients.read().unwrap().get(&target_id).cloned();
+            if let Some(client_tx) = client_tx_opt {
+                let ice_servers = state.fetch_ice_servers().await;
                 let _ = client_tx.send(ServerToClientMessage::Signaling(SignalingMessage::Sdp {
                     target_id: agent_id.to_string(),
                     sdp,
+                    ice_servers: Some(ice_servers),
                 }));
             }
         }
@@ -421,6 +461,7 @@ async fn handle_client_signaling(sig: SignalingMessage, client_id: &str, state: 
             };
 
             if let Some(agent_tx) = agent_tx_opt {
+                let ice_servers = state.fetch_ice_servers().await;
                 let incoming_msg = ServerToAgentMessage::Signaling(SignalingMessage::IncomingSession {
                     client_id: client_id.to_string(),
                     width,
@@ -429,6 +470,7 @@ async fn handle_client_signaling(sig: SignalingMessage, client_id: &str, state: 
                     bitrate,
                     codec: codec.clone(),
                     app_id,
+                    ice_servers: Some(ice_servers),
                 });
                 if let Err(e) = agent_tx.send(incoming_msg) {
                     error!("Failed to send IncomingSession to agent {}: {:?}", host_id, e);
@@ -484,6 +526,7 @@ async fn handle_client_signaling(sig: SignalingMessage, client_id: &str, state: 
             };
 
             // Setup bridge session (Sunshine runs on port 47989 by default)
+            let ice_servers = state.fetch_ice_servers().await;
             let session = match crate::bridge::setup_bridge_session(
                 agent_config,
                 client_id.to_string(),
@@ -497,6 +540,7 @@ async fn handle_client_signaling(sig: SignalingMessage, client_id: &str, state: 
                 bitrate,
                 codec.clone(),
                 app_id,
+                Some(ice_servers.clone()),
             ).await {
                 Ok(s) => s,
                 Err(e) => {
@@ -535,6 +579,7 @@ async fn handle_client_signaling(sig: SignalingMessage, client_id: &str, state: 
                     ty: common::RtcSdpType::Offer,
                     sdp: offer.sdp,
                 },
+                ice_servers: Some(ice_servers),
             });
             let _ = client_tx.send(sdp_msg);
 
@@ -544,7 +589,7 @@ async fn handle_client_signaling(sig: SignalingMessage, client_id: &str, state: 
             state.set_host_status(&host_id, HostStatus::Busy).await;
             info!("Local bridge session initialized for host {} and client {}", host_id, client_id);
         }
-        SignalingMessage::Sdp { target_id, sdp } => {
+        SignalingMessage::Sdp { target_id, sdp, .. } => {
             // target_id is the host_id
             info!("Received SDP Answer from client {} for host {}", client_id, target_id);
             
@@ -559,6 +604,7 @@ async fn handle_client_signaling(sig: SignalingMessage, client_id: &str, state: 
                 let _ = agent_tx.send(ServerToAgentMessage::Signaling(SignalingMessage::Sdp {
                     target_id: client_id.to_string(),
                     sdp,
+                    ice_servers: None,
                 }));
                 info!("SDP Answer forwarded to agent {}", target_id);
                 return;

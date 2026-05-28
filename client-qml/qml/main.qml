@@ -3,6 +3,7 @@ import QtQuick.Controls
 import QtMultimedia
 import Qt.labs.platform as Platform
 import com.lunaris.client 1.0
+import com.lunaris.client.gpu 1.0
 
 ApplicationWindow {
     id: window
@@ -11,7 +12,7 @@ ApplicationWindow {
     visible: false
     flags: Qt.Window
     title: "Lunaris Player Client"
-    color: "#0a0b10"
+    color: window.isStreamMode ? "#000000" : "#0a0b10"
 
     property bool exitRequested: false
 
@@ -107,6 +108,7 @@ ApplicationWindow {
     property real fps: 0.0
     property real bitrateKbps: 0.0
     property string activeCodec: "H264"
+    property bool useCuda: true
 
     // Hold ESC to unlock cursor properties
     property bool isEscHeld: false
@@ -119,23 +121,13 @@ ApplicationWindow {
     property bool showLockBanner: false
 
     onIsPointerLockedChanged: {
+        bridge.set_pointer_locked(isPointerLocked);
         if (isPointerLocked) {
             rootContainer.forceActiveFocus();
-            var cx = Math.round(videoOutput.width / 2);
-            var cy = Math.round(videoOutput.height / 2);
-            var globalCenter = streamMouseArea.mapToGlobal(cx, cy);
-            window.warpX = Math.round(globalCenter.x);
-            window.warpY = Math.round(globalCenter.y);
-            bridge.warpCursor(window.warpX, window.warpY);
-            window.lastMouseX = cx;
-            window.lastMouseY = cy;
-            
             window.showLockBanner = true;
             bannerTimer.restart();
             keyboardGrabTimer.restart();
         } else {
-            window.warpX = -1;
-            window.warpY = -1;
             window.showLockBanner = false;
             bannerTimer.stop();
             keyboardGrabTimer.stop();
@@ -209,8 +201,9 @@ ApplicationWindow {
             window.activeCodec = codec
         }
 
-        onSettingsLoaded: (res, fps, codec, bitrate, queueLimit, hostName) => {
-            menuBar.initializeSettings(res, fps, codec, bitrate, queueLimit, hostName);
+        onSettingsLoaded: (res, fps, codec, bitrate, queueLimit, hostName, disableCuda) => {
+            menuBar.initializeSettings(res, fps, codec, bitrate, queueLimit, hostName, disableCuda);
+            window.useCuda = !disableCuda;
         }
 
         onDeeplinkReceived: (url) => {
@@ -310,6 +303,21 @@ ApplicationWindow {
             id: videoOutput
             anchors.fill: parent
             fillMode: VideoOutput.Stretch
+            visible: !gpuVideoItem.cudaSupported || !window.useCuda
+
+            onVisibleChanged: {
+                if (visible && videoOutput.videoSink) {
+                    console.log("VideoOutput became visible, registering VideoSink: " + videoOutput.videoSink);
+                    bridge.setVideoSink(videoOutput.videoSink);
+                }
+            }
+        }
+
+        GpuVideoItem {
+            id: gpuVideoItem
+            anchors.fill: parent
+            visible: gpuVideoItem.cudaSupported && window.useCuda
+        }
 
         // Overlay element to capture all mouse inputs
         MouseArea {
@@ -325,48 +333,7 @@ ApplicationWindow {
                     window.ignoreMenuHover = false;
                 }
                 
-                var cx = Math.round(width / 2);
-                var cy = Math.round(height / 2);
-
-                if (window.isPointerLocked) {
-                    var mx = Math.round(mouse.x);
-                    var my = Math.round(mouse.y);
-                    var limit = Math.min(width, height) / 4;
-
-                    var globalPos = streamMouseArea.mapToGlobal(mouse.x, mouse.y);
-                    if (window.warpX !== -1 && window.warpY !== -1) {
-                        var isNearCenter = Math.abs(mx - cx) < limit / 2 && Math.abs(my - cy) < limit / 2;
-                        var isNearWarpTarget = Math.abs(globalPos.x - window.warpX) <= 3 && Math.abs(globalPos.y - window.warpY) <= 3;
-                        if (isNearCenter || isNearWarpTarget) {
-                            window.warpX = -1;
-                            window.warpY = -1;
-                            window.lastMouseX = mx;
-                            window.lastMouseY = my;
-                            return;
-                        }
-                    }
-
-                    var rx = mx - window.lastMouseX;
-                    var ry = my - window.lastMouseY;
-
-                    window.lastMouseX = mx;
-                    window.lastMouseY = my;
-
-                    if (rx !== 0 || ry !== 0) {
-                        // Send relative movement
-                        bridge.sendMouseMove(mx, my, width, height, rx, ry, true);
-                        
-                        // Warp cursor back to center if it goes too far and no warp is in flight
-                        if (window.warpX === -1 && window.warpY === -1) {
-                            if (Math.abs(mx - cx) > limit || Math.abs(my - cy) > limit) {
-                                var globalCenter = streamMouseArea.mapToGlobal(cx, cy);
-                                window.warpX = Math.round(globalCenter.x);
-                                window.warpY = Math.round(globalCenter.y);
-                                bridge.warpCursor(window.warpX, window.warpY);
-                            }
-                        }
-                    }
-                } else {
+                if (!window.isPointerLocked) {
                     // Map coordinates and send to Rust
                     bridge.sendMouseMove(mouse.x, mouse.y, width, height, 0, 0, false);
                 }
@@ -374,15 +341,21 @@ ApplicationWindow {
 
             onPressed: (mouse) => {
                 rootContainer.forceActiveFocus();
-                bridge.sendMouseClick(getButtonCode(mouse.button), true);
+                if (!window.isPointerLocked) {
+                    bridge.sendMouseClick(getButtonCode(mouse.button), true);
+                }
             }
 
             onReleased: (mouse) => {
-                bridge.sendMouseClick(getButtonCode(mouse.button), false);
+                if (!window.isPointerLocked) {
+                    bridge.sendMouseClick(getButtonCode(mouse.button), false);
+                }
             }
 
             onWheel: (wheel) => {
-                bridge.sendMouseWheel(wheel.angleDelta.y);
+                if (!window.isPointerLocked) {
+                    bridge.sendMouseWheel(wheel.angleDelta.y);
+                }
             }
 
             function getButtonCode(btn) {
@@ -392,7 +365,6 @@ ApplicationWindow {
                 return 0;
             }
         }
-    }
 
     // Global Shortcut to escape pointer lock (always active regardless of focus)
     Shortcut {
@@ -580,8 +552,9 @@ ApplicationWindow {
             window.hideLocalCursor = !window.hideLocalCursor;
         }
 
-        onSettingsChanged: (res, fps, codec, bitrate, queueLimit) => {
-            bridge.updateStreamConfig(res, fps, codec, bitrate, queueLimit);
+        onSettingsChanged: (res, fps, codec, bitrate, queueLimit, disableCuda) => {
+            window.useCuda = !disableCuda;
+            bridge.updateStreamConfig(res, fps, codec, bitrate, queueLimit, disableCuda);
         }
 
         onCollapsed: {
@@ -702,9 +675,10 @@ ApplicationWindow {
         visible: !window.isStreamMode
         focus: !window.isStreamMode
 
-        onStartSessionRequested: (server, token, hostId, hostName, appId, res, fps, codec, bitrate, queueLimit) => {
+        onStartSessionRequested: (server, token, hostId, hostName, appId, res, fps, codec, bitrate, queueLimit, disableCuda) => {
+            window.useCuda = !disableCuda;
             window.isStreamMode = true;
-            bridge.startGameSession(server, token, hostId, hostName, appId, res, fps, codec, bitrate, queueLimit);
+            bridge.startGameSession(server, token, hostId, hostName, appId, res, fps, codec, bitrate, queueLimit, disableCuda);
             bridge.setVideoSink(videoOutput.videoSink);
             bridge.requestSettings();
             rootContainer.forceActiveFocus();

@@ -48,7 +48,16 @@ fn find_dist_path(dir_name: &str) -> Option<std::path::PathBuf> {
         return Some(cwd_path);
     }
 
-    // Candidate 2: Relative to Executable Path
+    // Candidate 2: Compile-time manifest directory parent (workspace root on dev machine)
+    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    if let Some(workspace_dir) = manifest_dir.parent() {
+        let path = workspace_dir.join(dir_name);
+        if path.exists() {
+            return Some(path);
+        }
+    }
+
+    // Candidate 3: Relative to Executable Path
     if let Ok(exe_path) = std::env::current_exe() {
         if let Some(exe_dir) = exe_path.parent() {
             let path = exe_dir.join(dir_name);
@@ -164,6 +173,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/admin/users/:id", axum::routing::put(admin::update_user).delete(admin::delete_user))
         .route("/api/admin/groups", get(admin::list_groups).post(admin::create_group))
         .route("/api/admin/groups/:id", axum::routing::put(admin::update_group).delete(admin::delete_group))
+        .route("/api/admin/turn-servers", get(admin::list_turn_servers).post(admin::create_turn_server))
+        .route("/api/admin/turn-servers/:id", delete(admin::delete_turn_server))
         .route("/ws/agent", get(agent_ws_handler))
         .route("/ws/client", get(client_ws_handler));
 

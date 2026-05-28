@@ -1,11 +1,18 @@
+#include "video_helper.h"
 #include <QtMultimedia/QVideoSink>
 #include <QtMultimedia/QVideoFrame>
 #include <QtMultimedia/QVideoFrameFormat>
 #include <QCursor>
 #include <QGuiApplication>
 #include <QWindow>
+#include <QEvent>
+#include <QMouseEvent>
+#include <QWheelEvent>
+#include <QMetaObject>
 #include <cstring>
 #include <iostream>
+#include <cmath>
+#include <vector>
 
 void deliver_yuv_frame(QVideoSink* sink,
                        const uint8_t* y_data, int y_stride,
@@ -21,8 +28,12 @@ void deliver_yuv_frame(QVideoSink* sink,
         // Copy Y plane
         uint8_t* dst_y = frame.bits(0);
         int dst_y_stride = frame.bytesPerLine(0);
-        for (int i = 0; i < height; ++i) {
-            std::memcpy(dst_y + i * dst_y_stride, y_data + i * y_stride, width);
+        if (dst_y_stride == width && y_stride == width) {
+            std::memcpy(dst_y, y_data, width * height);
+        } else {
+            for (int i = 0; i < height; ++i) {
+                std::memcpy(dst_y + i * dst_y_stride, y_data + i * y_stride, width);
+            }
         }
 
         // Copy U plane
@@ -30,15 +41,23 @@ void deliver_yuv_frame(QVideoSink* sink,
         int dst_u_stride = frame.bytesPerLine(1);
         int uv_height = height / 2;
         int uv_width = width / 2;
-        for (int i = 0; i < uv_height; ++i) {
-            std::memcpy(dst_u + i * dst_u_stride, u_data + i * u_stride, uv_width);
+        if (dst_u_stride == uv_width && u_stride == uv_width) {
+            std::memcpy(dst_u, u_data, uv_width * uv_height);
+        } else {
+            for (int i = 0; i < uv_height; ++i) {
+                std::memcpy(dst_u + i * dst_u_stride, u_data + i * u_stride, uv_width);
+            }
         }
 
         // Copy V plane
         uint8_t* dst_v = frame.bits(2);
         int dst_v_stride = frame.bytesPerLine(2);
-        for (int i = 0; i < uv_height; ++i) {
-            std::memcpy(dst_v + i * dst_v_stride, v_data + i * v_stride, uv_width);
+        if (dst_v_stride == uv_width && v_stride == uv_width) {
+            std::memcpy(dst_v, v_data, uv_width * uv_height);
+        } else {
+            for (int i = 0; i < uv_height; ++i) {
+                std::memcpy(dst_v + i * dst_v_stride, v_data + i * v_stride, uv_width);
+            }
         }
 
         frame.unmap();
@@ -102,4 +121,227 @@ void set_keyboard_grab_helper(bool grab) {
     // Fallback if not Linux/X11 or if native loading failed
     bool success = window->setKeyboardGrabEnabled(grab);
     std::cerr << "Lunaris Client: Fallback setKeyboardGrabEnabled returned: " << (success ? "true" : "false") << std::endl;
+}
+
+static bool g_pointerLocked = false;
+static QObject* g_streamBridge = nullptr;
+static int g_windowWidth = 1280;
+static int g_windowHeight = 720;
+static int g_centerX = 640;
+static int g_centerY = 360;
+static int g_globalCenterX = 640;
+static int g_globalCenterY = 360;
+static bool g_ignoreNextWarp = false;
+
+static int getButtonCode(Qt::MouseButton btn) {
+    if (btn == Qt::LeftButton) return 1;
+    if (btn == Qt::MiddleButton) return 2;
+    if (btn == Qt::RightButton) return 3;
+    return 0;
+}
+
+#if defined(Q_OS_WIN)
+#include <QAbstractNativeEventFilter>
+#include <windows.h>
+
+void register_raw_input(HWND hwnd) {
+    RAWINPUTDEVICE rid;
+    rid.usUsagePage = 0x01; // Generic Desktop Page
+    rid.usUsage = 0x02;     // Mouse
+    rid.dwFlags = RIDEV_INPUTSINK;
+    rid.hwndTarget = hwnd;
+    if (!RegisterRawInputDevices(&rid, 1, sizeof(rid))) {
+        std::cerr << "Lunaris: Failed to register Windows raw input devices." << std::endl;
+    } else {
+        std::cerr << "Lunaris: Registered Windows Raw Input." << std::endl;
+    }
+}
+
+class WindowsRawInputFilter : public QAbstractNativeEventFilter {
+public:
+    bool nativeEventFilter(const QByteArray &eventType, void *message, qintptr *result) override {
+        if (g_pointerLocked && g_streamBridge && eventType == "windows_generic_MSG") {
+            MSG* msg = static_cast<MSG*>(message);
+            if (msg->message == WM_INPUT) {
+                UINT dwSize = 0;
+                GetRawInputData((HRAWINPUT)msg->lParam, RID_INPUT, NULL, &dwSize, sizeof(RAWINPUTHEADER));
+                if (dwSize > 0) {
+                    std::vector<BYTE> lparam_buf(dwSize);
+                    if (GetRawInputData((HRAWINPUT)msg->lParam, RID_INPUT, lparam_buf.data(), &dwSize, sizeof(RAWINPUTHEADER)) == dwSize) {
+                        RAWINPUT* raw = (RAWINPUT*)lparam_buf.data();
+                        if (raw->header.dwType == RIM_TYPEMOUSE) {
+                            int rx = raw->data.mouse.lLastX;
+                            int ry = raw->data.mouse.lLastY;
+                            USHORT flags = raw->data.mouse.usFlags;
+
+                            // Only process relative movement
+                            if ((flags & MOUSE_MOVE_ABSOLUTE) == 0) {
+                                if (rx != 0 || ry != 0) {
+                                    QMetaObject::invokeMethod(g_streamBridge, "sendMouseMove",
+                                                              Q_ARG(int, 0),
+                                                              Q_ARG(int, 0),
+                                                              Q_ARG(int, g_windowWidth),
+                                                              Q_ARG(int, g_windowHeight),
+                                                              Q_ARG(int, rx),
+                                                              Q_ARG(int, ry),
+                                                              Q_ARG(bool, true));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return false; // Let Qt process standard messages
+    }
+};
+
+static WindowsRawInputFilter* g_nativeEventFilter = nullptr;
+#endif
+
+class InputEventFilter : public QObject {
+protected:
+    bool eventFilter(QObject* watched, QEvent* event) override {
+        if (!g_pointerLocked || !g_streamBridge) {
+            return QObject::eventFilter(watched, event);
+        }
+
+        if (event->type() == QEvent::MouseMove) {
+            QMouseEvent* me = static_cast<QMouseEvent*>(event);
+            
+            QWindow* window = QGuiApplication::focusWindow();
+            if (!window) {
+                auto windows = QGuiApplication::allWindows();
+                if (!windows.isEmpty()) window = windows.first();
+            }
+            if (window) {
+                g_windowWidth = window->width();
+                g_windowHeight = window->height();
+                g_centerX = g_windowWidth / 2;
+                g_centerY = g_windowHeight / 2;
+                QPoint gCenter = window->mapToGlobal(QPoint(g_centerX, g_centerY));
+                g_globalCenterX = gCenter.x();
+                g_globalCenterY = gCenter.y();
+            }
+
+#if defined(Q_OS_WIN)
+            // On Windows, WindowsRawInputFilter handles relative mouse moves.
+            // We only keep the cursor confined to the center of the window to avoid escaping.
+            int dx = me->position().x() - g_centerX;
+            int dy = me->position().y() - g_centerY;
+            if (std::abs(dx) > g_windowWidth / 4 || std::abs(dy) > g_windowHeight / 4) {
+                QCursor::setPos(g_globalCenterX, g_globalCenterY);
+            }
+            return true; // Consume the event so QML doesn't process it
+#else
+            // On Linux/macOS, measure mouse delta relative to window center,
+            // send relative move, and synchronously warp the cursor back.
+            if (g_ignoreNextWarp) {
+                if (std::abs(me->position().x() - g_centerX) < 2 && std::abs(me->position().y() - g_centerY) < 2) {
+                    g_ignoreNextWarp = false;
+                    return true;
+                }
+            }
+
+            int rx = me->position().x() - g_centerX;
+            int ry = me->position().y() - g_centerY;
+
+            if (rx != 0 || ry != 0) {
+                QMetaObject::invokeMethod(g_streamBridge, "sendMouseMove",
+                                          Q_ARG(int, (int)me->position().x()),
+                                          Q_ARG(int, (int)me->position().y()),
+                                          Q_ARG(int, g_windowWidth),
+                                          Q_ARG(int, g_windowHeight),
+                                          Q_ARG(int, rx),
+                                          Q_ARG(int, ry),
+                                          Q_ARG(bool, true));
+
+                g_ignoreNextWarp = true;
+                QCursor::setPos(g_globalCenterX, g_globalCenterY);
+            }
+            return true;
+#endif
+        }
+
+        if (event->type() == QEvent::MouseButtonPress) {
+            QMouseEvent* me = static_cast<QMouseEvent*>(event);
+            QMetaObject::invokeMethod(g_streamBridge, "sendMouseClick",
+                                      Q_ARG(int, getButtonCode(me->button())),
+                                      Q_ARG(bool, true));
+            return true;
+        }
+
+        if (event->type() == QEvent::MouseButtonRelease) {
+            QMouseEvent* me = static_cast<QMouseEvent*>(event);
+            QMetaObject::invokeMethod(g_streamBridge, "sendMouseClick",
+                                      Q_ARG(int, getButtonCode(me->button())),
+                                      Q_ARG(bool, false));
+            return true;
+        }
+
+        if (event->type() == QEvent::Wheel) {
+            QWheelEvent* we = static_cast<QWheelEvent*>(event);
+            QMetaObject::invokeMethod(g_streamBridge, "sendMouseWheel",
+                                      Q_ARG(int, we->angleDelta().y()));
+            return true;
+        }
+
+        return QObject::eventFilter(watched, event);
+    }
+};
+
+static InputEventFilter* g_eventFilter = nullptr;
+
+void register_bridge_instance(StreamBridge* bridge) {
+    g_streamBridge = (QObject*)bridge;
+    std::cerr << "Lunaris Client: register_bridge_instance - Registered active bridge pointer." << std::endl;
+}
+
+void set_pointer_locked_helper(bool locked) {
+    g_pointerLocked = locked;
+    std::cerr << "Lunaris Client: set_pointer_locked_helper(" << (locked ? "true" : "false") << ")" << std::endl;
+    
+    if (locked) {
+        if (!g_eventFilter) {
+            g_eventFilter = new InputEventFilter();
+        }
+        QGuiApplication::instance()->installEventFilter(g_eventFilter);
+
+        QWindow* window = QGuiApplication::focusWindow();
+        if (!window) {
+            auto windows = QGuiApplication::allWindows();
+            if (!windows.isEmpty()) window = windows.first();
+        }
+        if (window) {
+            g_windowWidth = window->width();
+            g_windowHeight = window->height();
+            g_centerX = g_windowWidth / 2;
+            g_centerY = g_windowHeight / 2;
+            QPoint gCenter = window->mapToGlobal(QPoint(g_centerX, g_centerY));
+            g_globalCenterX = gCenter.x();
+            g_globalCenterY = gCenter.y();
+
+            // Initial warp
+            g_ignoreNextWarp = true;
+            QCursor::setPos(g_globalCenterX, g_globalCenterY);
+
+#if defined(Q_OS_WIN)
+            if (!g_nativeEventFilter) {
+                g_nativeEventFilter = new WindowsRawInputFilter();
+            }
+            QGuiApplication::instance()->installNativeEventFilter(g_nativeEventFilter);
+            register_raw_input((HWND)window->winId());
+#endif
+        }
+    } else {
+        if (g_eventFilter) {
+            QGuiApplication::instance()->removeEventFilter(g_eventFilter);
+        }
+#if defined(Q_OS_WIN)
+        if (g_nativeEventFilter) {
+            QGuiApplication::instance()->removeNativeEventFilter(g_nativeEventFilter);
+        }
+#endif
+        g_ignoreNextWarp = false;
+    }
 }

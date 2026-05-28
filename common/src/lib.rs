@@ -127,6 +127,29 @@ pub struct UpdateGroupRequest {
     pub host_ids: Option<Vec<String>>,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct RtcIceServer {
+    pub urls: Vec<String>,
+    pub username: Option<String>,
+    pub credential: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct TurnServer {
+    pub id: String,
+    pub urls: String,
+    pub username: Option<String>,
+    pub credential: Option<String>,
+    pub created_at: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct CreateTurnServerRequest {
+    pub urls: String,
+    pub username: Option<String>,
+    pub credential: Option<String>,
+}
+
 // --- WEBSOCKET SIGNALING TYPES ---
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
@@ -181,9 +204,14 @@ pub enum SignalingMessage {
         bitrate: Option<u32>,
         codec: Option<String>,
         app_id: Option<u32>,
+        ice_servers: Option<Vec<RtcIceServer>>,
     },
     // SDP / ICE Exchange
-    Sdp { target_id: String, sdp: RtcSessionDescription },
+    Sdp {
+        target_id: String,
+        sdp: RtcSessionDescription,
+        ice_servers: Option<Vec<RtcIceServer>>,
+    },
     IceCandidate { target_id: String, candidate: RtcIceCandidate },
     // Session termination
     EndSession { target_id: String },

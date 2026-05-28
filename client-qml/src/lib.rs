@@ -31,6 +31,7 @@ pub fn parse_deeplink_url(url_str: &str) -> Option<AppArgs> {
         let mut app_id: Option<u32> = None;
         let mut mouse_queue_limit = 256;
         let mut host_name = "Desktop • Host".to_string();
+        let mut disable_cuda = false;
 
         for (k, v) in parsed_url.query_pairs() {
             match k.as_ref() {
@@ -70,12 +71,19 @@ pub fn parse_deeplink_url(url_str: &str) -> Option<AppArgs> {
                         mouse_queue_limit = limit;
                     }
                 }
+                "disable_cuda" => {
+                    if let Ok(val) = v.parse::<bool>() {
+                        disable_cuda = val;
+                    } else if v.as_ref() == "1" || v.as_ref() == "true" {
+                        disable_cuda = true;
+                    }
+                }
                 _ => {}
             }
         }
 
         if !host_id.is_empty() && !server_url.is_empty() && !token.is_empty() {
-            return Some(AppArgs { host_id, server_url, token, width, height, fps, bitrate, codec, app_id, mouse_queue_limit, host_name });
+            return Some(AppArgs { host_id, server_url, token, width, height, fps, bitrate, codec, app_id, mouse_queue_limit, host_name, disable_cuda });
         }
     }
     None
@@ -170,9 +178,15 @@ fn parse_args() -> Option<AppArgs> {
     let mut app_id: Option<u32> = None;
     let mut mouse_queue_limit = 256;
     let mut host_name = "Desktop • Host".to_string();
+    let mut disable_cuda = false;
 
     let mut i = 1;
     while i < args.len() {
+        if args[i] == "--disable-cuda" {
+            disable_cuda = true;
+            i += 1;
+            continue;
+        }
         if i + 1 >= args.len() {
             // Check if it is a lone flag or deep link already handled, else break
             if args[i].starts_with("lunaris://") {
@@ -242,7 +256,7 @@ fn parse_args() -> Option<AppArgs> {
     }
 
     if !host_id.is_empty() && !server_url.is_empty() && !token.is_empty() {
-        Some(AppArgs { host_id, server_url, token, width, height, fps, bitrate, codec, app_id, mouse_queue_limit, host_name })
+        Some(AppArgs { host_id, server_url, token, width, height, fps, bitrate, codec, app_id, mouse_queue_limit, host_name, disable_cuda })
     } else {
         None
     }
@@ -285,8 +299,14 @@ pub fn run() {
         info!("No stream configurations provided on command-line. Starting in Launcher Dashboard mode.");
     }
 
+    // Force Qt Quick to use OpenGL RHI backend to support CUDA-GL interop
+    std::env::set_var("QSG_RHI_BACKEND", "opengl");
+
     // 1. Create QGuiApplication
     let mut app = QGuiApplication::new();
+
+    // Register our custom QML video rendering item
+    bridge::qobject::register_gpu_video_item_type();
 
     // 2. Create QQmlApplicationEngine
     let mut engine = QQmlApplicationEngine::new();

@@ -90,6 +90,19 @@ pub async fn init_db(database_url: &str) -> Result<SqlitePool, sqlx::Error> {
     .execute(&pool)
     .await?;
 
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS turn_servers (
+            id TEXT PRIMARY KEY,
+            urls TEXT NOT NULL,
+            username TEXT,
+            credential TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        );"
+    )
+    .execute(&pool)
+    .await?;
+
+
     // Perform migrations for hosts table if columns don't exist
     let columns: Vec<String> = sqlx::query_scalar("SELECT name FROM pragma_table_info('hosts')")
         .fetch_all(&pool)

@@ -770,3 +770,139 @@ pub async fn get_current_user(
         )),
     }
 }
+
+// --- TURN SERVER API ---
+
+// GET /api/admin/turn-servers
+pub async fn list_turn_servers(
+    _admin: AdminUser,
+    State(state): State<Arc<SignalingState>>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let rows: Vec<(String, String, Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT id, urls, username, credential, created_at FROM turn_servers ORDER BY created_at DESC"
+    )
+    .fetch_all(&state.db)
+    .await
+    .map_err(|e| {
+        error!("Database error: {}", e);
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": "Internal Database Error" })),
+        )
+    })?;
+
+    let servers: Vec<common::TurnServer> = rows
+        .into_iter()
+        .map(|(id, urls, username, credential, created_at)| common::TurnServer {
+            id,
+            urls,
+            username,
+            credential,
+            created_at,
+        })
+        .collect();
+
+    Ok((StatusCode::OK, Json(servers)))
+}
+
+// POST /api/admin/turn-servers
+pub async fn create_turn_server(
+    _admin: AdminUser,
+    State(state): State<Arc<SignalingState>>,
+    Json(payload): Json<common::CreateTurnServerRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    if payload.urls.trim().is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "URL cannot be empty" })),
+        ));
+    }
+
+    let server_id = Uuid::new_v4().to_string();
+
+    sqlx::query("INSERT INTO turn_servers (id, urls, username, credential) VALUES (?, ?, ?, ?)")
+        .bind(&server_id)
+        .bind(&payload.urls)
+        .bind(&payload.username)
+        .bind(&payload.credential)
+        .execute(&state.db)
+        .await
+        .map_err(|e| {
+            error!("Database error: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": "Failed to create TURN server" })),
+            )
+        })?;
+
+    // Fetch the newly created record to get the default created_at value
+    let created: (String, String, Option<String>, Option<String>, Option<String>) = sqlx::query_as(
+        "SELECT id, urls, username, credential, created_at FROM turn_servers WHERE id = ?"
+    )
+    .bind(&server_id)
+    .fetch_one(&state.db)
+    .await
+    .map_err(|e| {
+        error!("Database error: {}", e);
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": "Failed to retrieve created TURN server" })),
+        )
+    })?;
+
+    info!("Admin added TURN server: {}", payload.urls);
+
+    Ok((
+        StatusCode::CREATED,
+        Json(common::TurnServer {
+            id: created.0,
+            urls: created.1,
+            username: created.2,
+            credential: created.3,
+            created_at: created.4,
+        }),
+    ))
+}
+
+// DELETE /api/admin/turn-servers/:id
+pub async fn delete_turn_server(
+    _admin: AdminUser,
+    State(state): State<Arc<SignalingState>>,
+    Path(server_id): Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    // Check exists
+    let existing: Option<String> = sqlx::query_scalar("SELECT id FROM turn_servers WHERE id = ?")
+        .bind(&server_id)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(|e| {
+            error!("Database error: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": "Internal Database Error" })),
+            )
+        })?;
+
+    if existing.is_none() {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "TURN server not found" })),
+        ));
+    }
+
+    sqlx::query("DELETE FROM turn_servers WHERE id = ?")
+        .bind(&server_id)
+        .execute(&state.db)
+        .await
+        .map_err(|e| {
+            error!("Database error: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": "Failed to delete TURN server" })),
+            )
+        })?;
+
+    info!("Admin deleted TURN server: {}", server_id);
+
+    Ok(StatusCode::OK)
+}

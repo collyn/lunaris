@@ -13,7 +13,7 @@ Rectangle {
     property string username: ""
     property string serverUrl: ""
 
-    signal startSessionRequested(string server, string token, string hostId, string hostName, int appId, string res, int fps, string codec, int bitrate, int queueLimit)
+    signal startSessionRequested(string server, string token, string hostId, string hostName, int appId, string res, int fps, string codec, int bitrate, int queueLimit, bool disableCuda)
 
     // Internal UI state properties
     property bool isLoggedIn: false
@@ -37,6 +37,7 @@ Rectangle {
     property string configCodec: "h264"
     property int configBitrate: 8000
     property int configQueueLimit: 256
+    property bool configDisableCuda: false
 
     // Add device pairing page state
     property bool showPairingPage: false
@@ -792,9 +793,10 @@ Rectangle {
                                                 dashboardRoot.configCodec = "h264";
                                                 dashboardRoot.configBitrate = 8000;
                                                 dashboardRoot.configQueueLimit = 256;
+                                                dashboardRoot.configDisableCuda = false;
                                             }
                                             dashboardRoot.activeConfigHost = modelData;
-                                            settingsModal.setCurrentSettings(dashboardRoot.configRes, dashboardRoot.configFps, dashboardRoot.configCodec, dashboardRoot.configBitrate, dashboardRoot.configQueueLimit);
+                                            settingsModal.setCurrentSettings(dashboardRoot.configRes, dashboardRoot.configFps, dashboardRoot.configCodec, dashboardRoot.configBitrate, dashboardRoot.configQueueLimit, dashboardRoot.configDisableCuda);
                                             settingsModal.open();
                                         }
                                         background: Rectangle {
@@ -1443,7 +1445,8 @@ Rectangle {
                                     dashboardRoot.configFps,
                                     dashboardRoot.configCodec,
                                     dashboardRoot.configBitrate,
-                                    dashboardRoot.configQueueLimit
+                                    dashboardRoot.configQueueLimit,
+                                    dashboardRoot.configDisableCuda
                                 );
                             }
                         }
@@ -1610,7 +1613,8 @@ Rectangle {
                                             dashboardRoot.configFps,
                                             dashboardRoot.configCodec,
                                             dashboardRoot.configBitrate,
-                                            dashboardRoot.configQueueLimit
+                                            dashboardRoot.configQueueLimit,
+                                            dashboardRoot.configDisableCuda
                                         );
                                     }
                                 }
@@ -1636,12 +1640,13 @@ Rectangle {
         anchors.centerIn: parent
         z: 1000
 
-        onApplySettings: (res, fps, codec, bitrate, queueLimit) => {
+        onApplySettings: (res, fps, codec, bitrate, queueLimit, disableCuda) => {
             dashboardRoot.configRes = res;
             dashboardRoot.configFps = fps;
             dashboardRoot.configCodec = codec;
             dashboardRoot.configBitrate = bitrate;
             dashboardRoot.configQueueLimit = queueLimit;
+            dashboardRoot.configDisableCuda = disableCuda;
         }
     }
 }

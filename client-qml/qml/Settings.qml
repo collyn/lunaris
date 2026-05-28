@@ -4,7 +4,7 @@ import QtQuick.Controls
 Rectangle {
     id: settingsRoot
     width: 480
-    height: 520
+    height: 570
     radius: 16
     color: Qt.rgba(11/255, 17/255, 32/255, 0.96)
     border.color: Qt.rgba(0, 240/255, 255/255, 0.35)
@@ -32,7 +32,7 @@ Rectangle {
     }
 
     // Signals
-    signal applySettings(string res, int fps, string codec, int bitrate, int queueLimit)
+    signal applySettings(string res, int fps, string codec, int bitrate, int queueLimit, bool disableCuda)
 
     function open() {
         settingsRoot.visible = true;
@@ -42,7 +42,7 @@ Rectangle {
         settingsRoot.visible = false;
     }
 
-    function setCurrentSettings(res, fps, codec, bitrate, queueLimit) {
+    function setCurrentSettings(res, fps, codec, bitrate, queueLimit, disableCuda) {
         if (res.indexOf("1920") !== -1 || res.indexOf("1080") !== -1) {
             resCombo.currentIndex = 0;
         } else if (res.indexOf("1280") !== -1 || res.indexOf("720") !== -1) {
@@ -71,6 +71,8 @@ Rectangle {
         } else if (codecLower.indexOf("av1") !== -1) {
             codecCombo.currentIndex = 2;
         }
+
+        decoderCombo.currentIndex = (disableCuda === true) ? 1 : 0;
 
         bitrateSlider.value = bitrate;
 
@@ -360,6 +362,66 @@ Rectangle {
             }
         }
 
+        // Decoder Type
+        Text { text: "Decoder Type:"; color: "#cbd5e1"; font.pixelSize: 13; font.bold: true; width: 120 }
+        ComboBox {
+            id: decoderCombo
+            width: 260
+            model: ["GPU (CUDA)", "Software (FFmpeg)"]
+            currentIndex: 0
+
+            delegate: ItemDelegate {
+                width: decoderCombo.width
+                contentItem: Text {
+                    text: modelData
+                    color: decoderCombo.highlightedIndex === index ? "#ffffff" : "#cbd5e1"
+                    font.pixelSize: 13
+                    verticalAlignment: Text.AlignVCenter
+                }
+                background: Rectangle {
+                    color: decoderCombo.highlightedIndex === index ? "#4f46e5" : "transparent"
+                }
+                highlighted: decoderCombo.highlightedIndex === index
+            }
+
+            contentItem: Text {
+                leftPadding: 12
+                text: decoderCombo.displayText
+                font.pixelSize: 13
+                color: "#ffffff"
+                verticalAlignment: Text.AlignVCenter
+            }
+
+            background: Rectangle {
+                implicitHeight: 38
+                color: "#0f1626"
+                border.color: decoderCombo.activeFocus ? "#00f0ff" : Qt.rgba(1, 1, 1, 0.08)
+                border.width: 1
+                radius: 8
+            }
+
+            popup: Popup {
+                y: decoderCombo.height + 4
+                width: decoderCombo.width
+                implicitHeight: contentItem.implicitHeight
+                padding: 1
+
+                contentItem: ListView {
+                    clip: true
+                    implicitHeight: contentHeight
+                    model: decoderCombo.popup.visible ? decoderCombo.delegateModel : null
+                    currentIndex: decoderCombo.highlightedIndex
+                }
+
+                background: Rectangle {
+                    color: "#0f1626"
+                    border.color: Qt.rgba(1, 1, 1, 0.15)
+                    border.width: 1
+                    radius: 8
+                }
+            }
+        }
+
         // Bitrate — Slider
         Text { text: "Bitrate:"; color: "#cbd5e1"; font.pixelSize: 13; font.bold: true; width: 120 }
         Column {
@@ -405,9 +467,9 @@ Rectangle {
             }
 
             // Bitrate value label row
-            Row {
+            Item {
                 width: parent.width
-                spacing: 0
+                height: 16
 
                 Text {
                     text: {
@@ -421,14 +483,16 @@ Rectangle {
                     color: "#00f0ff"
                     font.pixelSize: 12
                     font.bold: true
+                    anchors.left: parent.left
+                    anchors.verticalCenter: parent.verticalCenter
                 }
-
-                Item { width: parent.width - parent.childrenRect.width }
 
                 Text {
                     text: "(" + bitrateSlider.value + " Kbps)"
                     color: "#64748b"
                     font.pixelSize: 11
+                    anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
                 }
             }
         }
@@ -556,7 +620,9 @@ Rectangle {
                 else if (queueCombo.currentIndex === 4) queueLimit = 4096
                 else if (queueCombo.currentIndex === 5) queueLimit = 16384
 
-                settingsRoot.applySettings(selectedRes, fps, codec, bitrate, queueLimit);
+                var disableCuda = (decoderCombo.currentIndex === 1);
+
+                settingsRoot.applySettings(selectedRes, fps, codec, bitrate, queueLimit, disableCuda);
                 settingsRoot.close();
             }
             background: Rectangle {

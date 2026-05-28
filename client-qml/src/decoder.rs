@@ -4,6 +4,37 @@ use ffmpeg_next::sys as ffi;
 // bindgen generates it as a global constant, while on others it is an enum variant (SwsFlags::SWS_BILINEAR).
 const SWS_BILINEAR: i32 = 2;
 
+struct SendRawFrame {
+    frame: *mut ffi::AVFrame,
+    decoder_ptr: usize,
+}
+unsafe impl Send for SendRawFrame {}
+
+static ACTIVE_CUDA_FRAME: std::sync::Mutex<Option<SendRawFrame>> = std::sync::Mutex::new(None);
+
+pub fn clear_active_cuda_frame() {
+    let mut lock = ACTIVE_CUDA_FRAME.lock().unwrap();
+    if let Some(SendRawFrame { frame, .. }) = lock.take() {
+        unsafe {
+            ffi::av_frame_free(&mut (frame as *mut _));
+        }
+    }
+}
+
+pub fn clear_active_cuda_frame_for_decoder(decoder_ptr: usize) {
+    let mut lock = ACTIVE_CUDA_FRAME.lock().unwrap();
+    if let Some(ref r) = *lock {
+        if r.decoder_ptr == decoder_ptr {
+            let taken = lock.take();
+            if let Some(SendRawFrame { frame, .. }) = taken {
+                unsafe {
+                    ffi::av_frame_free(&mut (frame as *mut _));
+                }
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub enum CodecType {
     H264,
@@ -34,7 +65,7 @@ pub struct HardwareDecoder {
 unsafe impl Send for HardwareDecoder {}
 
 impl HardwareDecoder {
-    pub fn new(codec_type: CodecType) -> Result<Self, anyhow::Error> {
+    pub fn new(codec_type: CodecType, disable_cuda: bool) -> Result<Self, anyhow::Error> {
         unsafe {
             ffi::av_log_set_level(ffi::AV_LOG_WARNING);
         }
@@ -64,15 +95,26 @@ impl HardwareDecoder {
         let mut hw_device_type = ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_NONE;
 
         let mut candidates = Vec::new();
-        if cfg!(target_os = "linux") {
-            candidates.push(ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_CUDA);
-            candidates.push(ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_VAAPI);
-            candidates.push(ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_VDPAU);
-        } else if cfg!(target_os = "windows") {
-            candidates.push(ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_D3D11VA);
-            candidates.push(ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_DXVA2);
-        } else if cfg!(target_os = "macos") {
-            candidates.push(ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_VIDEOTOOLBOX);
+        if !disable_cuda {
+            if cfg!(target_os = "linux") {
+                if std::env::var("LUNARIS_DISABLE_CUDA").is_err() {
+                    candidates.push(ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_CUDA);
+                } else {
+                    println!("CUDA hardware decoding is disabled.");
+                }
+                candidates.push(ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_VAAPI);
+                candidates.push(ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_VDPAU);
+            } else if cfg!(target_os = "windows") {
+                if std::env::var("LUNARIS_DISABLE_CUDA").is_err() {
+                    candidates.push(ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_CUDA);
+                }
+                candidates.push(ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_D3D11VA);
+                candidates.push(ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_DXVA2);
+            } else if cfg!(target_os = "macos") {
+                candidates.push(ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_VIDEOTOOLBOX);
+            }
+        } else {
+            println!("All hardware decoding is disabled (Software/FFmpeg mode).");
         }
 
         for &dev_type in &candidates {
@@ -183,6 +225,50 @@ impl HardwareDecoder {
     }
 
     fn process_frame(&mut self, gpu_frame: *mut ffi::AVFrame) -> Result<YUVFrame, anyhow::Error> {
+        let format = unsafe { (*gpu_frame).format };
+        let is_cuda = format == ffi::AVPixelFormat::AV_PIX_FMT_CUDA as i32;
+
+        if is_cuda {
+            unsafe {
+                let y_ptr = (*gpu_frame).data[0] as u64;
+                let uv_ptr = (*gpu_frame).data[1] as u64;
+                let y_stride = (*gpu_frame).linesize[0] as i32;
+                let uv_stride = (*gpu_frame).linesize[1] as i32;
+                let width = (*gpu_frame).width as i32;
+                let height = (*gpu_frame).height as i32;
+
+                let mut cuda_ctx = 0u64;
+                if !self.hw_device_ctx.is_null() {
+                    let hw_device_ctx_ptr = (*self.hw_device_ctx).data as *mut ffi::AVHWDeviceContext;
+                    if !hw_device_ctx_ptr.is_null() {
+                        let hwctx = (*hw_device_ctx_ptr).hwctx;
+                        if !hwctx.is_null() {
+                            cuda_ctx = *(hwctx as *mut *mut std::ffi::c_void) as u64;
+                        }
+                    }
+                }
+
+                let mut lock = ACTIVE_CUDA_FRAME.lock().unwrap();
+                let decoder_ptr = self as *const _ as usize;
+                if let Some(SendRawFrame { frame: old_frame, .. }) = lock.replace(SendRawFrame { frame: gpu_frame, decoder_ptr }) {
+                    ffi::av_frame_free(&mut (old_frame as *mut _));
+                }
+
+                crate::bridge::qobject::deliver_cuda_frame(cuda_ctx, y_ptr, y_stride, uv_ptr, uv_stride, width, height);
+            }
+
+            return Ok(YUVFrame {
+                width: 0,
+                height: 0,
+                y: Vec::new(),
+                u: Vec::new(),
+                v: Vec::new(),
+                y_stride: 0,
+                u_stride: 0,
+                v_stride: 0,
+            });
+        }
+
         let mut cpu_frame = gpu_frame;
         let mut is_hw_frame = false;
 
@@ -210,80 +296,6 @@ impl HardwareDecoder {
         let height = unsafe { (*cpu_frame).height };
         let format = unsafe { (*cpu_frame).format };
 
-        if self.sws_ctx.is_null() || self.last_width != width || self.last_height != height || self.last_format != format {
-            if !self.sws_ctx.is_null() {
-                unsafe {
-                    ffi::sws_freeContext(self.sws_ctx);
-                }
-            }
-
-            self.sws_ctx = unsafe {
-                ffi::sws_getContext(
-                    width,
-                    height,
-                    std::mem::transmute(format),
-                    width,
-                    height,
-                    ffi::AVPixelFormat::AV_PIX_FMT_YUV420P,
-                    SWS_BILINEAR,
-                    std::ptr::null_mut(),
-                    std::ptr::null_mut(),
-                    std::ptr::null(),
-                )
-            };
-
-            if self.sws_ctx.is_null() {
-                unsafe {
-                    if is_hw_frame {
-                        ffi::av_frame_free(&mut (cpu_frame as *mut _));
-                    }
-                    ffi::av_frame_free(&mut (gpu_frame as *mut _));
-                }
-                return Err(anyhow::anyhow!("Failed to initialize sws_scale context"));
-            }
-
-            self.last_width = width;
-            self.last_height = height;
-            self.last_format = format;
-        }
-
-        let dst_frame = unsafe { ffi::av_frame_alloc() };
-        if dst_frame.is_null() {
-            unsafe {
-                if is_hw_frame {
-                    ffi::av_frame_free(&mut (cpu_frame as *mut _));
-                }
-                ffi::av_frame_free(&mut (gpu_frame as *mut _));
-            }
-            return Err(anyhow::anyhow!("Failed to allocate output destination frame"));
-        }
-
-        unsafe {
-            (*dst_frame).width = width;
-            (*dst_frame).height = height;
-            (*dst_frame).format = ffi::AVPixelFormat::AV_PIX_FMT_YUV420P as i32;
-
-            let buffer_err = ffi::av_frame_get_buffer(dst_frame, 32);
-            if buffer_err < 0 {
-                ffi::av_frame_free(&mut (dst_frame as *mut _));
-                if is_hw_frame {
-                    ffi::av_frame_free(&mut (cpu_frame as *mut _));
-                }
-                ffi::av_frame_free(&mut (gpu_frame as *mut _));
-                return Err(anyhow::anyhow!("av_frame_get_buffer failed: {}", buffer_err));
-            }
-
-            ffi::sws_scale(
-                self.sws_ctx,
-                (*cpu_frame).data.as_ptr() as *const *const u8,
-                (*cpu_frame).linesize.as_ptr(),
-                0,
-                height,
-                (*dst_frame).data.as_mut_ptr() as *mut *mut u8,
-                (*dst_frame).linesize.as_mut_ptr(),
-            );
-        }
-
         let y_size = (width * height) as usize;
         let u_size = ((width / 2) * (height / 2)) as usize;
         let v_size = u_size;
@@ -292,39 +304,172 @@ impl HardwareDecoder {
         let mut u_vec = vec![0u8; u_size];
         let mut v_vec = vec![0u8; v_size];
 
-        unsafe {
-            let mut src_ptr = (*dst_frame).data[0];
-            let src_stride = (*dst_frame).linesize[0] as usize;
-            let mut dst_ptr = y_vec.as_mut_ptr();
-            for _ in 0..height {
-                std::ptr::copy_nonoverlapping(src_ptr, dst_ptr, width as usize);
-                src_ptr = src_ptr.add(src_stride);
-                dst_ptr = dst_ptr.add(width as usize);
+        let is_yuv420p = format == ffi::AVPixelFormat::AV_PIX_FMT_YUV420P as i32
+            || format == ffi::AVPixelFormat::AV_PIX_FMT_YUVJ420P as i32;
+
+        if is_yuv420p {
+            unsafe {
+                let src_stride = (*cpu_frame).linesize[0] as usize;
+                if src_stride == width as usize {
+                    std::ptr::copy_nonoverlapping((*cpu_frame).data[0], y_vec.as_mut_ptr(), y_size);
+                } else {
+                    let mut src_ptr = (*cpu_frame).data[0];
+                    let mut dst_ptr = y_vec.as_mut_ptr();
+                    for _ in 0..height {
+                        std::ptr::copy_nonoverlapping(src_ptr, dst_ptr, width as usize);
+                        src_ptr = src_ptr.add(src_stride);
+                        dst_ptr = dst_ptr.add(width as usize);
+                    }
+                }
+
+                let src_stride = (*cpu_frame).linesize[1] as usize;
+                let uv_h = height / 2;
+                let uv_w = width / 2;
+                if src_stride == uv_w as usize {
+                    std::ptr::copy_nonoverlapping((*cpu_frame).data[1], u_vec.as_mut_ptr(), u_size);
+                } else {
+                    let mut src_ptr = (*cpu_frame).data[1];
+                    let mut dst_ptr = u_vec.as_mut_ptr();
+                    for _ in 0..uv_h {
+                        std::ptr::copy_nonoverlapping(src_ptr, dst_ptr, uv_w as usize);
+                        src_ptr = src_ptr.add(src_stride);
+                        dst_ptr = dst_ptr.add(uv_w as usize);
+                    }
+                }
+
+                let src_stride = (*cpu_frame).linesize[2] as usize;
+                if src_stride == uv_w as usize {
+                    std::ptr::copy_nonoverlapping((*cpu_frame).data[2], v_vec.as_mut_ptr(), v_size);
+                } else {
+                    let mut src_ptr = (*cpu_frame).data[2];
+                    let mut dst_ptr = v_vec.as_mut_ptr();
+                    for _ in 0..uv_h {
+                        std::ptr::copy_nonoverlapping(src_ptr, dst_ptr, uv_w as usize);
+                        src_ptr = src_ptr.add(src_stride);
+                        dst_ptr = dst_ptr.add(uv_w as usize);
+                    }
+                }
+            }
+        } else {
+            if self.sws_ctx.is_null() || self.last_width != width || self.last_height != height || self.last_format != format {
+                if !self.sws_ctx.is_null() {
+                    unsafe {
+                        ffi::sws_freeContext(self.sws_ctx);
+                    }
+                }
+
+                self.sws_ctx = unsafe {
+                    ffi::sws_getContext(
+                        width,
+                        height,
+                        std::mem::transmute(format),
+                        width,
+                        height,
+                        ffi::AVPixelFormat::AV_PIX_FMT_YUV420P,
+                        SWS_BILINEAR,
+                        std::ptr::null_mut(),
+                        std::ptr::null_mut(),
+                        std::ptr::null(),
+                    )
+                };
+
+                if self.sws_ctx.is_null() {
+                    unsafe {
+                        if is_hw_frame {
+                            ffi::av_frame_free(&mut (cpu_frame as *mut _));
+                        }
+                        ffi::av_frame_free(&mut (gpu_frame as *mut _));
+                    }
+                    return Err(anyhow::anyhow!("Failed to initialize sws_scale context"));
+                }
+
+                self.last_width = width;
+                self.last_height = height;
+                self.last_format = format;
             }
 
-            let mut src_ptr = (*dst_frame).data[1];
-            let src_stride = (*dst_frame).linesize[1] as usize;
-            let mut dst_ptr = u_vec.as_mut_ptr();
-            let uv_h = height / 2;
-            let uv_w = width / 2;
-            for _ in 0..uv_h {
-                std::ptr::copy_nonoverlapping(src_ptr, dst_ptr, uv_w as usize);
-                src_ptr = src_ptr.add(src_stride);
-                dst_ptr = dst_ptr.add(uv_w as usize);
+            let dst_frame = unsafe { ffi::av_frame_alloc() };
+            if dst_frame.is_null() {
+                unsafe {
+                    if is_hw_frame {
+                        ffi::av_frame_free(&mut (cpu_frame as *mut _));
+                    }
+                    ffi::av_frame_free(&mut (gpu_frame as *mut _));
+                }
+                return Err(anyhow::anyhow!("Failed to allocate output destination frame"));
             }
 
-            let mut src_ptr = (*dst_frame).data[2];
-            let src_stride = (*dst_frame).linesize[2] as usize;
-            let mut dst_ptr = v_vec.as_mut_ptr();
-            for _ in 0..uv_h {
-                std::ptr::copy_nonoverlapping(src_ptr, dst_ptr, uv_w as usize);
-                src_ptr = src_ptr.add(src_stride);
-                dst_ptr = dst_ptr.add(uv_w as usize);
+            unsafe {
+                (*dst_frame).width = width;
+                (*dst_frame).height = height;
+                (*dst_frame).format = ffi::AVPixelFormat::AV_PIX_FMT_YUV420P as i32;
+
+                let buffer_err = ffi::av_frame_get_buffer(dst_frame, 32);
+                if buffer_err < 0 {
+                    ffi::av_frame_free(&mut (dst_frame as *mut _));
+                    if is_hw_frame {
+                        ffi::av_frame_free(&mut (cpu_frame as *mut _));
+                    }
+                    ffi::av_frame_free(&mut (gpu_frame as *mut _));
+                    return Err(anyhow::anyhow!("av_frame_get_buffer failed: {}", buffer_err));
+                }
+
+                ffi::sws_scale(
+                    self.sws_ctx,
+                    (*cpu_frame).data.as_ptr() as *const *const u8,
+                    (*cpu_frame).linesize.as_ptr(),
+                    0,
+                    height,
+                    (*dst_frame).data.as_mut_ptr() as *mut *mut u8,
+                    (*dst_frame).linesize.as_mut_ptr(),
+                );
+
+                let src_stride = (*dst_frame).linesize[0] as usize;
+                if src_stride == width as usize {
+                    std::ptr::copy_nonoverlapping((*dst_frame).data[0], y_vec.as_mut_ptr(), y_size);
+                } else {
+                    let mut src_ptr = (*dst_frame).data[0];
+                    let mut dst_ptr = y_vec.as_mut_ptr();
+                    for _ in 0..height {
+                        std::ptr::copy_nonoverlapping(src_ptr, dst_ptr, width as usize);
+                        src_ptr = src_ptr.add(src_stride);
+                        dst_ptr = dst_ptr.add(width as usize);
+                    }
+                }
+
+                let src_stride = (*dst_frame).linesize[1] as usize;
+                let uv_h = height / 2;
+                let uv_w = width / 2;
+                if src_stride == uv_w as usize {
+                    std::ptr::copy_nonoverlapping((*dst_frame).data[1], u_vec.as_mut_ptr(), u_size);
+                } else {
+                    let mut src_ptr = (*dst_frame).data[1];
+                    let mut dst_ptr = u_vec.as_mut_ptr();
+                    for _ in 0..uv_h {
+                        std::ptr::copy_nonoverlapping(src_ptr, dst_ptr, uv_w as usize);
+                        src_ptr = src_ptr.add(src_stride);
+                        dst_ptr = dst_ptr.add(uv_w as usize);
+                    }
+                }
+
+                let src_stride = (*dst_frame).linesize[2] as usize;
+                if src_stride == uv_w as usize {
+                    std::ptr::copy_nonoverlapping((*dst_frame).data[2], v_vec.as_mut_ptr(), v_size);
+                } else {
+                    let mut src_ptr = (*dst_frame).data[2];
+                    let mut dst_ptr = v_vec.as_mut_ptr();
+                    for _ in 0..uv_h {
+                        std::ptr::copy_nonoverlapping(src_ptr, dst_ptr, uv_w as usize);
+                        src_ptr = src_ptr.add(src_stride);
+                        dst_ptr = dst_ptr.add(uv_w as usize);
+                    }
+                }
+
+                ffi::av_frame_free(&mut (dst_frame as *mut _));
             }
         }
 
         unsafe {
-            ffi::av_frame_free(&mut (dst_frame as *mut _));
             if is_hw_frame {
                 ffi::av_frame_free(&mut (cpu_frame as *mut _));
             }
@@ -346,6 +491,8 @@ impl HardwareDecoder {
 
 impl Drop for HardwareDecoder {
     fn drop(&mut self) {
+        let decoder_ptr = self as *const _ as usize;
+        clear_active_cuda_frame_for_decoder(decoder_ptr);
         unsafe {
             if !self.codec_ctx.is_null() {
                 ffi::avcodec_free_context(&mut self.codec_ctx);

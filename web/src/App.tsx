@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { StreamPlayer } from './components/StreamPlayer';
 import { AdminUsers } from './components/AdminUsers';
 import { AdminGroups } from './components/AdminGroups';
+import { AdminTurnServers } from './components/AdminTurnServers';
 import './App.css';
 
 interface Host {
@@ -99,7 +100,7 @@ function App() {
 
   // Admin State
   const [userRole, setUserRole] = useState<string | null>(localStorage.getItem('lunaris_role'));
-  const [activeTab, setActiveTab] = useState<'devices' | 'users' | 'groups'>('devices');
+  const [activeTab, setActiveTab] = useState<'devices' | 'users' | 'groups' | 'turn_servers'>('devices');
 
   // Dashboard State
   const [hosts, setHosts] = useState<Host[]>([]);
@@ -978,6 +979,17 @@ function App() {
                     </svg>
                     Groups
                   </button>
+                  <button
+                    className={`nav-tab ${activeTab === 'turn_servers' ? 'active' : ''}`}
+                    onClick={() => setActiveTab('turn_servers')}
+                  >
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <polygon points="12 2 2 7 12 12 22 7 12 2" />
+                      <polyline points="2 17 12 22 22 17" />
+                      <polyline points="2 12 12 17 22 12" />
+                    </svg>
+                    TURN Servers
+                  </button>
                 </div>
               )}
 
@@ -1348,6 +1360,9 @@ function App() {
               )}
               {activeTab === 'groups' && (
                 <AdminGroups token={token!} getBackendHost={getBackendHost} getBackendProtocol={getBackendProtocol} />
+              )}
+              {activeTab === 'turn_servers' && (
+                <AdminTurnServers token={token!} getBackendHost={getBackendHost} getBackendProtocol={getBackendProtocol} />
               )}
             </div>
           </div>

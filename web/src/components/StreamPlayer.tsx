@@ -560,7 +560,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
           case "Sdp":
             if (payload.sdp.ty === "offer") {
               addLog("Received SDP Offer from host agent.");
-              await handleSdpOffer(payload.target_id, payload.sdp.sdp);
+              await handleSdpOffer(payload.target_id, payload.sdp.sdp, payload.ice_servers);
             }
             break;
             
@@ -857,12 +857,16 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     return () => clearInterval(interval);
   }, [status]);
 
-  const handleSdpOffer = async (agentId: string, offerSdp: string) => {
+  const handleSdpOffer = async (agentId: string, offerSdp: string, iceServers?: { urls: string[], username?: string, credential?: string }[]) => {
     setStatus("Establishing WebRTC...");
     
     // Create RTCPeerConnection
     const pc = new RTCPeerConnection({
-      iceServers: [
+      iceServers: iceServers && iceServers.length > 0 ? iceServers.map(s => ({
+        urls: s.urls,
+        username: s.username,
+        credential: s.credential
+      })) : [
         { urls: 'stun:stun.l.google.com:19302' },
         { urls: 'stun:stun1.l.google.com:19302' }
       ]
