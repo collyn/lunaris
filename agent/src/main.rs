@@ -89,9 +89,11 @@ fn which_sunshine() -> Result<(), &'static str> {
 
 #[allow(dead_code)]
 async fn download_file(url: &str, dest: &std::path::Path) -> Result<(), anyhow::Error> {
-    info!("Downloading {} to {:?}", url, dest);
+    warn!("Downloading {} to {:?}", url, dest);
     let client = reqwest::Client::builder()
         .user_agent("Mozilla/5.0")
+        .connect_timeout(std::time::Duration::from_secs(30))
+        .timeout(std::time::Duration::from_secs(300))
         .build()?;
     let response = client.get(url).send().await?;
     if !response.status().is_success() {
@@ -108,13 +110,13 @@ async fn download_file(url: &str, dest: &std::path::Path) -> Result<(), anyhow::
         file.write_all(&chunk).await?;
     }
     
-    info!("Download complete!");
+    warn!("Download complete!");
     Ok(())
 }
 
 #[allow(dead_code)]
 fn unzip_file(zip_path: &std::path::Path, extract_to: &std::path::Path) -> Result<(), anyhow::Error> {
-    info!("Extracting zip {:?} to {:?}", zip_path, extract_to);
+    warn!("Extracting zip {:?} to {:?}", zip_path, extract_to);
     let file = std::fs::File::open(zip_path)?;
     let mut archive = zip::ZipArchive::new(file)?;
     
@@ -139,7 +141,7 @@ fn unzip_file(zip_path: &std::path::Path, extract_to: &std::path::Path) -> Resul
             std::io::copy(&mut file, &mut outfile)?;
         }
     }
-    info!("Extraction complete!");
+    warn!("Extraction complete!");
     Ok(())
 }
 
@@ -162,7 +164,7 @@ async fn prepare_sunshine() -> Result<std::path::PathBuf, anyhow::Error> {
     {
         let appimage_path = bin_dir.join("sunshine.AppImage");
         if !appimage_path.exists() {
-            info!("Sunshine AppImage not found. Downloading...");
+            warn!("Sunshine AppImage not found. Downloading latest LizardByte Sunshine (approx. 170MB)...");
             download_file(LINUX_SUNSHINE_URL, &appimage_path).await?;
             make_executable(&appimage_path)?;
         }
@@ -174,7 +176,7 @@ async fn prepare_sunshine() -> Result<std::path::PathBuf, anyhow::Error> {
         let exe_path = bin_dir.join("sunshine").join("sunshine.exe");
         if !exe_path.exists() {
             let zip_path = bin_dir.join("sunshine.zip");
-            info!("Sunshine Windows portable zip not found. Downloading...");
+            warn!("Sunshine Windows portable binary not found. Downloading latest LizardByte Sunshine (approx. 150MB)...");
             download_file(WINDOWS_SUNSHINE_URL, &zip_path).await?;
             unzip_file(&zip_path, &bin_dir.join("sunshine"))?;
             let _ = std::fs::remove_file(zip_path);
