@@ -204,6 +204,11 @@ ApplicationWindow {
         onSettingsLoaded: (res, fps, codec, bitrate, queueLimit, hostName, disableCuda) => {
             menuBar.initializeSettings(res, fps, codec, bitrate, queueLimit, hostName, disableCuda);
             window.useCuda = !disableCuda;
+            var parts = res.split("x");
+            if (parts.length === 2) {
+                window.streamWidth = parseInt(parts[0]);
+                window.streamHeight = parseInt(parts[1]);
+            }
         }
 
         onDeeplinkReceived: (url) => {
@@ -298,71 +303,95 @@ ApplicationWindow {
         visible: window.isStreamMode
         focus: window.isStreamMode
 
-        // Video Output Area
-        VideoOutput {
-            id: videoOutput
-            anchors.fill: parent
-            fillMode: VideoOutput.Stretch
-            visible: !gpuVideoItem.cudaSupported || !window.useCuda
-
-            onVisibleChanged: {
-                if (visible && videoOutput.videoSink) {
-                    console.log("VideoOutput became visible, registering VideoSink: " + videoOutput.videoSink);
-                    bridge.setVideoSink(videoOutput.videoSink);
+        // Container to preserve aspect ratio of the stream
+        Item {
+            id: videoContainer
+            anchors.centerIn: parent
+            width: {
+                var aspect = window.streamWidth / window.streamHeight;
+                var parentAspect = parent.width / parent.height;
+                if (parentAspect > aspect) {
+                    return parent.height * aspect;
+                } else {
+                    return parent.width;
                 }
             }
-        }
-
-        GpuVideoItem {
-            id: gpuVideoItem
-            anchors.fill: parent
-            visible: gpuVideoItem.cudaSupported && window.useCuda
-        }
-
-        // Overlay element to capture all mouse inputs
-        MouseArea {
-            id: streamMouseArea
-            anchors.fill: parent
-            hoverEnabled: true
-            acceptedButtons: Qt.LeftButton | Qt.MiddleButton | Qt.RightButton
-            cursorShape: (window.isPointerLocked || window.hideLocalCursor) ? Qt.BlankCursor : Qt.ArrowCursor
-
-            // Trigger top menu on hover near top edge (similar to SDL2 notch)
-            onPositionChanged: (mouse) => {
-                if (mouse.y >= 50 && window.ignoreMenuHover) {
-                    window.ignoreMenuHover = false;
-                }
-                
-                if (!window.isPointerLocked) {
-                    // Map coordinates and send to Rust
-                    bridge.sendMouseMove(mouse.x, mouse.y, width, height, 0, 0, false);
+            height: {
+                var aspect = window.streamWidth / window.streamHeight;
+                var parentAspect = parent.width / parent.height;
+                if (parentAspect > aspect) {
+                    return parent.height;
+                } else {
+                    return parent.width / aspect;
                 }
             }
 
-            onPressed: (mouse) => {
-                rootContainer.forceActiveFocus();
-                if (!window.isPointerLocked) {
-                    bridge.sendMouseClick(getButtonCode(mouse.button), true);
+            // Video Output Area
+            VideoOutput {
+                id: videoOutput
+                anchors.fill: parent
+                fillMode: VideoOutput.Stretch
+                visible: !gpuVideoItem.cudaSupported || !window.useCuda
+
+                onVisibleChanged: {
+                    if (visible && videoOutput.videoSink) {
+                        console.log("VideoOutput became visible, registering VideoSink: " + videoOutput.videoSink);
+                        bridge.setVideoSink(videoOutput.videoSink);
+                    }
                 }
             }
 
-            onReleased: (mouse) => {
-                if (!window.isPointerLocked) {
-                    bridge.sendMouseClick(getButtonCode(mouse.button), false);
-                }
+            GpuVideoItem {
+                id: gpuVideoItem
+                anchors.fill: parent
+                visible: gpuVideoItem.cudaSupported && window.useCuda
             }
 
-            onWheel: (wheel) => {
-                if (!window.isPointerLocked) {
-                    bridge.sendMouseWheel(wheel.angleDelta.y);
-                }
-            }
+            // Overlay element to capture all mouse inputs
+            MouseArea {
+                id: streamMouseArea
+                anchors.fill: parent
+                hoverEnabled: true
+                acceptedButtons: Qt.LeftButton | Qt.MiddleButton | Qt.RightButton
+                cursorShape: (window.isPointerLocked || window.hideLocalCursor) ? Qt.BlankCursor : Qt.ArrowCursor
 
-            function getButtonCode(btn) {
-                if (btn === Qt.LeftButton) return 1;
-                if (btn === Qt.MiddleButton) return 2;
-                if (btn === Qt.RightButton) return 3;
-                return 0;
+                // Trigger top menu on hover near top edge (similar to SDL2 notch)
+                onPositionChanged: (mouse) => {
+                    if (mouse.y >= 50 && window.ignoreMenuHover) {
+                        window.ignoreMenuHover = false;
+                    }
+                    
+                    if (!window.isPointerLocked) {
+                        // Map coordinates and send to Rust
+                        bridge.sendMouseMove(mouse.x, mouse.y, width, height, 0, 0, false);
+                    }
+                }
+
+                onPressed: (mouse) => {
+                    rootContainer.forceActiveFocus();
+                    if (!window.isPointerLocked) {
+                        bridge.sendMouseClick(getButtonCode(mouse.button), true);
+                    }
+                }
+
+                onReleased: (mouse) => {
+                    if (!window.isPointerLocked) {
+                        bridge.sendMouseClick(getButtonCode(mouse.button), false);
+                    }
+                }
+
+                onWheel: (wheel) => {
+                    if (!window.isPointerLocked) {
+                        bridge.sendMouseWheel(wheel.angleDelta.y);
+                    }
+                }
+
+                function getButtonCode(btn) {
+                    if (btn === Qt.LeftButton) return 1;
+                    if (btn === Qt.MiddleButton) return 2;
+                    if (btn === Qt.RightButton) return 3;
+                    return 0;
+                }
             }
         }
 
@@ -555,6 +584,11 @@ ApplicationWindow {
         onSettingsChanged: (res, fps, codec, bitrate, queueLimit, disableCuda) => {
             window.useCuda = !disableCuda;
             bridge.updateStreamConfig(res, fps, codec, bitrate, queueLimit, disableCuda);
+            var parts = res.split("x");
+            if (parts.length === 2) {
+                window.streamWidth = parseInt(parts[0]);
+                window.streamHeight = parseInt(parts[1]);
+            }
         }
 
         onCollapsed: {
@@ -678,6 +712,11 @@ ApplicationWindow {
         onStartSessionRequested: (server, token, hostId, hostName, appId, res, fps, codec, bitrate, queueLimit, disableCuda) => {
             window.useCuda = !disableCuda;
             window.isStreamMode = true;
+            var parts = res.split("x");
+            if (parts.length === 2) {
+                window.streamWidth = parseInt(parts[0]);
+                window.streamHeight = parseInt(parts[1]);
+            }
             bridge.startGameSession(server, token, hostId, hostName, appId, res, fps, codec, bitrate, queueLimit, disableCuda);
             bridge.setVideoSink(videoOutput.videoSink);
             bridge.requestSettings();
@@ -687,6 +726,8 @@ ApplicationWindow {
     }
 
     property bool isStreamMode: false
+    property int streamWidth: 1920
+    property int streamHeight: 1080
 
     Component.onCompleted: {
         // Center window procedurally on startup to avoid permanent bindings
