@@ -149,11 +149,33 @@ jobs:
 
           tar -czf lunaris-client-desktop-linux.tar.gz -C lunaris-client-desktop .
 
+          # Package QML Client separately (rename binary/script inside and bundle as client-qml)
+          cp -r lunaris-client-desktop lunaris-client-qml
+          mv lunaris-client-qml/client-desktop lunaris-client-qml/client-qml
+          patchelf --force-rpath --set-rpath '$ORIGIN/lib' lunaris-client-qml/client-qml
+          
+          # Create QML launcher script
+          echo '#!/bin/bash' > lunaris-client-qml/launch.sh
+          echo 'SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"' >> lunaris-client-qml/launch.sh
+          echo 'export LD_LIBRARY_PATH="$SCRIPT_DIR/lib:$LD_LIBRARY_PATH"' >> lunaris-client-qml/launch.sh
+          echo 'export QT_PLUGIN_PATH="$SCRIPT_DIR/plugins"' >> lunaris-client-qml/launch.sh
+          echo 'export QML2_IMPORT_PATH="$SCRIPT_DIR/qml"' >> lunaris-client-qml/launch.sh
+          echo 'exec "$SCRIPT_DIR/client-qml" "$@"' >> lunaris-client-qml/launch.sh
+          chmod +x lunaris-client-qml/launch.sh
+
+          tar -czf lunaris-client-qml-linux.tar.gz -C lunaris-client-qml .
+
       - name: Upload Client Desktop Artifact
         uses: actions/upload-artifact@v4
         with:
           name: client-desktop-linux
           path: lunaris-client-desktop-linux.tar.gz
+
+      - name: Upload Client QML Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: client-qml-linux
+          path: lunaris-client-qml-linux.tar.gz
 
       - name: Upload Agent Artifact
         uses: actions/upload-artifact@v4
@@ -272,6 +294,11 @@ jobs:
           & "${env:QT_ROOT_DIR}/bin/windeployqt.exe" --qmldir client-qml/qml --no-translations --compiler-runtime lunaris-client-desktop/client-desktop.exe
           Copy-Item "C:/vcpkg/installed/x64-windows/bin/*.dll" -Destination lunaris-client-desktop/
           Compress-Archive -Path lunaris-client-desktop/* -DestinationPath lunaris-client-desktop-windows.zip
+          
+          # Package QML Client separately (rename binary and bundle as client-qml)
+          Copy-Item -Recurse lunaris-client-desktop -Destination lunaris-client-qml
+          Rename-Item lunaris-client-qml/client-desktop.exe -NewName client-qml.exe
+          Compress-Archive -Path lunaris-client-qml/* -DestinationPath lunaris-client-qml-windows.zip
         shell: pwsh
 
       - name: Upload Client Desktop Artifact
@@ -279,6 +306,12 @@ jobs:
         with:
           name: client-desktop-windows
           path: lunaris-client-desktop-windows.zip
+
+      - name: Upload Client QML Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: client-qml-windows
+          path: lunaris-client-qml-windows.zip
 
       - name: Upload Agent Artifact
         uses: actions/upload-artifact@v4
@@ -400,11 +433,22 @@ jobs:
           cp target/release/client-desktop lunaris-client-desktop/
           tar -czf lunaris-client-desktop-macos.tar.gz -C lunaris-client-desktop .
 
+          # Package QML Client separately
+          mkdir -p lunaris-client-qml
+          cp target/release/client-desktop lunaris-client-qml/client-qml
+          tar -czf lunaris-client-qml-macos.tar.gz -C lunaris-client-qml .
+
       - name: Upload Client Desktop Artifact
         uses: actions/upload-artifact@v4
         with:
           name: client-desktop-macos
           path: lunaris-client-desktop-macos.tar.gz
+
+      - name: Upload Client QML Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: client-qml-macos
+          path: lunaris-client-qml-macos.tar.gz
 
       - name: Upload Agent Artifact
         uses: actions/upload-artifact@v4
@@ -432,6 +476,12 @@ jobs:
           name: client-desktop-linux
           path: ./artifacts/linux-client-desktop
 
+      - name: Download Linux Client QML Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: client-qml-linux
+          path: ./artifacts/linux-client-qml
+
       - name: Download Windows Server Artifact
         uses: actions/download-artifact@v4
         with:
@@ -444,6 +494,12 @@ jobs:
           name: client-desktop-windows
           path: ./artifacts/windows-client-desktop
 
+      - name: Download Windows Client QML Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: client-qml-windows
+          path: ./artifacts/windows-client-qml
+
       - name: Download macOS Server Artifact
         uses: actions/download-artifact@v4
         with:
@@ -455,6 +511,12 @@ jobs:
         with:
           name: client-desktop-macos
           path: ./artifacts/macos-client-desktop
+
+      - name: Download macOS Client QML Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: client-qml-macos
+          path: ./artifacts/macos-client-qml
 
       - name: Download Linux Agent Artifact
         uses: actions/download-artifact@v4
@@ -481,16 +543,19 @@ jobs:
           # Linux
           mv ./artifacts/linux-server/lunaris-server-linux.tar.gz ./release-files/
           mv ./artifacts/linux-client-desktop/lunaris-client-desktop-linux.tar.gz ./release-files/
+          mv ./artifacts/linux-client-qml/lunaris-client-qml-linux.tar.gz ./release-files/
           mv ./artifacts/linux-agent/agent ./release-files/lunaris-agent-linux
 
           # Windows
           mv ./artifacts/windows-server/lunaris-server-windows.zip ./release-files/
           mv ./artifacts/windows-client-desktop/lunaris-client-desktop-windows.zip ./release-files/
+          mv ./artifacts/windows-client-qml/lunaris-client-qml-windows.zip ./release-files/
           mv ./artifacts/windows-agent/agent.exe ./release-files/lunaris-agent-windows.exe
 
           # macOS
           mv ./artifacts/macos-server/lunaris-server-macos.tar.gz ./release-files/
           mv ./artifacts/macos-client-desktop/lunaris-client-desktop-macos.tar.gz ./release-files/
+          mv ./artifacts/macos-client-qml/lunaris-client-qml-macos.tar.gz ./release-files/
           mv ./artifacts/macos-agent/agent ./release-files/lunaris-agent-macos
 
       - name: Create GitHub Release
@@ -503,12 +568,15 @@ jobs:
           files: |
             release-files/lunaris-server-linux.tar.gz
             release-files/lunaris-client-desktop-linux.tar.gz
+            release-files/lunaris-client-qml-linux.tar.gz
             release-files/lunaris-agent-linux
             release-files/lunaris-server-windows.zip
             release-files/lunaris-client-desktop-windows.zip
+            release-files/lunaris-client-qml-windows.zip
             release-files/lunaris-agent-windows.exe
             release-files/lunaris-server-macos.tar.gz
             release-files/lunaris-client-desktop-macos.tar.gz
+            release-files/lunaris-client-qml-macos.tar.gz
             release-files/lunaris-agent-macos
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

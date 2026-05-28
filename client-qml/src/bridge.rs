@@ -1511,7 +1511,7 @@ use webrtc::api::media_engine::MediaEngine;
 use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::ice_transport::ice_server::RTCIceServer;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
-use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
+use webrtc::ice_transport::ice_candidate::{RTCIceCandidate, RTCIceCandidateInit};
 use webrtc::data_channel::RTCDataChannel;
 use webrtc::track::track_remote::TrackRemote;
 use common::{ClientMessage, ServerToClientMessage, SignalingMessage, RtcSessionDescription, RtcSdpType};
@@ -1557,6 +1557,30 @@ async fn run_webrtc_client_task(
     };
     
     let peer_connection = Arc::new(api.new_peer_connection(config).await?);
+    
+    // Register ICE candidate gathering callback
+    let outbox_tx_clone = outbox_tx.clone();
+    let host_id_clone = host_id.clone();
+    peer_connection.on_ice_candidate(Box::new(move |candidate: Option<RTCIceCandidate>| {
+        let outbox_tx = outbox_tx_clone.clone();
+        let host_id = host_id_clone.clone();
+        Box::pin(async move {
+            if let Some(cand) = candidate {
+                if let Ok(json_cand) = cand.to_json() {
+                    let msg = ClientMessage::Signaling(SignalingMessage::IceCandidate {
+                        target_id: host_id,
+                        candidate: common::RtcIceCandidate {
+                            candidate: json_cand.candidate,
+                            sdp_mid: json_cand.sdp_mid,
+                            sdp_mline_index: json_cand.sdp_mline_index,
+                            username_fragment: json_cand.username_fragment,
+                        },
+                    });
+                    let _ = outbox_tx.send(msg);
+                }
+            }
+        })
+    }));
     
     // Setup video track handler
     let sink_clone = sink_wrapper.clone();
