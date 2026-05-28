@@ -2287,19 +2287,22 @@ async fn run_webrtc_client_task(
                 if final_buf[0] == 0 {
                     let mut dx = i16::from_be_bytes([final_buf[1], final_buf[2]]);
                     let mut dy = i16::from_be_bytes([final_buf[3], final_buf[4]]);
+                    let mut ts = u32::from_be_bytes([final_buf[5], final_buf[6], final_buf[7], final_buf[8]]);
                     let mut coalesced = false;
                     
                     while let Ok(next_buf) = mr_rx.try_recv() {
                         if next_buf[0] == 0 {
                             dx = dx.wrapping_add(i16::from_be_bytes([next_buf[1], next_buf[2]]));
                             dy = dy.wrapping_add(i16::from_be_bytes([next_buf[3], next_buf[4]]));
+                            ts = u32::from_be_bytes([next_buf[5], next_buf[6], next_buf[7], next_buf[8]]);
                             coalesced = true;
                         } else {
                             // Non-motion event (e.g. click, scroll) - send current accumulated motion first
-                            let mut motion_buf = vec![0u8; 5];
+                            let mut motion_buf = vec![0u8; 9];
                             motion_buf[0] = 0;
                             motion_buf[1..3].copy_from_slice(&dx.to_be_bytes());
                             motion_buf[3..5].copy_from_slice(&dy.to_be_bytes());
+                            motion_buf[5..9].copy_from_slice(&ts.to_be_bytes());
                             
                             if mouse_queue_limit > 0 {
                                 let now = std::time::Instant::now();
@@ -2326,10 +2329,11 @@ async fn run_webrtc_client_task(
                     }
                     
                     if coalesced {
-                        let mut motion_buf = vec![0u8; 5];
+                        let mut motion_buf = vec![0u8; 9];
                         motion_buf[0] = 0;
                         motion_buf[1..3].copy_from_slice(&dx.to_be_bytes());
                         motion_buf[3..5].copy_from_slice(&dy.to_be_bytes());
+                        motion_buf[5..9].copy_from_slice(&ts.to_be_bytes());
                         final_buf = Bytes::from(motion_buf);
                     }
                 }

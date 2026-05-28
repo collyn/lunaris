@@ -80,6 +80,13 @@ pub fn handle_key_event(
     }
 }
 
+static START_TIME: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+
+pub fn get_client_timestamp() -> u32 {
+    let start = START_TIME.get_or_init(std::time::Instant::now);
+    start.elapsed().as_millis() as u32
+}
+
 pub fn handle_mouse_move(
     x: i32,
     y: i32,
@@ -90,19 +97,22 @@ pub fn handle_mouse_move(
     pointer_locked: bool,
     senders: &InputSenders,
 ) {
+    let ts = get_client_timestamp();
     if !pointer_locked {
-        let mut buf = vec![0u8; 9];
+        let mut buf = vec![0u8; 13];
         buf[0] = 1; // Type 1: Absolute Mouse Position
         buf[1..3].copy_from_slice(&(x as i16).to_be_bytes());
         buf[3..5].copy_from_slice(&(y as i16).to_be_bytes());
         buf[5..7].copy_from_slice(&(width as i16).to_be_bytes());
         buf[7..9].copy_from_slice(&(height as i16).to_be_bytes());
+        buf[9..13].copy_from_slice(&ts.to_be_bytes());
         let _ = senders.mouse_abs.send(Bytes::from(buf));
     } else {
-        let mut buf = vec![0u8; 5];
+        let mut buf = vec![0u8; 9];
         buf[0] = 0; // Type 0: Relative Mouse Move
         buf[1..3].copy_from_slice(&(rx as i16).to_be_bytes());
         buf[3..5].copy_from_slice(&(ry as i16).to_be_bytes());
+        buf[5..9].copy_from_slice(&ts.to_be_bytes());
         let _ = senders.mouse_rel.send(Bytes::from(buf));
     }
 }

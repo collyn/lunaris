@@ -297,11 +297,18 @@ void register_bridge_instance(StreamBridge* bridge) {
     std::cerr << "Lunaris Client: register_bridge_instance - Registered active bridge pointer." << std::endl;
 }
 
+static bool g_cursorOverrideActive = false;
+
 void set_pointer_locked_helper(bool locked) {
     g_pointerLocked = locked;
     std::cerr << "Lunaris Client: set_pointer_locked_helper(" << (locked ? "true" : "false") << ")" << std::endl;
     
     if (locked) {
+        if (!g_cursorOverrideActive) {
+            QGuiApplication::setOverrideCursor(QCursor(Qt::BlankCursor));
+            g_cursorOverrideActive = true;
+        }
+
         if (!g_eventFilter) {
             g_eventFilter = new InputEventFilter();
         }
@@ -334,6 +341,11 @@ void set_pointer_locked_helper(bool locked) {
 #endif
         }
     } else {
+        if (g_cursorOverrideActive) {
+            QGuiApplication::restoreOverrideCursor();
+            g_cursorOverrideActive = false;
+        }
+
         if (g_eventFilter) {
             QGuiApplication::instance()->removeEventFilter(g_eventFilter);
         }

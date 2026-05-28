@@ -900,6 +900,8 @@ body {
   max-height: 100%;
   object-fit: contain;
   outline: none;
+  transform: translateZ(0);
+  will-change: transform;
 }
 
 .stream-video-view.visible {

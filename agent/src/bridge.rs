@@ -641,9 +641,18 @@ pub async fn setup_bridge_session(
             let mut seq: u16 = 0;
             while let Some(mut packets) = packet_rx.recv().await {
                 let mut discarded = false;
-                while let Ok(next_packets) = packet_rx.try_recv() {
-                    packets = next_packets;
-                    discarded = true;
+                let queue_len = packet_rx.len();
+                if queue_len > 10 {
+                    let mut discarded_count = 0;
+                    while packet_rx.len() > 1 && discarded_count < queue_len - 1 {
+                        if let Ok(next_packets) = packet_rx.try_recv() {
+                            packets = next_packets;
+                            discarded = true;
+                            discarded_count += 1;
+                        } else {
+                            break;
+                        }
+                    }
                 }
                 if discarded {
                     warn!("Discarding obsolete queued video frames to prevent latency and congestion");
@@ -816,9 +825,11 @@ fn setup_data_channel_handler(
     channel: TransportChannel,
     ml_stream: Arc<std::sync::RwLock<Option<MoonlightStream>>>,
 ) {
+    let last_timestamp = Arc::new(std::sync::atomic::AtomicU32::new(0));
     data_channel.on_message(Box::new(move |msg: DataChannelMessage| {
         let ml_stream = ml_stream.clone();
         let channel = channel;
+        let last_timestamp = last_timestamp.clone();
         Box::pin(async move {
             let Some(packet) = InboundPacket::deserialize(channel, &msg.data) else {
                 return;
@@ -833,11 +844,19 @@ fn setup_data_channel_handler(
                 InboundPacket::GeneralStop => {
                     info!("Received stop message on general channel");
                 }
-                InboundPacket::MouseMove { delta_x, delta_y } => {
-                    let _ = stream.send_mouse_move(delta_x, delta_y);
+                InboundPacket::MouseMove { delta_x, delta_y, timestamp } => {
+                    let last_ts = last_timestamp.load(std::sync::atomic::Ordering::SeqCst);
+                    if last_ts == 0 || (timestamp.wrapping_sub(last_ts) as i32) > 0 {
+                        last_timestamp.store(timestamp, std::sync::atomic::Ordering::SeqCst);
+                        let _ = stream.send_mouse_move(delta_x, delta_y);
+                    }
                 }
-                InboundPacket::MousePosition { x, y, reference_width, reference_height } => {
-                    let _ = stream.send_mouse_position(x, y, reference_width, reference_height);
+                InboundPacket::MousePosition { x, y, reference_width, reference_height, timestamp } => {
+                    let last_ts = last_timestamp.load(std::sync::atomic::Ordering::SeqCst);
+                    if last_ts == 0 || (timestamp.wrapping_sub(last_ts) as i32) > 0 {
+                        last_timestamp.store(timestamp, std::sync::atomic::Ordering::SeqCst);
+                        let _ = stream.send_mouse_position(x, y, reference_width, reference_height);
+                    }
                 }
                 InboundPacket::MouseButton { action, button } => {
                     let _ = stream.send_mouse_button(action, button);

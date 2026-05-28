@@ -49,12 +49,14 @@ pub enum InboundPacket {
     MouseMove {
         delta_x: i16,
         delta_y: i16,
+        timestamp: u32,
     },
     MousePosition {
         x: i16,
         y: i16,
         reference_width: i16,
         reference_height: i16,
+        timestamp: u32,
     },
     MouseButton {
         action: MouseButtonAction,
@@ -178,7 +180,12 @@ impl InboundPacket {
                     }
                     let delta_x = buffer.get_i16();
                     let delta_y = buffer.get_i16();
-                    Some(InboundPacket::MouseMove { delta_x, delta_y })
+                    let timestamp = if buffer.remaining() >= 4 {
+                        buffer.get_u32()
+                    } else {
+                        0
+                    };
+                    Some(InboundPacket::MouseMove { delta_x, delta_y, timestamp })
                 } else if ty == 1 {
                     if buffer.remaining() < 8 {
                         return None;
@@ -187,11 +194,17 @@ impl InboundPacket {
                     let y = buffer.get_i16();
                     let reference_width = buffer.get_i16();
                     let reference_height = buffer.get_i16();
+                    let timestamp = if buffer.remaining() >= 4 {
+                        buffer.get_u32()
+                    } else {
+                        0
+                    };
                     Some(InboundPacket::MousePosition {
                         x,
                         y,
                         reference_width,
                         reference_height,
+                        timestamp,
                     })
                 } else if ty == 2 {
                     if buffer.remaining() < 2 {

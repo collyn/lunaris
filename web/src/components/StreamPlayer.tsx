@@ -78,6 +78,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   const scrollXAccumulatorRef = useRef<number>(0);
   const scrollYAccumulatorRef = useRef<number>(0);
   const lastJitterResetTimeRef = useRef<number>(0);
+  const videoRectRef = useRef<DOMRect | null>(null);
 
   const [status, setStatus] = useState<string>('Initializing...');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -123,6 +124,10 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     return val === 'true';
   });
   const [draftUseNativeClient, setDraftUseNativeClient] = useState<boolean>(useNativeClient);
+  const [isMuted, setIsMuted] = useState<boolean>(() => {
+    const val = localStorage.getItem('lunaris_stream_muted');
+    return val !== null ? val === 'true' : false;
+  });
 
   const [browserCodecs, setBrowserCodecs] = useState<{ h264: boolean; h265: boolean; av1: boolean }>({
     h264: true,
@@ -398,10 +403,9 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       if (pcRef.current) {
         pcRef.current.getReceivers().forEach(receiver => {
           if ('playoutDelayHint' in receiver) {
-            const currentHint = (receiver as any).playoutDelayHint;
-            (receiver as any).playoutDelayHint = 0;
+            (receiver as any).playoutDelayHint = 0.05;
             setTimeout(() => {
-              (receiver as any).playoutDelayHint = currentHint;
+              (receiver as any).playoutDelayHint = 0;
             }, 50);
           }
         });
@@ -807,10 +811,9 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
                   if (pcRef.current) {
                     pcRef.current.getReceivers().forEach(receiver => {
                       if ('playoutDelayHint' in receiver) {
-                        const currentHint = (receiver as any).playoutDelayHint;
-                        (receiver as any).playoutDelayHint = 0;
+                        (receiver as any).playoutDelayHint = 0.05;
                         setTimeout(() => {
-                          (receiver as any).playoutDelayHint = currentHint;
+                          (receiver as any).playoutDelayHint = 0;
                         }, 50);
                       }
                     });
@@ -923,8 +926,8 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       if (event.receiver) {
         try {
           if ('playoutDelayHint' in event.receiver) {
-            (event.receiver as any).playoutDelayHint = 0.02;
-            addLog(`Set playoutDelayHint = 0.02 on receiver for track kind: ${event.track.kind}`);
+            (event.receiver as any).playoutDelayHint = 0;
+            addLog(`Set playoutDelayHint = 0 on receiver for track kind: ${event.track.kind}`);
           }
         } catch (e) {
           addLog(`Error setting playoutDelayHint: ${e}`);
@@ -1081,6 +1084,21 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     }
   };
 
+  const updateVideoRect = () => {
+    if (videoRef.current) {
+      videoRectRef.current = videoRef.current.getBoundingClientRect();
+    }
+  };
+
+  useEffect(() => {
+    window.addEventListener("resize", updateVideoRect);
+    window.addEventListener("scroll", updateVideoRect, true);
+    return () => {
+      window.removeEventListener("resize", updateVideoRect);
+      window.removeEventListener("scroll", updateVideoRect, true);
+    };
+  }, []);
+
   // Send mouse position (absolute or relative) with throttling and backpressure
   const handleMouseMove = (e: React.MouseEvent<HTMLVideoElement>) => {
     if (status !== "Streaming") return;
@@ -1099,11 +1117,13 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       if (mouseRelativeChannel && mouseRelativeChannel.readyState === "open") {
         const isBufferOk = mouseQueueLimit === 0 ? true : mouseRelativeChannel.bufferedAmount < mouseQueueLimit;
         if (isBufferOk) {
-          const buffer = new ArrayBuffer(5);
+          const buffer = new ArrayBuffer(9);
           const view = new DataView(buffer);
           view.setUint8(0, 0); // Type 0: MouseMove
           view.setInt16(1, e.movementX, false); // big-endian
           view.setInt16(3, e.movementY, false); // big-endian
+          const ts = Math.floor(performance.now()) >>> 0;
+          view.setUint32(5, ts, false); // big-endian
           mouseRelativeChannel.send(buffer);
         }
       }
@@ -1114,7 +1134,10 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
         const isBufferOk = mouseQueueLimit === 0 ? mouseAbsoluteChannel.bufferedAmount === 0 : mouseAbsoluteChannel.bufferedAmount < mouseQueueLimit;
         if (isBufferOk) {
           const video = videoRef.current;
-          const rect = video.getBoundingClientRect();
+          if (!videoRectRef.current) {
+            videoRectRef.current = video.getBoundingClientRect();
+          }
+          const rect = videoRectRef.current;
           
           const elWidth = rect.width;
           const elHeight = rect.height;
@@ -1161,13 +1184,15 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
           const scaledX = Math.max(0, Math.min(refWidth, Math.round(xNorm * refWidth)));
           const scaledY = Math.max(0, Math.min(refHeight, Math.round(yNorm * refHeight)));
 
-          const buffer = new ArrayBuffer(9);
+          const buffer = new ArrayBuffer(13);
           const view = new DataView(buffer);
           view.setUint8(0, 1); // Type 1: MousePosition
           view.setInt16(1, scaledX, false);
           view.setInt16(3, scaledY, false);
           view.setInt16(5, refWidth, false);
           view.setInt16(7, refHeight, false);
+          const ts = Math.floor(performance.now()) >>> 0;
+          view.setUint32(9, ts, false); // big-endian
           mouseAbsoluteChannel.send(buffer);
         }
       }
@@ -1920,6 +1945,30 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
           </button>
         )}
 
+        {/* Mute/Unmute Action */}
+        <button 
+          onClick={() => {
+            const newValue = !isMuted;
+            setIsMuted(newValue);
+            localStorage.setItem('lunaris_stream_muted', String(newValue));
+          }}
+          className={`stream-action-btn ${!isMuted ? 'active' : ''}`}
+          title={isMuted ? "Unmute Audio" : "Mute Audio"}
+        >
+          {isMuted ? (
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+              <path d="M11 5L6 9H2v6h4l5 4V5z" fill="none" />
+              <line x1="22" y1="9" x2="16" y2="15" />
+              <line x1="16" y1="9" x2="22" y2="15" />
+            </svg>
+          ) : (
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+              <path d="M11 5L6 9H2v6h4l5 4V5z" fill="none" />
+              <path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07" />
+            </svg>
+          )}
+        </button>
+
         {/* Fullscreen/Maximize Action */}
         <button 
           onClick={toggleFullscreen}
@@ -1962,12 +2011,13 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
           onMouseMove={handleMouseMove}
           onMouseDown={(e) => handleMouseButton(e, true)}
           onMouseUp={(e) => handleMouseButton(e, false)}
+          onMouseEnter={updateVideoRect}
           onContextMenu={(e) => e.preventDefault()}
           onWheel={handleWheel}
           className={`stream-video-view ${isStreaming ? 'visible' : 'hidden'}`}
           autoPlay
           playsInline
-          muted={true}
+          muted={isMuted}
           style={{ cursor: hideLocalCursor ? 'none' : 'default' }}
         />
 
