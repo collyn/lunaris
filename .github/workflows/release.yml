@@ -299,6 +299,9 @@ jobs:
           Copy-Item -Recurse lunaris-client-desktop -Destination lunaris-client-qml
           Rename-Item lunaris-client-qml/client-desktop.exe -NewName client-qml.exe
           Compress-Archive -Path lunaris-client-qml/* -DestinationPath lunaris-client-qml-windows.zip
+          
+          # Create Windows NSIS Installer
+          makensis client-desktop-installer.nsi
         shell: pwsh
 
       - name: Upload Client Desktop Artifact
@@ -312,6 +315,12 @@ jobs:
         with:
           name: client-qml-windows
           path: lunaris-client-qml-windows.zip
+
+      - name: Upload Client Desktop Installer Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: client-desktop-installer-windows
+          path: lunaris-client-installer.exe
 
       - name: Upload Agent Artifact
         uses: actions/upload-artifact@v4
@@ -532,6 +541,12 @@ jobs:
           name: agent-windows
           path: ./artifacts/windows-agent
 
+      - name: Download Windows Client Desktop Installer Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: client-desktop-installer-windows
+          path: ./artifacts/windows-client-desktop-installer
+
       - name: Download macOS Agent Artifact
         uses: actions/download-artifact@v4
         with:
@@ -553,6 +568,7 @@ jobs:
           mv ./artifacts/windows-client-desktop/lunaris-client-desktop-windows.zip ./release-files/
           mv ./artifacts/windows-client-qml/lunaris-client-qml-windows.zip ./release-files/
           mv ./artifacts/windows-agent/agent.exe ./release-files/lunaris-agent-windows.exe
+          mv ./artifacts/windows-client-desktop-installer/lunaris-client-installer.exe ./release-files/lunaris-client-installer-windows.exe
 
           # macOS
           mv ./artifacts/macos-server/lunaris-server-macos.tar.gz ./release-files/
@@ -576,6 +592,7 @@ jobs:
             release-files/lunaris-client-desktop-windows.zip
             release-files/lunaris-client-qml-windows.zip
             release-files/lunaris-agent-windows.exe
+            release-files/lunaris-client-installer-windows.exe
             release-files/lunaris-server-macos.tar.gz
             release-files/lunaris-client-desktop-macos.tar.gz
             release-files/lunaris-client-qml-macos.tar.gz

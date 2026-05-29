@@ -437,3 +437,51 @@ input:-webkit-autofill:active {
     text-shadow: 0 0 20px rgba(0, 240, 255, 0.7);
   }
 }
+
+/* Update Notification Banner */
+.update-banner {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: linear-gradient(90deg, rgba(157, 78, 221, 0.2), rgba(0, 240, 255, 0.2));
+  border: 1px solid rgba(0, 240, 255, 0.2);
+  border-radius: 8px;
+  padding: 10px 16px;
+  margin-bottom: 16px;
+  animation: slide-down 0.3s ease-out;
+}
+
+.update-text {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-main);
+}
+
+.update-btn {
+  background: var(--accent-cyan);
+  color: #080c14;
+  border: none;
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-weight: 600;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.update-btn:hover {
+  background: #ffffff;
+  box-shadow: 0 0 10px rgba(0, 240, 255, 0.5);
+  transform: scale(1.05);
+}
+
+@keyframes slide-down {
+  from {
+    transform: translateY(-10px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}

@@ -13,6 +13,12 @@ document.addEventListener('DOMContentLoaded', () => {
   const serverTokenInput = document.getElementById('server-token');
   const agentNameInput = document.getElementById('agent-name');
   const autostartSunshineInput = document.getElementById('autostart-sunshine');
+  const autostartAgentInput = document.getElementById('autostart-agent');
+  const closeToTrayAgentInput = document.getElementById('close-to-tray-agent');
+  
+  const updateBanner = document.getElementById('update-banner');
+  const updateText = document.getElementById('update-text');
+  const updateBtn = document.getElementById('update-btn');
 
   const toggleAgentBtn = document.getElementById('toggle-agent-btn');
   const saveConfigBtn = document.getElementById('save-config-btn');
@@ -60,6 +66,8 @@ document.addEventListener('DOMContentLoaded', () => {
       serverTokenInput.value = config.server_token || '';
       agentNameInput.value = config.agent_name || '';
       autostartSunshineInput.checked = !config.no_auto_start_sunshine;
+      autostartAgentInput.checked = !!config.autostart;
+      closeToTrayAgentInput.checked = !!config.close_to_tray;
       agentIdVal.textContent = config.client_unique_id || 'N/A';
       
       appendLog(`[INFO] Loaded configuration. Agent ID: ${config.client_unique_id}`);
@@ -75,12 +83,16 @@ document.addEventListener('DOMContentLoaded', () => {
       const serverToken = serverTokenInput.value.trim();
       const agentName = agentNameInput.value.trim();
       const noAutoStartSunshine = !autostartSunshineInput.checked;
+      const autostart = autostartAgentInput.checked;
+      const closeToTray = closeToTrayAgentInput.checked;
 
       await invoke('save_config', {
         serverUrl,
         agentName,
         noAutoStartSunshine,
-        serverToken
+        serverToken,
+        autostart,
+        closeToTray
       });
 
       appendLog(`[INFO] Configuration saved successfully.`);
@@ -196,4 +208,22 @@ document.addEventListener('DOMContentLoaded', () => {
   
   // Poll status every 1s
   setInterval(pollStatus, 1000);
+
+  // Check for updates
+  async function checkForUpdates() {
+    try {
+      const update = await invoke('check_for_updates');
+      if (update) {
+        updateText.textContent = `A new version (${update.latest_version}) of Lunaris Agent is available!`;
+        updateBanner.style.display = 'flex';
+        updateBtn.addEventListener('click', () => {
+          invoke('open_url', { url: update.release_url });
+        });
+      }
+    } catch (err) {
+      console.error('Failed to check for updates:', err);
+    }
+  }
+  
+  checkForUpdates();
 });

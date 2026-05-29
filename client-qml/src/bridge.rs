@@ -46,6 +46,10 @@ pub enum PendingDashboardEvent {
     DeepLinkReceived {
         url: String,
     },
+    UpdateAvailable {
+        latest_version: String,
+        release_url: String,
+    },
 }
 
 pub static PENDING_EVENTS: std::sync::Mutex<Vec<PendingDashboardEvent>> =
@@ -422,6 +426,13 @@ pub mod qobject {
         );
 
         #[qsignal]
+        fn new_version_available(
+            self: Pin<&mut StreamBridge>,
+            latest_version: QString,
+            release_url: QString,
+        );
+
+        #[qsignal]
         fn settings_loaded(
             self: Pin<&mut StreamBridge>,
             res: QString,
@@ -627,6 +638,9 @@ pub mod qobject {
 
         #[qinvokable]
         fn should_start_minimized(self: Pin<&mut StreamBridge>) -> bool;
+
+        #[qinvokable]
+        fn check_for_updates(self: Pin<&mut StreamBridge>);
     }
 }
 
@@ -1582,6 +1596,11 @@ impl qobject::StreamBridge {
                     let url_qstr = QString::from(&url);
                     self.as_mut().deeplink_received(url_qstr);
                 }
+                PendingDashboardEvent::UpdateAvailable { latest_version, release_url } => {
+                    let ver_qstr = QString::from(&latest_version);
+                    let url_qstr = QString::from(&release_url);
+                    self.as_mut().new_version_available(ver_qstr, url_qstr);
+                }
             }
         }
     }
@@ -1757,6 +1776,70 @@ impl qobject::StreamBridge {
     pub fn should_start_minimized(self: Pin<&mut Self>) -> bool {
         std::env::args().any(|arg| arg == "--minimized")
     }
+
+    pub fn check_for_updates(self: Pin<&mut Self>) {
+        let mut rust_obj = self.rust_mut();
+        let rt = rust_obj.get_or_init_runtime();
+
+        rt.spawn(async move {
+            let client = match reqwest::Client::builder().user_agent("lunaris-client").build() {
+                Ok(c) => c,
+                Err(_) => return,
+            };
+            
+            let res = match client.get("https://api.github.com/repos/collyn/lunaris/releases/latest")
+                .send()
+                .await
+            {
+                Ok(r) => r,
+                Err(_) => return,
+            };
+            
+            if !res.status().is_success() {
+                return;
+            }
+            
+            #[derive(serde::Deserialize)]
+            struct GithubRelease {
+                tag_name: String,
+                html_url: String,
+            }
+            
+            let release: GithubRelease = match res.json().await {
+                Ok(rel) => rel,
+                Err(_) => return,
+            };
+            
+            let current_version = env!("CARGO_PKG_VERSION");
+            if is_newer_version(current_version, &release.tag_name) {
+                let mut lock = PENDING_EVENTS.lock().unwrap();
+                lock.push(PendingDashboardEvent::UpdateAvailable {
+                    latest_version: release.tag_name,
+                    release_url: release.html_url,
+                });
+            }
+        });
+    }
+}
+
+fn is_newer_version(current: &str, latest: &str) -> bool {
+    let current_clean = current.trim_start_matches('v');
+    let latest_clean = latest.trim_start_matches('v');
+    
+    let current_parts: Vec<&str> = current_clean.split('.').collect();
+    let latest_parts: Vec<&str> = latest_clean.split('.').collect();
+    
+    for i in 0..std::cmp::max(current_parts.len(), latest_parts.len()) {
+        let current_num = current_parts.get(i).and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
+        let latest_num = latest_parts.get(i).and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
+        
+        if latest_num > current_num {
+            return true;
+        } else if current_num > latest_num {
+            return false;
+        }
+    }
+    false
 }
 
 pub fn stop_local_agent() {

@@ -80,6 +80,9 @@ struct Args {
 
     #[arg(long)]
     import_config: Option<String>,
+
+    #[arg(long)]
+    minimized: bool,
 }
 
 #[allow(dead_code)]
@@ -413,7 +416,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 .try_init();
 
             info!("Launching Lunaris Agent in Desktop GUI mode...");
-            gui::run_gui();
+            gui::run_gui(args.minimized);
             return Ok(());
         }
     }

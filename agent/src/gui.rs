@@ -14,6 +14,7 @@ use tracing::{error, info};
 // Shared state for Tauri
 pub struct AppState {
     pub shutdown_tx: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    pub close_to_tray: std::sync::atomic::AtomicBool,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
@@ -23,6 +24,14 @@ pub struct ConfigResponse {
     pub agent_name: String,
     pub no_auto_start_sunshine: bool,
     pub server_token: String,
+    pub autostart: bool,
+    pub close_to_tray: bool,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+pub struct UpdateResponse {
+    pub latest_version: String,
+    pub release_url: String,
 }
 
 #[derive(serde::Serialize, Clone)]
@@ -86,6 +95,8 @@ fn get_config() -> Result<ConfigResponse, String> {
         server_url: "ws://127.0.0.1:8080".to_string(),
         server_token: "".to_string(),
         webtransport_port: 55200,
+        autostart: false,
+        close_to_tray: false,
     });
 
     // Extract name from environment or host name
@@ -99,15 +110,20 @@ fn get_config() -> Result<ConfigResponse, String> {
         agent_name,
         no_auto_start_sunshine: false, // Default
         server_token: config.server_token,
+        autostart: config.autostart,
+        close_to_tray: config.close_to_tray,
     })
 }
 
 #[tauri::command]
 fn save_config(
+    state: State<'_, AppState>,
     server_url: String,
     _agent_name: String,
     _no_auto_start_sunshine: bool,
     server_token: String,
+    autostart: bool,
+    close_to_tray: bool,
 ) -> Result<(), String> {
     let mut config = load_config("agent_config.json").unwrap_or_else(|_| AgentConfig {
         client_unique_id: uuid::Uuid::new_v4().to_string().to_uppercase(),
@@ -117,11 +133,21 @@ fn save_config(
         server_url: "ws://127.0.0.1:8080".to_string(),
         server_token: "".to_string(),
         webtransport_port: 55200,
+        autostart: false,
+        close_to_tray: false,
     });
 
     config.server_url = server_url;
     config.server_token = server_token;
-    // We can save other fields or settings in agent_config.json if desired.
+    config.autostart = autostart;
+    config.close_to_tray = close_to_tray;
+
+    // Apply autostart settings to OS
+    crate::pairing::set_autostart_enabled_impl(autostart);
+
+    // Sync close_to_tray in AppState
+    state.close_to_tray.store(close_to_tray, Ordering::SeqCst);
+
     if let Err(e) = save_config_file(&config, "agent_config.json") {
         return Err(format!("Failed to save config: {}", e));
     }
@@ -261,15 +287,96 @@ fn clear_last_error() -> Result<(), String> {
     Ok(())
 }
 
+fn is_newer_version(current: &str, latest: &str) -> bool {
+    let current_clean = current.trim_start_matches('v');
+    let latest_clean = latest.trim_start_matches('v');
+    
+    let current_parts: Vec<&str> = current_clean.split('.').collect();
+    let latest_parts: Vec<&str> = latest_clean.split('.').collect();
+    
+    for i in 0..std::cmp::max(current_parts.len(), latest_parts.len()) {
+        let current_num = current_parts.get(i).and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
+        let latest_num = latest_parts.get(i).and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
+        
+        if latest_num > current_num {
+            return true;
+        } else if current_num > latest_num {
+            return false;
+        }
+    }
+    false
+}
+
+#[tauri::command]
+async fn check_for_updates() -> Result<Option<UpdateResponse>, String> {
+    let client = reqwest::Client::builder()
+        .user_agent("lunaris-agent")
+        .build()
+        .map_err(|e| e.to_string())?;
+        
+    let res = client.get("https://api.github.com/repos/collyn/lunaris/releases/latest")
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+        
+    if !res.status().is_success() {
+        return Ok(None);
+    }
+    
+    #[derive(serde::Deserialize)]
+    struct GithubRelease {
+        tag_name: String,
+        html_url: String,
+    }
+    
+    let release: GithubRelease = res.json().await.map_err(|e| e.to_string())?;
+    
+    let current_version = env!("CARGO_PKG_VERSION");
+    if is_newer_version(current_version, &release.tag_name) {
+        Ok(Some(UpdateResponse {
+            latest_version: release.tag_name,
+            release_url: release.html_url,
+        }))
+    } else {
+        Ok(None)
+    }
+}
+
+#[tauri::command]
+fn open_url(url: String) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    let _ = std::process::Command::new("cmd").args(&["/C", "start", &url]).status();
+    #[cfg(target_os = "macos")]
+    let _ = std::process::Command::new("open").arg(&url).status();
+    #[cfg(target_os = "linux")]
+    let _ = std::process::Command::new("xdg-open").arg(&url).status();
+    Ok(())
+}
+
 // -------------------------------------------------------------------------
 // GUI Entrypoint
 // -------------------------------------------------------------------------
-pub fn run_gui() {
+pub fn run_gui(minimized: bool) {
+    let config = load_config("agent_config.json").unwrap_or_else(|_| AgentConfig {
+        client_unique_id: "".to_string(),
+        client_private_key: "".to_string(),
+        client_certificate: "".to_string(),
+        server_certificate: "".to_string(),
+        server_url: "ws://127.0.0.1:8080".to_string(),
+        server_token: "".to_string(),
+        webtransport_port: 55200,
+        autostart: false,
+        close_to_tray: false,
+    });
+
+    let close_to_tray_val = config.close_to_tray;
+
     tauri::Builder::default()
         .manage(AppState {
             shutdown_tx: Mutex::new(None),
+            close_to_tray: std::sync::atomic::AtomicBool::new(close_to_tray_val),
         })
-        .setup(|app| {
+        .setup(move |app| {
             // Setup log listener that pipes std::sync::mpsc logs to UI
             let app_handle = app.handle().clone();
             std::thread::spawn(move || {
@@ -320,7 +427,23 @@ pub fn run_gui() {
                 })
                 .build(app)?;
 
+            // If not starting minimized, show the window
+            if !minimized {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.show();
+                }
+            }
+
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                let state = window.state::<AppState>();
+                if state.close_to_tray.load(Ordering::SeqCst) {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
         })
         .invoke_handler(tauri::generate_handler![
             get_config,
@@ -329,7 +452,9 @@ pub fn run_gui() {
             start_agent,
             stop_agent,
             get_status,
-            clear_last_error
+            clear_last_error,
+            check_for_updates,
+            open_url
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

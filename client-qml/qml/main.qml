@@ -110,6 +110,9 @@ ApplicationWindow {
     property string activeCodec: "H264"
     property string connectionType: "P2P (Direct)"
     property bool useCuda: true
+    property string latestVersion: ""
+    property string releaseUrl: ""
+    property bool showUpdateBanner: false
 
     // Hold ESC to unlock cursor properties
     property bool isEscHeld: false
@@ -201,6 +204,12 @@ ApplicationWindow {
             window.bitrateKbps = bit
             window.activeCodec = codec
             window.connectionType = connType
+        }
+
+        onNewVersionAvailable: (version, url) => {
+            window.latestVersion = version
+            window.releaseUrl = url
+            window.showUpdateBanner = true
         }
 
         onSettingsLoaded: (res, fps, codec, bitrate, queueLimit, hostName, disableCuda, inputProtocol) => {
@@ -712,10 +721,81 @@ ApplicationWindow {
     }
     }
 
+    // Update Banner
+    Rectangle {
+        id: updateBanner
+        visible: window.showUpdateBanner && !window.isStreamMode
+        anchors.top: parent.top
+        anchors.left: parent.left
+        anchors.right: parent.right
+        height: 40
+        color: Qt.rgba(20/255, 30/255, 55/255, 0.95)
+        border.color: Qt.rgba(0/255, 240/255, 255/255, 0.3)
+        border.width: 1
+        z: 9999
+
+        Row {
+            anchors.centerIn: parent
+            spacing: 12
+            
+            Text {
+                text: "A new version of Lunaris Client (" + window.latestVersion + ") is available!"
+                color: "#f1f5f9"
+                font.pixelSize: 13
+                font.bold: true
+                anchors.verticalCenter: parent.verticalCenter
+            }
+
+            Rectangle {
+                width: 90
+                height: 26
+                color: "#00f0ff"
+                radius: 4
+                anchors.verticalCenter: parent.verticalCenter
+                
+                Text {
+                    text: "Update Now"
+                    color: "#080c14"
+                    font.pixelSize: 11
+                    font.bold: true
+                    anchors.centerIn: parent
+                }
+
+                MouseArea {
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: {
+                        Qt.openUrlExternally(window.releaseUrl)
+                    }
+                }
+            }
+
+            // Close button
+            Text {
+                text: "✕"
+                color: "#94a3b8"
+                font.pixelSize: 14
+                anchors.verticalCenter: parent.verticalCenter
+                
+                MouseArea {
+                    anchors.fill: parent
+                    anchors.margins: -4
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: {
+                        window.showUpdateBanner = false
+                    }
+                }
+            }
+        }
+    }
+
     // Dashboard View
     Dashboard {
         id: dashboardView
-        anchors.fill: parent
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        anchors.top: updateBanner.visible ? updateBanner.bottom : parent.top
         visible: !window.isStreamMode
         focus: !window.isStreamMode
 
@@ -761,6 +841,7 @@ ApplicationWindow {
         } else {
             window.isStreamMode = false;
         }
+        bridge.checkForUpdates();
     }
 
 

@@ -19,6 +19,12 @@
       </div>
     </div>
 
+    <!-- Update Banner -->
+    <div id="update-banner" class="update-banner" style="display: none;">
+      <span id="update-text" class="update-text">A new version of Lunaris Agent is available!</span>
+      <button id="update-btn" class="update-btn">Update Now</button>
+    </div>
+
     <div class="dashboard-grid">
       <!-- Status Panel -->
       <div class="panel">
@@ -63,6 +69,18 @@
           <label class="checkbox-label">
             <input type="checkbox" id="autostart-sunshine" checked>
             <span>Auto-start Portable Sunshine</span>
+          </label>
+        </div>
+        <div class="form-group">
+          <label class="checkbox-label">
+            <input type="checkbox" id="autostart-agent">
+            <span>Start Agent on System Boot</span>
+          </label>
+        </div>
+        <div class="form-group">
+          <label class="checkbox-label">
+            <input type="checkbox" id="close-to-tray-agent">
+            <span>Close to System Tray</span>
           </label>
         </div>
       </div>
