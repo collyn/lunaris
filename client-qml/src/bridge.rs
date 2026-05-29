@@ -1879,6 +1879,7 @@ async fn setup_peer_connection(
     kb_chan_ref: Arc<Mutex<Option<Arc<RTCDataChannel>>>>,
     ma_chan_ref: Arc<Mutex<Option<Arc<RTCDataChannel>>>>,
     mr_chan_ref: Arc<Mutex<Option<Arc<RTCDataChannel>>>>,
+    clipboard_chan_ref: Arc<Mutex<Option<Arc<RTCDataChannel>>>>,
     active_decoder: Arc<Mutex<Option<std::thread::JoinHandle<()>>>>,
 ) -> Result<Arc<RTCPeerConnection>, anyhow::Error> {
     // WebRTC connection setup
@@ -2474,6 +2475,7 @@ async fn setup_peer_connection(
     let k_c = Arc::clone(&kb_chan_ref);
     let ma_c = Arc::clone(&ma_chan_ref);
     let mr_c = Arc::clone(&mr_chan_ref);
+    let cb_c = Arc::clone(&clipboard_chan_ref);
 
     peer_connection.on_data_channel(Box::new(move |d: Arc<RTCDataChannel>| {
         let label = d.label().to_string();
@@ -2489,12 +2491,83 @@ async fn setup_peer_connection(
             "mouse_relative" => {
                 *mr_c.lock().unwrap() = Some(channel_ref);
             }
+            "clipboard" => {
+                *cb_c.lock().unwrap() = Some(channel_ref.clone());
+                setup_client_clipboard_channel_handler(channel_ref);
+            }
             _ => {}
         }
         Box::pin(async {})
     }));
 
     Ok(peer_connection)
+}
+
+fn setup_client_clipboard_channel_handler(data_channel: Arc<RTCDataChannel>) {
+    let last_received_clipboard = Arc::new(std::sync::Mutex::new(String::new()));
+    let last_received_clone = last_received_clipboard.clone();
+    
+    data_channel.on_message(Box::new(move |msg: webrtc::data_channel::data_channel_message::DataChannelMessage| {
+        let last_received_clone = last_received_clone.clone();
+        Box::pin(async move {
+            let text = match String::from_utf8(msg.data.to_vec()) {
+                Ok(t) => t,
+                Err(_) => return,
+            };
+            if text.is_empty() {
+                return;
+            }
+            
+            // Set client clipboard
+            let mut clipboard = match arboard::Clipboard::new() {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("Failed to initialize client clipboard: {:?}", e);
+                    return;
+                }
+            };
+            
+            *last_received_clone.lock().unwrap() = text.clone();
+            
+            if let Err(e) = clipboard.set_text(text) {
+                eprintln!("Failed to set client clipboard text: {:?}", e);
+            }
+        })
+    }));
+    
+    let data_channel_clone = data_channel.clone();
+    tokio::spawn(async move {
+        let mut last_clipboard_text = String::new();
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            
+            if data_channel_clone.ready_state() != webrtc::data_channel::data_channel_state::RTCDataChannelState::Open {
+                break;
+            }
+            
+            let current_text = match tokio::task::spawn_blocking(|| {
+                arboard::Clipboard::new().and_then(|mut c| c.get_text())
+            }).await {
+                Ok(Ok(text)) => text,
+                _ => continue,
+            };
+            
+            if current_text.is_empty() {
+                continue;
+            }
+            
+            let is_new = {
+                let last_recv = last_received_clipboard.lock().unwrap();
+                current_text != last_clipboard_text && current_text != *last_recv
+            };
+            
+            if is_new {
+                last_clipboard_text = current_text.clone();
+                let bytes = bytes::Bytes::from(current_text);
+                let _ = data_channel_clone.send(&bytes).await;
+            }
+        }
+    });
 }
 
 async fn run_webrtc_client_task(
@@ -2543,6 +2616,7 @@ async fn run_webrtc_client_task(
     let kb_chan_ref: Arc<Mutex<Option<Arc<RTCDataChannel>>>> = Arc::new(Mutex::new(None));
     let ma_chan_ref: Arc<Mutex<Option<Arc<RTCDataChannel>>>> = Arc::new(Mutex::new(None));
     let mr_chan_ref: Arc<Mutex<Option<Arc<RTCDataChannel>>>> = Arc::new(Mutex::new(None));
+    let clipboard_chan_ref: Arc<Mutex<Option<Arc<RTCDataChannel>>>> = Arc::new(Mutex::new(None));
 
     let wt_conn_ref: Arc<Mutex<Option<wtransport::Connection>>> = Arc::new(Mutex::new(None));
 
@@ -2859,6 +2933,7 @@ async fn run_webrtc_client_task(
                                 kb_chan_ref.clone(),
                                 ma_chan_ref.clone(),
                                 mr_chan_ref.clone(),
+                                clipboard_chan_ref.clone(),
                                 active_decoder.clone(),
                             )
                             .await

@@ -807,12 +807,46 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       sendKeyEvent(e.code, e.shiftKey, e.ctrlKey, e.altKey, e.metaKey, false);
     };
 
+    const handleGlobalCopy = () => {
+      const clipboardChannel = channelsRef.current["clipboard"];
+      if (clipboardChannel && clipboardChannel.readyState === "open") {
+        const text = window.getSelection()?.toString();
+        if (text) {
+          clipboardChannel.send(text);
+        }
+      }
+    };
+
+    const handleGlobalPaste = (e: ClipboardEvent) => {
+      const activeEl = document.activeElement;
+      if (
+        activeEl && 
+        (activeEl.tagName === 'INPUT' || 
+         activeEl.tagName === 'SELECT' || 
+         activeEl.tagName === 'TEXTAREA' || 
+         (activeEl as HTMLElement).isContentEditable)
+      ) {
+        return;
+      }
+      const clipboardChannel = channelsRef.current["clipboard"];
+      if (clipboardChannel && clipboardChannel.readyState === "open") {
+        const text = e.clipboardData?.getData("text");
+        if (text) {
+          clipboardChannel.send(text);
+        }
+      }
+    };
+
     window.addEventListener('keydown', handleGlobalKeyDown);
     window.addEventListener('keyup', handleGlobalKeyUp);
+    window.addEventListener('copy', handleGlobalCopy);
+    window.addEventListener('paste', handleGlobalPaste);
 
     return () => {
       window.removeEventListener('keydown', handleGlobalKeyDown);
       window.removeEventListener('keyup', handleGlobalKeyUp);
+      window.removeEventListener('copy', handleGlobalCopy);
+      window.removeEventListener('paste', handleGlobalPaste);
     };
   }, [status, showSettingsModal]);
 
@@ -1168,6 +1202,26 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
         channelsRef.current[label] = createWebTransportChannelWrapper(label, channelId, channel) as any;
       } else {
         channelsRef.current[label] = channel;
+      }
+      
+      if (label === "clipboard") {
+        channel.onmessage = async (e) => {
+          let text = "";
+          if (typeof e.data === "string") {
+            text = e.data;
+          } else if (e.data instanceof ArrayBuffer) {
+            text = new TextDecoder().decode(e.data);
+          } else if (e.data instanceof Blob) {
+            text = await e.data.text();
+          }
+          if (text) {
+            try {
+              await navigator.clipboard.writeText(text);
+            } catch (err) {
+              addLog(`Failed to write to local clipboard: ${err}`);
+            }
+          }
+        };
       }
       
       channel.onopen = () => {

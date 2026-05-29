@@ -28,6 +28,7 @@ moonlight-common = { git = "https://github.com/MrCreativ3001/moonlight-common-ru
     "serde",
 ], default-features = false }
 webrtc = "0.17.1"
+arboard = "3.4"
 wtransport = { version = "0.7.1", features = ["self-signed"] }
 openssl = { version = "0.10", features = ["vendored"] }
 pem = "3.0"
