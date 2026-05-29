@@ -340,6 +340,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     ping: number;
     decodeLatency: number;
     jitter: number;
+    connectionType: string;
   }>({
     iceState: 'new',
     connState: 'new',
@@ -347,7 +348,8 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     bitrate: 0,
     ping: 0,
     decodeLatency: 0,
-    jitter: 0
+    jitter: 0,
+    connectionType: 'P2P (Direct)'
   });
 
   const addLog = (msg: string) => {
@@ -863,8 +865,20 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
         let videoFps = 0;
         let videoBitrate = 0;
         let videoJitter = 0;
+        let connectionType = "P2P (Direct)";
 
         statsReport.forEach((report) => {
+          if (report.type === 'candidate-pair' && report.selected === true) {
+            const localCandidate = statsReport.get(report.localCandidateId);
+            const remoteCandidate = statsReport.get(report.remoteCandidateId);
+            if (localCandidate && remoteCandidate) {
+              const localType = localCandidate.candidateType;
+              const remoteType = remoteCandidate.candidateType;
+              if (localType === 'relay' || remoteType === 'relay') {
+                connectionType = 'TURN Relay';
+              }
+            }
+          }
           if (report.type === 'candidate-pair') {
             const rtt = report.currentRoundTripTime !== undefined 
               ? report.currentRoundTripTime 
@@ -958,7 +972,8 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
           decodeLatency: videoDecodeLatency,
           fps: videoFps || prev.fps,
           bitrate: videoBitrate || prev.bitrate,
-          jitter: videoJitter || prev.jitter
+          jitter: videoJitter || prev.jitter,
+          connectionType
         }));
       } catch (err) {
         console.error("Error fetching WebRTC stats:", err);
@@ -3663,6 +3678,9 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
             <div>Codec: <span className="stat-value">{activeCodec.toUpperCase()}</span></div>
             <div>Input Protocol: <span className="stat-value" style={{ color: isWebTransportConnected ? '#4ade80' : '#38bdf8', fontWeight: 'bold' }}>
               {isWebTransportConnected ? "WebTransport (QUIC)" : "WebRTC (SCTP)"}
+            </span></div>
+            <div>Network Path: <span className="stat-value" style={{ color: stats.connectionType === 'P2P (Direct)' ? '#4ade80' : '#fb923c', fontWeight: 'bold' }}>
+              {stats.connectionType}
             </span></div>
           </div>
         )}

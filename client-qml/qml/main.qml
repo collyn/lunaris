@@ -108,6 +108,7 @@ ApplicationWindow {
     property real fps: 0.0
     property real bitrateKbps: 0.0
     property string activeCodec: "H264"
+    property string connectionType: "P2P (Direct)"
     property bool useCuda: true
 
     // Hold ESC to unlock cursor properties
@@ -193,12 +194,13 @@ ApplicationWindow {
         id: bridge
 
         // Handle diagnostic stats sent from Rust
-        onStatsUpdated: (ping, decode, frames, bit, codec) => {
+        onStatsUpdated: (ping, decode, frames, bit, codec, connType) => {
             window.pingMs = ping
             window.decodeLatencyMs = decode
             window.fps = frames
             window.bitrateKbps = bit
             window.activeCodec = codec
+            window.connectionType = connType
         }
 
         onSettingsLoaded: (res, fps, codec, bitrate, queueLimit, hostName, disableCuda, inputProtocol) => {
@@ -421,7 +423,7 @@ ApplicationWindow {
         
         anchors.rightMargin: 16
         width: 220
-        height: 156
+        height: 180
         radius: 16
         color: Qt.rgba(20/255, 20/255, 20/255, 0.6)
         border.color: Qt.rgba(255/255, 255/255, 255/255, 0.08)
@@ -485,6 +487,14 @@ ApplicationWindow {
                 anchors.right: parent.right
                 Text { text: "Codec"; color: "#94a3b8"; font.pixelSize: 11; font.bold: true; anchors.left: parent.left }
                 Text { text: window.activeCodec.toUpperCase(); color: "#ffffff"; font.pixelSize: 11; font.bold: true; anchors.right: parent.right }
+            }
+
+            Item {
+                height: 16
+                anchors.left: parent.left
+                anchors.right: parent.right
+                Text { text: "Network Path"; color: "#94a3b8"; font.pixelSize: 11; font.bold: true; anchors.left: parent.left }
+                Text { text: window.connectionType; color: window.connectionType === "P2P (Direct)" ? "#4ade80" : "#fb923c"; font.pixelSize: 11; font.bold: true; anchors.right: parent.right }
             }
         }
     }

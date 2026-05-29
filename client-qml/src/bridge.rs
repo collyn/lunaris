@@ -78,6 +78,7 @@ pub struct StreamStats {
     pub fps: f64,
     pub bitrate: f64,
     pub codec: String,
+    pub connection_type: String,
 }
 
 pub static STREAM_STATS: std::sync::Mutex<Option<StreamStats>> = std::sync::Mutex::new(None);
@@ -417,6 +418,7 @@ pub mod qobject {
             fps: f64,
             bitrate: f64,
             codec: QString,
+            connection_type: QString,
         );
 
         #[qsignal]
@@ -651,6 +653,14 @@ impl qobject::StreamBridge {
     pub fn start_stream(mut self: Pin<&mut Self>) {
         println!("Starting WebRTC streaming pipeline...");
         self.as_mut().stop_stream();
+        *STREAM_STATS.lock().unwrap() = Some(StreamStats {
+            ping: 0.0,
+            decode: 0.0,
+            fps: 0.0,
+            bitrate: 0.0,
+            codec: String::new(),
+            connection_type: "P2P (Direct)".to_string(),
+        });
         qobject::set_cuda_stream_active(true);
 
         // Load active config, if None, initialize from APP_ARGS
@@ -881,8 +891,9 @@ impl qobject::StreamBridge {
         let stats = { STREAM_STATS.lock().unwrap().clone() };
         if let Some(s) = stats {
             let codec_qstring = cxx_qt_lib::QString::from(&s.codec);
+            let conn_type_qstring = cxx_qt_lib::QString::from(&s.connection_type);
             self.as_mut()
-                .stats_updated(s.ping, s.decode, s.fps, s.bitrate, codec_qstring);
+                .stats_updated(s.ping, s.decode, s.fps, s.bitrate, codec_qstring, conn_type_qstring);
         }
     }
 
@@ -2327,13 +2338,22 @@ async fn setup_peer_connection(
                                 super::decoder::CodecType::AV1 => "AV1",
                             }.to_string();
                             
-                            *STREAM_STATS.lock().unwrap() = Some(StreamStats {
-                                ping: 2.1,
-                                decode: avg_decode_ms,
-                                fps,
-                                bitrate: bitrate_kbps,
-                                codec: codec_name,
-                            });
+                            let mut stats_lock = STREAM_STATS.lock().unwrap();
+                            if let Some(ref mut s) = *stats_lock {
+                                s.decode = avg_decode_ms;
+                                s.fps = fps;
+                                s.bitrate = bitrate_kbps;
+                                s.codec = codec_name;
+                            } else {
+                                *stats_lock = Some(StreamStats {
+                                    ping: 0.0,
+                                    decode: avg_decode_ms,
+                                    fps,
+                                    bitrate: bitrate_kbps,
+                                    codec: codec_name,
+                                    connection_type: "P2P (Direct)".to_string(),
+                                });
+                            }
                             
                             frame_count = 0;
                             byte_count = 0;
@@ -2794,6 +2814,54 @@ async fn run_webrtc_client_task(
                                     println!("SDP Answer created and sent successfully.");
                                 }
                             }
+                            let pc_clone = Arc::clone(&pc);
+                            tokio::spawn(async move {
+                                loop {
+                                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                                    let stats = pc_clone.get_stats().await;
+                                    
+                                    let mut conn_type = "P2P (Direct)".to_string();
+                                    let mut dynamic_ping = 0.0;
+                                    let mut selected_pair = None;
+                                    
+                                    for (_key, val) in &stats.reports {
+                                        if let webrtc::stats::StatsReportType::CandidatePair(pair_stats) = val {
+                                            if pair_stats.nominated {
+                                                selected_pair = Some(pair_stats);
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    
+                                    if let Some(pair_stats) = selected_pair {
+                                        dynamic_ping = pair_stats.current_round_trip_time * 1000.0;
+                                        
+                                        let local_cand = stats.reports.get(&pair_stats.local_candidate_id);
+                                        let remote_cand = stats.reports.get(&pair_stats.remote_candidate_id);
+                                        
+                                        let is_local_relay = if let Some(webrtc::stats::StatsReportType::LocalCandidate(cand_stats)) = local_cand {
+                                            matches!(cand_stats.candidate_type, webrtc::ice::candidate::CandidateType::Relay)
+                                        } else {
+                                            false
+                                        };
+                                        
+                                        let is_remote_relay = if let Some(webrtc::stats::StatsReportType::RemoteCandidate(cand_stats)) = remote_cand {
+                                            matches!(cand_stats.candidate_type, webrtc::ice::candidate::CandidateType::Relay)
+                                        } else {
+                                            false
+                                        };
+                                        
+                                        if is_local_relay || is_remote_relay {
+                                            conn_type = "TURN Relay".to_string();
+                                        }
+                                    }
+                                    
+                                    if let Some(ref mut s) = *STREAM_STATS.lock().unwrap() {
+                                        s.ping = dynamic_ping;
+                                        s.connection_type = conn_type;
+                                    }
+                                }
+                            });
                             peer_connection = Some(pc);
                         }
                     }

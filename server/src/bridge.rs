@@ -79,14 +79,18 @@ pub struct BridgeSession {
     pub webtransport_cert_hash: Option<String>,
     pub _webtransport_endpoint:
         Option<Arc<wtransport::Endpoint<wtransport::endpoint::endpoint_side::Server>>>,
+    pub webtransport_shutdown: Option<tokio::sync::oneshot::Sender<()>>,
 }
 
 impl Drop for BridgeSession {
     fn drop(&mut self) {
         info!("BridgeSession is being dropped, ensuring Moonlight stream is stopped...");
-        if let Some(endpoint) = self._webtransport_endpoint.take() {
-            info!("Closing WebTransport endpoint...");
-            endpoint.close(wtransport::VarInt::from(0u32), b"session closed");
+        if let Some(shutdown_tx) = self.webtransport_shutdown.take() {
+            info!("Sending shutdown signal to WebTransport accept loop...");
+            let _ = shutdown_tx.send(());
+        }
+        if let Some(_endpoint) = self._webtransport_endpoint.take() {
+            info!("Dropping WebTransport endpoint reference...");
         }
         if let Ok(mut lock) = self.moonlight_stream.write() {
             if let Some(stream) = lock.take() {
@@ -973,6 +977,7 @@ pub async fn setup_bridge_session(
     let mut webtransport_port = None;
     let mut webtransport_cert_hash = None;
     let mut webtransport_endpoint = None;
+    let mut webtransport_shutdown = None;
 
     match wtransport::Identity::self_signed(&["localhost", "127.0.0.1", "::1"]) {
         Ok(identity) => {
@@ -999,139 +1004,149 @@ pub async fn setup_bridge_session(
                         let endpoint_arc = Arc::new(endpoint);
                         webtransport_endpoint = Some(endpoint_arc.clone());
 
+                        let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+                        webtransport_shutdown = Some(shutdown_tx);
+
                         let ml_stream_clone = moonlight_stream_rwlock.clone();
                         tokio::spawn(async move {
                             loop {
-                                let incoming = endpoint_arc.accept().await;
-                                let ml_stream = ml_stream_clone.clone();
-                                tokio::spawn(async move {
-                                    info!(
-                                        "Incoming WebTransport session from {}",
-                                        incoming.remote_address()
-                                    );
-                                    let session_request = match incoming.await {
-                                        Ok(req) => req,
-                                        Err(e) => {
-                                            error!(
-                                                "WebTransport session handshake failed: {:?}",
-                                                e
+                                tokio::select! {
+                                    incoming = endpoint_arc.accept() => {
+                                        let ml_stream = ml_stream_clone.clone();
+                                        tokio::spawn(async move {
+                                            info!(
+                                                "Incoming WebTransport session from {}",
+                                                incoming.remote_address()
                                             );
-                                            return;
-                                        }
-                                    };
-                                    let connection = match session_request.accept().await {
-                                        Ok(conn) => conn,
-                                        Err(e) => {
-                                            error!("WebTransport session accept failed: {:?}", e);
-                                            return;
-                                        }
-                                    };
-                                    info!("WebTransport session accepted successfully");
-                                    loop {
-                                        match connection.receive_datagram().await {
-                                            Ok(datagram) => {
-                                                if datagram.len() < 1 {
-                                                    continue;
-                                                }
-                                                let channel_id = datagram[0];
-                                                let payload = &datagram[1..];
-                                                let Some(packet) = InboundPacket::deserialize(
-                                                    TransportChannel(channel_id),
-                                                    payload,
-                                                ) else {
-                                                    warn!(
-                                                        "WebTransport: Failed to deserialize packet on channel {}, payload len: {}",
-                                                        channel_id,
-                                                        payload.len()
+                                            let session_request = match incoming.await {
+                                                Ok(req) => req,
+                                                Err(e) => {
+                                                    error!(
+                                                        "WebTransport session handshake failed: {:?}",
+                                                        e
                                                     );
-                                                    continue;
-                                                };
-                                                let stream_guard = ml_stream.read().unwrap();
-                                                let Some(stream) = stream_guard.as_ref() else {
-                                                    continue;
-                                                };
-                                                match packet {
-                                                    InboundPacket::GeneralStop => {
-                                                        info!("Received stop message on general WebTransport channel");
-                                                    }
-                                                    InboundPacket::MouseMove {
-                                                        delta_x,
-                                                        delta_y,
-                                                        ..
-                                                    } => {
-                                                        let _ = stream
-                                                            .send_mouse_move(delta_x, delta_y);
-                                                    }
-                                                    InboundPacket::MousePosition {
-                                                        x,
-                                                        y,
-                                                        reference_width,
-                                                        reference_height,
-                                                        ..
-                                                    } => {
-                                                        let _ = stream.send_mouse_position(
-                                                            x,
-                                                            y,
-                                                            reference_width,
-                                                            reference_height,
-                                                        );
-                                                    }
-                                                    InboundPacket::MouseButton {
-                                                        action,
-                                                        button,
-                                                    } => {
-                                                        let _ = stream
-                                                            .send_mouse_button(action, button);
-                                                    }
-                                                    InboundPacket::Scroll { delta_x, delta_y } => {
-                                                        if delta_y != 0 {
-                                                            let _ = stream.send_scroll(delta_y);
+                                                    return;
+                                                }
+                                            };
+                                            let connection = match session_request.accept().await {
+                                                Ok(conn) => conn,
+                                                Err(e) => {
+                                                    error!("WebTransport session accept failed: {:?}", e);
+                                                    return;
+                                                }
+                                            };
+                                            info!("WebTransport session accepted successfully");
+                                            loop {
+                                                match connection.receive_datagram().await {
+                                                    Ok(datagram) => {
+                                                        if datagram.len() < 1 {
+                                                            continue;
                                                         }
-                                                        if delta_x != 0 {
-                                                            let _ = stream
-                                                                .send_horizontal_scroll(delta_x);
-                                                        }
-                                                    }
-                                                    InboundPacket::HighResScroll {
-                                                        delta_x,
-                                                        delta_y,
-                                                    } => {
-                                                        if delta_y != 0 {
-                                                            let _ = stream
-                                                                .send_high_res_scroll(delta_y);
-                                                        }
-                                                        if delta_x != 0 {
-                                                            let _ = stream
-                                                                .send_high_res_horizontal_scroll(
-                                                                    delta_x,
-                                                                );
-                                                        }
-                                                    }
-                                                    InboundPacket::Key {
-                                                        action,
-                                                        modifiers,
-                                                        key,
-                                                        flags,
-                                                    } => {
-                                                        let _ = stream
-                                                            .send_keyboard_event_non_standard(
-                                                                key as i16, action, modifiers,
-                                                                flags,
+                                                        let channel_id = datagram[0];
+                                                        let payload = &datagram[1..];
+                                                        let Some(packet) = InboundPacket::deserialize(
+                                                            TransportChannel(channel_id),
+                                                            payload,
+                                                        ) else {
+                                                            warn!(
+                                                                "WebTransport: Failed to deserialize packet on channel {}, payload len: {}",
+                                                                channel_id,
+                                                                payload.len()
                                                             );
+                                                            continue;
+                                                        };
+                                                        let stream_guard = ml_stream.read().unwrap();
+                                                        let Some(stream) = stream_guard.as_ref() else {
+                                                            continue;
+                                                        };
+                                                        match packet {
+                                                            InboundPacket::GeneralStop => {
+                                                                info!("Received stop message on general WebTransport channel");
+                                                            }
+                                                            InboundPacket::MouseMove {
+                                                                delta_x,
+                                                                delta_y,
+                                                                ..
+                                                            } => {
+                                                                let _ = stream
+                                                                    .send_mouse_move(delta_x, delta_y);
+                                                            }
+                                                            InboundPacket::MousePosition {
+                                                                x,
+                                                                y,
+                                                                reference_width,
+                                                                reference_height,
+                                                                ..
+                                                            } => {
+                                                                let _ = stream.send_mouse_position(
+                                                                    x,
+                                                                    y,
+                                                                    reference_width,
+                                                                    reference_height,
+                                                                );
+                                                            }
+                                                            InboundPacket::MouseButton {
+                                                                action,
+                                                                button,
+                                                            } => {
+                                                                let _ = stream
+                                                                    .send_mouse_button(action, button);
+                                                            }
+                                                            InboundPacket::Scroll { delta_x, delta_y } => {
+                                                                if delta_y != 0 {
+                                                                    let _ = stream.send_scroll(delta_y);
+                                                                }
+                                                                if delta_x != 0 {
+                                                                    let _ = stream
+                                                                        .send_horizontal_scroll(delta_x);
+                                                                }
+                                                            }
+                                                            InboundPacket::HighResScroll {
+                                                                delta_x,
+                                                                delta_y,
+                                                            } => {
+                                                                if delta_y != 0 {
+                                                                    let _ = stream
+                                                                        .send_high_res_scroll(delta_y);
+                                                                }
+                                                                if delta_x != 0 {
+                                                                    let _ = stream
+                                                                        .send_high_res_horizontal_scroll(
+                                                                            delta_x,
+                                                                        );
+                                                                }
+                                                            }
+                                                            InboundPacket::Key {
+                                                                action,
+                                                                modifiers,
+                                                                key,
+                                                                flags,
+                                                            } => {
+                                                                let _ = stream
+                                                                    .send_keyboard_event_non_standard(
+                                                                        key as i16, action, modifiers,
+                                                                        flags,
+                                                                    );
+                                                            }
+                                                            InboundPacket::Text { text } => {
+                                                                let _ = stream.send_text(&text);
+                                                            }
+                                                            _ => {}
+                                                        }
                                                     }
-                                                    InboundPacket::Text { text } => {
-                                                        let _ = stream.send_text(&text);
+                                                    Err(e) => {
+                                                        info!("WebTransport connection closed: {:?}", e);
+                                                        break;
                                                     }
-                                                    _ => {}
                                                 }
                                             }
-                                            Err(e) => {
-                                                info!("WebTransport connection closed: {:?}", e);
-                                                break;
-                                            }
-                                        }
+                                        });
                                     }
-                                });
+                                    _ = &mut shutdown_rx => {
+                                        info!("WebTransport accept loop received shutdown signal, exiting.");
+                                        break;
+                                    }
+                                }
                             }
                         });
                     }
@@ -1152,6 +1167,7 @@ pub async fn setup_bridge_session(
         webtransport_port,
         webtransport_cert_hash,
         _webtransport_endpoint: webtransport_endpoint,
+        webtransport_shutdown,
     }))
 }
 
