@@ -28,7 +28,7 @@ fn register_linux(exe_path: &str) -> Result<(), anyhow::Error> {
         .join(".local")
         .join("share")
         .join("applications");
-    
+
     if !dest_dir.exists() {
         std::fs::create_dir_all(&dest_dir)?;
     }
@@ -57,7 +57,11 @@ Categories=Network;
 
     // Register mimetype handler via xdg-mime
     let status = std::process::Command::new("xdg-mime")
-        .args(&["default", "lunaris-client.desktop", "x-scheme-handler/lunaris"])
+        .args(&[
+            "default",
+            "lunaris-client.desktop",
+            "x-scheme-handler/lunaris",
+        ])
         .status();
 
     match status {

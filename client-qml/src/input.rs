@@ -5,34 +5,32 @@ pub fn map_qt_key_to_vk(key: i32) -> u16 {
     if key >= 0x20 && key <= 0x7e {
         return key as u16;
     }
-    
+
     match key {
-        0x01000003 => 8,   // Backspace
-        0x01000001 => 9,   // Tab
-        0x01000004 | 0x01000005 => 13,  // Return / Enter
-        0x01000020 => 16,  // Shift
-        0x01000021 => 17,  // Control
-        0x01000023 => 18,  // Alt
-        0x01000008 => 19,  // Pause
-        0x01000024 => 20,  // CapsLock
-        0x01000000 => 27,  // Escape
-        0x01000016 => 33,  // PageUp
-        0x01000017 => 34,  // PageDown
-        0x01000011 => 35,  // End
-        0x01000010 => 36,  // Home
-        0x01000012 => 37,  // Left
-        0x01000013 => 38,  // Up
-        0x01000014 => 39,  // Right
-        0x01000015 => 40,  // Down
-        0x01000009 => 44,  // PrintScreen
-        0x01000006 => 45,  // Insert
-        0x01000007 => 46,  // Delete
-        0x01000022 => 91,  // Meta (Windows / Command key)
-        
+        0x01000003 => 8,               // Backspace
+        0x01000001 => 9,               // Tab
+        0x01000004 | 0x01000005 => 13, // Return / Enter
+        0x01000020 => 16,              // Shift
+        0x01000021 => 17,              // Control
+        0x01000023 => 18,              // Alt
+        0x01000008 => 19,              // Pause
+        0x01000024 => 20,              // CapsLock
+        0x01000000 => 27,              // Escape
+        0x01000016 => 33,              // PageUp
+        0x01000017 => 34,              // PageDown
+        0x01000011 => 35,              // End
+        0x01000010 => 36,              // Home
+        0x01000012 => 37,              // Left
+        0x01000013 => 38,              // Up
+        0x01000014 => 39,              // Right
+        0x01000015 => 40,              // Down
+        0x01000009 => 44,              // PrintScreen
+        0x01000006 => 45,              // Insert
+        0x01000007 => 46,              // Delete
+        0x01000022 => 91,              // Meta (Windows / Command key)
+
         // F1 to F12
-        k if k >= 0x01000030 && k <= 0x0100003b => {
-            (112 + (k - 0x01000030)) as u16
-        }
+        k if k >= 0x01000030 && k <= 0x0100003b => (112 + (k - 0x01000030)) as u16,
         _ => 0,
     }
 }
@@ -43,12 +41,7 @@ pub struct InputSenders {
     pub mouse_rel: tokio::sync::mpsc::UnboundedSender<Bytes>,
 }
 
-pub fn handle_key_event(
-    key: i32,
-    modifiers_mask: i32,
-    is_down: bool,
-    senders: &InputSenders,
-) {
+pub fn handle_key_event(key: i32, modifiers_mask: i32, is_down: bool, senders: &InputSenders) {
     let vk = map_qt_key_to_vk(key);
     if vk > 0 {
         let mut modifiers = 0u8;
@@ -69,7 +62,7 @@ pub fn handle_key_event(
         if (modifiers_mask & 0x10000000) != 0 {
             modifiers |= 8;
         }
-        
+
         let mut buf = vec![0u8; 5];
         buf[0] = 0; // Type 0: Key Event
         buf[1] = if is_down { 1 } else { 0 };
@@ -80,11 +73,9 @@ pub fn handle_key_event(
     }
 }
 
-static START_TIME: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
-
 pub fn get_client_timestamp() -> u32 {
-    let start = START_TIME.get_or_init(std::time::Instant::now);
-    start.elapsed().as_millis() as u32
+    static SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
 }
 
 pub fn handle_mouse_move(
@@ -117,11 +108,7 @@ pub fn handle_mouse_move(
     }
 }
 
-pub fn handle_mouse_click(
-    button: i32,
-    is_down: bool,
-    senders: &InputSenders,
-) {
+pub fn handle_mouse_click(button: i32, is_down: bool, senders: &InputSenders) {
     if button > 0 {
         let mut buf = vec![0u8; 3];
         buf[0] = 2; // Type 2: Mouse Button Event
@@ -131,10 +118,7 @@ pub fn handle_mouse_click(
     }
 }
 
-pub fn handle_mouse_wheel(
-    delta: i32,
-    senders: &InputSenders,
-) {
+pub fn handle_mouse_wheel(delta: i32, senders: &InputSenders) {
     let mut buf = vec![0u8; 3];
     buf[0] = 4; // Type 4: Scroll Event
     buf[1] = 0;

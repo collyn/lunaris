@@ -1,7 +1,3 @@
-use std::sync::Arc;
-use std::fs;
-use std::path::PathBuf;
-use serde::{Serialize, Deserialize};
 use moonlight_common::{
     crypto::openssl::OpenSSLCryptoBackend,
     high::tokio::MoonlightHost,
@@ -10,6 +6,10 @@ use moonlight_common::{
         pair::{PairPin, PairingCryptoBackend},
     },
 };
+use serde::{Deserialize, Serialize};
+use std::fs;
+use std::path::PathBuf;
+use std::sync::Arc;
 use uuid::Uuid;
 
 fn default_server_url() -> String {
@@ -85,20 +85,22 @@ pub fn import_config_file(imported_path: &str, target_path: &str) -> Result<(), 
     Ok(())
 }
 
-
 pub fn auto_pair_local_sunshine(
     client_name: &str,
     config_path: &str,
     cli_server_url: Option<String>,
 ) -> Result<AgentConfig, anyhow::Error> {
-    let sunshine_dir = get_sunshine_dir().ok_or_else(|| anyhow::anyhow!("Could not locate configuration directory"))?;
+    let sunshine_dir = get_sunshine_dir()
+        .ok_or_else(|| anyhow::anyhow!("Could not locate configuration directory"))?;
     if !sunshine_dir.exists() {
         fs::create_dir_all(&sunshine_dir)?;
     }
 
     // 1. Load or Generate Agent config (keys/cert)
     let mut config = if let Ok(mut existing_config) = load_config(config_path) {
-        if existing_config.client_private_key.is_empty() || existing_config.client_certificate.is_empty() {
+        if existing_config.client_private_key.is_empty()
+            || existing_config.client_certificate.is_empty()
+        {
             let crypto_provider = Arc::new(OpenSSLCryptoBackend);
             let (client_identifier, client_secret) = crypto_provider.generate_client_identity()?;
             existing_config.client_private_key = client_secret.to_pem().to_string();
@@ -112,10 +114,10 @@ pub fn auto_pair_local_sunshine(
         let client_unique_id = Uuid::new_v4().to_string().to_uppercase();
         let crypto_provider = Arc::new(OpenSSLCryptoBackend);
         let (client_identifier, client_secret) = crypto_provider.generate_client_identity()?;
-        
+
         let client_private_key = client_secret.to_pem().to_string();
         let client_certificate = client_identifier.to_pem().to_string();
-        
+
         AgentConfig {
             client_unique_id,
             client_private_key,
@@ -166,7 +168,9 @@ pub fn auto_pair_local_sunshine(
     let mut needs_write = false;
     if let Some(idx) = found_idx {
         let dev = &mut devices[idx];
-        if dev["cert"].as_str() != Some(&config.client_certificate) || dev["name"].as_str() != Some(client_name) {
+        if dev["cert"].as_str() != Some(&config.client_certificate)
+            || dev["name"].as_str() != Some(client_name)
+        {
             dev["cert"] = serde_json::json!(config.client_certificate);
             dev["name"] = serde_json::json!(client_name);
             needs_write = true;
@@ -201,7 +205,6 @@ pub fn auto_pair_local_sunshine(
     Ok(updated_config)
 }
 
-
 pub async fn perform_pairing(
     ip: &str,
     port: u16,
@@ -214,10 +217,18 @@ pub async fn perform_pairing(
     if pin_chars.len() != 4 {
         return Err(anyhow::anyhow!("PIN must be exactly 4 digits"));
     }
-    let n1 = pin_chars[0].to_digit(10).ok_or_else(|| anyhow::anyhow!("Invalid PIN digit"))? as u8;
-    let n2 = pin_chars[1].to_digit(10).ok_or_else(|| anyhow::anyhow!("Invalid PIN digit"))? as u8;
-    let n3 = pin_chars[2].to_digit(10).ok_or_else(|| anyhow::anyhow!("Invalid PIN digit"))? as u8;
-    let n4 = pin_chars[3].to_digit(10).ok_or_else(|| anyhow::anyhow!("Invalid PIN digit"))? as u8;
+    let n1 = pin_chars[0]
+        .to_digit(10)
+        .ok_or_else(|| anyhow::anyhow!("Invalid PIN digit"))? as u8;
+    let n2 = pin_chars[1]
+        .to_digit(10)
+        .ok_or_else(|| anyhow::anyhow!("Invalid PIN digit"))? as u8;
+    let n3 = pin_chars[2]
+        .to_digit(10)
+        .ok_or_else(|| anyhow::anyhow!("Invalid PIN digit"))? as u8;
+    let n4 = pin_chars[3]
+        .to_digit(10)
+        .ok_or_else(|| anyhow::anyhow!("Invalid PIN digit"))? as u8;
 
     let pin = PairPin::new(n1, n2, n3, n4)
         .ok_or_else(|| anyhow::anyhow!("Invalid PIN (digits must be 0-9)"))?;
@@ -245,7 +256,10 @@ pub async fn perform_pairing(
     )
     .await?;
 
-    let (_, _, server_identifier) = host.identity().await.ok_or_else(|| anyhow::anyhow!("No identity found"))?;
+    let (_, _, server_identifier) = host
+        .identity()
+        .await
+        .ok_or_else(|| anyhow::anyhow!("No identity found"))?;
 
     // Convert to PEM strings
     let client_private_key = client_secret.to_pem().to_string();
@@ -299,4 +313,3 @@ pub async fn query_sunshine_codec_support(
     let support = host.server_codec_mode_support().await?;
     Ok(support.bits())
 }
-

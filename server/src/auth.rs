@@ -8,7 +8,8 @@ use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 
 static JWT_SECRET: Lazy<String> = Lazy::new(|| {
-    std::env::var("JWT_SECRET").unwrap_or_else(|_| "lunaris-dev-secret-change-in-production".to_string())
+    std::env::var("JWT_SECRET")
+        .unwrap_or_else(|_| "lunaris-dev-secret-change-in-production".to_string())
 });
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -27,7 +28,11 @@ pub fn verify_password(password: &str, hash: &str) -> bool {
     bcrypt::verify(password, hash).unwrap_or(false)
 }
 
-pub fn create_jwt(user_id: &str, username: &str, role: &str) -> Result<String, jsonwebtoken::errors::Error> {
+pub fn create_jwt(
+    user_id: &str,
+    username: &str,
+    role: &str,
+) -> Result<String, jsonwebtoken::errors::Error> {
     let expiration = chrono::Utc::now()
         .checked_add_signed(chrono::Duration::days(7))
         .expect("valid timestamp")
@@ -56,8 +61,8 @@ pub fn verify_jwt(token: &str) -> Result<Claims, jsonwebtoken::errors::Error> {
     Ok(token_data.claims)
 }
 
-use std::sync::Arc;
 use crate::signaling::SignalingState;
+use std::sync::Arc;
 
 #[allow(dead_code)]
 pub struct AuthenticatedUser {
@@ -70,7 +75,10 @@ pub struct AuthenticatedUser {
 impl FromRequestParts<Arc<SignalingState>> for AuthenticatedUser {
     type Rejection = (StatusCode, &'static str);
 
-    async fn from_request_parts(parts: &mut Parts, state: &Arc<SignalingState>) -> Result<Self, Self::Rejection> {
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &Arc<SignalingState>,
+    ) -> Result<Self, Self::Rejection> {
         let auth_header = parts
             .headers
             .get("Authorization")
@@ -78,21 +86,25 @@ impl FromRequestParts<Arc<SignalingState>> for AuthenticatedUser {
             .ok_or((StatusCode::UNAUTHORIZED, "Missing Authorization Header"))?;
 
         if !auth_header.starts_with("Bearer ") {
-            return Err((StatusCode::UNAUTHORIZED, "Invalid Authorization Header Format"));
+            return Err((
+                StatusCode::UNAUTHORIZED,
+                "Invalid Authorization Header Format",
+            ));
         }
 
         let token = &auth_header[7..];
         let claims = verify_jwt(token).map_err(|_| (StatusCode::UNAUTHORIZED, "Invalid Token"))?;
 
         // Verify that the user exists in the database and fetch role
-        let row: Option<(String, String)> = sqlx::query_as("SELECT id, role FROM users WHERE id = ?")
-            .bind(&claims.sub)
-            .fetch_optional(&state.db)
-            .await
-            .map_err(|e| {
-                tracing::error!("Database verification error: {:?}", e);
-                (StatusCode::INTERNAL_SERVER_ERROR, "Database Error")
-            })?;
+        let row: Option<(String, String)> =
+            sqlx::query_as("SELECT id, role FROM users WHERE id = ?")
+                .bind(&claims.sub)
+                .fetch_optional(&state.db)
+                .await
+                .map_err(|e| {
+                    tracing::error!("Database verification error: {:?}", e);
+                    (StatusCode::INTERNAL_SERVER_ERROR, "Database Error")
+                })?;
 
         match row {
             Some((id, role)) => Ok(AuthenticatedUser {
@@ -115,7 +127,10 @@ pub struct AdminUser {
 impl FromRequestParts<Arc<SignalingState>> for AdminUser {
     type Rejection = (StatusCode, &'static str);
 
-    async fn from_request_parts(parts: &mut Parts, state: &Arc<SignalingState>) -> Result<Self, Self::Rejection> {
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &Arc<SignalingState>,
+    ) -> Result<Self, Self::Rejection> {
         let user = AuthenticatedUser::from_request_parts(parts, state).await?;
         if user.role != "admin" {
             return Err((StatusCode::FORBIDDEN, "Admin access required"));

@@ -4,12 +4,56 @@ import QtQuick.Controls
 Rectangle {
     id: settingsRoot
     width: 480
-    height: 570
+    height: 630
     radius: 16
     color: Qt.rgba(11/255, 17/255, 32/255, 0.96)
     border.color: Qt.rgba(0, 240/255, 255/255, 0.35)
     border.width: 1
     visible: false
+
+    property var fpsPresets: getSupportedFpsPresets()
+
+    function getSupportedFpsPresets() {
+        var maxRate = (Screen && Screen.refreshRate > 0) ? Math.ceil(Screen.refreshRate) : 60;
+        var allPresets = [240, 144, 120, 90, 60, 30];
+        var filtered = [];
+        
+        var insertedExact = false;
+        for (var i = 0; i < allPresets.length; i++) {
+            var preset = allPresets[i];
+            if (preset <= maxRate) {
+                if (!insertedExact && Math.abs(maxRate - preset) > 5 && maxRate > preset) {
+                    filtered.push(maxRate);
+                    insertedExact = true;
+                }
+                filtered.push(preset);
+            }
+        }
+        
+        if (!insertedExact && maxRate > 30 && filtered.indexOf(maxRate) === -1) {
+            var inserted = false;
+            for (var j = 0; j < filtered.length; j++) {
+                if (maxRate > filtered[j]) {
+                    filtered.splice(j, 0, maxRate);
+                    inserted = true;
+                    break;
+                }
+            }
+            if (!inserted) {
+                filtered.push(maxRate);
+            }
+        }
+        
+        if (filtered.indexOf(60) === -1) filtered.push(60);
+        if (filtered.indexOf(30) === -1) filtered.push(30);
+        
+        filtered = filtered.filter(function(item, pos) {
+            return filtered.indexOf(item) === pos;
+        });
+        filtered.sort(function(a, b) { return b - a; });
+        
+        return filtered;
+    }
 
     // Multi-layered glow border for a premium glow/shadow effect
     Rectangle {
@@ -32,7 +76,7 @@ Rectangle {
     }
 
     // Signals
-    signal applySettings(string res, int fps, string codec, int bitrate, int queueLimit, bool disableCuda)
+    signal applySettings(string res, int fps, string codec, int bitrate, int queueLimit, bool disableCuda, string inputProtocol)
 
     function open() {
         settingsRoot.visible = true;
@@ -42,7 +86,7 @@ Rectangle {
         settingsRoot.visible = false;
     }
 
-    function setCurrentSettings(res, fps, codec, bitrate, queueLimit, disableCuda) {
+    function setCurrentSettings(res, fps, codec, bitrate, queueLimit, disableCuda, inputProtocol) {
         if (res.indexOf("1920") !== -1 || res.indexOf("1080") !== -1) {
             resCombo.currentIndex = 0;
         } else if (res.indexOf("1280") !== -1 || res.indexOf("720") !== -1) {
@@ -53,8 +97,8 @@ Rectangle {
 
         // Set FPS: check if value matches a preset, otherwise set custom
         var fpsVal = parseInt(fps);
-        var fpsPresets = [240, 144, 120, 90, 60, 30];
-        var foundIndex = fpsPresets.indexOf(fpsVal);
+        var presets = settingsRoot.fpsPresets;
+        var foundIndex = presets.indexOf(fpsVal);
         if (foundIndex !== -1) {
             fpsCombo.currentIndex = foundIndex;
         } else {
@@ -84,6 +128,12 @@ Rectangle {
         else if (qlVal === 4096) queueCombo.currentIndex = 4;
         else if (qlVal === 16384) queueCombo.currentIndex = 5;
         else queueCombo.currentIndex = 2; // Default to 256
+
+        if (inputProtocol === "webtransport") {
+            protocolCombo.currentIndex = 1;
+        } else {
+            protocolCombo.currentIndex = 0;
+        }
     }
 
     // Modal overlay blocker
@@ -225,8 +275,8 @@ Rectangle {
                 id: fpsCombo
                 width: parent.width
                 height: parent.height
-                model: ["240", "144", "120", "90", "60", "30"]
-                currentIndex: 4
+                model: settingsRoot.fpsPresets.map(function(val) { return String(val); })
+                currentIndex: settingsRoot.fpsPresets.indexOf(60) !== -1 ? settingsRoot.fpsPresets.indexOf(60) : 0
                 editable: false
 
                 onActivated: {
@@ -263,7 +313,7 @@ Rectangle {
                     // Update combobox selection when user types a preset value
                     onTextChanged: {
                         var val = parseInt(text);
-                        var presets = [240, 144, 120, 90, 60, 30];
+                        var presets = settingsRoot.fpsPresets;
                         var idx = presets.indexOf(val);
                         if (idx !== -1 && fpsCombo.currentIndex !== idx) {
                             fpsCombo.currentIndex = idx;
@@ -563,6 +613,66 @@ Rectangle {
                 }
             }
         }
+
+        // Input Protocol
+        Text { text: "Input Protocol:"; color: "#cbd5e1"; font.pixelSize: 13; font.bold: true; width: 120 }
+        ComboBox {
+            id: protocolCombo
+            width: 260
+            model: ["WebRTC Data Channel (SCTP)", "WebTransport (QUIC Datagrams)"]
+            currentIndex: 0
+
+            delegate: ItemDelegate {
+                width: protocolCombo.width
+                contentItem: Text {
+                    text: modelData
+                    color: protocolCombo.highlightedIndex === index ? "#ffffff" : "#cbd5e1"
+                    font.pixelSize: 13
+                    verticalAlignment: Text.AlignVCenter
+                }
+                background: Rectangle {
+                    color: protocolCombo.highlightedIndex === index ? "#4f46e5" : "transparent"
+                }
+                highlighted: protocolCombo.highlightedIndex === index
+            }
+
+            contentItem: Text {
+                leftPadding: 12
+                text: protocolCombo.displayText
+                font.pixelSize: 13
+                color: "#ffffff"
+                verticalAlignment: Text.AlignVCenter
+            }
+
+            background: Rectangle {
+                implicitHeight: 38
+                color: "#0f1626"
+                border.color: protocolCombo.activeFocus ? "#00f0ff" : Qt.rgba(1, 1, 1, 0.08)
+                border.width: 1
+                radius: 8
+            }
+
+            popup: Popup {
+                y: protocolCombo.height + 4
+                width: protocolCombo.width
+                implicitHeight: contentItem.implicitHeight
+                padding: 1
+
+                contentItem: ListView {
+                    clip: true
+                    implicitHeight: contentHeight
+                    model: protocolCombo.popup.visible ? protocolCombo.delegateModel : null
+                    currentIndex: protocolCombo.highlightedIndex
+                }
+
+                background: Rectangle {
+                    color: "#0f1626"
+                    border.color: Qt.rgba(1, 1, 1, 0.15)
+                    border.width: 1
+                    radius: 8
+                }
+            }
+        }
     }
 
     // Button Row
@@ -621,8 +731,9 @@ Rectangle {
                 else if (queueCombo.currentIndex === 5) queueLimit = 16384
 
                 var disableCuda = (decoderCombo.currentIndex === 1);
+                var inputProtocol = (protocolCombo.currentIndex === 1) ? "webtransport" : "webrtc"
 
-                settingsRoot.applySettings(selectedRes, fps, codec, bitrate, queueLimit, disableCuda);
+                settingsRoot.applySettings(selectedRes, fps, codec, bitrate, queueLimit, disableCuda, inputProtocol);
                 settingsRoot.close();
             }
             background: Rectangle {

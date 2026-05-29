@@ -191,9 +191,7 @@ pub async fn create_user(
 
     info!("Admin created user: {}", payload.username);
 
-    let user_info = fetch_user_info(&state.db, &user_id)
-        .await?
-        .unwrap();
+    let user_info = fetch_user_info(&state.db, &user_id).await?.unwrap();
 
     Ok((StatusCode::CREATED, Json(user_info)))
 }
@@ -322,9 +320,7 @@ pub async fn update_user(
 
     info!("Admin updated user: {}", user_id);
 
-    let user_info = fetch_user_info(&state.db, &user_id)
-        .await?
-        .unwrap();
+    let user_info = fetch_user_info(&state.db, &user_id).await?.unwrap();
 
     Ok((StatusCode::OK, Json(user_info)))
 }
@@ -414,18 +410,17 @@ pub async fn list_groups(
     _admin: AdminUser,
     State(state): State<Arc<SignalingState>>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    let rows: Vec<(String, String, String)> = sqlx::query_as(
-        "SELECT id, name, COALESCE(note, '') FROM groups",
-    )
-    .fetch_all(&state.db)
-    .await
-    .map_err(|e| {
-        error!("Database error: {}", e);
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({ "error": "Internal Database Error" })),
-        )
-    })?;
+    let rows: Vec<(String, String, String)> =
+        sqlx::query_as("SELECT id, name, COALESCE(note, '') FROM groups")
+            .fetch_all(&state.db)
+            .await
+            .map_err(|e| {
+                error!("Database error: {}", e);
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({ "error": "Internal Database Error" })),
+                )
+            })?;
 
     let mut groups = Vec::new();
     for (id, name, note) in rows {
@@ -483,19 +478,21 @@ pub async fn create_group(
     let group_id = Uuid::new_v4().to_string();
     let note = payload.note.unwrap_or_default();
 
-    sqlx::query("INSERT INTO groups (id, name, note, created_at) VALUES (?, ?, ?, datetime('now'))")
-        .bind(&group_id)
-        .bind(&payload.name)
-        .bind(&note)
-        .execute(&state.db)
-        .await
-        .map_err(|e| {
-            error!("Database error: {}", e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({ "error": "Failed to create group" })),
-            )
-        })?;
+    sqlx::query(
+        "INSERT INTO groups (id, name, note, created_at) VALUES (?, ?, ?, datetime('now'))",
+    )
+    .bind(&group_id)
+    .bind(&payload.name)
+    .bind(&note)
+    .execute(&state.db)
+    .await
+    .map_err(|e| {
+        error!("Database error: {}", e);
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": "Failed to create group" })),
+        )
+    })?;
 
     info!("Admin created group: {}", payload.name);
 
@@ -635,22 +632,8 @@ pub async fn update_group(
     info!("Admin updated group: {}", group_id);
 
     // Fetch updated group info
-    let row: (String, String, String) = sqlx::query_as(
-        "SELECT id, name, COALESCE(note, '') FROM groups WHERE id = ?",
-    )
-    .bind(&group_id)
-    .fetch_one(&state.db)
-    .await
-    .map_err(|e| {
-        error!("Database error: {}", e);
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({ "error": "Internal Database Error" })),
-        )
-    })?;
-
-    let user_count: (i64,) =
-        sqlx::query_as("SELECT COUNT(*) FROM user_groups WHERE group_id = ?")
+    let row: (String, String, String) =
+        sqlx::query_as("SELECT id, name, COALESCE(note, '') FROM groups WHERE id = ?")
             .bind(&group_id)
             .fetch_one(&state.db)
             .await
@@ -662,18 +645,29 @@ pub async fn update_group(
                 )
             })?;
 
-    let host_count: (i64,) =
-        sqlx::query_as("SELECT COUNT(*) FROM host_groups WHERE group_id = ?")
-            .bind(&group_id)
-            .fetch_one(&state.db)
-            .await
-            .map_err(|e| {
-                error!("Database error: {}", e);
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({ "error": "Internal Database Error" })),
-                )
-            })?;
+    let user_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM user_groups WHERE group_id = ?")
+        .bind(&group_id)
+        .fetch_one(&state.db)
+        .await
+        .map_err(|e| {
+            error!("Database error: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": "Internal Database Error" })),
+            )
+        })?;
+
+    let host_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM host_groups WHERE group_id = ?")
+        .bind(&group_id)
+        .fetch_one(&state.db)
+        .await
+        .map_err(|e| {
+            error!("Database error: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": "Internal Database Error" })),
+            )
+        })?;
 
     Ok((
         StatusCode::OK,
@@ -793,13 +787,15 @@ pub async fn list_turn_servers(
 
     let servers: Vec<common::TurnServer> = rows
         .into_iter()
-        .map(|(id, urls, username, credential, created_at)| common::TurnServer {
-            id,
-            urls,
-            username,
-            credential,
-            created_at,
-        })
+        .map(
+            |(id, urls, username, credential, created_at)| common::TurnServer {
+                id,
+                urls,
+                username,
+                credential,
+                created_at,
+            },
+        )
         .collect();
 
     Ok((StatusCode::OK, Json(servers)))
@@ -836,8 +832,14 @@ pub async fn create_turn_server(
         })?;
 
     // Fetch the newly created record to get the default created_at value
-    let created: (String, String, Option<String>, Option<String>, Option<String>) = sqlx::query_as(
-        "SELECT id, urls, username, credential, created_at FROM turn_servers WHERE id = ?"
+    let created: (
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    ) = sqlx::query_as(
+        "SELECT id, urls, username, credential, created_at FROM turn_servers WHERE id = ?",
     )
     .bind(&server_id)
     .fetch_one(&state.db)

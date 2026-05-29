@@ -131,7 +131,9 @@ static int g_centerX = 640;
 static int g_centerY = 360;
 static int g_globalCenterX = 640;
 static int g_globalCenterY = 360;
-static bool g_ignoreNextWarp = false;
+static int g_lastGlobalX = 640;
+static int g_lastGlobalY = 360;
+static int g_pendingWarps = 0;
 
 static int getButtonCode(Qt::MouseButton btn) {
     if (btn == Qt::LeftButton) return 1;
@@ -178,12 +180,12 @@ public:
                             if ((flags & MOUSE_MOVE_ABSOLUTE) == 0) {
                                 if (rx != 0 || ry != 0) {
                                     QMetaObject::invokeMethod(g_streamBridge, "sendMouseMove",
-                                                              Q_ARG(int, 0),
-                                                              Q_ARG(int, 0),
-                                                              Q_ARG(int, g_windowWidth),
-                                                              Q_ARG(int, g_windowHeight),
-                                                              Q_ARG(int, rx),
-                                                              Q_ARG(int, ry),
+                                                              Q_ARG(::std::int32_t, 0),
+                                                              Q_ARG(::std::int32_t, 0),
+                                                              Q_ARG(::std::int32_t, g_windowWidth),
+                                                              Q_ARG(::std::int32_t, g_windowHeight),
+                                                              Q_ARG(::std::int32_t, rx),
+                                                              Q_ARG(::std::int32_t, ry),
                                                               Q_ARG(bool, true));
                                 }
                             }
@@ -215,6 +217,8 @@ protected:
                 if (!windows.isEmpty()) window = windows.first();
             }
             if (window) {
+                int oldGlobalX = g_globalCenterX;
+                int oldGlobalY = g_globalCenterY;
                 g_windowWidth = window->width();
                 g_windowHeight = window->height();
                 g_centerX = g_windowWidth / 2;
@@ -222,6 +226,12 @@ protected:
                 QPoint gCenter = window->mapToGlobal(QPoint(g_centerX, g_centerY));
                 g_globalCenterX = gCenter.x();
                 g_globalCenterY = gCenter.y();
+
+                if (g_globalCenterX != oldGlobalX || g_globalCenterY != oldGlobalY) {
+                    g_lastGlobalX = g_globalCenterX;
+                    g_lastGlobalY = g_globalCenterY;
+                    g_pendingWarps = 0;
+                }
             }
 
 #if defined(Q_OS_WIN)
@@ -234,29 +244,36 @@ protected:
             }
             return true; // Consume the event so QML doesn't process it
 #else
-            // On Linux/macOS, measure mouse delta relative to window center,
-            // send relative move, and synchronously warp the cursor back.
-            if (g_ignoreNextWarp) {
-                if (std::abs(me->position().x() - g_centerX) < 2 && std::abs(me->position().y() - g_centerY) < 2) {
-                    g_ignoreNextWarp = false;
-                    return true;
-                }
+            // On Linux/macOS, measure mouse delta using global coordinates
+            // to avoid warp-loop feedback and double-counting during fast movements.
+            int gx = std::round(me->globalPosition().x());
+            int gy = std::round(me->globalPosition().y());
+
+            // Check if this matches a warp event
+            if (gx == g_globalCenterX && gy == g_globalCenterY && g_pendingWarps > 0) {
+                g_pendingWarps--;
+                g_lastGlobalX = g_globalCenterX;
+                g_lastGlobalY = g_globalCenterY;
+                return true;
             }
 
-            int rx = me->position().x() - g_centerX;
-            int ry = me->position().y() - g_centerY;
+            int rx = gx - g_lastGlobalX;
+            int ry = gy - g_lastGlobalY;
+
+            g_lastGlobalX = gx;
+            g_lastGlobalY = gy;
 
             if (rx != 0 || ry != 0) {
                 QMetaObject::invokeMethod(g_streamBridge, "sendMouseMove",
-                                          Q_ARG(int, (int)me->position().x()),
-                                          Q_ARG(int, (int)me->position().y()),
-                                          Q_ARG(int, g_windowWidth),
-                                          Q_ARG(int, g_windowHeight),
-                                          Q_ARG(int, rx),
-                                          Q_ARG(int, ry),
+                                          Q_ARG(::std::int32_t, (::std::int32_t)me->position().x()),
+                                          Q_ARG(::std::int32_t, (::std::int32_t)me->position().y()),
+                                          Q_ARG(::std::int32_t, g_windowWidth),
+                                          Q_ARG(::std::int32_t, g_windowHeight),
+                                          Q_ARG(::std::int32_t, rx),
+                                          Q_ARG(::std::int32_t, ry),
                                           Q_ARG(bool, true));
 
-                g_ignoreNextWarp = true;
+                g_pendingWarps++;
                 QCursor::setPos(g_globalCenterX, g_globalCenterY);
             }
             return true;
@@ -266,7 +283,7 @@ protected:
         if (event->type() == QEvent::MouseButtonPress) {
             QMouseEvent* me = static_cast<QMouseEvent*>(event);
             QMetaObject::invokeMethod(g_streamBridge, "sendMouseClick",
-                                      Q_ARG(int, getButtonCode(me->button())),
+                                      Q_ARG(::std::int32_t, getButtonCode(me->button())),
                                       Q_ARG(bool, true));
             return true;
         }
@@ -274,7 +291,7 @@ protected:
         if (event->type() == QEvent::MouseButtonRelease) {
             QMouseEvent* me = static_cast<QMouseEvent*>(event);
             QMetaObject::invokeMethod(g_streamBridge, "sendMouseClick",
-                                      Q_ARG(int, getButtonCode(me->button())),
+                                      Q_ARG(::std::int32_t, getButtonCode(me->button())),
                                       Q_ARG(bool, false));
             return true;
         }
@@ -282,7 +299,7 @@ protected:
         if (event->type() == QEvent::Wheel) {
             QWheelEvent* we = static_cast<QWheelEvent*>(event);
             QMetaObject::invokeMethod(g_streamBridge, "sendMouseWheel",
-                                      Q_ARG(int, we->angleDelta().y()));
+                                      Q_ARG(::std::int32_t, we->angleDelta().y()));
             return true;
         }
 
@@ -329,7 +346,9 @@ void set_pointer_locked_helper(bool locked) {
             g_globalCenterY = gCenter.y();
 
             // Initial warp
-            g_ignoreNextWarp = true;
+            g_lastGlobalX = g_globalCenterX;
+            g_lastGlobalY = g_globalCenterY;
+            g_pendingWarps = 1;
             QCursor::setPos(g_globalCenterX, g_globalCenterY);
 
 #if defined(Q_OS_WIN)
@@ -354,6 +373,6 @@ void set_pointer_locked_helper(bool locked) {
             QGuiApplication::instance()->removeNativeEventFilter(g_nativeEventFilter);
         }
 #endif
-        g_ignoreNextWarp = false;
+        g_pendingWarps = 0;
     }
 }

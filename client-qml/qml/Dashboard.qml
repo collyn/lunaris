@@ -13,7 +13,7 @@ Rectangle {
     property string username: ""
     property string serverUrl: ""
 
-    signal startSessionRequested(string server, string token, string hostId, string hostName, int appId, string res, int fps, string codec, int bitrate, int queueLimit, bool disableCuda)
+    signal startSessionRequested(string server, string token, string hostId, string hostName, int appId, string res, int fps, string codec, int bitrate, int queueLimit, bool disableCuda, string inputProtocol)
 
     // Internal UI state properties
     property bool isLoggedIn: false
@@ -38,6 +38,7 @@ Rectangle {
     property int configBitrate: 8000
     property int configQueueLimit: 256
     property bool configDisableCuda: false
+    property string configInputProtocol: "webrtc"
 
     // Add device pairing page state
     property bool showPairingPage: false
@@ -794,9 +795,10 @@ Rectangle {
                                                 dashboardRoot.configBitrate = 8000;
                                                 dashboardRoot.configQueueLimit = 256;
                                                 dashboardRoot.configDisableCuda = false;
+                                                dashboardRoot.configInputProtocol = "webrtc";
                                             }
                                             dashboardRoot.activeConfigHost = modelData;
-                                            settingsModal.setCurrentSettings(dashboardRoot.configRes, dashboardRoot.configFps, dashboardRoot.configCodec, dashboardRoot.configBitrate, dashboardRoot.configQueueLimit, dashboardRoot.configDisableCuda);
+                                            settingsModal.setCurrentSettings(dashboardRoot.configRes, dashboardRoot.configFps, dashboardRoot.configCodec, dashboardRoot.configBitrate, dashboardRoot.configQueueLimit, dashboardRoot.configDisableCuda, dashboardRoot.configInputProtocol);
                                             settingsModal.open();
                                         }
                                         background: Rectangle {
@@ -1446,7 +1448,8 @@ Rectangle {
                                     dashboardRoot.configCodec,
                                     dashboardRoot.configBitrate,
                                     dashboardRoot.configQueueLimit,
-                                    dashboardRoot.configDisableCuda
+                                    dashboardRoot.configDisableCuda,
+                                    dashboardRoot.configInputProtocol
                                 );
                             }
                         }
@@ -1614,7 +1617,8 @@ Rectangle {
                                             dashboardRoot.configCodec,
                                             dashboardRoot.configBitrate,
                                             dashboardRoot.configQueueLimit,
-                                            dashboardRoot.configDisableCuda
+                                            dashboardRoot.configDisableCuda,
+                                            dashboardRoot.configInputProtocol
                                         );
                                     }
                                 }
@@ -1640,13 +1644,14 @@ Rectangle {
         anchors.centerIn: parent
         z: 1000
 
-        onApplySettings: (res, fps, codec, bitrate, queueLimit, disableCuda) => {
+        onApplySettings: (res, fps, codec, bitrate, queueLimit, disableCuda, inputProtocol) => {
             dashboardRoot.configRes = res;
             dashboardRoot.configFps = fps;
             dashboardRoot.configCodec = codec;
             dashboardRoot.configBitrate = bitrate;
             dashboardRoot.configQueueLimit = queueLimit;
             dashboardRoot.configDisableCuda = disableCuda;
+            dashboardRoot.configInputProtocol = inputProtocol;
         }
     }
 }

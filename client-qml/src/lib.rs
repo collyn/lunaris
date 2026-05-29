@@ -1,18 +1,18 @@
-use tracing::{info, error, warn};
+use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream};
+use tracing::{error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use url::Url;
-use std::io::{Write, Read};
-use std::net::{TcpStream, TcpListener};
 
 use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QUrl};
 
-pub mod protocol;
-pub mod input;
 pub mod audio;
-pub mod decoder;
 pub mod bridge;
+pub mod decoder;
+pub mod input;
+pub mod protocol;
 
-use bridge::{AppArgs, APP_ARGS, PendingDashboardEvent};
+use bridge::{AppArgs, PendingDashboardEvent, APP_ARGS};
 
 pub fn parse_deeplink_url(url_str: &str) -> Option<AppArgs> {
     if !url_str.starts_with("lunaris://") {
@@ -22,7 +22,7 @@ pub fn parse_deeplink_url(url_str: &str) -> Option<AppArgs> {
         let mut host_id = String::new();
         let mut server_url = String::new();
         let mut token = String::new();
-        
+
         let mut width = 1920; // Default resolution
         let mut height = 1080;
         let mut fps = 60;
@@ -32,6 +32,7 @@ pub fn parse_deeplink_url(url_str: &str) -> Option<AppArgs> {
         let mut mouse_queue_limit = 256;
         let mut host_name = "Desktop • Host".to_string();
         let mut disable_cuda = false;
+        let mut input_protocol = "webrtc".to_string();
 
         for (k, v) in parsed_url.query_pairs() {
             match k.as_ref() {
@@ -39,6 +40,7 @@ pub fn parse_deeplink_url(url_str: &str) -> Option<AppArgs> {
                 "server" => server_url = v.into_owned(),
                 "token" => token = v.into_owned(),
                 "host_name" => host_name = v.into_owned(),
+                "input_protocol" => input_protocol = v.into_owned().to_lowercase(),
                 "app_id" => {
                     if let Ok(id) = v.parse::<u32>() {
                         app_id = Some(id);
@@ -83,7 +85,21 @@ pub fn parse_deeplink_url(url_str: &str) -> Option<AppArgs> {
         }
 
         if !host_id.is_empty() && !server_url.is_empty() && !token.is_empty() {
-            return Some(AppArgs { host_id, server_url, token, width, height, fps, bitrate, codec, app_id, mouse_queue_limit, host_name, disable_cuda });
+            return Some(AppArgs {
+                host_id,
+                server_url,
+                token,
+                width,
+                height,
+                fps,
+                bitrate,
+                codec,
+                app_id,
+                mouse_queue_limit,
+                host_name,
+                disable_cuda,
+                input_protocol,
+            });
         }
     }
     None
@@ -132,21 +148,27 @@ fn handle_single_instance() -> bool {
 
             if msg == "FOCUS" {
                 info!("Single-instance: Received FOCUS command");
-                bridge::PENDING_EVENTS.lock().unwrap().push(PendingDashboardEvent::DeepLinkReceived {
-                    url: "".to_string(),
-                });
+                bridge::PENDING_EVENTS.lock().unwrap().push(
+                    PendingDashboardEvent::DeepLinkReceived {
+                        url: "".to_string(),
+                    },
+                );
             } else if msg.starts_with("CONNECT ") {
                 let url = msg["CONNECT ".len()..].to_string();
-                info!("Single-instance: Received CONNECT command with url: {}", url);
-                
+                info!(
+                    "Single-instance: Received CONNECT command with url: {}",
+                    url
+                );
+
                 if let Some(args) = parse_deeplink_url(&url) {
                     let mut active_config_lock = bridge::ACTIVE_CONFIG.lock().unwrap();
                     *active_config_lock = Some(args);
                 }
 
-                bridge::PENDING_EVENTS.lock().unwrap().push(PendingDashboardEvent::DeepLinkReceived {
-                    url,
-                });
+                bridge::PENDING_EVENTS
+                    .lock()
+                    .unwrap()
+                    .push(PendingDashboardEvent::DeepLinkReceived { url });
             }
         }
     });
@@ -169,7 +191,7 @@ fn parse_args() -> Option<AppArgs> {
     let mut host_id = String::new();
     let mut server_url = String::new();
     let mut token = String::new();
-    
+
     let mut width = 1280; // Changed default window size to QML's preferred size 1280x720
     let mut height = 720;
     let mut fps = 60;
@@ -179,6 +201,7 @@ fn parse_args() -> Option<AppArgs> {
     let mut mouse_queue_limit = 256;
     let mut host_name = "Desktop • Host".to_string();
     let mut disable_cuda = false;
+    let mut input_protocol = "webrtc".to_string();
 
     let mut i = 1;
     while i < args.len() {
@@ -209,6 +232,10 @@ fn parse_args() -> Option<AppArgs> {
             }
             "--host-name" => {
                 host_name = args[i + 1].clone();
+                i += 2;
+            }
+            "--input-protocol" => {
+                input_protocol = args[i + 1].clone().to_lowercase();
                 i += 2;
             }
             "--app-id" => {
@@ -256,7 +283,21 @@ fn parse_args() -> Option<AppArgs> {
     }
 
     if !host_id.is_empty() && !server_url.is_empty() && !token.is_empty() {
-        Some(AppArgs { host_id, server_url, token, width, height, fps, bitrate, codec, app_id, mouse_queue_limit, host_name, disable_cuda })
+        Some(AppArgs {
+            host_id,
+            server_url,
+            token,
+            width,
+            height,
+            fps,
+            bitrate,
+            codec,
+            app_id,
+            mouse_queue_limit,
+            host_name,
+            disable_cuda,
+            input_protocol,
+        })
     } else {
         None
     }
@@ -276,7 +317,8 @@ pub fn run() {
     // Init standard tracing logger
     let _ = tracing_subscriber::registry()
         .with(tracing_subscriber::EnvFilter::new(
-            std::env::var("RUST_LOG").unwrap_or_else(|_| "info,client_qml=debug,bridge=debug".into()),
+            std::env::var("RUST_LOG")
+                .unwrap_or_else(|_| "info,client_qml=debug,bridge=debug".into()),
         ))
         .with(tracing_subscriber::fmt::layer())
         .try_init();
@@ -330,4 +372,3 @@ pub fn run() {
     // Clean up local agent if running
     bridge::stop_local_agent();
 }
-

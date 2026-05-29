@@ -24,7 +24,10 @@ fn main() {
             println!("cargo:warning=Successfully ran moc on src/gpu_video_item.h");
         }
         _ => {
-            panic!("Failed to execute Qt6 moc on src/gpu_video_item.h using path {}", moc_path);
+            panic!(
+                "Failed to execute Qt6 moc on src/gpu_video_item.h using path {}",
+                moc_path
+            );
         }
     }
 

@@ -1,7 +1,7 @@
-use std::sync::{Arc, Mutex};
-use std::pin::Pin;
 use bytes::Bytes;
 use cxx_qt::CxxQtType;
+use std::pin::Pin;
+use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone)]
 pub enum PendingDashboardEvent {
@@ -46,10 +46,10 @@ pub enum PendingDashboardEvent {
     DeepLinkReceived {
         url: String,
     },
-
 }
 
-pub static PENDING_EVENTS: std::sync::Mutex<Vec<PendingDashboardEvent>> = std::sync::Mutex::new(Vec::new());
+pub static PENDING_EVENTS: std::sync::Mutex<Vec<PendingDashboardEvent>> =
+    std::sync::Mutex::new(Vec::new());
 
 #[derive(Debug, Clone)]
 pub struct AppArgs {
@@ -65,6 +65,7 @@ pub struct AppArgs {
     pub mouse_queue_limit: u32,
     pub host_name: String,
     pub disable_cuda: bool,
+    pub input_protocol: String,
 }
 
 pub static APP_ARGS: std::sync::OnceLock<AppArgs> = std::sync::OnceLock::new();
@@ -167,7 +168,8 @@ fn clear_settings() {
     let _ = std::fs::remove_file(path);
 }
 
-pub static LOCAL_AGENT_CHILD: std::sync::Mutex<Option<std::process::Child>> = std::sync::Mutex::new(None);
+pub static LOCAL_AGENT_CHILD: std::sync::Mutex<Option<std::process::Child>> =
+    std::sync::Mutex::new(None);
 
 fn get_agent_config_path() -> std::path::PathBuf {
     let mut path = if let Ok(home) = std::env::var("HOME") {
@@ -187,7 +189,8 @@ fn prepare_agent_config(server_url: &str, server_token: &str) -> std::path::Path
     let path = get_agent_config_path();
     let mut config_json = if path.exists() {
         if let Ok(content) = std::fs::read_to_string(&path) {
-            serde_json::from_str::<serde_json::Value>(&content).unwrap_or_else(|_| serde_json::json!({}))
+            serde_json::from_str::<serde_json::Value>(&content)
+                .unwrap_or_else(|_| serde_json::json!({}))
         } else {
             serde_json::json!({})
         }
@@ -242,7 +245,12 @@ fn is_autostart_enabled_impl() -> bool {
     #[cfg(target_os = "windows")]
     {
         let output = std::process::Command::new("reg")
-            .args(&["query", "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run", "/v", "LunarisClient"])
+            .args(&[
+                "query",
+                "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+                "/v",
+                "LunarisClient",
+            ])
             .output();
         if let Ok(out) = output {
             return out.status.success();
@@ -351,10 +359,14 @@ pub mod qobject {
         #[rust_name = "deliver_yuv_frame"]
         unsafe fn deliver_yuv_frame(
             sink: *mut QVideoSink,
-            y_data: *const u8, y_stride: i32,
-            u_data: *const u8, u_stride: i32,
-            v_data: *const u8, v_stride: i32,
-            width: i32, height: i32,
+            y_data: *const u8,
+            y_stride: i32,
+            u_data: *const u8,
+            u_stride: i32,
+            v_data: *const u8,
+            v_stride: i32,
+            width: i32,
+            height: i32,
         );
 
         #[rust_name = "warp_cursor_helper"]
@@ -372,9 +384,12 @@ pub mod qobject {
         #[rust_name = "deliver_cuda_frame"]
         unsafe fn deliver_cuda_frame(
             cuda_ctx: u64,
-            y_ptr: u64, y_stride: i32,
-            uv_ptr: u64, uv_stride: i32,
-            width: i32, height: i32,
+            y_ptr: u64,
+            y_stride: i32,
+            uv_ptr: u64,
+            uv_stride: i32,
+            width: i32,
+            height: i32,
         );
 
         #[rust_name = "register_gpu_video_item_type"]
@@ -414,6 +429,7 @@ pub mod qobject {
             mouse_queue_limit: i32,
             host_name: QString,
             disable_cuda: bool,
+            input_protocol: QString,
         );
 
         #[qsignal]
@@ -426,8 +442,6 @@ pub mod qobject {
             server: QString,
         );
 
-
-
         #[qsignal]
         fn hosts_result(
             self: Pin<&mut StreamBridge>,
@@ -437,18 +451,10 @@ pub mod qobject {
         );
 
         #[qsignal]
-        fn pair_result(
-            self: Pin<&mut StreamBridge>,
-            success: bool,
-            error_msg: QString,
-        );
+        fn pair_result(self: Pin<&mut StreamBridge>, success: bool, error_msg: QString);
 
         #[qsignal]
-        fn unpair_result(
-            self: Pin<&mut StreamBridge>,
-            success: bool,
-            error_msg: QString,
-        );
+        fn unpair_result(self: Pin<&mut StreamBridge>, success: bool, error_msg: QString);
 
         #[qsignal]
         fn apps_result(
@@ -477,11 +483,7 @@ pub mod qobject {
         );
 
         #[qsignal]
-        fn deeplink_received(
-            self: Pin<&mut StreamBridge>,
-            url: QString,
-        );
-
+        fn deeplink_received(self: Pin<&mut StreamBridge>, url: QString);
 
         #[qinvokable]
         unsafe fn set_video_sink(self: Pin<&mut StreamBridge>, sink: *mut QVideoSink);
@@ -493,7 +495,16 @@ pub mod qobject {
         fn stop_stream(self: Pin<&mut StreamBridge>);
 
         #[qinvokable]
-        fn send_mouse_move(self: Pin<&mut StreamBridge>, x: i32, y: i32, width: i32, height: i32, rx: i32, ry: i32, pointer_locked: bool);
+        fn send_mouse_move(
+            self: Pin<&mut StreamBridge>,
+            x: i32,
+            y: i32,
+            width: i32,
+            height: i32,
+            rx: i32,
+            ry: i32,
+            pointer_locked: bool,
+        );
 
         #[qinvokable]
         fn send_mouse_click(self: Pin<&mut StreamBridge>, button: i32, is_down: bool);
@@ -514,7 +525,16 @@ pub mod qobject {
         fn set_pointer_locked(self: Pin<&mut StreamBridge>, locked: bool);
 
         #[qinvokable]
-        fn update_stream_config(self: Pin<&mut StreamBridge>, res: QString, fps: i32, codec: QString, bitrate: i32, mouse_queue_limit: i32, disable_cuda: bool);
+        fn update_stream_config(
+            self: Pin<&mut StreamBridge>,
+            res: QString,
+            fps: i32,
+            codec: QString,
+            bitrate: i32,
+            mouse_queue_limit: i32,
+            disable_cuda: bool,
+            input_protocol: QString,
+        );
 
         #[qinvokable]
         fn request_settings(self: Pin<&mut StreamBridge>);
@@ -535,8 +555,6 @@ pub mod qobject {
             username: QString,
             password: QString,
         );
-
-
 
         #[qinvokable]
         fn logout(self: Pin<&mut StreamBridge>);
@@ -573,6 +591,7 @@ pub mod qobject {
             bitrate: i32,
             mouse_queue_limit: i32,
             disable_cuda: bool,
+            input_protocol: QString,
         );
 
         #[qinvokable]
@@ -582,7 +601,12 @@ pub mod qobject {
         fn fetch_agent_token(self: Pin<&mut StreamBridge>, server: QString, token: QString);
 
         #[qinvokable]
-        fn start_local_agent(self: Pin<&mut StreamBridge>, server: QString, token: QString, name: QString);
+        fn start_local_agent(
+            self: Pin<&mut StreamBridge>,
+            server: QString,
+            token: QString,
+            name: QString,
+        );
 
         #[qinvokable]
         fn stop_local_agent(self: Pin<&mut StreamBridge>);
@@ -604,10 +628,8 @@ pub mod qobject {
     }
 }
 
-
-
-use qobject::deliver_yuv_frame;
 use cxx_qt_lib::QString;
+use qobject::deliver_yuv_frame;
 
 impl qobject::StreamBridge {
     pub unsafe fn set_video_sink(mut self: Pin<&mut Self>, sink: *mut qobject::QVideoSink) {
@@ -667,6 +689,7 @@ impl qobject::StreamBridge {
         let codec_str = args.codec.clone();
         let app_id = args.app_id;
         let mouse_queue_limit = args.mouse_queue_limit;
+        let input_protocol = args.input_protocol.clone();
 
         let sink_wrapper = self.as_ref().rust().sink_wrapper.clone();
         let input_senders = self.as_ref().rust().input_senders.clone();
@@ -675,9 +698,23 @@ impl qobject::StreamBridge {
         // Spawn signaling connection and media threads
         let handle = rt.spawn(async move {
             if let Err(e) = run_webrtc_client_task(
-                host_id, server_url, token, width, height, fps, bitrate, codec_str, app_id,
-                mouse_queue_limit, sink_wrapper, input_senders, active_decoder,
-            ).await {
+                host_id,
+                server_url,
+                token,
+                width,
+                height,
+                fps,
+                bitrate,
+                codec_str,
+                app_id,
+                mouse_queue_limit,
+                input_protocol,
+                sink_wrapper,
+                input_senders,
+                active_decoder,
+            )
+            .await
+            {
                 eprintln!("Error in WebRTC client task: {:?}", e);
             }
         });
@@ -689,14 +726,26 @@ impl qobject::StreamBridge {
     pub fn stop_stream(mut self: Pin<&mut Self>) {
         println!("Stopping stream and releasing signaling runtime...");
         qobject::set_cuda_stream_active(false);
-        let handle = self.as_mut().rust_mut().active_stream.lock().unwrap().take();
+        let handle = self
+            .as_mut()
+            .rust_mut()
+            .active_stream
+            .lock()
+            .unwrap()
+            .take();
         if let Some(h) = handle {
             h.abort();
         }
         self.as_mut().rust_mut().tokio_runtime = None;
         *self.as_mut().rust_mut().input_senders.lock().unwrap() = None;
 
-        let decoder_handle = self.as_mut().rust_mut().active_decoder.lock().unwrap().take();
+        let decoder_handle = self
+            .as_mut()
+            .rust_mut()
+            .active_decoder
+            .lock()
+            .unwrap()
+            .take();
         if let Some(h) = decoder_handle {
             println!("Waiting for old decoder thread to exit...");
             if let Err(e) = h.join() {
@@ -708,7 +757,16 @@ impl qobject::StreamBridge {
         super::decoder::clear_active_cuda_frame();
     }
 
-    pub fn send_mouse_move(self: Pin<&mut Self>, x: i32, y: i32, width: i32, height: i32, rx: i32, ry: i32, pointer_locked: bool) {
+    pub fn send_mouse_move(
+        self: Pin<&mut Self>,
+        x: i32,
+        y: i32,
+        width: i32,
+        height: i32,
+        rx: i32,
+        ry: i32,
+        pointer_locked: bool,
+    ) {
         let binding = self.as_ref();
         let senders = binding.rust().input_senders.lock().unwrap();
         if let Some(ref s) = *senders {
@@ -752,10 +810,20 @@ impl qobject::StreamBridge {
         qobject::set_pointer_locked_helper(locked);
     }
 
-    pub fn update_stream_config(mut self: Pin<&mut Self>, res: QString, fps: i32, codec: QString, bitrate: i32, mouse_queue_limit: i32, disable_cuda: bool) {
+    pub fn update_stream_config(
+        mut self: Pin<&mut Self>,
+        res: QString,
+        fps: i32,
+        codec: QString,
+        bitrate: i32,
+        mouse_queue_limit: i32,
+        disable_cuda: bool,
+        input_protocol: QString,
+    ) {
         let res_str = res.to_string();
         let codec_str = codec.to_string().to_lowercase();
-        println!("Updating stream configuration: res={}, fps={}, codec={}, bitrate={}, mouse_queue_limit={}, disable_cuda={}", res_str, fps, codec_str, bitrate, mouse_queue_limit, disable_cuda);
+        let input_proto_str = input_protocol.to_string().to_lowercase();
+        println!("Updating stream configuration: res={}, fps={}, codec={}, bitrate={}, mouse_queue_limit={}, disable_cuda={}, input_protocol={}", res_str, fps, codec_str, bitrate, mouse_queue_limit, disable_cuda, input_proto_str);
 
         // Parse resolution (e.g. "1920x1080" or "720p")
         let mut width = 1280;
@@ -789,6 +857,7 @@ impl qobject::StreamBridge {
                 config.bitrate = bitrate as u32;
                 config.mouse_queue_limit = mouse_queue_limit as u32;
                 config.disable_cuda = disable_cuda;
+                config.input_protocol = input_proto_str;
             } else if let Some(args) = APP_ARGS.get() {
                 let mut new_config = args.clone();
                 new_config.width = width;
@@ -798,6 +867,7 @@ impl qobject::StreamBridge {
                 new_config.bitrate = bitrate as u32;
                 new_config.mouse_queue_limit = mouse_queue_limit as u32;
                 new_config.disable_cuda = disable_cuda;
+                new_config.input_protocol = input_proto_str;
                 *active_config_lock = Some(new_config);
             }
         }
@@ -808,12 +878,11 @@ impl qobject::StreamBridge {
     }
 
     pub fn poll_stats(mut self: Pin<&mut Self>) {
-        let stats = {
-            STREAM_STATS.lock().unwrap().clone()
-        };
+        let stats = { STREAM_STATS.lock().unwrap().clone() };
         if let Some(s) = stats {
             let codec_qstring = cxx_qt_lib::QString::from(&s.codec);
-            self.as_mut().stats_updated(s.ping, s.decode, s.fps, s.bitrate, codec_qstring);
+            self.as_mut()
+                .stats_updated(s.ping, s.decode, s.fps, s.bitrate, codec_qstring);
         }
     }
 
@@ -829,6 +898,7 @@ impl qobject::StreamBridge {
             let res_qstring = cxx_qt_lib::QString::from(&res);
             let codec_qstring = cxx_qt_lib::QString::from(&config.codec);
             let host_name_qstring = cxx_qt_lib::QString::from(&config.host_name);
+            let input_proto_qstring = cxx_qt_lib::QString::from(&config.input_protocol);
             self.as_mut().settings_loaded(
                 res_qstring,
                 config.fps as i32,
@@ -837,6 +907,7 @@ impl qobject::StreamBridge {
                 config.mouse_queue_limit as i32,
                 host_name_qstring,
                 config.disable_cuda,
+                input_proto_qstring,
             );
         }
     }
@@ -847,28 +918,29 @@ impl qobject::StreamBridge {
 
     pub fn load_saved_credentials(self: Pin<&mut Self>) {
         if let Some(settings) = load_settings() {
-            PENDING_EVENTS.lock().unwrap().push(PendingDashboardEvent::CredentialsLoaded {
-                success: true,
-                server: settings.server_url,
-                token: settings.token,
-                username: settings.username,
-            });
+            PENDING_EVENTS
+                .lock()
+                .unwrap()
+                .push(PendingDashboardEvent::CredentialsLoaded {
+                    success: true,
+                    server: settings.server_url,
+                    token: settings.token,
+                    username: settings.username,
+                });
         } else {
-            PENDING_EVENTS.lock().unwrap().push(PendingDashboardEvent::CredentialsLoaded {
-                success: false,
-                server: "".to_string(),
-                token: "".to_string(),
-                username: "".to_string(),
-            });
+            PENDING_EVENTS
+                .lock()
+                .unwrap()
+                .push(PendingDashboardEvent::CredentialsLoaded {
+                    success: false,
+                    server: "".to_string(),
+                    token: "".to_string(),
+                    username: "".to_string(),
+                });
         }
     }
 
-    pub fn login(
-        self: Pin<&mut Self>,
-        server: QString,
-        username: QString,
-        password: QString,
-    ) {
+    pub fn login(self: Pin<&mut Self>, server: QString, username: QString, password: QString) {
         let server_str = server.to_string();
         let username_str = username.to_string();
         let password_str = password.to_string();
@@ -879,7 +951,8 @@ impl qobject::StreamBridge {
         rt.spawn(async move {
             let client = reqwest::Client::new();
             let url = format!("{}/api/auth/login", server_str);
-            let res = client.post(&url)
+            let res = client
+                .post(&url)
                 .json(&serde_json::json!({
                     "username": username_str,
                     "password": password_str
@@ -894,50 +967,58 @@ impl qobject::StreamBridge {
                     if status.is_success() {
                         if let Ok(data) = serde_json::from_str::<common::AuthResponse>(&text) {
                             save_settings(&server_str, &data.token, &data.username);
-                            
-                            PENDING_EVENTS.lock().unwrap().push(PendingDashboardEvent::LoginResult {
-                                success: true,
-                                error_msg: "".to_string(),
-                                token: data.token,
-                                username: data.username,
-                                server: server_str,
-                            });
+
+                            PENDING_EVENTS.lock().unwrap().push(
+                                PendingDashboardEvent::LoginResult {
+                                    success: true,
+                                    error_msg: "".to_string(),
+                                    token: data.token,
+                                    username: data.username,
+                                    server: server_str,
+                                },
+                            );
                             return;
                         }
                     }
-                    
-                    let err_msg = if let Ok(err_data) = serde_json::from_str::<serde_json::Value>(&text) {
-                        err_data.get("error")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("Login failed")
-                            .to_string()
-                    } else {
-                        "Login failed".to_string()
-                    };
 
-                    PENDING_EVENTS.lock().unwrap().push(PendingDashboardEvent::LoginResult {
-                        success: false,
-                        error_msg: err_msg,
-                        token: "".to_string(),
-                        username: "".to_string(),
-                        server: "".to_string(),
-                    });
+                    let err_msg =
+                        if let Ok(err_data) = serde_json::from_str::<serde_json::Value>(&text) {
+                            err_data
+                                .get("error")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("Login failed")
+                                .to_string()
+                        } else {
+                            "Login failed".to_string()
+                        };
+
+                    PENDING_EVENTS
+                        .lock()
+                        .unwrap()
+                        .push(PendingDashboardEvent::LoginResult {
+                            success: false,
+                            error_msg: err_msg,
+                            token: "".to_string(),
+                            username: "".to_string(),
+                            server: "".to_string(),
+                        });
                 }
                 Err(e) => {
                     let err_msg = format!("Connection failed: {}", e);
-                    PENDING_EVENTS.lock().unwrap().push(PendingDashboardEvent::LoginResult {
-                        success: false,
-                        error_msg: err_msg,
-                        token: "".to_string(),
-                        username: "".to_string(),
-                        server: "".to_string(),
-                    });
+                    PENDING_EVENTS
+                        .lock()
+                        .unwrap()
+                        .push(PendingDashboardEvent::LoginResult {
+                            success: false,
+                            error_msg: err_msg,
+                            token: "".to_string(),
+                            username: "".to_string(),
+                            server: "".to_string(),
+                        });
                 }
             }
         });
     }
-
-
 
     pub fn logout(self: Pin<&mut Self>) {
         clear_settings();
@@ -947,25 +1028,29 @@ impl qobject::StreamBridge {
         let settings = match load_settings() {
             Some(s) => s,
             None => {
-                PENDING_EVENTS.lock().unwrap().push(PendingDashboardEvent::HostsResult {
-                    success: false,
-                    error_msg: "Not authenticated".to_string(),
-                    hosts_json: "".to_string(),
-                });
+                PENDING_EVENTS
+                    .lock()
+                    .unwrap()
+                    .push(PendingDashboardEvent::HostsResult {
+                        success: false,
+                        error_msg: "Not authenticated".to_string(),
+                        hosts_json: "".to_string(),
+                    });
                 return;
             }
         };
 
         let server_str = settings.server_url;
         let token_str = settings.token;
-        
+
         let mut rust_obj = self.rust_mut();
         let rt = rust_obj.get_or_init_runtime();
 
         rt.spawn(async move {
             let client = reqwest::Client::new();
             let url = format!("{}/api/hosts", server_str);
-            let res = client.get(&url)
+            let res = client
+                .get(&url)
                 .header("Authorization", format!("Bearer {}", token_str))
                 .send()
                 .await;
@@ -975,35 +1060,46 @@ impl qobject::StreamBridge {
                     if resp.status().is_success() {
                         if let Ok(hosts) = resp.json::<Vec<common::HostInfo>>().await {
                             if let Ok(hosts_json) = serde_json::to_string(&hosts) {
-                                PENDING_EVENTS.lock().unwrap().push(PendingDashboardEvent::HostsResult {
-                                    success: true,
-                                    error_msg: "".to_string(),
-                                    hosts_json,
-                                });
+                                PENDING_EVENTS.lock().unwrap().push(
+                                    PendingDashboardEvent::HostsResult {
+                                        success: true,
+                                        error_msg: "".to_string(),
+                                        hosts_json,
+                                    },
+                                );
                                 return;
                             }
                         }
                     } else if resp.status() == 401 {
-                        PENDING_EVENTS.lock().unwrap().push(PendingDashboardEvent::HostsResult {
-                            success: false,
-                            error_msg: "Unauthorized".to_string(),
-                            hosts_json: "".to_string(),
-                        });
+                        PENDING_EVENTS
+                            .lock()
+                            .unwrap()
+                            .push(PendingDashboardEvent::HostsResult {
+                                success: false,
+                                error_msg: "Unauthorized".to_string(),
+                                hosts_json: "".to_string(),
+                            });
                         return;
                     }
-                    PENDING_EVENTS.lock().unwrap().push(PendingDashboardEvent::HostsResult {
-                        success: false,
-                        error_msg: "Failed to fetch host list".to_string(),
-                        hosts_json: "".to_string(),
-                    });
+                    PENDING_EVENTS
+                        .lock()
+                        .unwrap()
+                        .push(PendingDashboardEvent::HostsResult {
+                            success: false,
+                            error_msg: "Failed to fetch host list".to_string(),
+                            hosts_json: "".to_string(),
+                        });
                 }
                 Err(e) => {
                     let err_msg = format!("Connection failed: {}", e);
-                    PENDING_EVENTS.lock().unwrap().push(PendingDashboardEvent::HostsResult {
-                        success: false,
-                        error_msg: err_msg,
-                        hosts_json: "".to_string(),
-                    });
+                    PENDING_EVENTS
+                        .lock()
+                        .unwrap()
+                        .push(PendingDashboardEvent::HostsResult {
+                            success: false,
+                            error_msg: err_msg,
+                            hosts_json: "".to_string(),
+                        });
                 }
             }
         });
@@ -1024,32 +1120,44 @@ impl qobject::StreamBridge {
         let settings = match load_settings() {
             Some(s) => s,
             None => {
-                PENDING_EVENTS.lock().unwrap().push(PendingDashboardEvent::PairResult {
-                    success: false,
-                    error_msg: "Not authenticated".to_string(),
-                });
+                PENDING_EVENTS
+                    .lock()
+                    .unwrap()
+                    .push(PendingDashboardEvent::PairResult {
+                        success: false,
+                        error_msg: "Not authenticated".to_string(),
+                    });
                 return;
             }
         };
 
         let server_str = settings.server_url;
         let token_str = settings.token;
-        
+
         let mut rust_obj = self.rust_mut();
         let rt = rust_obj.get_or_init_runtime();
 
         rt.spawn(async move {
             let client = reqwest::Client::new();
             let url = format!("{}/api/hosts/pair", server_str);
-            
+
             let pair_req = common::PairHostRequest {
                 name: name_str,
                 ip_address: ip_str,
-                sunshine_username: if user_str.is_empty() { None } else { Some(user_str) },
-                sunshine_password: if pass_str.is_empty() { None } else { Some(pass_str) },
+                sunshine_username: if user_str.is_empty() {
+                    None
+                } else {
+                    Some(user_str)
+                },
+                sunshine_password: if pass_str.is_empty() {
+                    None
+                } else {
+                    Some(pass_str)
+                },
             };
 
-            let res = client.post(&url)
+            let res = client
+                .post(&url)
                 .header("Authorization", format!("Bearer {}", token_str))
                 .json(&pair_req)
                 .send()
@@ -1058,28 +1166,41 @@ impl qobject::StreamBridge {
             match res {
                 Ok(resp) => {
                     if resp.status().is_success() {
-                        PENDING_EVENTS.lock().unwrap().push(PendingDashboardEvent::PairResult {
-                            success: true,
-                            error_msg: "".to_string(),
-                        });
+                        PENDING_EVENTS
+                            .lock()
+                            .unwrap()
+                            .push(PendingDashboardEvent::PairResult {
+                                success: true,
+                                error_msg: "".to_string(),
+                            });
                     } else {
                         let err_msg = if let Ok(err_data) = resp.json::<serde_json::Value>().await {
-                            err_data.get("error").and_then(|v| v.as_str()).unwrap_or("Pairing failed").to_string()
+                            err_data
+                                .get("error")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("Pairing failed")
+                                .to_string()
                         } else {
                             "Pairing failed".to_string()
                         };
-                        PENDING_EVENTS.lock().unwrap().push(PendingDashboardEvent::PairResult {
-                            success: false,
-                            error_msg: err_msg,
-                        });
+                        PENDING_EVENTS
+                            .lock()
+                            .unwrap()
+                            .push(PendingDashboardEvent::PairResult {
+                                success: false,
+                                error_msg: err_msg,
+                            });
                     }
                 }
                 Err(e) => {
                     let err_msg = format!("Connection failed: {}", e);
-                    PENDING_EVENTS.lock().unwrap().push(PendingDashboardEvent::PairResult {
-                        success: false,
-                        error_msg: err_msg,
-                    });
+                    PENDING_EVENTS
+                        .lock()
+                        .unwrap()
+                        .push(PendingDashboardEvent::PairResult {
+                            success: false,
+                            error_msg: err_msg,
+                        });
                 }
             }
         });
@@ -1091,17 +1212,20 @@ impl qobject::StreamBridge {
         let settings = match load_settings() {
             Some(s) => s,
             None => {
-                PENDING_EVENTS.lock().unwrap().push(PendingDashboardEvent::UnpairResult {
-                    success: false,
-                    error_msg: "Not authenticated".to_string(),
-                });
+                PENDING_EVENTS
+                    .lock()
+                    .unwrap()
+                    .push(PendingDashboardEvent::UnpairResult {
+                        success: false,
+                        error_msg: "Not authenticated".to_string(),
+                    });
                 return;
             }
         };
 
         let server_str = settings.server_url;
         let token_str = settings.token;
-        
+
         let mut rust_obj = self.rust_mut();
         let rt = rust_obj.get_or_init_runtime();
 
@@ -1109,7 +1233,8 @@ impl qobject::StreamBridge {
             let client = reqwest::Client::new();
             let url = format!("{}/api/hosts/{}", server_str, host_id_str);
 
-            let res = client.delete(&url)
+            let res = client
+                .delete(&url)
                 .header("Authorization", format!("Bearer {}", token_str))
                 .send()
                 .await;
@@ -1117,23 +1242,32 @@ impl qobject::StreamBridge {
             match res {
                 Ok(resp) => {
                     if resp.status().is_success() {
-                        PENDING_EVENTS.lock().unwrap().push(PendingDashboardEvent::UnpairResult {
-                            success: true,
-                            error_msg: "".to_string(),
-                        });
+                        PENDING_EVENTS
+                            .lock()
+                            .unwrap()
+                            .push(PendingDashboardEvent::UnpairResult {
+                                success: true,
+                                error_msg: "".to_string(),
+                            });
                     } else {
-                        PENDING_EVENTS.lock().unwrap().push(PendingDashboardEvent::UnpairResult {
-                            success: false,
-                            error_msg: "Failed to unpair host".to_string(),
-                        });
+                        PENDING_EVENTS
+                            .lock()
+                            .unwrap()
+                            .push(PendingDashboardEvent::UnpairResult {
+                                success: false,
+                                error_msg: "Failed to unpair host".to_string(),
+                            });
                     }
                 }
                 Err(e) => {
                     let err_msg = format!("Connection failed: {}", e);
-                    PENDING_EVENTS.lock().unwrap().push(PendingDashboardEvent::UnpairResult {
-                        success: false,
-                        error_msg: err_msg,
-                    });
+                    PENDING_EVENTS
+                        .lock()
+                        .unwrap()
+                        .push(PendingDashboardEvent::UnpairResult {
+                            success: false,
+                            error_msg: err_msg,
+                        });
                 }
             }
         });
@@ -1145,38 +1279,49 @@ impl qobject::StreamBridge {
         let settings = match load_settings() {
             Some(s) => s,
             None => {
-                PENDING_EVENTS.lock().unwrap().push(PendingDashboardEvent::AppsResult {
-                    success: false,
-                    error_msg: "Not authenticated".to_string(),
-                    host_id: host_id_str,
-                    apps_json: "".to_string(),
-                });
+                PENDING_EVENTS
+                    .lock()
+                    .unwrap()
+                    .push(PendingDashboardEvent::AppsResult {
+                        success: false,
+                        error_msg: "Not authenticated".to_string(),
+                        host_id: host_id_str,
+                        apps_json: "".to_string(),
+                    });
                 return;
             }
         };
 
         let server_str = settings.server_url;
         let token_str = settings.token;
-        
+
         let mut rust_obj = self.rust_mut();
         let rt = rust_obj.get_or_init_runtime();
 
         rt.spawn(async move {
-            let encoded_token: String = url::form_urlencoded::byte_serialize(token_str.as_bytes()).collect();
-            let ws_url = format!("{}/ws/client?token={}", server_str.replace("http", "ws"), encoded_token);
+            let encoded_token: String =
+                url::form_urlencoded::byte_serialize(token_str.as_bytes()).collect();
+            let ws_url = format!(
+                "{}/ws/client?token={}",
+                server_str.replace("http", "ws"),
+                encoded_token
+            );
             println!("fetch_apps connecting to ws at: {}", ws_url);
-            
+
             let connect_result = connect_async(&ws_url).await;
             let (mut ws_stream, _) = match connect_result {
                 Ok(c) => c,
                 Err(e) => {
                     let err_msg = format!("WebSocket connection failed: {}", e);
-                    PENDING_EVENTS.lock().unwrap().push(PendingDashboardEvent::AppsResult {
-                        success: false,
-                        error_msg: err_msg,
-                        host_id: host_id_str,
-                        apps_json: "".to_string(),
-                    });
+                    PENDING_EVENTS
+                        .lock()
+                        .unwrap()
+                        .push(PendingDashboardEvent::AppsResult {
+                            success: false,
+                            error_msg: err_msg,
+                            host_id: host_id_str,
+                            apps_json: "".to_string(),
+                        });
                     return;
                 }
             };
@@ -1188,12 +1333,15 @@ impl qobject::StreamBridge {
             if let Ok(text) = serde_json::to_string(&get_app_msg) {
                 if let Err(e) = ws_stream.send(WsMessage::Text(text)).await {
                     let err_msg = format!("Failed to send GetAppList request: {}", e);
-                    PENDING_EVENTS.lock().unwrap().push(PendingDashboardEvent::AppsResult {
-                        success: false,
-                        error_msg: err_msg,
-                        host_id: host_id_str,
-                        apps_json: "".to_string(),
-                    });
+                    PENDING_EVENTS
+                        .lock()
+                        .unwrap()
+                        .push(PendingDashboardEvent::AppsResult {
+                            success: false,
+                            error_msg: err_msg,
+                            host_id: host_id_str,
+                            apps_json: "".to_string(),
+                        });
                     return;
                 }
             }
@@ -1202,7 +1350,9 @@ impl qobject::StreamBridge {
                 while let Some(msg_result) = ws_stream.next().await {
                     match msg_result {
                         Ok(WsMessage::Text(text)) => {
-                            if let Ok(server_msg) = serde_json::from_str::<common::ServerToClientMessage>(&text) {
+                            if let Ok(server_msg) =
+                                serde_json::from_str::<common::ServerToClientMessage>(&text)
+                            {
                                 match server_msg {
                                     common::ServerToClientMessage::Signaling(sig) => match sig {
                                         SignalingMessage::AppListResponse { apps, .. } => {
@@ -1212,7 +1362,7 @@ impl qobject::StreamBridge {
                                             return Err(message);
                                         }
                                         _ => {}
-                                    }
+                                    },
                                 }
                             }
                         }
@@ -1223,43 +1373,56 @@ impl qobject::StreamBridge {
                     }
                 }
                 Err("Connection closed before response received".to_string())
-            }).await;
+            })
+            .await;
 
             let _ = ws_stream.close(None).await;
 
             match result {
                 Ok(Ok(apps)) => {
                     if let Ok(apps_json) = serde_json::to_string(&apps) {
-                        PENDING_EVENTS.lock().unwrap().push(PendingDashboardEvent::AppsResult {
-                            success: true,
-                            error_msg: "".to_string(),
-                            host_id: host_id_str,
-                            apps_json,
-                        });
+                        PENDING_EVENTS
+                            .lock()
+                            .unwrap()
+                            .push(PendingDashboardEvent::AppsResult {
+                                success: true,
+                                error_msg: "".to_string(),
+                                host_id: host_id_str,
+                                apps_json,
+                            });
                     } else {
-                        PENDING_EVENTS.lock().unwrap().push(PendingDashboardEvent::AppsResult {
-                            success: false,
-                            error_msg: "Failed to serialize apps".to_string(),
-                            host_id: host_id_str,
-                            apps_json: "".to_string(),
-                        });
+                        PENDING_EVENTS
+                            .lock()
+                            .unwrap()
+                            .push(PendingDashboardEvent::AppsResult {
+                                success: false,
+                                error_msg: "Failed to serialize apps".to_string(),
+                                host_id: host_id_str,
+                                apps_json: "".to_string(),
+                            });
                     }
                 }
                 Ok(Err(e)) => {
-                    PENDING_EVENTS.lock().unwrap().push(PendingDashboardEvent::AppsResult {
-                        success: false,
-                        error_msg: e,
-                        host_id: host_id_str,
-                        apps_json: "".to_string(),
-                    });
+                    PENDING_EVENTS
+                        .lock()
+                        .unwrap()
+                        .push(PendingDashboardEvent::AppsResult {
+                            success: false,
+                            error_msg: e,
+                            host_id: host_id_str,
+                            apps_json: "".to_string(),
+                        });
                 }
                 Err(_) => {
-                    PENDING_EVENTS.lock().unwrap().push(PendingDashboardEvent::AppsResult {
-                        success: false,
-                        error_msg: "Timed out waiting for application list".to_string(),
-                        host_id: host_id_str,
-                        apps_json: "".to_string(),
-                    });
+                    PENDING_EVENTS
+                        .lock()
+                        .unwrap()
+                        .push(PendingDashboardEvent::AppsResult {
+                            success: false,
+                            error_msg: "Timed out waiting for application list".to_string(),
+                            host_id: host_id_str,
+                            apps_json: "".to_string(),
+                        });
                 }
             }
         });
@@ -1278,6 +1441,7 @@ impl qobject::StreamBridge {
         bitrate: i32,
         mouse_queue_limit: i32,
         disable_cuda: bool,
+        input_protocol: QString,
     ) {
         let server_str = server.to_string();
         let token_str = token.to_string();
@@ -1285,6 +1449,7 @@ impl qobject::StreamBridge {
         let host_name_str = host_name.to_string();
         let res_str = res.to_string();
         let codec_str = codec.to_string().to_lowercase();
+        let input_proto_str = input_protocol.to_string().to_lowercase();
 
         let mut width = 1280;
         let mut height = 720;
@@ -1298,7 +1463,11 @@ impl qobject::StreamBridge {
             }
         }
 
-        let app_id_opt = if app_id < 0 { None } else { Some(app_id as u32) };
+        let app_id_opt = if app_id < 0 {
+            None
+        } else {
+            Some(app_id as u32)
+        };
 
         let args = AppArgs {
             host_id: host_id_str,
@@ -1313,6 +1482,7 @@ impl qobject::StreamBridge {
             mouse_queue_limit: mouse_queue_limit as u32,
             host_name: host_name_str,
             disable_cuda,
+            input_protocol: input_proto_str,
         };
 
         {
@@ -1331,15 +1501,26 @@ impl qobject::StreamBridge {
         };
         for event in events {
             match event {
-                PendingDashboardEvent::LoginResult { success, error_msg, token, username, server } => {
+                PendingDashboardEvent::LoginResult {
+                    success,
+                    error_msg,
+                    token,
+                    username,
+                    server,
+                } => {
                     let err_qstr = QString::from(&error_msg);
                     let tok_qstr = QString::from(&token);
                     let user_qstr = QString::from(&username);
                     let srv_qstr = QString::from(&server);
-                    self.as_mut().login_result(success, err_qstr, tok_qstr, user_qstr, srv_qstr);
+                    self.as_mut()
+                        .login_result(success, err_qstr, tok_qstr, user_qstr, srv_qstr);
                 }
 
-                PendingDashboardEvent::HostsResult { success, error_msg, hosts_json } => {
+                PendingDashboardEvent::HostsResult {
+                    success,
+                    error_msg,
+                    hosts_json,
+                } => {
                     let err_qstr = QString::from(&error_msg);
                     let hosts_qstr = QString::from(&hosts_json);
                     self.as_mut().hosts_result(success, err_qstr, hosts_qstr);
@@ -1352,37 +1533,49 @@ impl qobject::StreamBridge {
                     let err_qstr = QString::from(&error_msg);
                     self.as_mut().unpair_result(success, err_qstr);
                 }
-                PendingDashboardEvent::AppsResult { success, error_msg, host_id, apps_json } => {
+                PendingDashboardEvent::AppsResult {
+                    success,
+                    error_msg,
+                    host_id,
+                    apps_json,
+                } => {
                     let err_qstr = QString::from(&error_msg);
                     let host_qstr = QString::from(&host_id);
                     let apps_qstr = QString::from(&apps_json);
-                    self.as_mut().apps_result(success, err_qstr, host_qstr, apps_qstr);
+                    self.as_mut()
+                        .apps_result(success, err_qstr, host_qstr, apps_qstr);
                 }
-                PendingDashboardEvent::CredentialsLoaded { success, server, token, username } => {
+                PendingDashboardEvent::CredentialsLoaded {
+                    success,
+                    server,
+                    token,
+                    username,
+                } => {
                     let srv_qstr = QString::from(&server);
                     let tok_qstr = QString::from(&token);
                     let user_qstr = QString::from(&username);
-                    self.as_mut().credentials_loaded(success, srv_qstr, tok_qstr, user_qstr);
+                    self.as_mut()
+                        .credentials_loaded(success, srv_qstr, tok_qstr, user_qstr);
                 }
-                PendingDashboardEvent::AgentTokenResult { success, error_msg, token } => {
+                PendingDashboardEvent::AgentTokenResult {
+                    success,
+                    error_msg,
+                    token,
+                } => {
                     let err_qstr = QString::from(&error_msg);
                     let tok_qstr = QString::from(&token);
-                    self.as_mut().agent_token_result(success, err_qstr, tok_qstr);
+                    self.as_mut()
+                        .agent_token_result(success, err_qstr, tok_qstr);
                 }
                 PendingDashboardEvent::DeepLinkReceived { url } => {
                     let url_qstr = QString::from(&url);
                     self.as_mut().deeplink_received(url_qstr);
                 }
             }
-
         }
     }
 
-    pub fn fetch_agent_token(
-        self: Pin<&mut Self>,
-        server: QString,
-        token: QString,
-    ) {
+    pub fn fetch_agent_token(self: Pin<&mut Self>, server: QString, token: QString) {
         let server_str = server.to_string();
         let token_str = token.to_string();
 
@@ -1392,7 +1585,8 @@ impl qobject::StreamBridge {
         rt.spawn(async move {
             let client = reqwest::Client::new();
             let url = format!("{}/api/agent/token", server_str.trim_end_matches('/'));
-            let res = client.get(&url)
+            let res = client
+                .get(&url)
                 .header("Authorization", format!("Bearer {}", token_str))
                 .send()
                 .await;
@@ -1404,49 +1598,54 @@ impl qobject::StreamBridge {
                     if status.is_success() {
                         if let Ok(data) = serde_json::from_str::<serde_json::Value>(&text) {
                             if let Some(agent_tok) = data.get("token").and_then(|t| t.as_str()) {
-                                PENDING_EVENTS.lock().unwrap().push(PendingDashboardEvent::AgentTokenResult {
-                                    success: true,
-                                    error_msg: "".to_string(),
-                                    token: agent_tok.to_string(),
-                                });
+                                PENDING_EVENTS.lock().unwrap().push(
+                                    PendingDashboardEvent::AgentTokenResult {
+                                        success: true,
+                                        error_msg: "".to_string(),
+                                        token: agent_tok.to_string(),
+                                    },
+                                );
                                 return;
                             }
                         }
                     }
-                    
-                    let err_msg = if let Ok(err_data) = serde_json::from_str::<serde_json::Value>(&text) {
-                        err_data.get("error")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("Failed to fetch agent token")
-                            .to_string()
-                    } else {
-                        "Failed to fetch agent token".to_string()
-                    };
 
-                    PENDING_EVENTS.lock().unwrap().push(PendingDashboardEvent::AgentTokenResult {
-                        success: false,
-                        error_msg: err_msg,
-                        token: "".to_string(),
-                    });
+                    let err_msg =
+                        if let Ok(err_data) = serde_json::from_str::<serde_json::Value>(&text) {
+                            err_data
+                                .get("error")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("Failed to fetch agent token")
+                                .to_string()
+                        } else {
+                            "Failed to fetch agent token".to_string()
+                        };
+
+                    PENDING_EVENTS
+                        .lock()
+                        .unwrap()
+                        .push(PendingDashboardEvent::AgentTokenResult {
+                            success: false,
+                            error_msg: err_msg,
+                            token: "".to_string(),
+                        });
                 }
                 Err(e) => {
                     let err_msg = format!("Connection failed: {}", e);
-                    PENDING_EVENTS.lock().unwrap().push(PendingDashboardEvent::AgentTokenResult {
-                        success: false,
-                        error_msg: err_msg,
-                        token: "".to_string(),
-                    });
+                    PENDING_EVENTS
+                        .lock()
+                        .unwrap()
+                        .push(PendingDashboardEvent::AgentTokenResult {
+                            success: false,
+                            error_msg: err_msg,
+                            token: "".to_string(),
+                        });
                 }
             }
         });
     }
 
-    pub fn start_local_agent(
-        self: Pin<&mut Self>,
-        server: QString,
-        token: QString,
-        name: QString,
-    ) {
+    pub fn start_local_agent(self: Pin<&mut Self>, server: QString, token: QString, name: QString) {
         let server_str = server.to_string();
         let token_str = token.to_string();
         let name_str = name.to_string();
@@ -1469,7 +1668,7 @@ impl qobject::StreamBridge {
 
             if path.exists() {
                 let config_path_str = config_path.to_string_lossy().to_string();
-                
+
                 // Stop any running local agent first
                 stop_local_agent();
 
@@ -1558,24 +1757,25 @@ pub fn stop_local_agent() {
     }
 }
 
-
-
 // -----------------------------------------------------------------------------
 // WebRTC and network handling logic (Tokio Task)
 // -----------------------------------------------------------------------------
-use webrtc::api::APIBuilder;
-use webrtc::api::media_engine::MediaEngine;
-use webrtc::peer_connection::configuration::RTCConfiguration;
-use webrtc::peer_connection::RTCPeerConnection;
-use webrtc::ice_transport::ice_server::RTCIceServer;
-use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
-use webrtc::ice_transport::ice_candidate::{RTCIceCandidate, RTCIceCandidateInit};
-use webrtc::data_channel::RTCDataChannel;
-use webrtc::track::track_remote::TrackRemote;
-use common::{ClientMessage, ServerToClientMessage, SignalingMessage, RtcSessionDescription, RtcSdpType};
+use common::{
+    ClientMessage, RtcSdpType, RtcSessionDescription, ServerToClientMessage, SignalingMessage,
+};
+use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::protocol::Message as WsMessage;
-use futures_util::{StreamExt, SinkExt};
+use wtransport::{ClientConfig, Endpoint};
+use webrtc::api::media_engine::MediaEngine;
+use webrtc::api::APIBuilder;
+use webrtc::data_channel::RTCDataChannel;
+use webrtc::ice_transport::ice_candidate::{RTCIceCandidate, RTCIceCandidateInit};
+use webrtc::ice_transport::ice_server::RTCIceServer;
+use webrtc::peer_connection::configuration::RTCConfiguration;
+use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
+use webrtc::peer_connection::RTCPeerConnection;
+use webrtc::track::track_remote::TrackRemote;
 
 async fn setup_peer_connection(
     ice_servers: Option<Vec<common::RtcIceServer>>,
@@ -1591,30 +1791,31 @@ async fn setup_peer_connection(
     let mut media_engine = MediaEngine::default();
     media_engine.register_default_codecs()?;
     let api = APIBuilder::new().with_media_engine(media_engine).build();
-    
+
     let webrtc_ice_servers = if let Some(servers) = ice_servers {
-        servers.into_iter().map(|s| RTCIceServer {
-            urls: s.urls,
-            username: s.username.unwrap_or_default(),
-            credential: s.credential.unwrap_or_default(),
-            ..Default::default()
-        }).collect()
-    } else {
-        vec![
-            RTCIceServer {
-                urls: vec!["stun:stun.l.google.com:19302".to_string()],
+        servers
+            .into_iter()
+            .map(|s| RTCIceServer {
+                urls: s.urls,
+                username: s.username.unwrap_or_default(),
+                credential: s.credential.unwrap_or_default(),
                 ..Default::default()
-            }
-        ]
+            })
+            .collect()
+    } else {
+        vec![RTCIceServer {
+            urls: vec!["stun:stun.l.google.com:19302".to_string()],
+            ..Default::default()
+        }]
     };
 
     let config = RTCConfiguration {
         ice_servers: webrtc_ice_servers,
         ..Default::default()
     };
-    
+
     let peer_connection = Arc::new(api.new_peer_connection(config).await?);
-    
+
     // Register ICE candidate gathering callback
     let outbox_tx_clone = outbox_tx.clone();
     let host_id_clone = host_id.clone();
@@ -1638,7 +1839,7 @@ async fn setup_peer_connection(
             }
         })
     }));
-    
+
     // Setup video track handler
     let sink_clone = sink_wrapper.clone();
     let pc_clone = Arc::clone(&peer_connection);
@@ -2176,9 +2377,15 @@ async fn setup_peer_connection(
         println!("Remote host created DataChannel: {}", label);
         let channel_ref = Arc::clone(&d);
         match label.as_str() {
-            "keyboard" => { *k_c.lock().unwrap() = Some(channel_ref); }
-            "mouse_absolute" => { *ma_c.lock().unwrap() = Some(channel_ref); }
-            "mouse_relative" => { *mr_c.lock().unwrap() = Some(channel_ref); }
+            "keyboard" => {
+                *k_c.lock().unwrap() = Some(channel_ref);
+            }
+            "mouse_absolute" => {
+                *ma_c.lock().unwrap() = Some(channel_ref);
+            }
+            "mouse_relative" => {
+                *mr_c.lock().unwrap() = Some(channel_ref);
+            }
             _ => {}
         }
         Box::pin(async {})
@@ -2198,18 +2405,23 @@ async fn run_webrtc_client_task(
     codec_str: String,
     app_id: Option<u32>,
     mouse_queue_limit: u32,
+    input_protocol: String,
     sink_wrapper: VideoSinkWrapper,
     input_senders: Arc<Mutex<Option<super::input::InputSenders>>>,
     active_decoder: Arc<Mutex<Option<std::thread::JoinHandle<()>>>>,
 ) -> Result<(), anyhow::Error> {
-    let ws_url = format!("{}/ws/client?token={}", server_url.replace("http", "ws"), token);
+    let ws_url = format!(
+        "{}/ws/client?token={}",
+        server_url.replace("http", "ws"),
+        token
+    );
     println!("Connecting to signaling server at: {}", ws_url);
-    
+
     let (ws_stream, _) = connect_async(url::Url::parse(&ws_url)?).await?;
     let (mut ws_write, mut ws_read) = ws_stream.split();
-    
+
     let (outbox_tx, mut outbox_rx) = tokio::sync::mpsc::unbounded_channel::<ClientMessage>();
-    
+
     let mut peer_connection: Option<Arc<RTCPeerConnection>> = None;
 
     // Setup input channels
@@ -2229,130 +2441,225 @@ async fn run_webrtc_client_task(
     let ma_chan_ref: Arc<Mutex<Option<Arc<RTCDataChannel>>>> = Arc::new(Mutex::new(None));
     let mr_chan_ref: Arc<Mutex<Option<Arc<RTCDataChannel>>>> = Arc::new(Mutex::new(None));
 
+    let wt_conn_ref: Arc<Mutex<Option<wtransport::Connection>>> = Arc::new(Mutex::new(None));
+
     // Spawn input senders tasks
     let k_c = Arc::clone(&kb_chan_ref);
+    let wt_c = Arc::clone(&wt_conn_ref);
     tokio::spawn(async move {
         while let Some(buf) = kb_rx.recv().await {
-            let chan = { k_c.lock().unwrap().clone() };
-            if let Some(chan) = chan {
-                let _ = chan.send(&buf).await;
+            let wt_sent = {
+                let lock = wt_c.lock().unwrap();
+                if let Some(ref conn) = *lock {
+                    let mut wt_buf = vec![0u8; buf.len() + 1];
+                    wt_buf[0] = 7; // Channel 7: keyboard
+                    wt_buf[1..].copy_from_slice(&buf);
+                    if let Err(e) = conn.send_datagram(&wt_buf) {
+                        eprintln!("WebTransport send_datagram keyboard failed: {:?}", e);
+                        false
+                    } else {
+                        true
+                    }
+                } else {
+                    false
+                }
+            };
+
+            if !wt_sent {
+                let chan = { k_c.lock().unwrap().clone() };
+                if let Some(chan) = chan {
+                    let _ = chan.send(&buf).await;
+                }
             }
         }
     });
 
     let ma_c = Arc::clone(&ma_chan_ref);
+    let wt_c = Arc::clone(&wt_conn_ref);
     tokio::spawn(async move {
         let mut last_check = std::time::Instant::now();
         let mut pkts_since_check = 0;
         let mut cached_buffer_ok = true;
         while let Some(buf) = ma_rx.recv().await {
             let chan = { ma_c.lock().unwrap().clone() };
-            if let Some(chan) = chan {
-                let mut final_buf = buf;
-                while let Ok(next_buf) = ma_rx.try_recv() {
-                    final_buf = next_buf;
-                }
-                
-                if mouse_queue_limit > 0 {
-                    let now = std::time::Instant::now();
-                    pkts_since_check += 1;
-                    if pkts_since_check >= 16 || now.duration_since(last_check).as_millis() >= 50 {
-                        let amt = chan.buffered_amount().await;
-                        cached_buffer_ok = amt < mouse_queue_limit as usize;
-                        last_check = now;
-                        pkts_since_check = 0;
+            let mut final_buf = buf;
+            while let Ok(next_buf) = ma_rx.try_recv() {
+                final_buf = next_buf;
+            }
+
+            let wt_sent = {
+                let lock = wt_c.lock().unwrap();
+                if let Some(ref conn) = *lock {
+                    let mut wt_buf = vec![0u8; final_buf.len() + 1];
+                    wt_buf[0] = 5; // Channel 5: mouse_absolute
+                    wt_buf[1..].copy_from_slice(&final_buf);
+                    if let Err(e) = conn.send_datagram(&wt_buf) {
+                        eprintln!("WebTransport send_datagram mouse_abs failed: {:?}", e);
+                        false
+                    } else {
+                        true
                     }
                 } else {
-                    cached_buffer_ok = true;
+                    false
                 }
-                
-                if cached_buffer_ok {
-                    let _ = chan.send(&final_buf).await;
+            };
+
+            if !wt_sent {
+                if let Some(chan) = chan {
+                    if mouse_queue_limit > 0 {
+                        let now = std::time::Instant::now();
+                        pkts_since_check += 1;
+                        if pkts_since_check >= 16 || now.duration_since(last_check).as_millis() >= 50 {
+                            let amt = chan.buffered_amount().await;
+                            cached_buffer_ok = amt < mouse_queue_limit as usize;
+                            last_check = now;
+                            pkts_since_check = 0;
+                        }
+                    } else {
+                        cached_buffer_ok = true;
+                    }
+
+                    if cached_buffer_ok {
+                        let _ = chan.send(&final_buf).await;
+                    }
                 }
             }
         }
     });
 
     let mr_c = Arc::clone(&mr_chan_ref);
+    let wt_c = Arc::clone(&wt_conn_ref);
     tokio::spawn(async move {
         let mut last_check = std::time::Instant::now();
         let mut pkts_since_check = 0;
         let mut cached_buffer_ok = true;
         while let Some(buf) = mr_rx.recv().await {
             let chan = { mr_c.lock().unwrap().clone() };
-            if let Some(chan) = chan {
-                let mut final_buf = buf;
-                
-                // If this is a relative mouse motion event (Type 0), coalesce it with consecutive motions in the queue
-                if final_buf[0] == 0 {
-                    let mut dx = i16::from_be_bytes([final_buf[1], final_buf[2]]);
-                    let mut dy = i16::from_be_bytes([final_buf[3], final_buf[4]]);
-                    let mut ts = u32::from_be_bytes([final_buf[5], final_buf[6], final_buf[7], final_buf[8]]);
-                    let mut coalesced = false;
-                    
-                    while let Ok(next_buf) = mr_rx.try_recv() {
-                        if next_buf[0] == 0 {
-                            dx = dx.wrapping_add(i16::from_be_bytes([next_buf[1], next_buf[2]]));
-                            dy = dy.wrapping_add(i16::from_be_bytes([next_buf[3], next_buf[4]]));
-                            ts = u32::from_be_bytes([next_buf[5], next_buf[6], next_buf[7], next_buf[8]]);
-                            coalesced = true;
-                        } else {
-                            // Non-motion event (e.g. click, scroll) - send current accumulated motion first
-                            let mut motion_buf = vec![0u8; 9];
-                            motion_buf[0] = 0;
-                            motion_buf[1..3].copy_from_slice(&dx.to_be_bytes());
-                            motion_buf[3..5].copy_from_slice(&dy.to_be_bytes());
-                            motion_buf[5..9].copy_from_slice(&ts.to_be_bytes());
-                            
-                            if mouse_queue_limit > 0 {
-                                let now = std::time::Instant::now();
-                                pkts_since_check += 1;
-                                if pkts_since_check >= 16 || now.duration_since(last_check).as_millis() >= 50 {
-                                    let amt = chan.buffered_amount().await;
-                                    cached_buffer_ok = amt < mouse_queue_limit as usize;
-                                    last_check = now;
-                                    pkts_since_check = 0;
-                                }
-                            } else {
-                                cached_buffer_ok = true;
-                            }
-                            
-                            if cached_buffer_ok {
-                                let _ = chan.send(&Bytes::from(motion_buf)).await;
-                            }
-                            
-                            // Now transition final_buf to this non-motion event
-                            final_buf = next_buf;
-                            coalesced = false;
-                            break;
-                        }
-                    }
-                    
-                    if coalesced {
+            let mut final_buf = buf;
+
+            // If this is a relative mouse motion event (Type 0), coalesce it with consecutive motions in the queue
+            if final_buf[0] == 0 {
+                let mut dx = i16::from_be_bytes([final_buf[1], final_buf[2]]);
+                let mut dy = i16::from_be_bytes([final_buf[3], final_buf[4]]);
+                let mut ts = u32::from_be_bytes([
+                    final_buf[5],
+                    final_buf[6],
+                    final_buf[7],
+                    final_buf[8],
+                ]);
+                let mut coalesced = false;
+
+                while let Ok(next_buf) = mr_rx.try_recv() {
+                    if next_buf[0] == 0 {
+                        dx = dx.wrapping_add(i16::from_be_bytes([next_buf[1], next_buf[2]]));
+                        dy = dy.wrapping_add(i16::from_be_bytes([next_buf[3], next_buf[4]]));
+                        ts = u32::from_be_bytes([
+                            next_buf[5],
+                            next_buf[6],
+                            next_buf[7],
+                            next_buf[8],
+                        ]);
+                        coalesced = true;
+                    } else {
+                        // Non-motion event (e.g. click, scroll) - send current accumulated motion first
                         let mut motion_buf = vec![0u8; 9];
                         motion_buf[0] = 0;
                         motion_buf[1..3].copy_from_slice(&dx.to_be_bytes());
                         motion_buf[3..5].copy_from_slice(&dy.to_be_bytes());
                         motion_buf[5..9].copy_from_slice(&ts.to_be_bytes());
-                        final_buf = Bytes::from(motion_buf);
+
+                        let wt_sent = {
+                            let lock = wt_c.lock().unwrap();
+                            if let Some(ref conn) = *lock {
+                                let mut wt_buf = vec![0u8; motion_buf.len() + 1];
+                                wt_buf[0] = 6; // Channel 6: mouse_relative
+                                wt_buf[1..].copy_from_slice(&motion_buf);
+                                if let Err(e) = conn.send_datagram(&wt_buf) {
+                                    eprintln!("WebTransport send_datagram mouse_rel motion failed: {:?}", e);
+                                    false
+                                } else {
+                                    true
+                                }
+                            } else {
+                                false
+                            }
+                        };
+
+                        if !wt_sent {
+                            if let Some(ref c) = chan {
+                                if mouse_queue_limit > 0 {
+                                    let now = std::time::Instant::now();
+                                    pkts_since_check += 1;
+                                    if pkts_since_check >= 16
+                                        || now.duration_since(last_check).as_millis() >= 50
+                                    {
+                                        let amt = c.buffered_amount().await;
+                                        cached_buffer_ok = amt < mouse_queue_limit as usize;
+                                        last_check = now;
+                                        pkts_since_check = 0;
+                                    }
+                                } else {
+                                    cached_buffer_ok = true;
+                                }
+
+                                if cached_buffer_ok {
+                                    let _ = c.send(&Bytes::from(motion_buf)).await;
+                                }
+                            }
+                        }
+
+                        // Now transition final_buf to this non-motion event
+                        final_buf = next_buf;
+                        coalesced = false;
+                        break;
                     }
                 }
-                
-                if mouse_queue_limit > 0 {
-                    let now = std::time::Instant::now();
-                    pkts_since_check += 1;
-                    if pkts_since_check >= 16 || now.duration_since(last_check).as_millis() >= 50 {
-                        let amt = chan.buffered_amount().await;
-                        cached_buffer_ok = amt < mouse_queue_limit as usize;
-                        last_check = now;
-                        pkts_since_check = 0;
+
+                if coalesced {
+                    let mut motion_buf = vec![0u8; 9];
+                    motion_buf[0] = 0;
+                    motion_buf[1..3].copy_from_slice(&dx.to_be_bytes());
+                    motion_buf[3..5].copy_from_slice(&dy.to_be_bytes());
+                    motion_buf[5..9].copy_from_slice(&ts.to_be_bytes());
+                    final_buf = Bytes::from(motion_buf);
+                }
+            }
+
+            let wt_sent = {
+                let lock = wt_c.lock().unwrap();
+                if let Some(ref conn) = *lock {
+                    let mut wt_buf = vec![0u8; final_buf.len() + 1];
+                    wt_buf[0] = 6; // Channel 6: mouse_relative
+                    wt_buf[1..].copy_from_slice(&final_buf);
+                    if let Err(e) = conn.send_datagram(&wt_buf) {
+                        eprintln!("WebTransport send_datagram mouse_rel final failed: {:?}", e);
+                        false
+                    } else {
+                        true
                     }
                 } else {
-                    cached_buffer_ok = true;
+                    false
                 }
-                
-                if cached_buffer_ok {
-                    let _ = chan.send(&final_buf).await;
+            };
+
+            if !wt_sent {
+                if let Some(ref c) = chan {
+                    if mouse_queue_limit > 0 {
+                        let now = std::time::Instant::now();
+                        pkts_since_check += 1;
+                        if pkts_since_check >= 16 || now.duration_since(last_check).as_millis() >= 50 {
+                            let amt = c.buffered_amount().await;
+                            cached_buffer_ok = amt < mouse_queue_limit as usize;
+                            last_check = now;
+                            pkts_since_check = 0;
+                        }
+                    } else {
+                        cached_buffer_ok = true;
+                    }
+
+                    if cached_buffer_ok {
+                        let _ = c.send(&final_buf).await;
+                    }
                 }
             }
         }
@@ -2403,8 +2710,44 @@ async fn run_webrtc_client_task(
 
             match server_msg {
                 ServerToClientMessage::Signaling(sig) => match sig {
-                    SignalingMessage::Sdp { sdp, ice_servers, .. } => {
+                    SignalingMessage::Sdp {
+                        sdp, ice_servers, webtransport_port, ..
+                    } => {
                         if sdp.ty == RtcSdpType::Offer {
+                            if input_protocol == "webtransport" {
+                                if let Some(port) = webtransport_port {
+                                    let wt_conn_c = Arc::clone(&wt_conn_ref);
+                                    let server_url_c = server_url.clone();
+                                    tokio::spawn(async move {
+                                        if let Ok(parsed_url) = url::Url::parse(&server_url_c) {
+                                            if let Some(host) = parsed_url.host_str() {
+                                                println!("WebTransport: Connecting to https://{}:{}", host, port);
+                                                let config = ClientConfig::builder()
+                                                    .with_bind_default()
+                                                    .with_no_cert_validation()
+                                                    .build();
+                                                match Endpoint::client(config) {
+                                                    Ok(endpoint) => {
+                                                        match endpoint.connect(format!("https://{}:{}", host, port)).await {
+                                                            Ok(connection) => {
+                                                                println!("WebTransport connected successfully!");
+                                                                *wt_conn_c.lock().unwrap() = Some(connection);
+                                                            }
+                                                            Err(e) => {
+                                                                eprintln!("WebTransport connection to {}:{} failed: {:?}", host, port, e);
+                                                            }
+                                                        }
+                                                    }
+                                                    Err(e) => {
+                                                        eprintln!("Failed to construct WebTransport endpoint: {:?}", e);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    });
+                                }
+                            }
+
                             let pc = match setup_peer_connection(
                                 ice_servers,
                                 outbox_tx.clone(),
@@ -2414,7 +2757,9 @@ async fn run_webrtc_client_task(
                                 ma_chan_ref.clone(),
                                 mr_chan_ref.clone(),
                                 active_decoder.clone(),
-                            ).await {
+                            )
+                            .await
+                            {
                                 Ok(pc) => pc,
                                 Err(e) => {
                                     eprintln!("Failed to setup peer connection: {:?}", e);
@@ -2434,14 +2779,17 @@ async fn run_webrtc_client_task(
                                         continue;
                                     }
 
-                                    let answer_msg = ClientMessage::Signaling(SignalingMessage::Sdp {
-                                        target_id: host_id.clone(),
-                                        sdp: RtcSessionDescription {
-                                            ty: RtcSdpType::Answer,
-                                            sdp: answer.sdp,
-                                        },
-                                        ice_servers: None,
-                                    });
+                                    let answer_msg =
+                                        ClientMessage::Signaling(SignalingMessage::Sdp {
+                                            target_id: host_id.clone(),
+                                            sdp: RtcSessionDescription {
+                                                ty: RtcSdpType::Answer,
+                                                sdp: answer.sdp,
+                                            },
+                                            ice_servers: None,
+                                            webtransport_port: None,
+                                            webtransport_cert_hash: None,
+                                        });
                                     let _ = outbox_tx.send(answer_msg);
                                     println!("SDP Answer created and sent successfully.");
                                 }
@@ -2478,5 +2826,3 @@ async fn run_webrtc_client_task(
     }
     Ok(())
 }
-
-

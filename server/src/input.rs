@@ -1,7 +1,7 @@
 use crate::buffer::ByteBuffer;
 use moonlight_common::stream::control::{
-    ControllerButtons, ControllerCapabilities, ControllerType, KeyAction, KeyFlags,
-    KeyModifiers, MouseButton, MouseButtonAction, TouchEventType,
+    ControllerButtons, ControllerCapabilities, ControllerType, KeyAction, KeyFlags, KeyModifiers,
+    MouseButton, MouseButtonAction, TouchEventType,
 };
 use num_traits::FromPrimitive;
 use tracing::warn;
@@ -185,7 +185,11 @@ impl InboundPacket {
                     } else {
                         0
                     };
-                    Some(InboundPacket::MouseMove { delta_x, delta_y, timestamp })
+                    Some(InboundPacket::MouseMove {
+                        delta_x,
+                        delta_y,
+                        timestamp,
+                    })
                 } else if ty == 1 {
                     if buffer.remaining() < 8 {
                         return None;

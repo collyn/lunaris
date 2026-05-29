@@ -3,15 +3,59 @@ import QtQuick.Controls
 
 Item {
     id: menuContainer
-    width: 950
+    width: 1080
     height: 48
+
+    property var fpsPresets: getSupportedFpsPresets()
+
+    function getSupportedFpsPresets() {
+        var maxRate = (Screen && Screen.refreshRate > 0) ? Math.ceil(Screen.refreshRate) : 60;
+        var allPresets = [240, 144, 120, 90, 60, 30];
+        var filtered = [];
+        
+        var insertedExact = false;
+        for (var i = 0; i < allPresets.length; i++) {
+            var preset = allPresets[i];
+            if (preset <= maxRate) {
+                if (!insertedExact && Math.abs(maxRate - preset) > 5 && maxRate > preset) {
+                    filtered.push(maxRate);
+                    insertedExact = true;
+                }
+                filtered.push(preset);
+            }
+        }
+        
+        if (!insertedExact && maxRate > 30 && filtered.indexOf(maxRate) === -1) {
+            var inserted = false;
+            for (var j = 0; j < filtered.length; j++) {
+                if (maxRate > filtered[j]) {
+                    filtered.splice(j, 0, maxRate);
+                    inserted = true;
+                    break;
+                }
+            }
+            if (!inserted) {
+                filtered.push(maxRate);
+            }
+        }
+        
+        if (filtered.indexOf(60) === -1) filtered.push(60);
+        if (filtered.indexOf(30) === -1) filtered.push(30);
+        
+        filtered = filtered.filter(function(item, pos) {
+            return filtered.indexOf(item) === pos;
+        });
+        filtered.sort(function(a, b) { return b - a; });
+        
+        return filtered;
+    }
     
     // Custom signals
     signal fullscreenToggled()
     signal lockToggled()
     signal statsToggled()
     signal cursorHideToggled()
-    signal settingsChanged(string res, int fps, string codec, int bitrate, int queueLimit, bool disableCuda)
+    signal settingsChanged(string res, int fps, string codec, int bitrate, int queueLimit, bool disableCuda, string inputProtocol)
     signal exitTriggered()
     signal collapsed()
     signal minimizeTriggered()
@@ -94,7 +138,7 @@ Item {
     // To prevent onActivated from firing when programmatically updating the values
     property bool isInitializing: false
 
-    function initializeSettings(res, fps, codec, bitrate, queueLimit, host, disableCuda) {
+    function initializeSettings(res, fps, codec, bitrate, queueLimit, host, disableCuda, inputProtocol) {
         isInitializing = true;
         
         hostName = host;
@@ -109,9 +153,11 @@ Item {
         }
 
         // Set FPS combobox
-        var fpsPresets = [240, 144, 120, 90, 60, 30];
+        var fpsPresets = menuContainer.fpsPresets;
         var fpsIdx = fpsPresets.indexOf(fps);
-        fpsComboBox.currentIndex = fpsIdx !== -1 ? fpsIdx : 4; // Default to 60
+        var fallbackIdx = fpsPresets.indexOf(60);
+        if (fallbackIdx === -1) fallbackIdx = 0;
+        fpsComboBox.currentIndex = fpsIdx !== -1 ? fpsIdx : fallbackIdx;
 
         // Set Bitrate combobox (bitrate is in kbps)
         var bitratePresets = [2000, 5000, 8000, 10000, 15000, 20000, 30000, 50000, 75000, 100000, 150000];
@@ -149,6 +195,12 @@ Item {
 
         decoderComboBox.currentIndex = (disableCuda === true) ? 1 : 0;
 
+        if (inputProtocol === "webtransport") {
+            protocolComboBox.currentIndex = 1;
+        } else {
+            protocolComboBox.currentIndex = 0;
+        }
+
         isInitializing = false;
     }
 
@@ -158,8 +210,7 @@ Item {
         var resMap = ["1920x1080", "1280x720", "960x540"];
         var selectedRes = resMap[resComboBox.currentIndex];
 
-        var fpsMap = [240, 144, 120, 90, 60, 30];
-        var selectedFps = fpsMap[fpsComboBox.currentIndex];
+        var selectedFps = menuContainer.fpsPresets[fpsComboBox.currentIndex];
 
         var bitrateMap = [2000, 5000, 8000, 10000, 15000, 20000, 30000, 50000, 75000, 100000, 150000];
         var selectedBitrate = bitrateMap[bitrateComboBox.currentIndex];
@@ -172,8 +223,11 @@ Item {
 
         var selectedDisableCuda = (decoderComboBox.currentIndex === 1);
 
-        console.log("Applying menu settings: " + selectedRes + ", " + selectedFps + ", " + selectedCodec + ", " + selectedBitrate + ", " + selectedQueue + ", disableCuda=" + selectedDisableCuda);
-        menuContainer.settingsChanged(selectedRes, selectedFps, selectedCodec, selectedBitrate, selectedQueue, selectedDisableCuda);
+        var protocolMap = ["webrtc", "webtransport"];
+        var selectedProtocol = protocolMap[protocolComboBox.currentIndex];
+
+        console.log("Applying menu settings: " + selectedRes + ", " + selectedFps + ", " + selectedCodec + ", " + selectedBitrate + ", " + selectedQueue + ", disableCuda=" + selectedDisableCuda + ", protocol=" + selectedProtocol);
+        menuContainer.settingsChanged(selectedRes, selectedFps, selectedCodec, selectedBitrate, selectedQueue, selectedDisableCuda, selectedProtocol);
     }
 
     // Pill background
@@ -262,7 +316,7 @@ Item {
             LunarisComboBox {
                 id: fpsComboBox
                 customWidth: 95
-                model: ["240 FPS", "144 FPS", "120 FPS", "90 FPS", "60 FPS", "30 FPS"]
+                model: menuContainer.fpsPresets.map(function(val) { return String(val) + " FPS"; })
                 anchors.verticalCenter: parent.verticalCenter
                 LunarisToolTip { text: "Stream Frame Rate (FPS)" }
                 onActivated: menuContainer.applyCurrentSettings()
@@ -305,6 +359,16 @@ Item {
                 model: ["128 B", "256 B", "512 B", "1024 B"]
                 anchors.verticalCenter: parent.verticalCenter
                 LunarisToolTip { text: "Mouse Queue Limit" }
+                onActivated: menuContainer.applyCurrentSettings()
+            }
+
+            // Input Protocol Dropdown
+            LunarisComboBox {
+                id: protocolComboBox
+                customWidth: 125
+                model: ["WebRTC (SCTP)", "WebTransport"]
+                anchors.verticalCenter: parent.verticalCenter
+                LunarisToolTip { text: "Input Protocol" }
                 onActivated: menuContainer.applyCurrentSettings()
             }
 

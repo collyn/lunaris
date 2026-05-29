@@ -78,7 +78,10 @@ impl HardwareDecoder {
 
         let codec = unsafe { ffi::avcodec_find_decoder(codec_id) };
         if codec.is_null() {
-            return Err(anyhow::anyhow!("Failed to find FFmpeg decoder for codec {:?}", codec_id));
+            return Err(anyhow::anyhow!(
+                "Failed to find FFmpeg decoder for codec {:?}",
+                codec_id
+            ));
         }
 
         let codec_ctx = unsafe { ffi::avcodec_alloc_context3(codec) };
@@ -88,7 +91,7 @@ impl HardwareDecoder {
 
         unsafe {
             (*codec_ctx).flags |= ffi::AV_CODEC_FLAG_LOW_DELAY as i32;
-            (*codec_ctx).thread_count = 1; 
+            (*codec_ctx).thread_count = 1;
         }
 
         let mut hw_device_ctx: *mut ffi::AVBufferRef = std::ptr::null_mut();
@@ -138,7 +141,10 @@ impl HardwareDecoder {
                 (*codec_ctx).hw_device_ctx = ffi::av_buffer_ref(hw_device_ctx);
                 let name = std::ffi::CStr::from_ptr(ffi::av_hwdevice_get_type_name(hw_device_type))
                     .to_string_lossy();
-                println!("Successfully initialized GPU hardware decoding context: {}", name);
+                println!(
+                    "Successfully initialized GPU hardware decoding context: {}",
+                    name
+                );
             }
         } else {
             println!("Failed to create GPU hardware decoding context. Falling back to software decoding.");
@@ -199,7 +205,9 @@ impl HardwareDecoder {
 
             let recv_ret = unsafe { ffi::avcodec_receive_frame(self.codec_ctx, gpu_frame) };
 
-            if recv_ret == ffi::AVERROR(ffmpeg_next::util::error::EAGAIN) || recv_ret == ffi::AVERROR_EOF {
+            if recv_ret == ffi::AVERROR(ffmpeg_next::util::error::EAGAIN)
+                || recv_ret == ffi::AVERROR_EOF
+            {
                 unsafe {
                     ffi::av_frame_free(&mut (gpu_frame as *mut _));
                 }
@@ -208,7 +216,10 @@ impl HardwareDecoder {
                 unsafe {
                     ffi::av_frame_free(&mut (gpu_frame as *mut _));
                 }
-                return Err(anyhow::anyhow!("avcodec_receive_frame failed: {}", recv_ret));
+                return Err(anyhow::anyhow!(
+                    "avcodec_receive_frame failed: {}",
+                    recv_ret
+                ));
             }
 
             match self.process_frame(gpu_frame) {
@@ -239,7 +250,8 @@ impl HardwareDecoder {
 
                 let mut cuda_ctx = 0u64;
                 if !self.hw_device_ctx.is_null() {
-                    let hw_device_ctx_ptr = (*self.hw_device_ctx).data as *mut ffi::AVHWDeviceContext;
+                    let hw_device_ctx_ptr =
+                        (*self.hw_device_ctx).data as *mut ffi::AVHWDeviceContext;
                     if !hw_device_ctx_ptr.is_null() {
                         let hwctx = (*hw_device_ctx_ptr).hwctx;
                         if !hwctx.is_null() {
@@ -250,11 +262,18 @@ impl HardwareDecoder {
 
                 let mut lock = ACTIVE_CUDA_FRAME.lock().unwrap();
                 let decoder_ptr = self as *const _ as usize;
-                if let Some(SendRawFrame { frame: old_frame, .. }) = lock.replace(SendRawFrame { frame: gpu_frame, decoder_ptr }) {
+                if let Some(SendRawFrame {
+                    frame: old_frame, ..
+                }) = lock.replace(SendRawFrame {
+                    frame: gpu_frame,
+                    decoder_ptr,
+                }) {
                     ffi::av_frame_free(&mut (old_frame as *mut _));
                 }
 
-                crate::bridge::qobject::deliver_cuda_frame(cuda_ctx, y_ptr, y_stride, uv_ptr, uv_stride, width, height);
+                crate::bridge::qobject::deliver_cuda_frame(
+                    cuda_ctx, y_ptr, y_stride, uv_ptr, uv_stride, width, height,
+                );
             }
 
             return Ok(YUVFrame {
@@ -277,7 +296,9 @@ impl HardwareDecoder {
                 let temp_frame = ffi::av_frame_alloc();
                 if temp_frame.is_null() {
                     ffi::av_frame_free(&mut (gpu_frame as *mut _));
-                    return Err(anyhow::anyhow!("Failed to allocate temp frame for HW-to-CPU copy"));
+                    return Err(anyhow::anyhow!(
+                        "Failed to allocate temp frame for HW-to-CPU copy"
+                    ));
                 }
 
                 let transfer_err = ffi::av_hwframe_transfer_data(temp_frame, gpu_frame, 0);
@@ -351,7 +372,11 @@ impl HardwareDecoder {
                 }
             }
         } else {
-            if self.sws_ctx.is_null() || self.last_width != width || self.last_height != height || self.last_format != format {
+            if self.sws_ctx.is_null()
+                || self.last_width != width
+                || self.last_height != height
+                || self.last_format != format
+            {
                 if !self.sws_ctx.is_null() {
                     unsafe {
                         ffi::sws_freeContext(self.sws_ctx);
@@ -396,7 +421,9 @@ impl HardwareDecoder {
                     }
                     ffi::av_frame_free(&mut (gpu_frame as *mut _));
                 }
-                return Err(anyhow::anyhow!("Failed to allocate output destination frame"));
+                return Err(anyhow::anyhow!(
+                    "Failed to allocate output destination frame"
+                ));
             }
 
             unsafe {
@@ -411,7 +438,10 @@ impl HardwareDecoder {
                         ffi::av_frame_free(&mut (cpu_frame as *mut _));
                     }
                     ffi::av_frame_free(&mut (gpu_frame as *mut _));
-                    return Err(anyhow::anyhow!("av_frame_get_buffer failed: {}", buffer_err));
+                    return Err(anyhow::anyhow!(
+                        "av_frame_get_buffer failed: {}",
+                        buffer_err
+                    ));
                 }
 
                 ffi::sws_scale(

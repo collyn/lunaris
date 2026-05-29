@@ -78,7 +78,43 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   const scrollXAccumulatorRef = useRef<number>(0);
   const scrollYAccumulatorRef = useRef<number>(0);
   const lastJitterResetTimeRef = useRef<number>(0);
-  const videoRectRef = useRef<DOMRect | null>(null);
+  const wtRef = useRef<any>(null);
+  const wtDatagramWriterRef = useRef<any>(null);
+  const agentIpsRef = useRef<string[]>([]);
+  const wtPortRef = useRef<number | undefined>(undefined);
+  const wtCertHashRef = useRef<string | undefined>(undefined);
+  const wtConnectingRef = useRef<boolean>(false);
+
+  // Mobile gesture and keyboard refs
+  const keyboardInputRef = useRef<HTMLInputElement>(null);
+  const initialTouchDistanceRef = useRef<number>(0);
+  const initialZoomScaleRef = useRef<number>(1);
+  const initialZoomPanRef = useRef<{ x: number, y: number }>({ x: 0, y: 0 });
+  const initialTouchMidpointRef = useRef<{ x: number, y: number }>({ x: 0, y: 0 });
+  const touchStartPosRef = useRef<{ x: number, y: number }>({ x: 0, y: 0 });
+  const touchStartTimeRef = useRef<number>(0);
+  const lastTouchTapTimeRef = useRef<number>(0);
+  const isDraggingRef = useRef<boolean>(false);
+  const viewportWrapperRef = useRef<HTMLDivElement>(null);
+  const touchStartInitialPosRef = useRef<{ x: number, y: number }>({ x: 0, y: 0 });
+  const longPressTimerRef = useRef<any | null>(null);
+  const longPressTriggeredRef = useRef<boolean>(false);
+  const clickUpTimerRef = useRef<any | null>(null);
+  const wasMultiTouchRef = useRef<boolean>(false);
+  const isDirectClickPendingRef = useRef<boolean>(false);
+  const twoFingerTouchStartTimeRef = useRef<number>(0);
+  const isTwoFingerTapPendingRef = useRef<boolean>(false);
+  const localCursorRef = useRef<HTMLDivElement>(null);
+  const localCursorPosRef = useRef<{ x: number, y: number }>({ x: 960, y: 540 });
+  const initialLocalCursorPosRef = useRef<{ x: number, y: number }>({ x: 960, y: 540 });
+  const hasCenteredThisTouchRef = useRef<boolean>(false);
+  const mouseAccumulatorXRef = useRef<number>(0);
+  const mouseAccumulatorYRef = useRef<number>(0);
+  const mouseRelativeAccXRef = useRef<number>(0);
+  const mouseRelativeAccYRef = useRef<number>(0);
+  const latestAbsoluteMousePosRef = useRef<{ clientX: number, clientY: number } | null>(null);
+  const mouseSeqRef = useRef<number>(0);
+  const mouseFlushTimeoutRef = useRef<any | null>(null);
 
   const [status, setStatus] = useState<string>('Initializing...');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -100,12 +136,14 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     }
     return Number(val);
   });
+  const [activeInputProtocol, setActiveInputProtocol] = useState<string>(() => localStorage.getItem('lunaris_input_protocol') || 'webrtc');
 
   const [draftResolution, setDraftResolution] = useState<string>(activeResolution);
   const [draftFps, setDraftFps] = useState<number>(activeFps);
   const [draftBitrate, setDraftBitrate] = useState<number>(activeBitrate);
   const [draftCodec, setDraftCodec] = useState<string>(activeCodec);
   const [draftMouseQueueLimit, setDraftMouseQueueLimit] = useState<number>(mouseQueueLimit);
+  const [draftInputProtocol, setDraftInputProtocol] = useState<string>(activeInputProtocol);
 
   const [useNativeClient, setUseNativeClient] = useState<boolean>(() => {
     if (typeof window.RTCPeerConnection === 'undefined') {
@@ -127,6 +165,25 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   const [isMuted, setIsMuted] = useState<boolean>(() => {
     const val = localStorage.getItem('lunaris_stream_muted');
     return val !== null ? val === 'true' : false;
+  });
+
+  // Mobile-specific States
+  const [touchMode, setTouchMode] = useState<'direct' | 'trackpad'>(() => {
+    return (localStorage.getItem('lunaris_mobile_touch_mode') as 'direct' | 'trackpad') || 'trackpad';
+  });
+  const [useTouchOffset, setUseTouchOffset] = useState<boolean>(() => {
+    return localStorage.getItem('lunaris_mobile_touch_offset') !== 'false';
+  });
+  const [zoomScale, setZoomScale] = useState<number>(1);
+  const [zoomPan, setZoomPan] = useState<{ x: number, y: number }>({ x: 0, y: 0 });
+  const [showMobileMenu, setShowMobileMenu] = useState<boolean>(false);
+  const [isKeyboardActive, setIsKeyboardActive] = useState<boolean>(false);
+  const [isMobileFooterVisible, setIsMobileFooterVisible] = useState<boolean>(true);
+  const [modifierKeys, setModifierKeys] = useState<{ ctrl: boolean; alt: boolean; shift: boolean; meta: boolean }>({
+    ctrl: false,
+    alt: false,
+    shift: false,
+    meta: false
   });
 
   const [browserCodecs, setBrowserCodecs] = useState<{ h264: boolean; h265: boolean; av1: boolean }>({
@@ -263,13 +320,15 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       setDraftCodec(activeCodec);
       setDraftMouseQueueLimit(mouseQueueLimit);
       setDraftUseNativeClient(useNativeClient);
+      setDraftInputProtocol(activeInputProtocol);
     }
-  }, [showSettingsModal, activeResolution, activeFps, activeBitrate, activeCodec, mouseQueueLimit, useNativeClient]);
+  }, [showSettingsModal, activeResolution, activeFps, activeBitrate, activeCodec, mouseQueueLimit, useNativeClient, activeInputProtocol]);
   const [hideLocalCursor, setHideLocalCursor] = useState<boolean>(() => localStorage.getItem('lunaris_stream_hide_cursor') !== 'false');
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
   const [isHeaderVisible, setIsHeaderVisible] = useState<boolean>(true);
   const [isHeaderPinned, setIsHeaderPinned] = useState<boolean>(() => localStorage.getItem('lunaris_header_pinned') === 'true');
   const [showStats, setShowStats] = useState<boolean>(() => localStorage.getItem('lunaris_show_stats') !== 'false');
+  const [isWebTransportConnected, setIsWebTransportConnected] = useState<boolean>(false);
   const headerTimeoutRef = useRef<any | null>(null);
 
   // Stats State
@@ -306,15 +365,21 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       const locked = document.pointerLockElement === videoRef.current;
       setIsPointerLocked(locked);
       addLog(locked ? "Pointer locked. Relative mouse mode." : "Pointer unlocked. Absolute mouse mode.");
-      // Keep remote cursor visible if local cursor is hidden, even when pointer is locked
-      sendSunshineCursorHide(!hideLocalCursor);
+      sendSunshineCursorHide(locked ? false : (touchMode === "trackpad" ? false : !hideLocalCursor));
     };
 
     document.addEventListener('pointerlockchange', handlePointerLockChange);
     return () => {
       document.removeEventListener('pointerlockchange', handlePointerLockChange);
     };
-  }, [hideLocalCursor]);
+  }, [hideLocalCursor, touchMode]);
+
+  // Hide host cursor when local cursor is active or touch mode is trackpad
+  useEffect(() => {
+    if (status === "Streaming") {
+      sendSunshineCursorHide(isPointerLocked ? false : (touchMode === "trackpad" ? false : !hideLocalCursor));
+    }
+  }, [hideLocalCursor, touchMode, status, isPointerLocked]);
 
   // Listen to fullscreen changes (e.g. user presses ESC)
   useEffect(() => {
@@ -564,12 +629,26 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
           case "Sdp":
             if (payload.sdp.ty === "offer") {
               addLog("Received SDP Offer from host agent.");
-              await handleSdpOffer(payload.target_id, payload.sdp.sdp, payload.ice_servers);
+              await handleSdpOffer(
+                payload.target_id,
+                payload.sdp.sdp,
+                payload.ice_servers,
+                payload.webtransport_port,
+                payload.webtransport_cert_hash
+              );
             }
             break;
             
           case "IceCandidate":
             addLog("Received remote ICE candidate.");
+            const candIp = parseCandidateIp(payload.candidate.candidate);
+            if (candIp && !agentIpsRef.current.includes(candIp)) {
+              agentIpsRef.current.push(candIp);
+              addLog(`Found remote candidate IP: ${candIp}`);
+              if (activeInputProtocol === "webtransport" && !wtRef.current && wtPortRef.current && wtCertHashRef.current) {
+                attemptWebTransport();
+              }
+            }
             if (pcRef.current) {
               try {
                 await pcRef.current.addIceCandidate(new RTCIceCandidate({
@@ -623,7 +702,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     return () => {
       cleanup();
     };
-  }, [hostId, activeResolution, activeFps, activeBitrate, activeCodec, token, hostName, selectedAppId, useNativeClient]);
+  }, [hostId, activeResolution, activeFps, activeBitrate, activeCodec, token, hostName, selectedAppId, useNativeClient, activeInputProtocol]);
 
   // Send keyboard event helper (global/unified)
   const sendKeyEvent = (code: string, shiftKey: boolean, ctrlKey: boolean, altKey: boolean, metaKey: boolean, isDown: boolean) => {
@@ -749,6 +828,35 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     const interval = setInterval(async () => {
       if (!pcRef.current) return;
       try {
+        // Active video latency/delay accumulation correction
+        const video = videoRef.current;
+        if (video && video.buffered.length > 0) {
+          if (video.paused) {
+            video.play().catch(e => console.error("Play error in auto-sync:", e));
+          }
+          const end = video.buffered.end(video.buffered.length - 1);
+          const currentDelay = end - video.currentTime;
+          
+          if (currentDelay > 0.20) {
+            // Hard reset to flush the buffer instantly if delay is very large
+            try {
+              const stream = video.srcObject;
+              video.srcObject = null;
+              video.srcObject = stream;
+              video.play().catch(e => console.error("Play error after srcObject reset:", e));
+              addLog(`Hard reset video srcObject to flush large delay: ${(currentDelay * 1000).toFixed(0)}ms`);
+            } catch (e) {
+              console.error("Failed to reset srcObject:", e);
+            }
+          } else if (currentDelay > 0.08) {
+            // Speed up playback (15% faster) to catch up smoothly
+            video.playbackRate = 1.15;
+          } else if (currentDelay <= 0.04) {
+            // Restore normal playback speed once caught up
+            video.playbackRate = 1.0;
+          }
+        }
+
         const statsReport = await pcRef.current.getStats();
         let currentRtt = 0;
         let videoDecodeLatency = 0;
@@ -860,8 +968,141 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     return () => clearInterval(interval);
   }, [status]);
 
-  const handleSdpOffer = async (agentId: string, offerSdp: string, iceServers?: { urls: string[], username?: string, credential?: string }[]) => {
+  const parseCandidateIp = (candidateStr: string) => {
+    const parts = candidateStr.split(' ');
+    if (parts.length >= 5) {
+      const ip = parts[4];
+      if (ip.match(/^[0-9.]+$/) || ip.includes(':')) {
+        return ip;
+      }
+    }
+    return null;
+  };
+
+  const hexToUint8Array = (hexString: string) => {
+    const clean = hexString.replace(/:/g, '');
+    const arr = new Uint8Array(clean.length / 2);
+    for (let i = 0; i < clean.length; i += 2) {
+      arr[i / 2] = parseInt(clean.substring(i, i + 2), 16);
+    }
+    return arr;
+  };
+
+  const createWebTransportChannelWrapper = (label: string, channelId: number, originalChannel: RTCDataChannel | null) => {
+    return {
+      label,
+      readyState: "open",
+      isWrapped: true,
+      get bufferedAmount() {
+        return 0;
+      },
+      send: (buffer: any) => {
+        if (wtRef.current && wtDatagramWriterRef.current) {
+          const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
+          const wtBuffer = new Uint8Array(bytes.byteLength + 1);
+          wtBuffer[0] = channelId;
+          wtBuffer.set(bytes, 1);
+          wtDatagramWriterRef.current.write(wtBuffer).catch((e: any) => {
+            console.warn(`WebTransport send failed for ${label}, falling back to WebRTC:`, e);
+            setIsWebTransportConnected(false);
+            if (originalChannel && originalChannel.readyState === "open") {
+              originalChannel.send(buffer);
+            }
+          });
+        } else if (originalChannel && originalChannel.readyState === "open") {
+          originalChannel.send(buffer);
+        }
+      },
+      close: () => {
+        if (originalChannel) {
+          originalChannel.close();
+        }
+      }
+    };
+  };
+
+  const attemptWebTransport = async () => {
+    if (wtRef.current || wtConnectingRef.current) return;
+    if (!wtPortRef.current || !wtCertHashRef.current) return;
+    
+    wtConnectingRef.current = true;
+    const port = wtPortRef.current;
+    const certHash = wtCertHashRef.current;
+    
+    // Build list of IPs to try
+    const ips = [...agentIpsRef.current];
+    const sigHost = getBackendHost().split(':')[0];
+    if (!ips.includes(sigHost)) {
+      ips.push(sigHost);
+    }
+    if (!ips.includes("127.0.0.1")) {
+      ips.push("127.0.0.1");
+    }
+    
+    addLog(`Attempting WebTransport connection with IPs: ${ips.join(', ')} on port ${port}`);
+    
+    const hashArray = hexToUint8Array(certHash);
+    
+    for (const ip of ips) {
+      try {
+        const url = `https://${ip}:${port}/`;
+        addLog(`WebTransport: Connecting to ${url}...`);
+        const transport = new (window as any).WebTransport(url, {
+          serverCertificateHashes: [
+            {
+              algorithm: 'sha-256',
+              value: hashArray
+            }
+          ]
+        });
+        
+        await transport.ready;
+        addLog(`WebTransport: Connected successfully to ${url}!`);
+        
+        wtRef.current = transport;
+        wtDatagramWriterRef.current = transport.datagrams.writable.getWriter();
+        setIsWebTransportConnected(true);
+        
+        // Wrap existing data channels to send via WebTransport
+        const WT_CHANNELS = {
+          keyboard: 7,
+          mouse_absolute: 5,
+          mouse_reliable: 4,
+          mouse_relative: 6,
+        };
+        for (const [label, channelId] of Object.entries(WT_CHANNELS)) {
+          const existing = channelsRef.current[label];
+          if (existing && !(existing as any).isWrapped) {
+            channelsRef.current[label] = createWebTransportChannelWrapper(label, channelId, existing) as any;
+          }
+        }
+        
+        wtConnectingRef.current = false;
+        return;
+      } catch (e) {
+        addLog(`WebTransport connection to ${ip}:${port} failed: ${e}`);
+      }
+    }
+    
+    addLog("WebTransport: All connection attempts failed. Falling back to WebRTC.");
+    wtConnectingRef.current = false;
+    setIsWebTransportConnected(false);
+  };
+
+  const handleSdpOffer = async (
+    agentId: string, 
+    offerSdp: string, 
+    iceServers?: { urls: string[], username?: string, credential?: string }[],
+    webtransportPort?: number,
+    webtransportCertHash?: string
+  ) => {
     setStatus("Establishing WebRTC...");
+    
+    wtPortRef.current = webtransportPort;
+    wtCertHashRef.current = webtransportCertHash;
+    if (activeInputProtocol === "webtransport" && webtransportPort && webtransportCertHash) {
+      attemptWebTransport();
+    }
     
     // Create RTCPeerConnection
     const pc = new RTCPeerConnection({
@@ -899,13 +1140,26 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     pc.ondatachannel = (event) => {
       const channel = event.channel;
       addLog(`Data Channel established: ${channel.label}`);
-      channelsRef.current[channel.label] = channel;
+      
+      const label = channel.label;
+      const WT_CHANNELS = {
+        keyboard: 7,
+        mouse_absolute: 5,
+        mouse_reliable: 4,
+        mouse_relative: 6,
+      };
+      const channelId = WT_CHANNELS[label as keyof typeof WT_CHANNELS];
+      if (wtRef.current && channelId !== undefined) {
+        channelsRef.current[label] = createWebTransportChannelWrapper(label, channelId, channel) as any;
+      } else {
+        channelsRef.current[label] = channel;
+      }
       
       channel.onopen = () => {
         addLog(`Data Channel ${channel.label} opened.`);
         if (channel.label === "keyboard") {
           setTimeout(() => {
-            sendSunshineCursorHide(!hideLocalCursor);
+            sendSunshineCursorHide(document.pointerLockElement === videoRef.current ? false : (touchMode === "trackpad" ? false : !hideLocalCursor));
           }, 1000);
         }
       };
@@ -987,7 +1241,10 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
             sdp: {
               ty: "answer",
               sdp: answer.sdp
-            }
+            },
+            ice_servers: null,
+            webtransport_port: null,
+            webtransport_cert_hash: null
           }
         }
       }));
@@ -996,6 +1253,12 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   };
 
   const cleanup = () => {
+    // Clear mouse flush timer
+    if (mouseFlushTimeoutRef.current) {
+      clearTimeout(mouseFlushTimeoutRef.current);
+      mouseFlushTimeoutRef.current = null;
+    }
+
     // 1. Send EndSession signal if websocket is open
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({
@@ -1028,6 +1291,22 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       videoRef.current.srcObject = null;
     }
     
+    // Close WebTransport
+    if (wtDatagramWriterRef.current) {
+      try {
+        wtDatagramWriterRef.current.releaseLock();
+      } catch (e) {}
+      wtDatagramWriterRef.current = null;
+    }
+    if (wtRef.current) {
+      try {
+        wtRef.current.close();
+      } catch (e) {}
+      wtRef.current = null;
+    }
+    setIsWebTransportConnected(false);
+    agentIpsRef.current = [];
+
     document.exitPointerLock();
   };
 
@@ -1069,6 +1348,11 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       localStorage.setItem('lunaris_mouse_queue_limit', String(numValue));
       setMouseQueueLimit(numValue);
       setDraftMouseQueueLimit(numValue);
+    } else if (key === 'inputProtocol') {
+      localStorage.setItem('lunaris_input_protocol', value);
+      setActiveInputProtocol(value);
+      setDraftInputProtocol(value);
+      if (value !== activeInputProtocol) setStatus("Connecting...");
     }
   };
 
@@ -1085,10 +1369,73 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   };
 
   const updateVideoRect = () => {
-    if (videoRef.current) {
-      videoRectRef.current = videoRef.current.getBoundingClientRect();
+    updateVirtualCursorDOM();
+  };
+
+  const updateVirtualCursorDOM = () => {
+    const cursorEl = localCursorRef.current;
+    const video = videoRef.current;
+    const wrapper = viewportWrapperRef.current;
+    if (!cursorEl || !video || !wrapper) return;
+
+    const rect = video.getBoundingClientRect();
+    const wrapperRect = wrapper.getBoundingClientRect();
+
+    if (rect.width <= 0 || rect.height <= 0 || wrapperRect.width <= 0 || wrapperRect.height <= 0) {
+      return;
+    }
+
+    const vidWidth = video.videoWidth > 0 ? video.videoWidth : 1920;
+    const vidHeight = video.videoHeight > 0 ? video.videoHeight : 1080;
+
+    const elWidth = rect.width;
+    const elHeight = rect.height;
+
+    let actualVidWidth = elWidth;
+    let actualVidHeight = elHeight;
+    let offsetX = 0;
+    let offsetY = 0;
+
+    const elAspectRatio = elWidth / elHeight;
+    const vidAspectRatio = vidWidth / vidHeight;
+
+    if (elAspectRatio > vidAspectRatio) {
+      actualVidHeight = elHeight;
+      actualVidWidth = elHeight * vidAspectRatio;
+      offsetX = (elWidth - actualVidWidth) / 2;
+    } else {
+      actualVidWidth = elWidth;
+      actualVidHeight = elWidth / vidAspectRatio;
+      offsetY = (elHeight - actualVidHeight) / 2;
+    }
+
+    const xNorm = localCursorPosRef.current.x / vidWidth;
+    const yNorm = localCursorPosRef.current.y / vidHeight;
+
+    const clientX = xNorm * actualVidWidth + offsetX + rect.left;
+    const clientY = yNorm * actualVidHeight + offsetY + rect.top;
+
+    const leftWrapper = clientX - wrapperRect.left;
+    const topWrapper = clientY - wrapperRect.top;
+
+    cursorEl.style.left = `${leftWrapper}px`;
+    cursorEl.style.top = `${topWrapper}px`;
+  };
+
+  const handleVideoLoadedMetadata = () => {
+    const video = videoRef.current;
+    if (video) {
+      localCursorPosRef.current = {
+        x: video.videoWidth > 0 ? Math.round(video.videoWidth / 2) : 960,
+        y: video.videoHeight > 0 ? Math.round(video.videoHeight / 2) : 540
+      };
+      updateVirtualCursorDOM();
     }
   };
+
+  useEffect(() => {
+    updateVirtualCursorDOM();
+  }, [zoomScale, zoomPan, touchMode]);
 
   useEffect(() => {
     window.addEventListener("resize", updateVideoRect);
@@ -1099,55 +1446,909 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     };
   }, []);
 
-  // Send mouse position (absolute or relative) with throttling and backpressure
-  const handleMouseMove = (e: React.MouseEvent<HTMLVideoElement>) => {
-    if (status !== "Streaming") return;
+  // Mobile Touch Helpers & Handlers
+  const getDistance = (t1: React.Touch | Touch, t2: React.Touch | Touch) => {
+    const dx = t1.clientX - t2.clientX;
+    const dy = t1.clientY - t2.clientY;
+    return Math.sqrt(dx * dx + dy * dy);
+  };
 
-    const now = performance.now();
-    if (now - lastMouseMoveTimeRef.current < 2) {
-      // Throttle mouse moves to max 500Hz (once every 2ms) to prevent extreme event loop flooding
-      // while maintaining maximum cursor smoothness on high refresh rate monitors.
-      return;
+  const getMidpoint = (t1: React.Touch | Touch, t2: React.Touch | Touch) => {
+    return {
+      x: (t1.clientX + t2.clientX) / 2,
+      y: (t1.clientY + t2.clientY) / 2
+    };
+  };
+
+  const sendTouchAbsolutePos = (clientX: number, clientY: number) => {
+    const video = videoRef.current;
+    const mouseAbsoluteChannel = channelsRef.current["mouse_absolute"];
+    if (video && mouseAbsoluteChannel && mouseAbsoluteChannel.readyState === "open") {
+      const rect = video.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return;
+
+      const xLocal = clientX - rect.left;
+      const adjustedClientY = useTouchOffset ? (clientY - 40) : clientY;
+      const yLocal = adjustedClientY - rect.top;
+
+      const elWidth = rect.width;
+      const elHeight = rect.height;
+      const vidWidth = video.videoWidth > 0 ? video.videoWidth : 1920;
+      const vidHeight = video.videoHeight > 0 ? video.videoHeight : 1080;
+
+      let xNorm = 0.5;
+      let yNorm = 0.5;
+
+      const elAspectRatio = elWidth / elHeight;
+      const vidAspectRatio = vidWidth / vidHeight;
+
+      let actualVidWidth = elWidth;
+      let actualVidHeight = elHeight;
+      let offsetX = 0;
+      let offsetY = 0;
+
+      if (elAspectRatio > vidAspectRatio) {
+        actualVidHeight = elHeight;
+        actualVidWidth = elHeight * vidAspectRatio;
+        offsetX = (elWidth - actualVidWidth) / 2;
+      } else {
+        actualVidWidth = elWidth;
+        actualVidHeight = elWidth / vidAspectRatio;
+        offsetY = (elHeight - actualVidHeight) / 2;
+      }
+
+      xNorm = (xLocal - offsetX) / actualVidWidth;
+      yNorm = (yLocal - offsetY) / actualVidHeight;
+
+      xNorm = Math.max(0, Math.min(1, xNorm));
+      yNorm = Math.max(0, Math.min(1, yNorm));
+
+      const scaledX = Math.round(xNorm * vidWidth);
+      const scaledY = Math.round(yNorm * vidHeight);
+
+      // Keep local cursor position ref synchronized
+      localCursorPosRef.current = { x: scaledX, y: scaledY };
+      if (touchMode === "trackpad") {
+        updateVirtualCursorDOM();
+      }
+
+      const buffer = new ArrayBuffer(13);
+      const view = new DataView(buffer);
+      view.setUint8(0, 1); // Type 1: MousePosition
+      view.setInt16(1, scaledX, false);
+      view.setInt16(3, scaledY, false);
+      view.setInt16(5, vidWidth, false);
+      view.setInt16(7, vidHeight, false);
+      const seq = (mouseSeqRef.current++) >>> 0;
+      view.setUint32(9, seq, false);
+      mouseAbsoluteChannel.send(buffer);
     }
-    lastMouseMoveTimeRef.current = now;
+  };
+
+  const sendMouseClickAction = (button: number, isDown: boolean) => {
+    const mouseReliableChannel = channelsRef.current["mouse_reliable"];
+    if (mouseReliableChannel && mouseReliableChannel.readyState === "open") {
+      const buffer = new ArrayBuffer(3);
+      const view = new DataView(buffer);
+      view.setUint8(0, 2); // Type 2: MouseButton
+      view.setUint8(1, isDown ? 1 : 0);
+      view.setUint8(2, button);
+      mouseReliableChannel.send(buffer);
+    }
+  };
+
+  useEffect(() => {
+    const wrapper = viewportWrapperRef.current;
+    if (!wrapper) return;
+
+    const bypassSelectors = '.stream-header-bar, .stream-header-pull-tab, .mobile-footer-bar, .mobile-footer-pull-tab, .mobile-controls-drawer, .stream-settings-overlay';
+
+    const onTouchStart = (e: TouchEvent) => {
+      if (e.target && (e.target as HTMLElement).closest(bypassSelectors)) {
+        return; // Allow button clicks inside menu/header to propagate normally
+      }
+      handleTouchStart(e as unknown as React.TouchEvent<HTMLDivElement>);
+    };
+
+    const onTouchMove = (e: TouchEvent) => {
+      if (e.target && (e.target as HTMLElement).closest(bypassSelectors)) {
+        return;
+      }
+      handleTouchMove(e as unknown as React.TouchEvent<HTMLDivElement>);
+    };
+
+    const onTouchEnd = (e: TouchEvent) => {
+      if (e.target && (e.target as HTMLElement).closest(bypassSelectors)) {
+        return;
+      }
+      handleTouchEnd(e as unknown as React.TouchEvent<HTMLDivElement>);
+    };
+
+    wrapper.addEventListener('touchstart', onTouchStart, { passive: false });
+    wrapper.addEventListener('touchmove', onTouchMove, { passive: false });
+    wrapper.addEventListener('touchend', onTouchEnd, { passive: false });
+
+    return () => {
+      wrapper.removeEventListener('touchstart', onTouchStart);
+      wrapper.removeEventListener('touchmove', onTouchMove);
+      wrapper.removeEventListener('touchend', onTouchEnd);
+    };
+  }, [status, touchMode, zoomScale, zoomPan, useTouchOffset]);
+
+  const handleTouchStart = (e: React.TouchEvent<HTMLDivElement>) => {
+    if (status !== "Streaming") return;
+    
+    // Prevent browser from emulating mouse events (mousemove, mousedown, click)
+    e.preventDefault();
+
+    const video = videoRef.current;
+    if (!video) return;
+
+    mouseAccumulatorXRef.current = 0;
+    mouseAccumulatorYRef.current = 0;
+
+    if (e.touches.length === 1) {
+      hasCenteredThisTouchRef.current = false;
+      // If there's a pending click-up timer from a previous tap,
+      // it means the left mouse button is currently held down on the host.
+      let wasPendingClickUp = false;
+      if (clickUpTimerRef.current) {
+        clearTimeout(clickUpTimerRef.current);
+        clickUpTimerRef.current = null;
+        wasPendingClickUp = true;
+      }
+
+      const touch = e.touches[0];
+      const now = performance.now();
+      
+      wasMultiTouchRef.current = false; // Reset multi-touch flag
+
+      const isDoubleTap = now - lastTouchTapTimeRef.current < 500;
+      if (isDoubleTap) {
+        lastTouchTapTimeRef.current = 0; // Prevent chaining of double tap
+      }
+
+      touchStartPosRef.current = { x: touch.clientX, y: touch.clientY };
+      touchStartInitialPosRef.current = { x: touch.clientX, y: touch.clientY };
+      touchStartTimeRef.current = now;
+      initialZoomPanRef.current = { ...zoomPan };
+      longPressTriggeredRef.current = false;
+
+      if (touchMode === "trackpad") {
+        isDraggingRef.current = false;
+        
+        // Cancel any existing long press timer
+        if (longPressTimerRef.current) {
+          clearTimeout(longPressTimerRef.current);
+          longPressTimerRef.current = null;
+        }
+
+        if (isDoubleTap) {
+          // Double-Tap and Hold gesture: trigger drag instantly (0ms delay)
+          isDraggingRef.current = true;
+          if (!wasPendingClickUp) {
+            sendMouseClickAction(1, true); // left click down
+          }
+          if (navigator.vibrate) {
+            navigator.vibrate(40); // Haptic feedback
+          }
+        } else {
+          if (wasPendingClickUp) {
+            sendMouseClickAction(1, false);
+          }
+          // Single touch down: Start long press timer (600ms) for right click
+          longPressTimerRef.current = setTimeout(() => {
+            const mouseReliableChannel = channelsRef.current["mouse_reliable"];
+            if (mouseReliableChannel && mouseReliableChannel.readyState === "open") {
+              sendMouseClickAction(3, true); // right click down
+              setTimeout(() => sendMouseClickAction(3, false), 30); // right click up
+              
+              // Haptic feedback for successful right click trigger
+              if (navigator.vibrate) {
+                navigator.vibrate(50);
+              }
+              longPressTriggeredRef.current = true;
+            }
+          }, 600);
+        }
+      } else {
+        // Direct Mode: Mark click as pending instead of clicking down immediately
+        isDirectClickPendingRef.current = true;
+
+        // Start long press timer for right click
+        if (longPressTimerRef.current) {
+          clearTimeout(longPressTimerRef.current);
+        }
+        longPressTimerRef.current = setTimeout(() => {
+          const mouseReliableChannel = channelsRef.current["mouse_reliable"];
+          if (mouseReliableChannel && mouseReliableChannel.readyState === "open") {
+            sendTouchAbsolutePos(touch.clientX, touch.clientY);
+            sendMouseClickAction(3, true);  // right click down
+            setTimeout(() => sendMouseClickAction(3, false), 30); // right click up
+            
+            if (navigator.vibrate) {
+              navigator.vibrate(50);
+            }
+            longPressTriggeredRef.current = true;
+            isDirectClickPendingRef.current = false; // Cancel left click down
+          }
+        }, 600);
+      }
+    } else if (e.touches.length === 2) {
+      wasMultiTouchRef.current = true; // Mark as multi-touch gesture
+      isDirectClickPendingRef.current = false; // Cancel any pending direct left click
+
+      // Cancel long press timer for multi-touch gestures
+      if (longPressTimerRef.current) {
+        clearTimeout(longPressTimerRef.current);
+        longPressTimerRef.current = null;
+      }
+      isDraggingRef.current = false;
+
+      initialTouchDistanceRef.current = getDistance(e.touches[0], e.touches[1]);
+      initialZoomScaleRef.current = zoomScale;
+      initialZoomPanRef.current = { ...zoomPan };
+      initialTouchMidpointRef.current = getMidpoint(e.touches[0], e.touches[1]);
+      initialLocalCursorPosRef.current = { ...localCursorPosRef.current };
+
+      // For 2-finger tap right click detection
+      twoFingerTouchStartTimeRef.current = performance.now();
+      isTwoFingerTapPendingRef.current = true;
+    }
+  };
+
+  const handleTouchMove = (e: React.TouchEvent<HTMLDivElement>) => {
+    if (status !== "Streaming") return;
+    
+    // Always prevent default page scrolling or browser navigation inside the player
+    e.preventDefault();
+
+    const video = videoRef.current;
+    if (!video) return;
+
+    if (e.touches.length === 1) {
+      const touch = e.touches[0];
+      const dx = touch.clientX - touchStartPosRef.current.x;
+      const dy = touch.clientY - touchStartPosRef.current.y;
+      
+      const totalDx = touch.clientX - touchStartInitialPosRef.current.x;
+      const totalDy = touch.clientY - touchStartInitialPosRef.current.y;
+      const totalMovement = Math.sqrt(totalDx * totalDx + totalDy * totalDy);
+
+      // Cancel right click (600ms) timer if movement > 15px
+      if (totalMovement > 15 && longPressTimerRef.current) {
+        clearTimeout(longPressTimerRef.current);
+        longPressTimerRef.current = null;
+      }
+
+      if (zoomScale > 1) {
+        if (touchMode === "trackpad") {
+          const wrapper = viewportWrapperRef.current;
+          if (wrapper) {
+            const wrapperRect = wrapper.getBoundingClientRect();
+            const W_wrapper = wrapperRect.width;
+            const H_wrapper = wrapperRect.height;
+
+            const vidWidth = video.videoWidth > 0 ? video.videoWidth : 1920;
+            const vidHeight = video.videoHeight > 0 ? video.videoHeight : 1080;
+
+            const wrapperAspectRatio = W_wrapper / H_wrapper;
+            const vidAspectRatio = vidWidth / vidHeight;
+
+            let W_base = W_wrapper;
+            let H_base = H_wrapper;
+            let offsetX = 0;
+            let offsetY = 0;
+
+            if (wrapperAspectRatio > vidAspectRatio) {
+              H_base = H_wrapper;
+              W_base = H_wrapper * vidAspectRatio;
+              offsetX = (W_wrapper - W_base) / 2;
+            } else {
+              W_base = W_wrapper;
+              H_base = W_wrapper / vidAspectRatio;
+              offsetY = (H_wrapper - H_base) / 2;
+            }
+
+            const actualVidWidth = W_base * zoomScale;
+            const actualVidHeight = H_base * zoomScale;
+
+            // Apply trackpad acceleration
+            const distance = Math.sqrt(dx * dx + dy * dy);
+            let accel = 1.0;
+            if (distance > 2) {
+              accel = Math.min(3.0, 1.0 + (distance - 2) * 0.15);
+            }
+            const s = 2.2 * accel;
+
+            // Convert client screen delta (dx, dy) to host resolution delta
+            const rawDeltaX = (dx * s / actualVidWidth) * vidWidth;
+            const rawDeltaY = (dy * s / actualVidHeight) * vidHeight;
+
+            // Add accumulated sub-pixel movements
+            const totalDeltaX = rawDeltaX + mouseAccumulatorXRef.current;
+            const totalDeltaY = rawDeltaY + mouseAccumulatorYRef.current;
+
+            // Round to integer deltas
+            const relX = Math.round(totalDeltaX);
+            const relY = Math.round(totalDeltaY);
+
+            // Store the fractional remainders
+            mouseAccumulatorXRef.current = totalDeltaX - relX;
+            mouseAccumulatorYRef.current = totalDeltaY - relY;
+
+            // Update local cursor position estimate in host coordinates
+            let newX = localCursorPosRef.current.x + relX;
+            let newY = localCursorPosRef.current.y + relY;
+
+            newX = Math.max(0, Math.min(vidWidth, newX));
+            newY = Math.max(0, Math.min(vidHeight, newY));
+
+            localCursorPosRef.current = { x: newX, y: newY };
+
+            // Send relative mouse movement to host
+            const mouseRelativeChannel = channelsRef.current["mouse_relative"];
+            if (mouseRelativeChannel && mouseRelativeChannel.readyState === "open" && (relX !== 0 || relY !== 0)) {
+              const isBufferOk = mouseQueueLimit === 0 ? true : mouseRelativeChannel.bufferedAmount < mouseQueueLimit;
+              if (isBufferOk) {
+                const buffer = new ArrayBuffer(9);
+                const view = new DataView(buffer);
+                view.setUint8(0, 0); // Type 0: MouseMove (Relative)
+                view.setInt16(1, relX, false);
+                view.setInt16(3, relY, false);
+                const seq = (mouseSeqRef.current++) >>> 0;
+                view.setUint32(5, seq, false);
+                mouseRelativeChannel.send(buffer);
+              }
+            }
+
+            // Viewport horizontal panning keeps cursor centered
+            const targetVisualX = W_wrapper / 2;
+            let newPanX = targetVisualX - (newX / vidWidth) * actualVidWidth - offsetX * zoomScale;
+
+            const limitX1 = -offsetX * zoomScale;
+            const limitX2 = W_wrapper - actualVidWidth - offsetX * zoomScale;
+            const minPanX = Math.min(limitX1, limitX2);
+            const maxPanX = Math.max(limitX1, limitX2);
+
+            const clampedPanX = Math.max(minPanX, Math.min(maxPanX, newPanX));
+            const clampedPanY = zoomPan.y; // Keep Y-axis locked to current pan
+
+            setZoomPan({ x: clampedPanX, y: clampedPanY });
+
+            // Sync visual cursor DOM directly and instantly
+            const cursorEl = localCursorRef.current;
+            if (cursorEl) {
+              const leftWrapper = (newX / vidWidth) * actualVidWidth + offsetX * zoomScale + clampedPanX;
+              const topWrapper = (newY / vidHeight) * actualVidHeight + offsetY * zoomScale + clampedPanY;
+              cursorEl.style.left = `${leftWrapper}px`;
+              cursorEl.style.top = `${topWrapper}px`;
+            }
+
+            touchStartPosRef.current = { x: touch.clientX, y: touch.clientY };
+          }
+        } else {
+          // Direct Mode with Zoom: standard panning using initial reference
+          setZoomPan({
+            x: initialZoomPanRef.current.x + totalDx,
+            y: initialZoomPanRef.current.y + totalDy
+          });
+        }
+      } else if (touchMode === "trackpad") {
+        const rect = video.getBoundingClientRect();
+        if (rect.width > 0 && rect.height > 0) {
+          const vidWidth = video.videoWidth > 0 ? video.videoWidth : 1920;
+          const vidHeight = video.videoHeight > 0 ? video.videoHeight : 1080;
+
+          // Apply trackpad acceleration
+          const distance = Math.sqrt(dx * dx + dy * dy);
+          let accel = 1.0;
+          if (distance > 2) {
+            accel = Math.min(3.0, 1.0 + (distance - 2) * 0.15);
+          }
+          const s = 2.2 * accel;
+
+          // Convert client screen delta (dx, dy) to host resolution delta
+          const rawDeltaX = (dx * s / rect.width) * vidWidth;
+          const rawDeltaY = (dy * s / rect.height) * vidHeight;
+
+          // Add accumulated sub-pixel movements
+          const totalDeltaX = rawDeltaX + mouseAccumulatorXRef.current;
+          const totalDeltaY = rawDeltaY + mouseAccumulatorYRef.current;
+
+          // Round to integer deltas
+          const relX = Math.round(totalDeltaX);
+          const relY = Math.round(totalDeltaY);
+
+          // Store the fractional remainders
+          mouseAccumulatorXRef.current = totalDeltaX - relX;
+          mouseAccumulatorYRef.current = totalDeltaY - relY;
+
+          // Update local cursor position estimate in host coordinates
+          let newX = localCursorPosRef.current.x + relX;
+          let newY = localCursorPosRef.current.y + relY;
+
+          newX = Math.max(0, Math.min(vidWidth, newX));
+          newY = Math.max(0, Math.min(vidHeight, newY));
+
+          localCursorPosRef.current = { x: newX, y: newY };
+
+          // Send relative mouse movement to host
+          const mouseRelativeChannel = channelsRef.current["mouse_relative"];
+          if (mouseRelativeChannel && mouseRelativeChannel.readyState === "open" && (relX !== 0 || relY !== 0)) {
+            const isBufferOk = mouseQueueLimit === 0 ? true : mouseRelativeChannel.bufferedAmount < mouseQueueLimit;
+            if (isBufferOk) {
+              const buffer = new ArrayBuffer(9);
+              const view = new DataView(buffer);
+              view.setUint8(0, 0); // Type 0: MouseMove (Relative)
+              view.setInt16(1, relX, false);
+              view.setInt16(3, relY, false);
+              const seq = (mouseSeqRef.current++) >>> 0;
+              view.setUint32(5, seq, false);
+              mouseRelativeChannel.send(buffer);
+            }
+          }
+
+          updateVirtualCursorDOM();
+          touchStartPosRef.current = { x: touch.clientX, y: touch.clientY };
+        }
+      } else {
+        // Direct Touchscreen Mode:
+        if (isDirectClickPendingRef.current) {
+          if (totalMovement > 15) {
+            // Drag started: send left click down at initial touch point first
+            sendTouchAbsolutePos(touchStartInitialPosRef.current.x, touchStartInitialPosRef.current.y);
+            sendMouseClickAction(1, true);
+            isDirectClickPendingRef.current = false;
+          }
+        }
+        
+        if (!isDirectClickPendingRef.current) {
+          sendTouchAbsolutePos(touch.clientX, touch.clientY);
+        }
+      }
+    } else if (e.touches.length === 2) {
+      const dist = getDistance(e.touches[0], e.touches[1]);
+      if (initialTouchDistanceRef.current > 0) {
+        const factor = dist / initialTouchDistanceRef.current;
+        const newScale = Math.max(1, Math.min(5, initialZoomScaleRef.current * factor));
+
+        // If scale changes significantly, or fingers move, cancel 2-finger tap right click
+        if (Math.abs(factor - 1) > 0.08) {
+          isTwoFingerTapPendingRef.current = false;
+        }
+
+        const rect = video.getBoundingClientRect();
+        const wrapper = viewportWrapperRef.current;
+        if (rect.width > 0 && rect.height > 0 && wrapper) {
+          const wrapperRect = wrapper.getBoundingClientRect();
+          const W_wrapper = wrapperRect.width;
+          const H_wrapper = wrapperRect.height;
+
+          const vidWidth = video.videoWidth > 0 ? video.videoWidth : 1920;
+          const vidHeight = video.videoHeight > 0 ? video.videoHeight : 1080;
+
+          const wrapperAspectRatio = W_wrapper / H_wrapper;
+          const vidAspectRatio = vidWidth / vidHeight;
+
+          let W_base = W_wrapper;
+          let H_base = H_wrapper;
+          let offsetX = 0;
+          let offsetY = 0;
+
+          if (wrapperAspectRatio > vidAspectRatio) {
+            H_base = H_wrapper;
+            W_base = H_wrapper * vidAspectRatio;
+            offsetX = (W_wrapper - W_base) / 2;
+          } else {
+            W_base = W_wrapper;
+            H_base = W_wrapper / vidAspectRatio;
+            offsetY = (H_wrapper - H_base) / 2;
+          }
+
+          const actualVidWidth = W_base * newScale;
+          const actualVidHeight = H_base * newScale;
+
+          const currentMidpoint = getMidpoint(e.touches[0], e.touches[1]);
+          const dxMid = currentMidpoint.x - initialTouchMidpointRef.current.x;
+          const dyMid = currentMidpoint.y - initialTouchMidpointRef.current.y;
+          if (Math.sqrt(dxMid * dxMid + dyMid * dyMid) > 15) {
+            isTwoFingerTapPendingRef.current = false;
+          }
+
+          if (newScale === 1) {
+            setZoomScale(1);
+            setZoomPan({ x: 0, y: 0 });
+          } else {
+            // Apply mathematically correct combined Zoom & Pan formula in opposite direction:
+            const midStartX = initialTouchMidpointRef.current.x - wrapperRect.left;
+            const midStartY = initialTouchMidpointRef.current.y - wrapperRect.top;
+            const midCurrentX = currentMidpoint.x - wrapperRect.left;
+            const midCurrentY = currentMidpoint.y - wrapperRect.top;
+
+            const dxMid = midCurrentX - midStartX;
+            const dyMid = midCurrentY - midStartY;
+
+            const scaleRatio = newScale / initialZoomScaleRef.current;
+            const newPanX = (midStartX - dxMid) - (midStartX - initialZoomPanRef.current.x) * scaleRatio;
+            const newPanY = (midStartY - dyMid) - (midStartY - initialZoomPanRef.current.y) * scaleRatio;
+
+            // Boundary clamping so the zoomed view doesn't pan off-screen (unified Math.min/max range)
+            const limitX1 = -offsetX * newScale;
+            const limitX2 = W_wrapper - actualVidWidth - offsetX * newScale;
+            const minPanX = Math.min(limitX1, limitX2);
+            const maxPanX = Math.max(limitX1, limitX2);
+
+            const limitY1 = -offsetY * newScale;
+            const limitY2 = H_wrapper - actualVidHeight - offsetY * newScale;
+            const minPanY = Math.min(limitY1, limitY2);
+            const maxPanY = Math.max(limitY1, limitY2);
+
+            const clampedPanX = Math.max(minPanX, Math.min(maxPanX, newPanX));
+            const clampedPanY = Math.max(minPanY, Math.min(maxPanY, newPanY));
+
+            setZoomScale(newScale);
+            setZoomPan({ x: clampedPanX, y: clampedPanY });
+
+            // Calculate start visual coordinate of the cursor relative to wrapper
+            const V_startX = (initialLocalCursorPosRef.current.x / vidWidth) * (W_base * initialZoomScaleRef.current) + offsetX * initialZoomScaleRef.current + initialZoomPanRef.current.x;
+            const V_startY = (initialLocalCursorPosRef.current.y / vidHeight) * (H_base * initialZoomScaleRef.current) + offsetY * initialZoomScaleRef.current + initialZoomPanRef.current.y;
+
+            // Derive the new remote coordinates to keep the visual cursor locked on screen
+            let newX = ((V_startX - offsetX * newScale - clampedPanX) / (W_base * newScale)) * vidWidth;
+            let newY = ((V_startY - offsetY * newScale - clampedPanY) / (H_base * newScale)) * vidHeight;
+
+            newX = Math.max(0, Math.min(vidWidth, newX));
+            newY = Math.max(0, Math.min(vidHeight, newY));
+
+            localCursorPosRef.current = { x: newX, y: newY };
+
+            // Send mouse absolute position
+            const mouseAbsoluteChannel = channelsRef.current["mouse_absolute"];
+            if (mouseAbsoluteChannel && mouseAbsoluteChannel.readyState === "open") {
+              const scaledX = Math.round(newX);
+              const scaledY = Math.round(newY);
+
+              const buffer = new ArrayBuffer(13);
+              const view = new DataView(buffer);
+              view.setUint8(0, 1); // Type 1: MousePosition
+              view.setInt16(1, scaledX, false);
+              view.setInt16(3, scaledY, false);
+              view.setInt16(5, vidWidth, false);
+              view.setInt16(7, vidHeight, false);
+              const seq = (mouseSeqRef.current++) >>> 0;
+              view.setUint32(9, seq, false);
+              mouseAbsoluteChannel.send(buffer);
+            }
+
+            // Sync visual cursor DOM directly and instantly
+            const cursorEl = localCursorRef.current;
+            if (cursorEl) {
+              const leftWrapper = (newX / vidWidth) * actualVidWidth + offsetX * newScale + clampedPanX;
+              const topWrapper = (newY / vidHeight) * actualVidHeight + offsetY * newScale + clampedPanY;
+              cursorEl.style.left = `${leftWrapper}px`;
+              cursorEl.style.top = `${topWrapper}px`;
+            }
+          }
+        }
+      }
+    }
+  };
+
+  const handleTouchEnd = (e: React.TouchEvent<HTMLDivElement>) => {
+    if (status !== "Streaming") return;
+    
+    // Prevent browser from emulating mouseup and click events
+    e.preventDefault();
+
+    if (longPressTimerRef.current) {
+      clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+
+    if (longPressTriggeredRef.current) {
+      longPressTriggeredRef.current = false;
+      return; // Already triggered right click during hold
+    }
+
+    if (touchMode === "trackpad") {
+      if (isDraggingRef.current) {
+        isDraggingRef.current = false;
+        sendMouseClickAction(1, false); // left click up
+        return;
+      }
+
+      // Handle two-finger tap for right-click in trackpad mode
+      if (wasMultiTouchRef.current) {
+        const duration = performance.now() - twoFingerTouchStartTimeRef.current;
+        if (isTwoFingerTapPendingRef.current && duration < 350) {
+          const mouseReliableChannel = channelsRef.current["mouse_reliable"];
+          if (mouseReliableChannel && mouseReliableChannel.readyState === "open") {
+            sendMouseClickAction(3, true); // right click down
+            setTimeout(() => sendMouseClickAction(3, false), 30); // right click up
+            if (navigator.vibrate) {
+              navigator.vibrate(50);
+            }
+          }
+        }
+        isTwoFingerTapPendingRef.current = false;
+        return;
+      }
+    } else {
+      // Ignore clicks if the touch session was a multi-touch (zoom/pan) gesture in Direct Mode
+      if (wasMultiTouchRef.current) {
+        return;
+      }
+    }
+
+    const touch = e.changedTouches[0];
+    const duration = performance.now() - touchStartTimeRef.current;
+    const dx = touch.clientX - touchStartInitialPosRef.current.x;
+    const dy = touch.clientY - touchStartInitialPosRef.current.y;
+    const movement = Math.sqrt(dx * dx + dy * dy);
+
+    if (touchMode === "trackpad") {
+      // Forgiving dynamic tap threshold to accommodate quick finger wobbles on touch screens
+      const maxTapMovement = duration < 250 ? 40 : 25;
+      const isTap = duration < 450 && movement < maxTapMovement;
+      const mouseReliableChannel = channelsRef.current["mouse_reliable"];
+
+      if (isTap) {
+        lastTouchTapTimeRef.current = performance.now(); // Record tap completion time
+        if (mouseReliableChannel && mouseReliableChannel.readyState === "open") {
+          sendMouseClickAction(1, true);
+          if (clickUpTimerRef.current) {
+            clearTimeout(clickUpTimerRef.current);
+          }
+          clickUpTimerRef.current = setTimeout(() => {
+            sendMouseClickAction(1, false);
+            clickUpTimerRef.current = null;
+          }, 35);
+        }
+      }
+    } else {
+      // Direct Touchscreen Mode:
+      if (isDirectClickPendingRef.current) {
+        // Tap: send complete click (down + up)
+        sendTouchAbsolutePos(touch.clientX, touch.clientY);
+        sendMouseClickAction(1, true);
+        setTimeout(() => sendMouseClickAction(1, false), 35);
+        isDirectClickPendingRef.current = false;
+      } else {
+        // Drag end: release left click
+        sendTouchAbsolutePos(touch.clientX, touch.clientY);
+        sendMouseClickAction(1, false);
+      }
+    }
+  };
+
+  // Mobile Virtual Keyboard Handlers
+  const handleVirtualKeyboardInput = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const text = e.target.value;
+    if (text.length > 0) {
+      const keyboardChannel = channelsRef.current["keyboard"];
+      if (keyboardChannel && keyboardChannel.readyState === "open") {
+        const utf8Encoder = new TextEncoder();
+        const encodedText = utf8Encoder.encode(text);
+        const buffer = new ArrayBuffer(3 + encodedText.length);
+        const view = new DataView(buffer);
+        view.setUint8(0, 1); // Type 1: Text Event
+        view.setUint16(1, encodedText.length, false);
+        new Uint8Array(buffer, 3).set(encodedText);
+        keyboardChannel.send(buffer);
+      }
+      e.target.value = "";
+    }
+  };
+
+  const handleVirtualKeyboardKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    const key = e.key;
+    if (key === "Backspace" || key === "Enter" || key === "Tab" || key === "Escape") {
+      sendSpecialKeyRemote(key);
+      e.preventDefault();
+    }
+  };
+
+  const sendSpecialKeyRemote = (key: string) => {
+    let vk = 0;
+    if (key === "Backspace") vk = 8;
+    else if (key === "Tab") vk = 9;
+    else if (key === "Enter") vk = 13;
+    else if (key === "Escape") vk = 27;
+    else if (key === "Delete") vk = 46;
+
+    if (vk > 0) {
+      let modifiers = 0;
+      if (modifierKeys.shift) modifiers |= 1;
+      if (modifierKeys.ctrl) modifiers |= 2;
+      if (modifierKeys.alt) modifiers |= 4;
+      if (modifierKeys.meta) modifiers |= 8;
+
+      sendRawKeyEvent(vk, true, modifiers);
+      setTimeout(() => sendRawKeyEvent(vk, false, modifiers), 30);
+    }
+  };
+
+  // Send mouse position (absolute or relative) with throttling and backpressure
+  const flushMouse = () => {
+    mouseFlushTimeoutRef.current = null;
+    if (status !== "Streaming") return;
+    const now = performance.now();
 
     if (isPointerLocked) {
-      // Relative mouse mode: send deltas if buffer is below limit
       const mouseRelativeChannel = channelsRef.current["mouse_relative"];
       if (mouseRelativeChannel && mouseRelativeChannel.readyState === "open") {
         const isBufferOk = mouseQueueLimit === 0 ? true : mouseRelativeChannel.bufferedAmount < mouseQueueLimit;
         if (isBufferOk) {
-          const buffer = new ArrayBuffer(9);
-          const view = new DataView(buffer);
-          view.setUint8(0, 0); // Type 0: MouseMove
-          view.setInt16(1, e.movementX, false); // big-endian
-          view.setInt16(3, e.movementY, false); // big-endian
-          const ts = Math.floor(performance.now()) >>> 0;
-          view.setUint32(5, ts, false); // big-endian
-          mouseRelativeChannel.send(buffer);
+          const dx = mouseRelativeAccXRef.current;
+          const dy = mouseRelativeAccYRef.current;
+          if (dx !== 0 || dy !== 0) {
+            const buffer = new ArrayBuffer(9);
+            const view = new DataView(buffer);
+            view.setUint8(0, 0); // Type 0: MouseMove
+            view.setInt16(1, dx, false);
+            view.setInt16(3, dy, false);
+            const seq = (mouseSeqRef.current++) >>> 0;
+            view.setUint32(5, seq, false);
+            mouseRelativeChannel.send(buffer);
+
+            mouseRelativeAccXRef.current = 0;
+            mouseRelativeAccYRef.current = 0;
+            lastMouseMoveTimeRef.current = now;
+          }
+        } else {
+          // Channel congested, retry in 4ms
+          mouseFlushTimeoutRef.current = setTimeout(flushMouse, 4);
         }
       }
     } else {
-      // Absolute mouse mode: send coordinates if buffer is below limit
       const mouseAbsoluteChannel = channelsRef.current["mouse_absolute"];
       if (mouseAbsoluteChannel && mouseAbsoluteChannel.readyState === "open" && videoRef.current) {
         const isBufferOk = mouseQueueLimit === 0 ? mouseAbsoluteChannel.bufferedAmount === 0 : mouseAbsoluteChannel.bufferedAmount < mouseQueueLimit;
         if (isBufferOk) {
-          const video = videoRef.current;
-          if (!videoRectRef.current) {
-            videoRectRef.current = video.getBoundingClientRect();
+          if (latestAbsoluteMousePosRef.current) {
+            const pos = latestAbsoluteMousePosRef.current;
+            latestAbsoluteMousePosRef.current = null;
+            
+            const video = videoRef.current;
+            const rect = video.getBoundingClientRect();
+            if (rect.width > 0 && rect.height > 0) {
+              const elWidth = rect.width;
+              const elHeight = rect.height;
+              const vidWidth = video.videoWidth > 0 ? video.videoWidth : 1920;
+              const vidHeight = video.videoHeight > 0 ? video.videoHeight : 1080;
+              
+              const elAspectRatio = elWidth / elHeight;
+              const vidAspectRatio = vidWidth / vidHeight;
+              
+              let actualVidWidth = elWidth;
+              let actualVidHeight = elHeight;
+              let offsetX = 0;
+              let offsetY = 0;
+              
+              if (elAspectRatio > vidAspectRatio) {
+                actualVidHeight = elHeight;
+                actualVidWidth = elHeight * vidAspectRatio;
+                offsetX = (elWidth - actualVidWidth) / 2;
+              } else {
+                actualVidWidth = elWidth;
+                actualVidHeight = elWidth / vidAspectRatio;
+                offsetY = (elHeight - actualVidHeight) / 2;
+              }
+              
+              const xLocal = pos.clientX - rect.left;
+              const yLocal = pos.clientY - rect.top;
+              
+              let xNorm = (xLocal - offsetX) / actualVidWidth;
+              let yNorm = (yLocal - offsetY) / actualVidHeight;
+              
+              xNorm = Math.max(0, Math.min(1, xNorm));
+              yNorm = Math.max(0, Math.min(1, yNorm));
+              
+              const scaledX = Math.round(xNorm * vidWidth);
+              const scaledY = Math.round(yNorm * vidHeight);
+              
+              localCursorPosRef.current = { x: scaledX, y: scaledY };
+              if (touchMode === 'trackpad') {
+                updateVirtualCursorDOM();
+              }
+              
+              const buffer = new ArrayBuffer(13);
+              const view = new DataView(buffer);
+              view.setUint8(0, 1); // Type 1: MousePosition
+              view.setInt16(1, scaledX, false);
+              view.setInt16(3, scaledY, false);
+              view.setInt16(5, vidWidth, false);
+              view.setInt16(7, vidHeight, false);
+              const seq = (mouseSeqRef.current++) >>> 0;
+              view.setUint32(9, seq, false);
+              mouseAbsoluteChannel.send(buffer);
+              
+              lastMouseMoveTimeRef.current = now;
+            }
           }
-          const rect = videoRectRef.current;
+        } else {
+          // Channel congested, retry in 4ms
+          mouseFlushTimeoutRef.current = setTimeout(flushMouse, 4);
+        }
+      }
+    }
+  };
+
+  // Send mouse position (absolute or relative) with throttling and backpressure
+  const handleMouseMove = (e: React.MouseEvent<HTMLVideoElement>) => {
+    // Ignore emulated mouse events from touches
+    if ((e.nativeEvent as any).sourceCapabilities?.firesTouchEvents) {
+      return;
+    }
+
+    if (status !== "Streaming") return;
+
+    const now = performance.now();
+
+    if (isPointerLocked) {
+      // Accumulate relative deltas
+      mouseRelativeAccXRef.current += e.movementX;
+      mouseRelativeAccYRef.current += e.movementY;
+
+      const mouseRelativeChannel = channelsRef.current["mouse_relative"];
+      if (mouseRelativeChannel && mouseRelativeChannel.readyState === "open") {
+        const isBufferOk = mouseQueueLimit === 0 ? true : mouseRelativeChannel.bufferedAmount < mouseQueueLimit;
+        
+        // Limit direct send to 250Hz (once every 4ms) to prevent event loop flooding,
+        // but since we accumulate, no physical movement is lost.
+        if (isBufferOk && (now - lastMouseMoveTimeRef.current >= 4)) {
+          const dx = mouseRelativeAccXRef.current;
+          const dy = mouseRelativeAccYRef.current;
           
-          const elWidth = rect.width;
-          const elHeight = rect.height;
-          const vidWidth = video.videoWidth;
-          const vidHeight = video.videoHeight;
+          if (dx !== 0 || dy !== 0) {
+            const buffer = new ArrayBuffer(9);
+            const view = new DataView(buffer);
+            view.setUint8(0, 0); // Type 0: MouseMove
+            view.setInt16(1, dx, false);
+            view.setInt16(3, dy, false);
+            const seq = (mouseSeqRef.current++) >>> 0;
+            view.setUint32(5, seq, false);
+            mouseRelativeChannel.send(buffer);
+
+            // Reset accumulator
+            mouseRelativeAccXRef.current = 0;
+            mouseRelativeAccYRef.current = 0;
+            lastMouseMoveTimeRef.current = now;
+            
+            // Clear any pending flush timeout
+            if (mouseFlushTimeoutRef.current) {
+              clearTimeout(mouseFlushTimeoutRef.current);
+              mouseFlushTimeoutRef.current = null;
+            }
+          }
+        } else {
+          // If throttled or buffer is full, schedule a deferred flush
+          if (!mouseFlushTimeoutRef.current) {
+            mouseFlushTimeoutRef.current = setTimeout(flushMouse, 4);
+          }
+        }
+      }
+    } else {
+      // Absolute mouse mode: update latest position ref
+      latestAbsoluteMousePosRef.current = { clientX: e.clientX, clientY: e.clientY };
+
+      const mouseAbsoluteChannel = channelsRef.current["mouse_absolute"];
+      if (mouseAbsoluteChannel && mouseAbsoluteChannel.readyState === "open" && videoRef.current) {
+        const isBufferOk = mouseQueueLimit === 0 ? mouseAbsoluteChannel.bufferedAmount === 0 : mouseAbsoluteChannel.bufferedAmount < mouseQueueLimit;
+        
+        if (isBufferOk && (now - lastMouseMoveTimeRef.current >= 4)) {
+          const pos = latestAbsoluteMousePosRef.current;
+          latestAbsoluteMousePosRef.current = null;
           
-          let xNorm = 0.5;
-          let yNorm = 0.5;
-          
-          if (vidWidth > 0 && vidHeight > 0) {
+          const video = videoRef.current;
+          const rect = video.getBoundingClientRect();
+          if (rect.width > 0 && rect.height > 0) {
+            const elWidth = rect.width;
+            const elHeight = rect.height;
+            const vidWidth = video.videoWidth > 0 ? video.videoWidth : 1920;
+            const vidHeight = video.videoHeight > 0 ? video.videoHeight : 1080;
+            
             const elAspectRatio = elWidth / elHeight;
             const vidAspectRatio = vidWidth / vidHeight;
             
@@ -1157,43 +2358,56 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
             let offsetY = 0;
             
             if (elAspectRatio > vidAspectRatio) {
-              // Pillarbox: video is narrower than container
               actualVidHeight = elHeight;
               actualVidWidth = elHeight * vidAspectRatio;
               offsetX = (elWidth - actualVidWidth) / 2;
             } else {
-              // Letterbox: video is wider than container
               actualVidWidth = elWidth;
               actualVidHeight = elWidth / vidAspectRatio;
               offsetY = (elHeight - actualVidHeight) / 2;
             }
             
-            const xLocal = e.clientX - rect.left;
-            const yLocal = e.clientY - rect.top;
+            const xLocal = pos.clientX - rect.left;
+            const yLocal = pos.clientY - rect.top;
             
-            xNorm = (xLocal - offsetX) / actualVidWidth;
-            yNorm = (yLocal - offsetY) / actualVidHeight;
-          } else {
-            xNorm = (e.clientX - rect.left) / elWidth;
-            yNorm = (e.clientY - rect.top) / elHeight;
+            let xNorm = (xLocal - offsetX) / actualVidWidth;
+            let yNorm = (yLocal - offsetY) / actualVidHeight;
+            
+            xNorm = Math.max(0, Math.min(1, xNorm));
+            yNorm = Math.max(0, Math.min(1, yNorm));
+            
+            const scaledX = Math.round(xNorm * vidWidth);
+            const scaledY = Math.round(yNorm * vidHeight);
+            
+            localCursorPosRef.current = { x: scaledX, y: scaledY };
+            if (touchMode === 'trackpad') {
+              updateVirtualCursorDOM();
+            }
+            
+            const buffer = new ArrayBuffer(13);
+            const view = new DataView(buffer);
+            view.setUint8(0, 1); // Type 1: MousePosition
+            view.setInt16(1, scaledX, false);
+            view.setInt16(3, scaledY, false);
+            view.setInt16(5, vidWidth, false);
+            view.setInt16(7, vidHeight, false);
+            const seq = (mouseSeqRef.current++) >>> 0;
+            view.setUint32(9, seq, false);
+            mouseAbsoluteChannel.send(buffer);
+            
+            lastMouseMoveTimeRef.current = now;
+            
+            // Clear any pending flush timeout
+            if (mouseFlushTimeoutRef.current) {
+              clearTimeout(mouseFlushTimeoutRef.current);
+              mouseFlushTimeoutRef.current = null;
+            }
           }
-
-          const refWidth = vidWidth > 0 ? vidWidth : 1920;
-          const refHeight = vidHeight > 0 ? vidHeight : 1080;
-
-          const scaledX = Math.max(0, Math.min(refWidth, Math.round(xNorm * refWidth)));
-          const scaledY = Math.max(0, Math.min(refHeight, Math.round(yNorm * refHeight)));
-
-          const buffer = new ArrayBuffer(13);
-          const view = new DataView(buffer);
-          view.setUint8(0, 1); // Type 1: MousePosition
-          view.setInt16(1, scaledX, false);
-          view.setInt16(3, scaledY, false);
-          view.setInt16(5, refWidth, false);
-          view.setInt16(7, refHeight, false);
-          const ts = Math.floor(performance.now()) >>> 0;
-          view.setUint32(9, ts, false); // big-endian
-          mouseAbsoluteChannel.send(buffer);
+        } else {
+          // If throttled or buffer is full, schedule a deferred flush
+          if (!mouseFlushTimeoutRef.current) {
+            mouseFlushTimeoutRef.current = setTimeout(flushMouse, 4);
+          }
         }
       }
     }
@@ -1201,6 +2415,11 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
 
   // Send mouse click event
   const handleMouseButton = (e: React.MouseEvent<HTMLVideoElement>, isDown: boolean) => {
+    // Ignore emulated mouse events from touches
+    if ((e.nativeEvent as any).sourceCapabilities?.firesTouchEvents) {
+      return;
+    }
+
     // Prevent context menu from right clicks
     e.preventDefault();
     
@@ -1408,6 +2627,19 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
                     <option value={16384}>16384 B (Previous Default - High Latency Risk)</option>
                   </select>
                 </div>
+                <div className="settings-group full-width">
+                  <label htmlFor="inputProtocol">Input Protocol (WebTransport reduces mouse/keyboard latency)</label>
+                  <select 
+                    id="inputProtocol" 
+                    value={draftInputProtocol} 
+                    onChange={(e) => setDraftInputProtocol(e.target.value)}
+                  >
+                    <option value="webrtc">WebRTC Data Channels (Standard)</option>
+                    <option value="webtransport" disabled={typeof (window as any).WebTransport === 'undefined'}>
+                      WebTransport QUIC Datagrams {typeof (window as any).WebTransport === 'undefined' ? "(Unsupported by browser)" : "(Experimental - Faster Mouse)"}
+                    </option>
+                  </select>
+                </div>
                 {!!(window as any).__TAURI__ && (
                   <div className="settings-group full-width" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginTop: '0.5rem' }}>
                     <input 
@@ -1430,6 +2662,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
                   onClick={() => {
                     setDraftMouseQueueLimit(mouseQueueLimit);
                     setDraftUseNativeClient(useNativeClient);
+                    setDraftInputProtocol(activeInputProtocol);
                     setShowSettingsModal(false);
                   }}
                   className="btn-secondary"
@@ -1444,6 +2677,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
                     setActiveCodec(draftCodec);
                     setMouseQueueLimit(draftMouseQueueLimit);
                     setUseNativeClient(draftUseNativeClient);
+                    setActiveInputProtocol(draftInputProtocol);
                     
                     localStorage.setItem('lunaris_stream_res', draftResolution);
                     localStorage.setItem('lunaris_stream_fps', String(draftFps));
@@ -1451,9 +2685,10 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
                     localStorage.setItem('lunaris_stream_codec', draftCodec);
                     localStorage.setItem('lunaris_mouse_queue_limit', String(draftMouseQueueLimit));
                     localStorage.setItem('lunaris_tauri_use_native', String(draftUseNativeClient));
+                    localStorage.setItem('lunaris_input_protocol', draftInputProtocol);
                     
                     setShowSettingsModal(false);
-                    addLog(`Applied settings: res=${draftResolution}, fps=${draftFps}, bitrate=${draftBitrate}Kbps, codec=${draftCodec}, mouseQueueLimit=${draftMouseQueueLimit}B, useNative=${draftUseNativeClient}`);
+                    addLog(`Applied settings: res=${draftResolution}, fps=${draftFps}, bitrate=${draftBitrate}Kbps, codec=${draftCodec}, mouseQueueLimit=${draftMouseQueueLimit}B, useNative=${draftUseNativeClient}, inputProtocol=${draftInputProtocol}`);
                   }}
                   className="btn-primary"
                 >
@@ -1671,6 +2906,34 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
                   <option value={16384}>16384 B (Previous Default - High Latency Risk)</option>
                 </select>
               </div>
+              <div className="settings-group full-width">
+                <label htmlFor="inputProtocol">Input Protocol (WebTransport reduces mouse/keyboard latency)</label>
+                <select 
+                  id="inputProtocol" 
+                  value={draftInputProtocol} 
+                  onChange={(e) => setDraftInputProtocol(e.target.value)}
+                >
+                  <option value="webrtc">WebRTC Data Channels (Standard)</option>
+                  <option value="webtransport" disabled={typeof (window as any).WebTransport === 'undefined'}>
+                    WebTransport QUIC Datagrams {typeof (window as any).WebTransport === 'undefined' ? "(Unsupported by browser)" : "(Experimental - Faster Mouse)"}
+                  </option>
+                </select>
+              </div>
+              {!!(window as any).__TAURI__ && (
+                <div className="settings-group full-width" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginTop: '0.5rem' }}>
+                  <input 
+                    type="checkbox" 
+                    id="useNativeClient"
+                    checked={typeof window.RTCPeerConnection === 'undefined' ? true : draftUseNativeClient} 
+                    disabled={typeof window.RTCPeerConnection === 'undefined'}
+                    onChange={(e) => setDraftUseNativeClient(e.target.checked)}
+                    style={{ width: 'auto', margin: 0, cursor: typeof window.RTCPeerConnection === 'undefined' ? 'not-allowed' : 'pointer' }}
+                  />
+                  <label htmlFor="useNativeClient" style={{ cursor: typeof window.RTCPeerConnection === 'undefined' ? 'not-allowed' : 'pointer', margin: 0, userSelect: 'none', fontWeight: 'normal' }}>
+                    Use native client binary {typeof window.RTCPeerConnection === 'undefined' ? "(Forced: Webview WebRTC unsupported on Linux WebKitGTK)" : "(bypasses WebView-based WebRTC, recommended for Desktop)"}
+                  </label>
+                </div>
+              )}
             </div>
 
             <div className="settings-actions">
@@ -1681,6 +2944,8 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
                   setDraftBitrate(activeBitrate);
                   setDraftCodec(activeCodec);
                   setDraftMouseQueueLimit(mouseQueueLimit);
+                  setDraftUseNativeClient(useNativeClient);
+                  setDraftInputProtocol(activeInputProtocol);
                   setShowSettingsModal(false);
                 }} 
                 className="btn-secondary"
@@ -1695,13 +2960,17 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
                   localStorage.setItem('lunaris_stream_bitrate', String(draftBitrate));
                   localStorage.setItem('lunaris_stream_codec', draftCodec);
                   localStorage.setItem('lunaris_mouse_queue_limit', String(draftMouseQueueLimit));
+                  localStorage.setItem('lunaris_tauri_use_native', String(draftUseNativeClient));
+                  localStorage.setItem('lunaris_input_protocol', draftInputProtocol);
                   
                   // Check if media parameters changed
                   const mediaChanged = 
                     draftResolution !== activeResolution ||
                     draftFps !== activeFps ||
                     draftBitrate !== activeBitrate ||
-                    draftCodec !== activeCodec;
+                    draftCodec !== activeCodec ||
+                    draftUseNativeClient !== useNativeClient ||
+                    draftInputProtocol !== activeInputProtocol;
 
                   setMouseQueueLimit(draftMouseQueueLimit);
 
@@ -1711,6 +2980,8 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
                     setActiveFps(draftFps);
                     setActiveBitrate(draftBitrate);
                     setActiveCodec(draftCodec);
+                    setUseNativeClient(draftUseNativeClient);
+                    setActiveInputProtocol(draftInputProtocol);
                     
                     // Reset states for connection indicator
                     setStatus("Connecting...");
@@ -1851,6 +3122,19 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
           <option value={16384}>16 KB</option>
         </select>
 
+        {/* Input Protocol Dropdown */}
+        <select
+          value={activeInputProtocol}
+          onChange={(e) => updateSetting('inputProtocol', e.target.value)}
+          className="stream-select"
+          title="Input Protocol"
+        >
+          <option value="webrtc">WebRTC</option>
+          <option value="webtransport" disabled={typeof (window as any).WebTransport === 'undefined'}>
+            WebTransport {typeof (window as any).WebTransport === 'undefined' ? "(Unsupported)" : ""}
+          </option>
+        </select>
+
         {/* Separator */}
         <div className="stream-menu-separator"></div>
 
@@ -1879,7 +3163,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
             const newValue = !hideLocalCursor;
             setHideLocalCursor(newValue);
             localStorage.setItem('lunaris_stream_hide_cursor', String(newValue));
-            sendSunshineCursorHide(!newValue);
+            sendSunshineCursorHide(document.pointerLockElement === videoRef.current ? false : (touchMode === "trackpad" ? false : !newValue));
           }}
           className={`stream-action-btn ${!hideLocalCursor ? 'active' : ''}`}
           title={hideLocalCursor ? "Show Local Cursor" : "Hide Local Cursor"}
@@ -2005,7 +3289,30 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       </div>
 
       {/* Main Stream Area */}
-      <div className="stream-viewport-wrapper">
+      <div 
+        ref={viewportWrapperRef}
+        className={`stream-viewport-wrapper ${isKeyboardActive ? 'keyboard-active' : ''}`}
+      >
+        {/* Hidden input for mobile virtual keyboard */}
+        <input
+          ref={keyboardInputRef}
+          type="text"
+          style={{
+            position: 'absolute',
+            top: '-100px',
+            left: '-100px',
+            width: '10px',
+            height: '10px',
+            opacity: 0,
+            zIndex: -100,
+            pointerEvents: 'none'
+          }}
+          value=""
+          onChange={handleVirtualKeyboardInput}
+          onKeyDown={handleVirtualKeyboardKeyDown}
+          onBlur={() => setIsKeyboardActive(false)}
+        />
+
         <video
           ref={videoRef}
           onMouseMove={handleMouseMove}
@@ -2018,8 +3325,331 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
           autoPlay
           playsInline
           muted={isMuted}
-          style={{ cursor: hideLocalCursor ? 'none' : 'default' }}
+          onLoadedMetadata={handleVideoLoadedMetadata}
+          style={{ 
+            cursor: (hideLocalCursor || (touchMode === 'trackpad' && /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent))) ? 'none' : 'default',
+            transform: `translate(${zoomPan.x}px, ${zoomPan.y}px) scale(${zoomScale})`,
+            transformOrigin: '0 0'
+          }}
         />
+
+        {/* Client-side virtual cursor for mobile trackpad mode */}
+        <div
+          ref={localCursorRef}
+          className="client-virtual-cursor"
+          style={{
+            position: 'absolute',
+            width: '18px',
+            height: '18px',
+            pointerEvents: 'none',
+            zIndex: 150,
+            transform: 'translate(-2px, -2px)',
+            transition: 'none',
+            display: "none",
+          }}
+        >
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+            <path d="M4.5 3V19.5L9.75 14.25H18L4.5 3Z" fill="#a5b4fc" stroke="#ffffff" strokeWidth="2" strokeLinejoin="round" />
+          </svg>
+        </div>
+
+        {/* Mobile controls drawer & footer menu bar for touch screens */}
+        {isStreaming && (
+          <>
+            {/* Mobile Controls Drawer */}
+            {showMobileMenu && (
+              <div 
+                className="mobile-controls-drawer"
+                onTouchStart={(e) => e.stopPropagation()}
+                onTouchMove={(e) => e.stopPropagation()}
+                onTouchEnd={(e) => e.stopPropagation()}
+                onMouseDown={(e) => e.stopPropagation()}
+                onMouseUp={(e) => e.stopPropagation()}
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="drawer-header">
+                  <h4>Touch & Keyboard Controls</h4>
+                </div>
+
+                <div className="drawer-section">
+                  <span className="section-label">Mouse Mode</span>
+                  <div className="mode-toggle-grid">
+                    <button 
+                      onClick={() => {
+                        setTouchMode('direct');
+                        localStorage.setItem('lunaris_mobile_touch_mode', 'direct');
+                      }}
+                      className={`btn-toggle-option ${touchMode === 'direct' ? 'active' : ''}`}
+                    >
+                      Touchscreen
+                    </button>
+                    <button 
+                      onClick={() => {
+                        setTouchMode('trackpad');
+                        localStorage.setItem('lunaris_mobile_touch_mode', 'trackpad');
+                      }}
+                      className={`btn-toggle-option ${touchMode === 'trackpad' ? 'active' : ''}`}
+                    >
+                      Trackpad
+                    </button>
+                  </div>
+                </div>
+
+                {touchMode === 'direct' && (
+                  <div className="drawer-section">
+                    <span className="section-label">Finger/Cursor Offset</span>
+                    <div className="mode-toggle-grid">
+                      <button 
+                        onClick={() => {
+                          setUseTouchOffset(true);
+                          localStorage.setItem('lunaris_mobile_touch_offset', 'true');
+                        }}
+                        className={`btn-toggle-option ${useTouchOffset ? 'active' : ''}`}
+                      >
+                        Enabled (-40px)
+                      </button>
+                      <button 
+                        onClick={() => {
+                          setUseTouchOffset(false);
+                          localStorage.setItem('lunaris_mobile_touch_offset', 'false');
+                        }}
+                        className={`btn-toggle-option ${!useTouchOffset ? 'active' : ''}`}
+                      >
+                        Disabled
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                <div className="drawer-section">
+                  <span className="section-label">Actions</span>
+                  <div className="action-buttons-grid">
+                    <button 
+                      onClick={() => {
+                        if (keyboardInputRef.current) {
+                          keyboardInputRef.current.focus();
+                          setIsKeyboardActive(true);
+                        }
+                      }}
+                      className={`btn-action-option ${isKeyboardActive ? 'active' : ''}`}
+                    >
+                      ⌨️ Keyboard
+                    </button>
+                    <button 
+                      onClick={() => {
+                        setZoomScale(1);
+                        setZoomPan({ x: 0, y: 0 });
+                      }}
+                      className="btn-action-option"
+                      disabled={zoomScale === 1}
+                    >
+                      🔄 Reset Zoom
+                    </button>
+                    <button 
+                      onClick={handleStopActiveStream}
+                      className="btn-action-option btn-danger-option"
+                    >
+                      🛑 Disconnect
+                    </button>
+                  </div>
+                </div>
+
+                {isKeyboardActive && (
+                  <div className="drawer-section modifier-keys-section">
+                    <span className="section-label">Modifier Keys</span>
+                    <div className="modifiers-grid">
+                      <button 
+                        onClick={() => {
+                          setModifierKeys(prev => ({ ...prev, ctrl: !prev.ctrl }));
+                          sendRawKeyEvent(17, !modifierKeys.ctrl, 0);
+                        }}
+                        className={`btn-modifier-key ${modifierKeys.ctrl ? 'active' : ''}`}
+                      >
+                        Ctrl
+                      </button>
+                      <button 
+                        onClick={() => {
+                          setModifierKeys(prev => ({ ...prev, alt: !prev.alt }));
+                          sendRawKeyEvent(18, !modifierKeys.alt, modifierKeys.ctrl ? 2 : 0);
+                        }}
+                        className={`btn-modifier-key ${modifierKeys.alt ? 'active' : ''}`}
+                      >
+                        Alt
+                      </button>
+                      <button 
+                        onClick={() => {
+                          setModifierKeys(prev => ({ ...prev, shift: !prev.shift }));
+                          sendRawKeyEvent(16, !modifierKeys.shift, (modifierKeys.ctrl ? 2 : 0) | (modifierKeys.alt ? 4 : 0));
+                        }}
+                        className={`btn-modifier-key ${modifierKeys.shift ? 'active' : ''}`}
+                      >
+                        Shift
+                      </button>
+                      <button 
+                        onClick={() => {
+                          setModifierKeys(prev => ({ ...prev, meta: !prev.meta }));
+                          sendRawKeyEvent(91, !modifierKeys.meta, (modifierKeys.ctrl ? 2 : 0) | (modifierKeys.alt ? 4 : 0) | (modifierKeys.shift ? 1 : 0));
+                        }}
+                        className={`btn-modifier-key ${modifierKeys.meta ? 'active' : ''}`}
+                      >
+                        Win
+                      </button>
+                      <button 
+                        onClick={() => sendSpecialKeyRemote("Escape")}
+                        className="btn-modifier-key"
+                      >
+                        Esc
+                      </button>
+                      <button 
+                        onClick={() => sendSpecialKeyRemote("Tab")}
+                        className="btn-modifier-key"
+                      >
+                        Tab
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Pull tab to show footer when collapsed */}
+            {!isMobileFooterVisible && (
+              <button
+                className="mobile-footer-pull-tab"
+                title="Show Menu"
+                onTouchStart={(e) => e.stopPropagation()}
+                onTouchMove={(e) => e.stopPropagation()}
+                onTouchEnd={(e) => e.stopPropagation()}
+                onMouseDown={(e) => e.stopPropagation()}
+                onMouseUp={(e) => e.stopPropagation()}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setIsMobileFooterVisible(true);
+                }}
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="18 15 12 9 6 15"></polyline>
+                </svg>
+              </button>
+            )}
+
+            {/* Footer Bar Container */}
+            <div 
+              className={`mobile-footer-bar ${!isMobileFooterVisible ? 'collapsed' : ''}`}
+              onTouchStart={(e) => e.stopPropagation()}
+              onTouchMove={(e) => e.stopPropagation()}
+              onTouchEnd={(e) => e.stopPropagation()}
+              onMouseDown={(e) => e.stopPropagation()}
+              onMouseUp={(e) => e.stopPropagation()}
+              onClick={(e) => e.stopPropagation()}
+            >
+              {/* Close Button */}
+              <button 
+                onClick={onBack}
+                className="mobile-footer-btn"
+                title="Disconnect"
+              >
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="18" y1="6" x2="6" y2="18"></line>
+                  <line x1="6" y1="6" x2="18" y2="18"></line>
+                </svg>
+              </button>
+
+              {/* Display Settings Button */}
+              <button 
+                onClick={() => setShowSettingsModal(true)}
+                className="mobile-footer-btn"
+                title="Display Settings"
+              >
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect>
+                  <line x1="8" y1="21" x2="16" y2="21"></line>
+                  <line x1="12" y1="17" x2="12" y2="21"></line>
+                </svg>
+              </button>
+
+              {/* Keyboard Toggle Button */}
+              <button 
+                onClick={() => {
+                  if (keyboardInputRef.current) {
+                    if (isKeyboardActive) {
+                      keyboardInputRef.current.blur();
+                      setIsKeyboardActive(false);
+                    } else {
+                      keyboardInputRef.current.focus();
+                      setIsKeyboardActive(true);
+                    }
+                  }
+                }}
+                className={`mobile-footer-btn ${isKeyboardActive ? 'active' : ''}`}
+                title="Keyboard"
+              >
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="2" y="4" width="20" height="16" rx="2" ry="2"></rect>
+                  <path d="M6 8h.01M10 8h.01M14 8h.01M18 8h.01M6 12h.01M18 12h.01M7 16h10"></path>
+                </svg>
+              </button>
+
+              {/* Mouse Mode Button */}
+              <button 
+                onClick={() => {
+                  const nextMode = touchMode === 'trackpad' ? 'direct' : 'trackpad';
+                  setTouchMode(nextMode);
+                  localStorage.setItem('lunaris_mobile_touch_mode', nextMode);
+                }}
+                className={`mobile-footer-btn ${touchMode === 'trackpad' ? 'active-trackpad' : ''}`}
+                title={`Mouse Mode: ${touchMode === 'trackpad' ? 'Trackpad' : 'Touchscreen'}`}
+              >
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="5" y="2" width="14" height="20" rx="7" ry="7"></rect>
+                  <line x1="12" y1="2" x2="12" y2="12"></line>
+                  <line x1="5" y1="10" x2="19" y2="10"></line>
+                </svg>
+              </button>
+
+              {/* Stats Overlay Toggle Button */}
+              <button 
+                onClick={() => {
+                  const newValue = !showStats;
+                  setShowStats(newValue);
+                  localStorage.setItem('lunaris_show_stats', String(newValue));
+                }}
+                className={`mobile-footer-btn ${showStats ? 'active' : ''}`}
+                title="Stats"
+              >
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="18" y1="20" x2="18" y2="10"></line>
+                  <line x1="12" y1="20" x2="12" y2="4"></line>
+                  <line x1="6" y1="20" x2="6" y2="14"></line>
+                </svg>
+              </button>
+
+              {/* More Menu / Controls Drawer Button */}
+              <button 
+                onClick={() => setShowMobileMenu(prev => !prev)}
+                className={`mobile-footer-btn ${showMobileMenu ? 'active' : ''}`}
+                title="Controls Menu"
+              >
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="12" cy="5" r="1"></circle>
+                  <circle cx="12" cy="12" r="1"></circle>
+                  <circle cx="12" cy="19" r="1"></circle>
+                </svg>
+              </button>
+
+              {/* Collapse Button */}
+              <button 
+                onClick={() => setIsMobileFooterVisible(false)}
+                className="mobile-footer-btn collapse-btn"
+                title="Hide Bar"
+              >
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="6 9 12 15 18 9"></polyline>
+                </svg>
+              </button>
+            </div>
+          </>
+        )}
 
         {/* Stats overlay */}
         {isStreaming && showStats && (
@@ -2031,6 +3661,9 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
             <div>FPS: <span className="stat-value">{stats.fps}</span></div>
             <div>Bitrate: <span className="stat-value">{stats.bitrate} Kbps</span></div>
             <div>Codec: <span className="stat-value">{activeCodec.toUpperCase()}</span></div>
+            <div>Input Protocol: <span className="stat-value" style={{ color: isWebTransportConnected ? '#4ade80' : '#38bdf8', fontWeight: 'bold' }}>
+              {isWebTransportConnected ? "WebTransport (QUIC)" : "WebRTC (SCTP)"}
+            </span></div>
           </div>
         )}
 

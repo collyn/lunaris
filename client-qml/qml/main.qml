@@ -121,7 +121,7 @@ ApplicationWindow {
     property bool showLockBanner: false
 
     onIsPointerLockedChanged: {
-        bridge.set_pointer_locked(isPointerLocked);
+        bridge.setPointerLocked(isPointerLocked);
         if (isPointerLocked) {
             rootContainer.forceActiveFocus();
             window.showLockBanner = true;
@@ -131,7 +131,7 @@ ApplicationWindow {
             window.showLockBanner = false;
             bannerTimer.stop();
             keyboardGrabTimer.stop();
-            bridge.set_keyboard_grab(false);
+            bridge.setKeyboardGrab(false);
         }
     }
 
@@ -201,8 +201,8 @@ ApplicationWindow {
             window.activeCodec = codec
         }
 
-        onSettingsLoaded: (res, fps, codec, bitrate, queueLimit, hostName, disableCuda) => {
-            menuBar.initializeSettings(res, fps, codec, bitrate, queueLimit, hostName, disableCuda);
+        onSettingsLoaded: (res, fps, codec, bitrate, queueLimit, hostName, disableCuda, inputProtocol) => {
+            menuBar.initializeSettings(res, fps, codec, bitrate, queueLimit, hostName, disableCuda, inputProtocol);
             window.useCuda = !disableCuda;
             var parts = res.split("x");
             if (parts.length === 2) {
@@ -291,7 +291,7 @@ ApplicationWindow {
         repeat: false
         onTriggered: {
             if (window.isPointerLocked) {
-                bridge.set_keyboard_grab(true);
+                bridge.setKeyboardGrab(true);
             }
         }
     }
@@ -581,9 +581,9 @@ ApplicationWindow {
             window.hideLocalCursor = !window.hideLocalCursor;
         }
 
-        onSettingsChanged: (res, fps, codec, bitrate, queueLimit, disableCuda) => {
+        onSettingsChanged: (res, fps, codec, bitrate, queueLimit, disableCuda, inputProtocol) => {
             window.useCuda = !disableCuda;
-            bridge.updateStreamConfig(res, fps, codec, bitrate, queueLimit, disableCuda);
+            bridge.updateStreamConfig(res, fps, codec, bitrate, queueLimit, disableCuda, inputProtocol);
             var parts = res.split("x");
             if (parts.length === 2) {
                 window.streamWidth = parseInt(parts[0]);
@@ -709,7 +709,7 @@ ApplicationWindow {
         visible: !window.isStreamMode
         focus: !window.isStreamMode
 
-        onStartSessionRequested: (server, token, hostId, hostName, appId, res, fps, codec, bitrate, queueLimit, disableCuda) => {
+        onStartSessionRequested: (server, token, hostId, hostName, appId, res, fps, codec, bitrate, queueLimit, disableCuda, inputProtocol) => {
             window.useCuda = !disableCuda;
             window.isStreamMode = true;
             var parts = res.split("x");
@@ -717,7 +717,7 @@ ApplicationWindow {
                 window.streamWidth = parseInt(parts[0]);
                 window.streamHeight = parseInt(parts[1]);
             }
-            bridge.startGameSession(server, token, hostId, hostName, appId, res, fps, codec, bitrate, queueLimit, disableCuda);
+            bridge.startGameSession(server, token, hostId, hostName, appId, res, fps, codec, bitrate, queueLimit, disableCuda, inputProtocol);
             bridge.setVideoSink(videoOutput.videoSink);
             bridge.requestSettings();
             rootContainer.forceActiveFocus();

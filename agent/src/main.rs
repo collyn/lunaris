@@ -1,37 +1,49 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use clap::Parser;
+use futures_util::{SinkExt, StreamExt};
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
-use futures_util::{StreamExt, SinkExt};
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
-use clap::Parser;
-use tracing::{info, error, warn, debug};
+use tracing::{debug, error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use common::{
-    AgentMessage, ServerToAgentMessage, SignalingMessage,
-    RtcSdpType, RtcSessionDescription,
+    AgentMessage, RtcSdpType, RtcSessionDescription, ServerToAgentMessage, SignalingMessage,
 };
-use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
+use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 
+mod bridge;
 mod buffer;
 mod input;
 mod pairing;
 mod video;
-mod bridge;
 
 #[cfg(feature = "gui")]
 pub mod gui;
 
-pub static CONNECTED_TO_SERVER: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+pub static CONNECTED_TO_SERVER: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 pub static SUNSHINE_PID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 pub static AGENT_ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 pub static LAST_ERROR: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+pub static LAST_STREAM_STOP_TIME_MS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
 
-use crate::pairing::{save_config, perform_pairing, query_sunshine_codec_support, auto_pair_local_sunshine, AgentConfig};
+fn get_current_time_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
 use crate::bridge::{setup_bridge_session, BridgeSession};
+use crate::pairing::{
+    auto_pair_local_sunshine, perform_pairing, query_sunshine_codec_support, save_config,
+    AgentConfig,
+};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -71,13 +83,18 @@ struct Args {
 }
 
 #[allow(dead_code)]
-const LINUX_SUNSHINE_URL: &str = "https://github.com/LizardByte/Sunshine/releases/latest/download/sunshine.AppImage";
+const LINUX_SUNSHINE_URL: &str =
+    "https://github.com/LizardByte/Sunshine/releases/latest/download/sunshine.AppImage";
 #[allow(dead_code)]
 const WINDOWS_SUNSHINE_URL: &str = "https://github.com/LizardByte/Sunshine/releases/latest/download/Sunshine-Windows-AMD64-portable.zip";
 
 #[allow(dead_code)]
 fn which_sunshine() -> Result<(), &'static str> {
-    let check_cmd = if cfg!(target_os = "windows") { "where" } else { "which" };
+    let check_cmd = if cfg!(target_os = "windows") {
+        "where"
+    } else {
+        "which"
+    };
     let output = std::process::Command::new(check_cmd)
         .arg("sunshine")
         .output();
@@ -97,31 +114,37 @@ async fn download_file(url: &str, dest: &std::path::Path) -> Result<(), anyhow::
         .build()?;
     let response = client.get(url).send().await?;
     if !response.status().is_success() {
-        return Err(anyhow::anyhow!("Failed to download: HTTP {}", response.status()));
+        return Err(anyhow::anyhow!(
+            "Failed to download: HTTP {}",
+            response.status()
+        ));
     }
-    
+
     let mut file = tokio::fs::File::create(dest).await?;
     let mut stream = response.bytes_stream();
     use futures_util::StreamExt;
     use tokio::io::AsyncWriteExt;
-    
+
     while let Some(chunk_result) = stream.next().await {
         let chunk = chunk_result?;
         file.write_all(&chunk).await?;
     }
-    
+
     warn!("Download complete!");
     Ok(())
 }
 
 #[allow(dead_code)]
-fn unzip_file(zip_path: &std::path::Path, extract_to: &std::path::Path) -> Result<(), anyhow::Error> {
+fn unzip_file(
+    zip_path: &std::path::Path,
+    extract_to: &std::path::Path,
+) -> Result<(), anyhow::Error> {
     warn!("Extracting zip {:?} to {:?}", zip_path, extract_to);
     let file = std::fs::File::open(zip_path)?;
     let mut archive = zip::ZipArchive::new(file)?;
-    
+
     std::fs::create_dir_all(extract_to)?;
-    
+
     for i in 0..archive.len() {
         let mut file = archive.by_index(i)?;
         let outpath = match file.enclosed_name() {
@@ -233,9 +256,11 @@ fn write_sunshine_conf(config_json: &str) -> Result<(), anyhow::Error> {
     let sunshine_dir = crate::pairing::get_sunshine_dir()
         .ok_or_else(|| anyhow::anyhow!("Could not locate configuration directory"))?;
     let conf_path = sunshine_dir.join("sunshine.conf");
-    
+
     let new_config: serde_json::Value = serde_json::from_str(config_json)?;
-    let new_map = new_config.as_object().ok_or_else(|| anyhow::anyhow!("Config is not a JSON object"))?;
+    let new_map = new_config
+        .as_object()
+        .ok_or_else(|| anyhow::anyhow!("Config is not a JSON object"))?;
 
     let mut lines: Vec<String> = if conf_path.exists() {
         let content = std::fs::read_to_string(&conf_path)?;
@@ -290,7 +315,10 @@ fn check_and_start_sunshine(path: &str, ip: &str, port: u16) -> Option<tokio::pr
         return None;
     }
 
-    info!("Sunshine is not running. Spawning local Sunshine process from path: {}", path);
+    info!(
+        "Sunshine is not running. Spawning local Sunshine process from path: {}",
+        path
+    );
     let mut cmd = tokio::process::Command::new(path);
     cmd.kill_on_drop(true);
 
@@ -312,7 +340,10 @@ fn check_and_start_sunshine(path: &str, ip: &str, port: u16) -> Option<tokio::pr
 
     match cmd.spawn() {
         Ok(child) => {
-            info!("Local Sunshine process spawned successfully (PID: {:?})", child.id());
+            info!(
+                "Local Sunshine process spawned successfully (PID: {:?})",
+                child.id()
+            );
             Some(child)
         }
         Err(e) => {
@@ -346,7 +377,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             .with(tracing_subscriber::fmt::layer())
             .try_init();
 
-        info!("Importing configuration from {} into {}...", import_path, args.config);
+        info!(
+            "Importing configuration from {} into {}...",
+            import_path, args.config
+        );
         if let Err(e) = crate::pairing::import_config_file(import_path, &args.config) {
             error!("Failed to import configuration: {:?}", e);
             std::process::exit(1);
@@ -361,16 +395,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             let _ = tracing_subscriber::registry()
                 .with(tracing_subscriber::EnvFilter::new(
                     std::env::var("RUST_LOG").unwrap_or_else(|_| {
-                        if cfg!(debug_assertions) {
-                            "info,agent=debug"
-                        } else {
-                            "warn"
+                        {
+                            if cfg!(debug_assertions) {
+                                "info,agent=debug"
+                            } else {
+                                "warn"
+                            }
                         }
-                    }.into()),
+                        .into()
+                    }),
                 ))
-                .with(tracing_subscriber::fmt::layer()
-                    .with_writer(gui::ChannelMakeWriter)
-                    .with_ansi(false))
+                .with(
+                    tracing_subscriber::fmt::layer()
+                        .with_writer(gui::ChannelMakeWriter)
+                        .with_ansi(false),
+                )
                 .try_init();
 
             info!("Launching Lunaris Agent in Desktop GUI mode...");
@@ -384,12 +423,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let _ = tracing_subscriber::registry()
         .with(tracing_subscriber::EnvFilter::new(
             std::env::var("RUST_LOG").unwrap_or_else(|_| {
-                if cfg!(debug_assertions) {
-                    "info,agent=debug"
-                } else {
-                    "warn"
+                {
+                    if cfg!(debug_assertions) {
+                        "info,agent=debug"
+                    } else {
+                        "warn"
+                    }
                 }
-            }.into()),
+                .into()
+            }),
         ))
         .with(tracing_subscriber::fmt::layer())
         .try_init();
@@ -403,11 +445,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     });
 
     if args.pair {
-        let pin = args.pin.ok_or_else(|| anyhow::anyhow!("--pin is required when pairing"))?;
-        info!("Starting Sunshine pairing handshake with {}:{} using PIN {}", args.host_ip, args.host_port, pin);
-        let config = perform_pairing(&args.host_ip, args.host_port, &pin, &name, args.server.clone()).await?;
+        let pin = args
+            .pin
+            .ok_or_else(|| anyhow::anyhow!("--pin is required when pairing"))?;
+        info!(
+            "Starting Sunshine pairing handshake with {}:{} using PIN {}",
+            args.host_ip, args.host_port, pin
+        );
+        let config = perform_pairing(
+            &args.host_ip,
+            args.host_port,
+            &pin,
+            &name,
+            args.server.clone(),
+        )
+        .await?;
         save_config(&config, &args.config)?;
-        info!("Pairing completed successfully! Config saved to {}", args.config);
+        info!(
+            "Pairing completed successfully! Config saved to {}",
+            args.config
+        );
         return Ok(());
     }
 
@@ -502,19 +559,23 @@ pub async fn run_agent_loop(
         // Since we are starting/restarting Sunshine, we must ensure the auto-pair runs
         // when Sunshine is not running, so that we can write to sunshine_state.json safely.
         info!("Ensuring Agent credentials are paired with local Sunshine configuration...");
-        config = match auto_pair_local_sunshine(&name, &config_path, Some(config.server_url.clone())) {
-            Ok(c) => c,
-            Err(e) => {
-                error!("Failed to auto-pair local Sunshine config: {:?}", e);
-                return Err(e.into());
-            }
-        };
+        config =
+            match auto_pair_local_sunshine(&name, &config_path, Some(config.server_url.clone())) {
+                Ok(c) => c,
+                Err(e) => {
+                    error!("Failed to auto-pair local Sunshine config: {:?}", e);
+                    return Err(e.into());
+                }
+            };
 
         // Prepare/Download portable Sunshine if necessary
         let path_to_run = match prepare_sunshine().await {
             Ok(p) => p.to_string_lossy().into_owned(),
             Err(e) => {
-                warn!("Could not automatically prepare Sunshine binary: {:?}. Fallback to path: {}", e, sunshine_path);
+                warn!(
+                    "Could not automatically prepare Sunshine binary: {:?}. Fallback to path: {}",
+                    e, sunshine_path
+                );
                 sunshine_path.clone()
             }
         };
@@ -527,18 +588,21 @@ pub async fn run_agent_loop(
     } else if !port_open && no_auto_start_sunshine {
         // If it's not running and we can't start it, we still run auto-pair just in case
         info!("Sunshine is not running and auto-start is disabled. Ensuring configuration is prepared...");
-        config = match auto_pair_local_sunshine(&name, &config_path, Some(config.server_url.clone())) {
-            Ok(c) => c,
-            Err(e) => {
-                error!("Failed to auto-pair local Sunshine config: {:?}", e);
-                return Err(e.into());
-            }
-        };
+        config =
+            match auto_pair_local_sunshine(&name, &config_path, Some(config.server_url.clone())) {
+                Ok(c) => c,
+                Err(e) => {
+                    error!("Failed to auto-pair local Sunshine config: {:?}", e);
+                    return Err(e.into());
+                }
+            };
     }
 
     // If server_certificate is empty, we will try to read it from Sunshine credentials directory
     if config.server_certificate.is_empty() {
-        info!("Server certificate not loaded yet. Waiting for Sunshine to initialize credentials...");
+        info!(
+            "Server certificate not loaded yet. Waiting for Sunshine to initialize credentials..."
+        );
         // Wait up to 10 seconds for the cert to appear
         if let Some(sunshine_dir) = crate::pairing::get_sunshine_dir() {
             let cert_path = sunshine_dir.join("credentials").join("cacert.pem");
@@ -548,7 +612,10 @@ pub async fn run_agent_loop(
                     if let Ok(cert_pem) = std::fs::read_to_string(&cert_path) {
                         config.server_certificate = cert_pem;
                         if let Err(e) = save_config(&config, &config_path) {
-                            error!("Failed to save server certificate to {}: {:?}", config_path, e);
+                            error!(
+                                "Failed to save server certificate to {}: {:?}",
+                                config_path, e
+                            );
                         } else {
                             info!("Successfully read and saved server certificate!");
                             cert_loaded = true;
@@ -564,22 +631,34 @@ pub async fn run_agent_loop(
         }
     }
 
-    info!("Starting Host Agent: {} ({})", name, config.client_unique_id);
+    info!(
+        "Starting Host Agent: {} ({})",
+        name, config.client_unique_id
+    );
 
     // Query Sunshine capabilities with retry
     let mut codec_support = None;
     for i in 1..=5 {
         match query_sunshine_codec_support(&host_ip, host_port, &config).await {
             Ok(support) => {
-                info!("Successfully queried Sunshine codec support bitmask: {}", support);
+                info!(
+                    "Successfully queried Sunshine codec support bitmask: {}",
+                    support
+                );
                 codec_support = Some(support);
                 break;
             }
             Err(e) => {
                 if i == 5 {
-                    warn!("Failed to query Sunshine codec support after 5 attempts: {:?}", e);
+                    warn!(
+                        "Failed to query Sunshine codec support after 5 attempts: {:?}",
+                        e
+                    );
                 } else {
-                    info!("Sunshine not ready yet, retrying query (attempt {}/5)...", i);
+                    info!(
+                        "Sunshine not ready yet, retrying query (attempt {}/5)...",
+                        i
+                    );
                     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
                 }
             }
@@ -674,18 +753,32 @@ pub async fn run_agent_loop(
                             ice_servers,
                         } => {
                             info!("Incoming session request from client: {}", client_id);
-                            
+
                             // Clean up previous active session on the agent to release Sunshine stream
                             {
                                 let mut lock = active_session.lock().await;
                                 if let Some(old_session) = lock.take() {
                                     info!("Cleaning up previous active session before setting up new one...");
                                     let _ = old_session.peer_connection.close().await;
-                                    let mut stream_lock = old_session.moonlight_stream.write().unwrap();
+                                    let mut stream_lock =
+                                        old_session.moonlight_stream.write().unwrap();
                                     if let Some(stream) = stream_lock.take() {
                                         info!("Stopping Moonlight stream for previous session...");
                                         stream.stop();
+                                        LAST_STREAM_STOP_TIME_MS.store(get_current_time_ms(), std::sync::atomic::Ordering::SeqCst);
                                     }
+                                }
+                            }
+
+                            // Wait if the stream was stopped very recently (let Sunshine release encoder/port resources)
+                            let last_stop = LAST_STREAM_STOP_TIME_MS.load(std::sync::atomic::Ordering::SeqCst);
+                            if last_stop > 0 {
+                                let now = get_current_time_ms();
+                                let elapsed = now.saturating_sub(last_stop);
+                                if elapsed < 1200 {
+                                    let sleep_ms = 1200 - elapsed;
+                                    info!("Previous stream was stopped recently ({}ms ago). Delaying new stream setup by {}ms to prevent Sunshine encoder conflicts...", elapsed, sleep_ms);
+                                    tokio::time::sleep(std::time::Duration::from_millis(sleep_ms)).await;
                                 }
                             }
 
@@ -703,13 +796,20 @@ pub async fn run_agent_loop(
                                 codec,
                                 app_id,
                                 ice_servers,
-                            ).await {
+                            )
+                            .await
+                            {
                                 Ok(s) => s,
                                 Err(e) => {
                                     error!("Failed to setup WebRTC bridge session: {:?}", e);
-                                    let _ = agent_tx.send(AgentMessage::Signaling(SignalingMessage::Error {
-                                        message: format!("Failed to bridge connection: {:?}", e),
-                                    }));
+                                    let _ = agent_tx.send(AgentMessage::Signaling(
+                                        SignalingMessage::Error {
+                                            message: format!(
+                                                "Failed to bridge connection: {:?}",
+                                                e
+                                            ),
+                                        },
+                                    ));
                                     continue;
                                 }
                             };
@@ -723,7 +823,11 @@ pub async fn run_agent_loop(
                                 }
                             };
 
-                            if let Err(e) = session.peer_connection.set_local_description(offer.clone()).await {
+                            if let Err(e) = session
+                                .peer_connection
+                                .set_local_description(offer.clone())
+                                .await
+                            {
                                 error!("Failed to set local description: {:?}", e);
                                 continue;
                             }
@@ -736,6 +840,8 @@ pub async fn run_agent_loop(
                                     sdp: offer.sdp,
                                 },
                                 ice_servers: None,
+                                webtransport_port: session.webtransport_port,
+                                webtransport_cert_hash: session.webtransport_cert_hash.clone(),
                             });
                             let _ = agent_tx.send(sdp_msg);
 
@@ -747,23 +853,30 @@ pub async fn run_agent_loop(
                             info!("Received SDP description from client: {}", target_id);
                             let lock = active_session.lock().await;
                             if let Some(session) = lock.as_ref() {
-                                    match RTCSessionDescription::answer(sdp.sdp) {
-                                        Ok(rtc_sdp) => {
-                                            if let Err(e) = session.peer_connection.set_remote_description(rtc_sdp).await {
-                                                error!("Failed to set remote description: {:?}", e);
-                                            } else {
-                                                info!("SDP Answer set successfully!");
-                                            }
-                                        }
-                                        Err(e) => {
-                                            error!("Failed to parse SDP Answer: {:?}", e);
+                                match RTCSessionDescription::answer(sdp.sdp) {
+                                    Ok(rtc_sdp) => {
+                                        if let Err(e) = session
+                                            .peer_connection
+                                            .set_remote_description(rtc_sdp)
+                                            .await
+                                        {
+                                            error!("Failed to set remote description: {:?}", e);
+                                        } else {
+                                            info!("SDP Answer set successfully!");
                                         }
                                     }
+                                    Err(e) => {
+                                        error!("Failed to parse SDP Answer: {:?}", e);
+                                    }
+                                }
                             } else {
                                 warn!("Received SDP without an active session");
                             }
                         }
-                        SignalingMessage::IceCandidate { target_id: _, candidate } => {
+                        SignalingMessage::IceCandidate {
+                            target_id: _,
+                            candidate,
+                        } => {
                             let lock = active_session.lock().await;
                             if let Some(session) = lock.as_ref() {
                                 let rtc_cand = RTCIceCandidateInit {
@@ -772,7 +885,9 @@ pub async fn run_agent_loop(
                                     sdp_mline_index: candidate.sdp_mline_index,
                                     username_fragment: candidate.username_fragment,
                                 };
-                                if let Err(e) = session.peer_connection.add_ice_candidate(rtc_cand).await {
+                                if let Err(e) =
+                                    session.peer_connection.add_ice_candidate(rtc_cand).await
+                                {
                                     debug!("Failed to add ICE candidate: {:?}", e);
                                 }
                             }
@@ -786,6 +901,7 @@ pub async fn run_agent_loop(
                                 if let Some(stream) = stream_lock.take() {
                                     info!("Stopping Moonlight stream...");
                                     stream.stop();
+                                    LAST_STREAM_STOP_TIME_MS.store(get_current_time_ms(), std::sync::atomic::Ordering::SeqCst);
                                 }
                             }
                         }
@@ -795,27 +911,37 @@ pub async fn run_agent_loop(
                             let host_ip_clone = host_ip.clone();
                             let agent_tx_clone = agent_tx.clone();
                             tokio::spawn(async move {
-                                match get_agent_apps(&config_clone, &host_ip_clone, host_port).await {
+                                match get_agent_apps(&config_clone, &host_ip_clone, host_port).await
+                                {
                                     Ok((apps, current_game_id)) => {
-                                        let resp = AgentMessage::Signaling(SignalingMessage::AppListResponse {
-                                            target_id,
-                                            apps,
-                                            current_game_id,
-                                        });
+                                        let resp = AgentMessage::Signaling(
+                                            SignalingMessage::AppListResponse {
+                                                target_id,
+                                                apps,
+                                                current_game_id,
+                                            },
+                                        );
                                         let _ = agent_tx_clone.send(resp);
                                     }
                                     Err(e) => {
                                         error!("Failed to get app list: {:?}", e);
-                                        let resp = AgentMessage::Signaling(SignalingMessage::Error {
-                                            message: format!("Failed to retrieve app list: {:?}", e),
-                                        });
+                                        let resp =
+                                            AgentMessage::Signaling(SignalingMessage::Error {
+                                                message: format!(
+                                                    "Failed to retrieve app list: {:?}",
+                                                    e
+                                                ),
+                                            });
                                         let _ = agent_tx_clone.send(resp);
                                     }
                                 }
                             });
                         }
                         SignalingMessage::StopActiveStream { target_id } => {
-                            info!("Received StopActiveStream request from target: {}", target_id);
+                            info!(
+                                "Received StopActiveStream request from target: {}",
+                                target_id
+                            );
                             // Clean up active session locally first
                             {
                                 let mut lock = active_session.lock().await;
@@ -825,6 +951,7 @@ pub async fn run_agent_loop(
                                     if let Some(stream) = stream_lock.take() {
                                         info!("Stopping Moonlight stream...");
                                         stream.stop();
+                                        LAST_STREAM_STOP_TIME_MS.store(get_current_time_ms(), std::sync::atomic::Ordering::SeqCst);
                                     }
                                 }
                             }
@@ -832,29 +959,38 @@ pub async fn run_agent_loop(
                             let host_ip_clone = host_ip.clone();
                             let agent_tx_clone = agent_tx.clone();
                             tokio::spawn(async move {
-                                match stop_agent_stream(&config_clone, &host_ip_clone, host_port).await {
+                                match stop_agent_stream(&config_clone, &host_ip_clone, host_port)
+                                    .await
+                                {
                                     Ok(success) => {
-                                        let resp = AgentMessage::Signaling(SignalingMessage::StopActiveStreamResponse {
-                                            target_id,
-                                            success,
-                                            error: None,
-                                        });
+                                        let resp = AgentMessage::Signaling(
+                                            SignalingMessage::StopActiveStreamResponse {
+                                                target_id,
+                                                success,
+                                                error: None,
+                                            },
+                                        );
                                         let _ = agent_tx_clone.send(resp);
                                     }
                                     Err(e) => {
                                         error!("Failed to stop stream: {:?}", e);
-                                        let resp = AgentMessage::Signaling(SignalingMessage::StopActiveStreamResponse {
-                                            target_id,
-                                            success: false,
-                                            error: Some(e.to_string()),
-                                        });
+                                        let resp = AgentMessage::Signaling(
+                                            SignalingMessage::StopActiveStreamResponse {
+                                                target_id,
+                                                success: false,
+                                                error: Some(e.to_string()),
+                                            },
+                                        );
                                         let _ = agent_tx_clone.send(resp);
                                     }
                                 }
                             });
                         }
                         SignalingMessage::GetSunshineConfig { target_id } => {
-                            info!("Received GetSunshineConfig request from target: {}", target_id);
+                            info!(
+                                "Received GetSunshineConfig request from target: {}",
+                                target_id
+                            );
                             let config = match read_sunshine_conf() {
                                 Ok(cfg) => cfg,
                                 Err(e) => {
@@ -862,14 +998,21 @@ pub async fn run_agent_loop(
                                     "{}".to_string()
                                 }
                             };
-                            let resp = AgentMessage::Signaling(SignalingMessage::SunshineConfigResponse {
-                                target_id,
-                                config,
-                            });
+                            let resp =
+                                AgentMessage::Signaling(SignalingMessage::SunshineConfigResponse {
+                                    target_id,
+                                    config,
+                                });
                             let _ = agent_tx.send(resp);
                         }
-                        SignalingMessage::UpdateSunshineConfig { target_id, config: config_str } => {
-                            info!("Received UpdateSunshineConfig request from target: {}", target_id);
+                        SignalingMessage::UpdateSunshineConfig {
+                            target_id,
+                            config: config_str,
+                        } => {
+                            info!(
+                                "Received UpdateSunshineConfig request from target: {}",
+                                target_id
+                            );
                             let mut success = true;
                             let mut error = None;
                             if let Err(e) = write_sunshine_conf(&config_str) {
@@ -887,7 +1030,10 @@ pub async fn run_agent_loop(
                                                 if let Some(pid) = child.id() {
                                                     // Kill the entire process group
                                                     unsafe {
-                                                        libc::kill(-(pid as libc::pid_t), libc::SIGKILL);
+                                                        libc::kill(
+                                                            -(pid as libc::pid_t),
+                                                            libc::SIGKILL,
+                                                        );
                                                     }
                                                 }
                                             }
@@ -896,13 +1042,21 @@ pub async fn run_agent_loop(
                                                 let _ = child.kill().await;
                                             }
                                             let _ = child.wait().await;
-                                            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                                            tokio::time::sleep(tokio::time::Duration::from_millis(
+                                                500,
+                                            ))
+                                            .await;
                                         }
-                                        let child_opt = check_and_start_sunshine(path, &host_ip, host_port);
+                                        let child_opt =
+                                            check_and_start_sunshine(path, &host_ip, host_port);
                                         if let Some(ref child) = child_opt {
-                                            SUNSHINE_PID.store(child.id().unwrap_or(0), std::sync::atomic::Ordering::SeqCst);
+                                            SUNSHINE_PID.store(
+                                                child.id().unwrap_or(0),
+                                                std::sync::atomic::Ordering::SeqCst,
+                                            );
                                         } else {
-                                            SUNSHINE_PID.store(0, std::sync::atomic::Ordering::SeqCst);
+                                            SUNSHINE_PID
+                                                .store(0, std::sync::atomic::Ordering::SeqCst);
                                         }
                                         _sunshine_child = child_opt;
                                     } else {
@@ -912,11 +1066,13 @@ pub async fn run_agent_loop(
                                     info!("no_auto_start_sunshine is true, not restarting Sunshine automatically.");
                                 }
                             }
-                            let resp = AgentMessage::Signaling(SignalingMessage::UpdateSunshineConfigResponse {
-                                target_id,
-                                success,
-                                error,
-                            });
+                            let resp = AgentMessage::Signaling(
+                                SignalingMessage::UpdateSunshineConfigResponse {
+                                    target_id,
+                                    success,
+                                    error,
+                                },
+                            );
                             let _ = agent_tx.send(resp);
                         }
                         _ => {}
@@ -942,7 +1098,7 @@ pub async fn run_agent_loop(
             }
         }
     }
-    
+
     // Explicitly kill Sunshine child if we spawned it
     if let Some(mut child) = _sunshine_child {
         info!("Stopping local Sunshine child process...");
@@ -971,12 +1127,16 @@ async fn get_agent_apps(
     host_ip: &str,
     host_port: u16,
 ) -> Result<(Vec<common::AppInfo>, u32), anyhow::Error> {
+    use moonlight_common::high::tokio::MoonlightHost;
     use moonlight_common::http::client::tokio_hyper::TokioHyperClient;
     use moonlight_common::http::{ClientIdentifier, ClientSecret, ServerIdentifier};
-    use moonlight_common::high::tokio::MoonlightHost;
 
-    let host = MoonlightHost::<TokioHyperClient>::new(host_ip.to_string(), host_port, Some(config.client_unique_id.clone()))?;
-    
+    let host = MoonlightHost::<TokioHyperClient>::new(
+        host_ip.to_string(),
+        host_port,
+        Some(config.client_unique_id.clone()),
+    )?;
+
     let client_cert_pem = pem::parse(&config.client_certificate)?;
     let client_key_pem = pem::parse(&config.client_private_key)?;
     let server_cert_pem = pem::parse(&config.server_certificate)?;
@@ -1022,12 +1182,16 @@ async fn stop_agent_stream(
     host_ip: &str,
     host_port: u16,
 ) -> Result<bool, anyhow::Error> {
+    use moonlight_common::high::tokio::MoonlightHost;
     use moonlight_common::http::client::tokio_hyper::TokioHyperClient;
     use moonlight_common::http::{ClientIdentifier, ClientSecret, ServerIdentifier};
-    use moonlight_common::high::tokio::MoonlightHost;
 
-    let host = MoonlightHost::<TokioHyperClient>::new(host_ip.to_string(), host_port, Some(config.client_unique_id.clone()))?;
-    
+    let host = MoonlightHost::<TokioHyperClient>::new(
+        host_ip.to_string(),
+        host_port,
+        Some(config.client_unique_id.clone()),
+    )?;
+
     let client_cert_pem = pem::parse(&config.client_certificate)?;
     let client_key_pem = pem::parse(&config.client_private_key)?;
     let server_cert_pem = pem::parse(&config.server_certificate)?;

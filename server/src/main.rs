@@ -2,7 +2,7 @@ use axum::{
     extract::State,
     http::StatusCode,
     response::IntoResponse,
-    routing::{get, post, delete},
+    routing::{delete, get, post},
     Json, Router,
 };
 use common::{AuthResponse, HostInfo, HostStatus, LoginRequest, PairHostRequest};
@@ -12,23 +12,21 @@ use tower_http::services::{ServeDir, ServeFile};
 use tracing::{error, info};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-
 mod admin;
 mod auth;
-mod db;
-pub mod signaling;
-pub mod pairing;
-pub mod buffer;
-pub mod input;
-pub mod video;
 pub mod bridge;
+pub mod buffer;
+mod db;
+pub mod input;
+pub mod pairing;
+pub mod signaling;
+pub mod video;
 
 use crate::{
     auth::{create_jwt, verify_password, AuthenticatedUser},
     db::init_db,
     signaling::{agent_ws_handler, client_ws_handler, SignalingState},
 };
-
 
 #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
 #[no_mangle]
@@ -64,7 +62,7 @@ fn find_dist_path(dir_name: &str) -> Option<std::path::PathBuf> {
             if path.exists() {
                 return Some(path);
             }
-            
+
             // If executable is in target/release/ or target/debug/
             if let Some(target_dir) = exe_dir.parent() {
                 if let Some(workspace_dir) = target_dir.parent() {
@@ -169,26 +167,43 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/hosts/pair", post(pair_host_handler))
         .route("/api/hosts/:id", delete(unpair_host_handler))
         .route("/api/agent/token", get(agent_token_handler))
-        .route("/api/admin/users", get(admin::list_users).post(admin::create_user))
-        .route("/api/admin/users/:id", axum::routing::put(admin::update_user).delete(admin::delete_user))
-        .route("/api/admin/groups", get(admin::list_groups).post(admin::create_group))
-        .route("/api/admin/groups/:id", axum::routing::put(admin::update_group).delete(admin::delete_group))
-        .route("/api/admin/turn-servers", get(admin::list_turn_servers).post(admin::create_turn_server))
-        .route("/api/admin/turn-servers/:id", delete(admin::delete_turn_server))
+        .route(
+            "/api/admin/users",
+            get(admin::list_users).post(admin::create_user),
+        )
+        .route(
+            "/api/admin/users/:id",
+            axum::routing::put(admin::update_user).delete(admin::delete_user),
+        )
+        .route(
+            "/api/admin/groups",
+            get(admin::list_groups).post(admin::create_group),
+        )
+        .route(
+            "/api/admin/groups/:id",
+            axum::routing::put(admin::update_group).delete(admin::delete_group),
+        )
+        .route(
+            "/api/admin/turn-servers",
+            get(admin::list_turn_servers).post(admin::create_turn_server),
+        )
+        .route(
+            "/api/admin/turn-servers/:id",
+            delete(admin::delete_turn_server),
+        )
         .route("/ws/agent", get(agent_ws_handler))
         .route("/ws/client", get(client_ws_handler));
 
     if let Some(ref path) = react_path {
         info!("Serving React client from {:?}", path);
-        let serve_react = ServeDir::new(path)
-            .not_found_service(ServeFile::new(path.join("index.html")));
+        let serve_react =
+            ServeDir::new(path).not_found_service(ServeFile::new(path.join("index.html")));
         app = app.fallback_service(serve_react);
     } else {
         error!("Directory 'web/dist' not found! Build the React client via 'npm run build' inside the 'web' directory.");
     }
 
-    let app = app.layer(cors)
-        .with_state(signaling_state);
+    let app = app.layer(cors).with_state(signaling_state);
 
     let port = std::env::var("SERVER_PORT").unwrap_or_else(|_| "8080".to_string());
     let addr = format!("0.0.0.0:{}", port);
@@ -204,18 +219,19 @@ async fn login_handler(
     State(state): State<Arc<SignalingState>>,
     Json(payload): Json<LoginRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    let row: Option<(String, String, String)> =
-        sqlx::query_as("SELECT id, password_hash, COALESCE(role, 'user') as role FROM users WHERE username = ?")
-            .bind(&payload.username)
-            .fetch_optional(&state.db)
-            .await
-            .map_err(|e| {
-                error!("Database error: {}", e);
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({ "error": "Internal Database Error" })),
-                )
-            })?;
+    let row: Option<(String, String, String)> = sqlx::query_as(
+        "SELECT id, password_hash, COALESCE(role, 'user') as role FROM users WHERE username = ?",
+    )
+    .bind(&payload.username)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|e| {
+        error!("Database error: {}", e);
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": "Internal Database Error" })),
+        )
+    })?;
 
     let (user_id, hash, role) = match row {
         Some((id, hash, role)) => (id, hash, role),
@@ -255,7 +271,12 @@ async fn login_handler(
 async fn check_host_online(ip: &str, port: u16) -> bool {
     let addr_str = format!("{}:{}", ip, port);
     if let Ok(socket_addr) = addr_str.parse::<std::net::SocketAddr>() {
-        match tokio::time::timeout(std::time::Duration::from_millis(500), tokio::net::TcpStream::connect(&socket_addr)).await {
+        match tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            tokio::net::TcpStream::connect(&socket_addr),
+        )
+        .await
+        {
             Ok(Ok(_)) => true,
             _ => false,
         }
@@ -287,7 +308,7 @@ async fn hosts_handler(
              FROM hosts h
              INNER JOIN host_groups hg ON h.id = hg.host_id
              INNER JOIN user_groups ug ON hg.group_id = ug.group_id
-             WHERE ug.user_id = ?"
+             WHERE ug.user_id = ?",
         )
         .bind(&user.user_id)
         .fetch_all(&state.db)
@@ -313,7 +334,7 @@ async fn hosts_handler(
         let db_pool = state.db.clone();
         let is_currently_busy = active_host_ids.contains(&id);
         let state_clone = state.clone();
-        
+
         let fut = async move {
             let is_agent_online = state_clone.agents.read().unwrap().contains_key(&id);
             let status = if is_currently_busy {
@@ -337,7 +358,7 @@ async fn hosts_handler(
                 HostStatus::Offline => "Offline",
                 HostStatus::Busy => "Busy",
             };
-            
+
             if status_db_str != status_str {
                 let _ = sqlx::query("UPDATE hosts SET status = ? WHERE id = ?")
                     .bind(status_db_str)
@@ -369,7 +390,7 @@ async fn pair_host_handler(
     Json(payload): Json<PairHostRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     info!("Pairing host: {} at {}", payload.name, payload.ip_address);
-    
+
     let username = match payload.sunshine_username.as_deref() {
         Some(u) if !u.trim().is_empty() => u,
         _ => {
@@ -379,7 +400,7 @@ async fn pair_host_handler(
             ));
         }
     };
-    
+
     let password = match payload.sunshine_password.as_deref() {
         Some(p) if !p.is_empty() => p,
         _ => {
@@ -441,7 +462,10 @@ async fn pair_host_handler(
         )
     })?;
 
-    Ok((StatusCode::CREATED, Json(serde_json::json!({ "id": config.client_unique_id }))))
+    Ok((
+        StatusCode::CREATED,
+        Json(serde_json::json!({ "id": config.client_unique_id })),
+    ))
 }
 
 async fn unpair_host_handler(
@@ -450,7 +474,7 @@ async fn unpair_host_handler(
 ) -> impl IntoResponse {
     let host_id = host_id_path.0;
     info!("Unpairing host: {}", host_id);
-    
+
     // Check if there are active local sessions and end them
     let session = {
         let mut sessions = state.local_sessions.write().unwrap();
@@ -469,7 +493,8 @@ async fn unpair_host_handler(
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({ "error": "Failed to delete host from database" })),
-        ).into_response();
+        )
+            .into_response();
     }
 
     StatusCode::OK.into_response()
@@ -481,4 +506,3 @@ async fn agent_token_handler(
 ) -> impl IntoResponse {
     Json(serde_json::json!({ "token": state.agent_token }))
 }
-

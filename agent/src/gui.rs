@@ -1,15 +1,15 @@
 #![cfg(feature = "gui")]
 
+use crate::pairing::{load_config, save_config as save_config_file, AgentConfig};
+use crate::{run_agent_loop, AGENT_ACTIVE, CONNECTED_TO_SERVER, LAST_ERROR, SUNSHINE_PID};
 use std::sync::atomic::Ordering;
 use std::sync::Mutex;
 use tauri::{
     menu::{Menu, MenuItem},
-    tray::{TrayIconBuilder, TrayIconEvent, MouseButton},
+    tray::{MouseButton, TrayIconBuilder, TrayIconEvent},
     Emitter, Manager, State,
 };
 use tracing::{error, info};
-use crate::pairing::{load_config, save_config as save_config_file, AgentConfig};
-use crate::{run_agent_loop, CONNECTED_TO_SERVER, SUNSHINE_PID, AGENT_ACTIVE, LAST_ERROR};
 
 // Shared state for Tauri
 pub struct AppState {
@@ -102,7 +102,12 @@ fn get_config() -> Result<ConfigResponse, String> {
 }
 
 #[tauri::command]
-fn save_config(server_url: String, _agent_name: String, _no_auto_start_sunshine: bool, server_token: String) -> Result<(), String> {
+fn save_config(
+    server_url: String,
+    _agent_name: String,
+    _no_auto_start_sunshine: bool,
+    server_token: String,
+) -> Result<(), String> {
     let mut config = load_config("agent_config.json").unwrap_or_else(|_| AgentConfig {
         client_unique_id: uuid::Uuid::new_v4().to_string().to_uppercase(),
         client_private_key: "".to_string(),
@@ -133,7 +138,7 @@ fn import_config() -> Result<bool, String> {
         let path_str = path.to_string_lossy();
         crate::pairing::import_config_file(&path_str, "agent_config.json")
             .map_err(|e| format!("Failed to import config: {}", e))?;
-        
+
         info!("Successfully imported configuration from {:?}", path);
         Ok(true)
     } else {
@@ -213,11 +218,11 @@ fn stop_agent(state: State<'_, AppState>) -> Result<(), String> {
             let _ = tx.send(());
         }
     }
-    
+
     AGENT_ACTIVE.store(false, Ordering::SeqCst);
     CONNECTED_TO_SERVER.store(false, Ordering::SeqCst);
     SUNSHINE_PID.store(0, Ordering::SeqCst);
-    
+
     Ok(())
 }
 
@@ -226,9 +231,10 @@ fn get_status() -> Result<StatusResponse, String> {
     let agent_active = AGENT_ACTIVE.load(Ordering::SeqCst);
     let connected_to_server = CONNECTED_TO_SERVER.load(Ordering::SeqCst);
     let sunshine_pid = SUNSHINE_PID.load(Ordering::SeqCst);
-    
+
     // Check if Sunshine is running on localhost port 47989
-    let sunshine_running = sunshine_pid > 0 || std::net::TcpStream::connect("127.0.0.1:47989").is_ok();
+    let sunshine_running =
+        sunshine_pid > 0 || std::net::TcpStream::connect("127.0.0.1:47989").is_ok();
 
     let last_error = if let Ok(mut err_lock) = LAST_ERROR.lock() {
         err_lock.take()
@@ -298,19 +304,17 @@ pub fn run_gui() {
                         }
                     }
                 })
-                .on_menu_event(|app, event| {
-                    match event.id.as_ref() {
-                        "quit" => {
-                            app.exit(0);
-                        }
-                        "show" => {
-                            if let Some(window) = app.get_webview_window("main") {
-                                let _ = window.show();
-                                let _ = window.set_focus();
-                            }
-                        }
-                        _ => {}
+                .on_menu_event(|app, event| match event.id.as_ref() {
+                    "quit" => {
+                        app.exit(0);
                     }
+                    "show" => {
+                        if let Some(window) = app.get_webview_window("main") {
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                        }
+                    }
+                    _ => {}
                 })
                 .build(app)?;
 

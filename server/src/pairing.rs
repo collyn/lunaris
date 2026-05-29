@@ -1,6 +1,3 @@
-use std::sync::Arc;
-use std::fs;
-use serde::{Serialize, Deserialize};
 use moonlight_common::{
     crypto::openssl::OpenSSLCryptoBackend,
     high::tokio::MoonlightHost,
@@ -9,9 +6,12 @@ use moonlight_common::{
         pair::{PairPin, PairingCryptoBackend},
     },
 };
-use uuid::Uuid;
-use tracing::{info, warn, error};
+use serde::{Deserialize, Serialize};
+use std::fs;
+use std::sync::Arc;
 use std::time::Duration;
+use tracing::{error, info, warn};
+use uuid::Uuid;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct AgentConfig {
@@ -42,7 +42,7 @@ pub async fn approve_sunshine_pin(
     client_name: &str,
 ) -> Result<(), anyhow::Error> {
     let url = format!("https://{}:47990/api/pin", ip);
-    
+
     // Create an HTTP client that accepts self-signed certificates
     let client = reqwest::Client::builder()
         .danger_accept_invalid_certs(true)
@@ -54,8 +54,9 @@ pub async fn approve_sunshine_pin(
     });
 
     info!("Submitting PIN {} to Sunshine API at {}", pin, url);
-    
-    let res = client.post(&url)
+
+    let res = client
+        .post(&url)
         .basic_auth(username, Some(password))
         .json(&payload)
         .send()
@@ -67,7 +68,10 @@ pub async fn approve_sunshine_pin(
     } else {
         let status = res.status();
         let body = res.text().await.unwrap_or_default();
-        error!("Sunshine PIN approval failed with status {}: {}", status, body);
+        error!(
+            "Sunshine PIN approval failed with status {}: {}",
+            status, body
+        );
         Err(anyhow::anyhow!("Sunshine API error: {} - {}", status, body))
     }
 }
@@ -89,10 +93,18 @@ pub async fn perform_pairing(
 
     // Parse PIN
     let pin_chars: Vec<char> = pin_str.chars().collect();
-    let n1 = pin_chars[0].to_digit(10).ok_or_else(|| anyhow::anyhow!("Invalid PIN digit"))? as u8;
-    let n2 = pin_chars[1].to_digit(10).ok_or_else(|| anyhow::anyhow!("Invalid PIN digit"))? as u8;
-    let n3 = pin_chars[2].to_digit(10).ok_or_else(|| anyhow::anyhow!("Invalid PIN digit"))? as u8;
-    let n4 = pin_chars[3].to_digit(10).ok_or_else(|| anyhow::anyhow!("Invalid PIN digit"))? as u8;
+    let n1 = pin_chars[0]
+        .to_digit(10)
+        .ok_or_else(|| anyhow::anyhow!("Invalid PIN digit"))? as u8;
+    let n2 = pin_chars[1]
+        .to_digit(10)
+        .ok_or_else(|| anyhow::anyhow!("Invalid PIN digit"))? as u8;
+    let n3 = pin_chars[2]
+        .to_digit(10)
+        .ok_or_else(|| anyhow::anyhow!("Invalid PIN digit"))? as u8;
+    let n4 = pin_chars[3]
+        .to_digit(10)
+        .ok_or_else(|| anyhow::anyhow!("Invalid PIN digit"))? as u8;
 
     let pin = PairPin::new(n1, n2, n3, n4)
         .ok_or_else(|| anyhow::anyhow!("Invalid PIN (digits must be 0-9)"))?;
@@ -149,11 +161,17 @@ pub async fn perform_pairing(
             return Err(anyhow::anyhow!("Sunshine PIN auto-approval failed: {}", e));
         }
         Err(e) => {
-            return Err(anyhow::anyhow!("Sunshine approval task panicked or was aborted: {}", e));
+            return Err(anyhow::anyhow!(
+                "Sunshine approval task panicked or was aborted: {}",
+                e
+            ));
         }
     }
 
-    let (_, _, server_identifier) = host.identity().await.ok_or_else(|| anyhow::anyhow!("No identity found"))?;
+    let (_, _, server_identifier) = host
+        .identity()
+        .await
+        .ok_or_else(|| anyhow::anyhow!("No identity found"))?;
 
     host.set_identity(
         client_identifier.clone(),
@@ -165,7 +183,10 @@ pub async fn perform_pairing(
     let server_codec_mode_support = match host.server_codec_mode_support().await {
         Ok(support) => support.bits(),
         Err(e) => {
-            warn!("Failed to query server codec support during pairing: {:?}", e);
+            warn!(
+                "Failed to query server codec support during pairing: {:?}",
+                e
+            );
             0
         }
     };

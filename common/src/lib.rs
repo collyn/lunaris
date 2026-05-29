@@ -31,8 +31,6 @@ pub struct PairHostRequest {
     pub sunshine_password: Option<String>,
 }
 
-
-
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct HostInfo {
     pub id: String,
@@ -211,31 +209,56 @@ pub enum SignalingMessage {
         target_id: String,
         sdp: RtcSessionDescription,
         ice_servers: Option<Vec<RtcIceServer>>,
+        webtransport_port: Option<u16>,
+        webtransport_cert_hash: Option<String>,
     },
-    IceCandidate { target_id: String, candidate: RtcIceCandidate },
+    IceCandidate {
+        target_id: String,
+        candidate: RtcIceCandidate,
+    },
     // Session termination
-    EndSession { target_id: String },
+    EndSession {
+        target_id: String,
+    },
     // Sunshine Config Exchange
-    GetSunshineConfig { target_id: String },
-    SunshineConfigResponse { target_id: String, config: String },
-    UpdateSunshineConfig { target_id: String, config: String },
-    UpdateSunshineConfigResponse { target_id: String, success: bool, error: Option<String> },
+    GetSunshineConfig {
+        target_id: String,
+    },
+    SunshineConfigResponse {
+        target_id: String,
+        config: String,
+    },
+    UpdateSunshineConfig {
+        target_id: String,
+        config: String,
+    },
+    UpdateSunshineConfigResponse {
+        target_id: String,
+        success: bool,
+        error: Option<String>,
+    },
     // App List Query
-    GetAppList { target_id: String },
+    GetAppList {
+        target_id: String,
+    },
     AppListResponse {
         target_id: String,
         apps: Vec<AppInfo>,
         current_game_id: u32,
     },
     // Stop Session/Stream
-    StopActiveStream { target_id: String },
+    StopActiveStream {
+        target_id: String,
+    },
     StopActiveStreamResponse {
         target_id: String,
         success: bool,
         error: Option<String>,
     },
     // Errors
-    Error { message: String },
+    Error {
+        message: String,
+    },
 }
 
 // Message from Agent to Server via WebSocket
