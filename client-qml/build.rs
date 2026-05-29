@@ -2,11 +2,66 @@ use cxx_qt_build::{CxxQtBuilder, QmlModule};
 
 fn main() {
     let out_dir = std::env::var("OUT_DIR").unwrap();
-    let moc_path = if std::path::Path::new("/usr/lib/qt6/libexec/moc").exists() {
-        "/usr/lib/qt6/libexec/moc".to_string()
-    } else {
-        "moc".to_string()
-    };
+    let mut moc_path = "moc".to_string();
+
+    // 1. Try querying via QMAKE env var or standard qmake commands
+    let qmake_candidates = vec![
+        std::env::var("QMAKE").unwrap_or_default(),
+        "qmake6".to_string(),
+        "qmake".to_string(),
+    ];
+
+    for qmake in qmake_candidates {
+        if qmake.is_empty() {
+            continue;
+        }
+        for query_key in &["QT_INSTALL_LIBEXECS", "QT_INSTALL_BINS"] {
+            if let Ok(output) = std::process::Command::new(&qmake)
+                .args(&["-query", query_key])
+                .output()
+            {
+                let path_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if !path_str.is_empty() {
+                    let candidate = std::path::Path::new(&path_str).join("moc");
+                    #[cfg(windows)]
+                    let candidate = candidate.with_extension("exe");
+                    
+                    if candidate.exists() {
+                        moc_path = candidate.to_string_lossy().to_string();
+                        break;
+                    }
+                }
+            }
+        }
+        if moc_path != "moc" {
+            break;
+        }
+    }
+
+    // 2. Try standard fallback paths if still not found
+    if moc_path == "moc" {
+        if std::path::Path::new("/usr/lib/qt6/libexec/moc").exists() {
+            moc_path = "/usr/lib/qt6/libexec/moc".to_string();
+        } else if let Ok(qt_root) = std::env::var("QT_ROOT_DIR") {
+            let candidate = std::path::Path::new(&qt_root).join("bin/moc");
+            #[cfg(windows)]
+            let candidate = candidate.with_extension("exe");
+            if candidate.exists() {
+                moc_path = candidate.to_string_lossy().to_string();
+            }
+        } else {
+            // Check Homebrew macOS standard path
+            let brew_moc = std::path::Path::new("/opt/homebrew/opt/qt/libexec/moc");
+            if brew_moc.exists() {
+                moc_path = brew_moc.to_string_lossy().to_string();
+            } else {
+                let brew_moc_bin = std::path::Path::new("/opt/homebrew/opt/qt/bin/moc");
+                if brew_moc_bin.exists() {
+                    moc_path = brew_moc_bin.to_string_lossy().to_string();
+                }
+            }
+        }
+    }
 
     let current_dir = std::env::current_dir().unwrap();
     let header_path = current_dir.join("src/gpu_video_item.h");

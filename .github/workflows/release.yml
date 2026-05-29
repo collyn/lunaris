@@ -348,6 +348,8 @@ jobs:
           # Qt6 via Homebrew (keg-only)
           echo "QMAKE=${QT_PREFIX}/bin/qmake" >> $GITHUB_ENV
           echo "CMAKE_PREFIX_PATH=${QT_PREFIX}" >> $GITHUB_ENV
+          echo "${QT_PREFIX}/bin" >> $GITHUB_PATH
+          echo "${QT_PREFIX}/libexec" >> $GITHUB_PATH
 
           # cxx-qt-lib includes bare headers like <QtGlobal> (not <QtCore/QtGlobal>).
           # qmake reports /opt/homebrew/include as QT_INSTALL_HEADERS, but Qt is
