@@ -478,18 +478,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
     };
 
-    run_agent_loop(
-        config,
-        name,
-        args.host_ip,
-        args.host_port,
-        args.no_auto_start_sunshine,
-        args.sunshine_path,
-        args.config,
-    )
-    .await?;
+    loop {
+        let loop_res = run_agent_loop(
+            config.clone(),
+            name.clone(),
+            args.host_ip.clone(),
+            args.host_port,
+            args.no_auto_start_sunshine,
+            args.sunshine_path.clone(),
+            args.config.clone(),
+        )
+        .await;
 
-    Ok(())
+        if let Err(e) = loop_res {
+            error!("Agent loop returned error: {:?}. Reconnecting in 3 seconds...", e);
+        } else {
+            info!("Agent loop finished. Reconnecting in 3 seconds...");
+        }
+
+        tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+    }
 }
 
 async fn kill_running_sunshine() {

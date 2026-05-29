@@ -85,6 +85,7 @@ fn get_config() -> Result<ConfigResponse, String> {
         server_certificate: "".to_string(),
         server_url: "ws://127.0.0.1:8080".to_string(),
         server_token: "".to_string(),
+        webtransport_port: 55200,
     });
 
     // Extract name from environment or host name
@@ -115,6 +116,7 @@ fn save_config(
         server_certificate: "".to_string(),
         server_url: "ws://127.0.0.1:8080".to_string(),
         server_token: "".to_string(),
+        webtransport_port: 55200,
     });
 
     config.server_url = server_url;

@@ -996,7 +996,7 @@ pub async fn setup_bridge_session(
                 .collect::<String>();
 
             let config = wtransport::ServerConfig::builder()
-                .with_bind_default(0)
+                .with_bind_default(agent_config.webtransport_port)
                 .with_identity(identity)
                 .build();
 

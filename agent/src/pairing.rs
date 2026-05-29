@@ -16,6 +16,10 @@ fn default_server_url() -> String {
     "ws://127.0.0.1:8080".to_string()
 }
 
+fn default_webtransport_port() -> u16 {
+    55200
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct AgentConfig {
     #[serde(default)]
@@ -30,6 +34,8 @@ pub struct AgentConfig {
     pub server_url: String,
     #[serde(default)]
     pub server_token: String,
+    #[serde(default = "default_webtransport_port")]
+    pub webtransport_port: u16,
 }
 
 pub fn get_sunshine_dir() -> Option<PathBuf> {
@@ -125,6 +131,7 @@ pub fn auto_pair_local_sunshine(
             server_certificate: "".to_string(), // Will be updated later
             server_url: cli_server_url.clone().unwrap_or_else(default_server_url),
             server_token: "".to_string(),
+            webtransport_port: default_webtransport_port(),
         }
     };
 
@@ -273,6 +280,7 @@ pub async fn perform_pairing(
         server_certificate,
         server_url: cli_server_url.unwrap_or_else(default_server_url),
         server_token: "".to_string(),
+        webtransport_port: default_webtransport_port(),
     })
 }
 
