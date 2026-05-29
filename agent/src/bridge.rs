@@ -297,6 +297,8 @@ impl ConnectionListenerC for StreamConnectionListener {
     }
 }
 
+pub static MOONLIGHT_CONNECTING: AtomicBool = AtomicBool::new(false);
+
 pub async fn setup_bridge_session(
     agent_config: AgentConfig,
     client_id: String,
@@ -311,6 +313,11 @@ pub async fn setup_bridge_session(
     app_id: Option<u32>,
     ice_servers: Option<Vec<common::RtcIceServer>>,
 ) -> Result<Arc<BridgeSession>> {
+    if MOONLIGHT_CONNECTING.load(Ordering::SeqCst) {
+        warn!("A Moonlight C connection attempt is already in progress. Rejecting new session to prevent C-library conflicts.");
+        anyhow::bail!("Another connection attempt is currently in progress. Please wait a few seconds before trying again.");
+    }
+
     // Start Moonlight connection to Sunshine first to get capabilities
     info!(
         "Starting Moonlight host connection to {}:{}",
@@ -340,6 +347,10 @@ pub async fn setup_bridge_session(
     // 1. Setup WebRTC PeerConnection
     let mut api_settings = SettingEngine::default();
     api_settings.set_include_loopback_candidate(true);
+    api_settings.set_network_types(vec![
+        webrtc::ice::network_type::NetworkType::Udp4,
+        webrtc::ice::network_type::NetworkType::Tcp4,
+    ]);
 
     let mut api_media = MediaEngine::default();
 
@@ -947,15 +958,18 @@ pub async fn setup_bridge_session(
 
     // Start C connection in background thread since it is blocking
     let ml_stream_rwlock_clone = moonlight_stream_rwlock.clone();
+    MOONLIGHT_CONNECTING.store(true, Ordering::SeqCst);
     std::thread::spawn(move || {
-        match moonlight.start_connection(
+        let res = moonlight.start_connection(
             stream_config,
             settings,
             connection_listener,
             connection_listener_c,
             video_decoder,
             audio_decoder,
-        ) {
+        );
+        MOONLIGHT_CONNECTING.store(false, Ordering::SeqCst);
+        match res {
             Ok(stream) => {
                 info!("Moonlight C connection successfully started!");
                 let mut lock = ml_stream_rwlock_clone.write().unwrap();
