@@ -1304,8 +1304,14 @@ fn setup_clipboard_channel_handler(data_channel: Arc<RTCDataChannel>) {
         loop {
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             
-            if data_channel_clone.ready_state() != webrtc::data_channel::data_channel_state::RTCDataChannelState::Open {
+            let state = data_channel_clone.ready_state();
+            if state == webrtc::data_channel::data_channel_state::RTCDataChannelState::Closing
+                || state == webrtc::data_channel::data_channel_state::RTCDataChannelState::Closed
+            {
                 break;
+            }
+            if state != webrtc::data_channel::data_channel_state::RTCDataChannelState::Open {
+                continue;
             }
             
             let current_text = match tokio::task::spawn_blocking(|| {
