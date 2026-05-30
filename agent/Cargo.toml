@@ -20,7 +20,6 @@ moonlight-common = { git = "https://github.com/MrCreativ3001/moonlight-common-ru
 tokio = { version = "1.0", features = ["full"] }
 tokio-tungstenite = { version = "0.21", features = ["native-tls", "rustls-tls-native-roots"] }
 webrtc = "0.17.1"
-arboard = "3.4"
 wtransport = { version = "0.7.1", features = ["self-signed"] }
 openssl = { version = "0.10", features = ["vendored"] }
 pem = "3.0"

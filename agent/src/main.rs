@@ -375,7 +375,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if let Some(ref import_path) = args.import_config {
         let _ = tracing_subscriber::registry()
             .with(tracing_subscriber::EnvFilter::new(
-                std::env::var("RUST_LOG").unwrap_or_else(|_| "info,agent=debug".into()),
+                std::env::var("RUST_LOG").unwrap_or_else(|_| "info,agent=debug,webrtc_sctp=off".into()),
             ))
             .with(tracing_subscriber::fmt::layer())
             .try_init();
@@ -400,9 +400,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     std::env::var("RUST_LOG").unwrap_or_else(|_| {
                         {
                             if cfg!(debug_assertions) {
-                                "info,agent=debug"
+                                "info,agent=debug,webrtc_sctp=off"
                             } else {
-                                "warn"
+                                "warn,webrtc_sctp=off"
                             }
                         }
                         .into()
@@ -428,9 +428,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             std::env::var("RUST_LOG").unwrap_or_else(|_| {
                 {
                     if cfg!(debug_assertions) {
-                        "info,agent=debug"
+                        "info,agent=debug,webrtc_sctp=off"
                     } else {
-                        "warn"
+                        "warn,webrtc_sctp=off"
                     }
                 }
                 .into()

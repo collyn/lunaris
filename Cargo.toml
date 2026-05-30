@@ -4,12 +4,12 @@ members = [
     "agent",
     "common",
     "client-desktop",
-    "client-qml",
+    "client-qml", "scratch/test_arboard",
 ]
 resolver = "2"
 
 [workspace.package]
-version = "0.1.7"
+version = "0.1.9"
 edition = "2021"
 
 [profile.release]

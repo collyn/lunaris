@@ -26,14 +26,27 @@ use webrtc::{
     interceptor::registry::Registry,
     media::Sample,
     peer_connection::{peer_connection_state::RTCPeerConnectionState, RTCPeerConnection},
-    rtp::{header::Header, packet::Packet, packetizer::Payloader},
+    rtp::{
+        extension::{
+            HeaderExtension,
+            abs_send_time_extension::AbsSendTimeExtension,
+            playout_delay_extension::PlayoutDelayExtension,
+        },
+        header::Header,
+        packet::Packet,
+        packetizer::Payloader,
+    },
     rtp_transceiver::{
-        rtp_codec::{RTCRtpCodecCapability, RTCRtpCodecParameters, RTPCodecType},
+        rtp_codec::{
+            RTCRtpCodecCapability, RTCRtpCodecParameters, RTCRtpHeaderExtensionCapability,
+            RTPCodecType,
+        },
         RTCPFeedback,
     },
+    sdp::extmap::ABS_SEND_TIME_URI,
     track::track_local::{
         track_local_static_rtp::TrackLocalStaticRTP,
-        track_local_static_sample::TrackLocalStaticSample, TrackLocalWriter,
+        track_local_static_sample::TrackLocalStaticSample,
     },
 };
 
@@ -74,7 +87,7 @@ use crate::input::TransportChannelId;
 
 pub struct BridgeSession {
     pub peer_connection: Arc<RTCPeerConnection>,
-    pub moonlight_stream: Arc<std::sync::RwLock<Option<MoonlightStream>>>,
+    pub moonlight_stream: Arc<parking_lot::RwLock<Option<MoonlightStream>>>,
     pub webtransport_port: Option<u16>,
     pub webtransport_cert_hash: Option<String>,
     pub _webtransport_endpoint:
@@ -92,13 +105,12 @@ impl Drop for BridgeSession {
         if let Some(_endpoint) = self._webtransport_endpoint.take() {
             info!("Dropping WebTransport endpoint reference...");
         }
-        if let Ok(mut lock) = self.moonlight_stream.write() {
+        {
+            let mut lock = self.moonlight_stream.write();
             if let Some(stream) = lock.take() {
                 info!("Stopping Moonlight stream in BridgeSession Drop...");
                 stream.stop();
             }
-        } else {
-            warn!("Moonlight stream RwLock was poisoned, cannot stop stream in Drop.");
         }
     }
 }
@@ -428,6 +440,27 @@ pub async fn setup_bridge_session(
         RTPCodecType::Audio,
     )?;
 
+    // Register RTP header extensions — critical for low-latency video:
+    // PlayoutDelay(0,0): tells browser jitter buffer to use ZERO playout delay.
+    //   Without this, Chrome's jitter buffer grows over time, adding increasing latency.
+    //   This is the root cause of "mouse gets slower over time".
+    // AbsSendTime: helps browser's congestion control (REMB) estimate bandwidth.
+    const PLAYOUT_DELAY_URI: &str = "http://www.webrtc.org/experiments/rtp-hdrext/playout-delay";
+    api_media.register_header_extension(
+        RTCRtpHeaderExtensionCapability {
+            uri: PLAYOUT_DELAY_URI.to_string(),
+        },
+        RTPCodecType::Video,
+        None,
+    )?;
+    api_media.register_header_extension(
+        RTCRtpHeaderExtensionCapability {
+            uri: ABS_SEND_TIME_URI.to_string(),
+        },
+        RTPCodecType::Video,
+        None,
+    )?;
+
     let mut registry = Registry::new();
     registry = register_default_interceptors(registry, &mut api_media)?;
 
@@ -581,7 +614,7 @@ pub async fn setup_bridge_session(
         }
     });
 
-    let moonlight_stream_rwlock = Arc::new(std::sync::RwLock::new(None));
+    let moonlight_stream_rwlock = Arc::new(parking_lot::RwLock::new(None));
     let ml_stream_clone = moonlight_stream_rwlock.clone();
 
     // Create Data Channels
@@ -599,9 +632,13 @@ pub async fn setup_bridge_session(
         .create_data_channel("mouse_absolute", Some(mouse_absolute_init))
         .await?;
 
+    // mouse_relative: reliable + unordered (matches moonlight-web-stream reference).
+    // Reliable because deltas are cumulative — losing a packet = permanent cursor drift.
+    // Unordered to avoid head-of-line blocking (lower latency).
     let mouse_relative_init = RTCDataChannelInit {
         ordered: Some(false),
-        max_retransmits: Some(0),
+        // No max_retransmits → SCTP will retransmit lost packets.
+        // Reference: Options { reliable: true, ordered: false }
         ..Default::default()
     };
     let mouse_relative_channel = peer_connection
@@ -609,9 +646,6 @@ pub async fn setup_bridge_session(
         .await?;
     let keyboard_channel = peer_connection
         .create_data_channel("keyboard", None)
-        .await?;
-    let clipboard_channel = peer_connection
-        .create_data_channel("clipboard", None)
         .await?;
 
     // Handle messages on Data Channels
@@ -640,7 +674,6 @@ pub async fn setup_bridge_session(
         TransportChannel(TransportChannelId::KEYBOARD),
         ml_stream_clone.clone(),
     );
-    setup_clipboard_channel_handler(clipboard_channel);
 
     // ICE Candidate callback
     let client_tx_clone = client_tx.clone();
@@ -764,7 +797,7 @@ pub async fn setup_bridge_session(
         .start_stream(resolved_app_id, &settings, aes_key, aes_iv, "")
         .await?;
 
-    let (video_frame_tx, mut video_frame_rx) = tokio::sync::mpsc::channel::<VideoFramePayload>(24);
+    let (video_frame_tx, mut video_frame_rx) = tokio::sync::mpsc::channel::<VideoFramePayload>(2);
     let video_track_clone = video_track.clone();
     let payload_type_clone = payload_type;
     let need_idr_clone_worker = need_idr_flag.clone();
@@ -781,31 +814,51 @@ pub async fn setup_bridge_session(
         tokio::spawn(async move {
             let mut seq: u16 = 0;
             while let Some(mut packets) = packet_rx.recv().await {
-                let mut discarded = false;
+                // Frame queue management: if queue has more than 10 frames (~167ms at 60fps),
+                // skip to latest to prevent latency accumulation.
+                // Threshold must be high enough to absorb IDR keyframe bursts
+                // (IDR frames are 10-50x larger than P-frames, causing momentary queue buildup).
+                // Too low (e.g., 2) causes drop→IDR→large frame→queue full→drop cascade.
                 let queue_len = packet_rx.len();
-                if queue_len > 30 {
+                if queue_len > 10 {
                     let mut discarded_count = 0;
-                    while packet_rx.len() > 1 && discarded_count < queue_len - 1 {
-                        if let Ok(next_packets) = packet_rx.try_recv() {
-                            packets = next_packets;
-                            discarded = true;
-                            discarded_count += 1;
-                        } else {
-                            break;
-                        }
+                    while let Ok(next_packets) = packet_rx.try_recv() {
+                        packets = next_packets;
+                        discarded_count += 1;
+                    }
+                    if discarded_count > 0 {
+                        warn!(
+                            "Discarding {} queued video frames to prevent latency buildup",
+                            discarded_count
+                        );
+                        need_idr_clone_writer.store(true, Ordering::SeqCst);
                     }
                 }
-                if discarded {
-                    warn!(
-                        "Discarding obsolete queued video frames to prevent latency and congestion"
-                    );
-                    need_idr_clone_writer.store(true, Ordering::SeqCst);
-                }
+
+                // Compute AbsSendTime for congestion control (REMB)
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default();
+                let now_secs = now.as_secs() as f64 + now.subsec_nanos() as f64 * 1e-9;
+                let abs_send_time: u64 = (now_secs * 262_144.0) as u64;
+
+                let extensions = [
+                    // PlayoutDelay(0, 0): min=0, max=0 playout delay.
+                    // Tells Chrome to use ZERO jitter buffer delay — critical for
+                    // preventing latency accumulation that makes mouse feel slower.
+                    HeaderExtension::PlayoutDelay(PlayoutDelayExtension::new(0, 0)),
+                    HeaderExtension::AbsSendTime(AbsSendTimeExtension {
+                        timestamp: abs_send_time,
+                    }),
+                ];
 
                 for packet in &mut packets {
                     packet.header.sequence_number = seq;
                     seq = seq.wrapping_add(1);
-                    if let Err(e) = video_track_clone.write_rtp(packet).await {
+                    if let Err(e) = video_track_clone
+                        .write_rtp_with_extensions(packet, &extensions)
+                        .await
+                    {
                         debug!("Failed to write video RTP packet: {:?}", e);
                     }
                 }
@@ -968,7 +1021,7 @@ pub async fn setup_bridge_session(
         ) {
             Ok(stream) => {
                 info!("Moonlight C connection successfully started!");
-                let mut lock = ml_stream_rwlock_clone.write().unwrap();
+                let mut lock = ml_stream_rwlock_clone.write();
                 *lock = Some(stream);
             }
             Err(e) => {
@@ -1059,21 +1112,18 @@ pub async fn setup_bridge_session(
                                                             );
                                                             continue;
                                                         };
-                                                        let stream_guard = ml_stream.read().unwrap();
-                                                        let Some(stream) = stream_guard.as_ref() else {
-                                                            continue;
-                                                        };
                                                         match packet {
-                                                            InboundPacket::GeneralStop => {
-                                                                info!("Received stop message on general WebTransport channel");
-                                                            }
                                                             InboundPacket::MouseMove {
                                                                 delta_x,
                                                                 delta_y,
                                                                 ..
                                                             } => {
-                                                                let _ = stream
-                                                                    .send_mouse_move(delta_x, delta_y);
+                                                                // try_read: skip if lock held by video thread (fire-and-forget OK for mouse move)
+                                                                if let Some(guard) = ml_stream.try_read() {
+                                                                    if let Some(stream) = guard.as_ref() {
+                                                                        let _ = stream.send_mouse_move(delta_x, delta_y);
+                                                                    }
+                                                                }
                                                             }
                                                             InboundPacket::MousePosition {
                                                                 x,
@@ -1082,60 +1132,76 @@ pub async fn setup_bridge_session(
                                                                 reference_height,
                                                                 ..
                                                             } => {
-                                                                let _ = stream.send_mouse_position(
-                                                                    x,
-                                                                    y,
-                                                                    reference_width,
-                                                                    reference_height,
-                                                                );
-                                                            }
-                                                            InboundPacket::MouseButton {
-                                                                action,
-                                                                button,
-                                                            } => {
-                                                                let _ = stream
-                                                                    .send_mouse_button(action, button);
-                                                            }
-                                                            InboundPacket::Scroll { delta_x, delta_y } => {
-                                                                if delta_y != 0 {
-                                                                    let _ = stream.send_scroll(delta_y);
-                                                                }
-                                                                if delta_x != 0 {
-                                                                    let _ = stream
-                                                                        .send_horizontal_scroll(delta_x);
-                                                                }
-                                                            }
-                                                            InboundPacket::HighResScroll {
-                                                                delta_x,
-                                                                delta_y,
-                                                            } => {
-                                                                if delta_y != 0 {
-                                                                    let _ = stream
-                                                                        .send_high_res_scroll(delta_y);
-                                                                }
-                                                                if delta_x != 0 {
-                                                                    let _ = stream
-                                                                        .send_high_res_horizontal_scroll(
-                                                                            delta_x,
+                                                                if let Some(guard) = ml_stream.try_read() {
+                                                                    if let Some(stream) = guard.as_ref() {
+                                                                        let _ = stream.send_mouse_position(
+                                                                            x,
+                                                                            y,
+                                                                            reference_width,
+                                                                            reference_height,
                                                                         );
+                                                                    }
                                                                 }
                                                             }
-                                                            InboundPacket::Key {
-                                                                action,
-                                                                modifiers,
-                                                                key,
-                                                                flags,
-                                                            } => {
-                                                                let _ = stream
-                                                                    .send_keyboard_event_non_standard(
-                                                                        key as i16, action, modifiers,
+                                                            other => {
+                                                                // All non-mouse-move packets must wait for lock (clicks, keys, scroll are critical)
+                                                                let stream_guard = ml_stream.read();
+                                                                let Some(stream) = stream_guard.as_ref() else {
+                                                                    continue;
+                                                                };
+                                                                match other {
+                                                                    InboundPacket::GeneralStop => {
+                                                                        info!("Received stop message on general WebTransport channel");
+                                                                    }
+                                                                    InboundPacket::MouseButton {
+                                                                        action,
+                                                                        button,
+                                                                    } => {
+                                                                        let _ = stream
+                                                                            .send_mouse_button(action, button);
+                                                                    }
+                                                                    InboundPacket::Scroll { delta_x, delta_y } => {
+                                                                        if delta_y != 0 {
+                                                                            let _ = stream.send_scroll(delta_y);
+                                                                        }
+                                                                        if delta_x != 0 {
+                                                                            let _ = stream
+                                                                                .send_horizontal_scroll(delta_x);
+                                                                        }
+                                                                    }
+                                                                    InboundPacket::HighResScroll {
+                                                                        delta_x,
+                                                                        delta_y,
+                                                                    } => {
+                                                                        if delta_y != 0 {
+                                                                            let _ = stream
+                                                                                .send_high_res_scroll(delta_y);
+                                                                        }
+                                                                        if delta_x != 0 {
+                                                                            let _ = stream
+                                                                                .send_high_res_horizontal_scroll(
+                                                                                    delta_x,
+                                                                                );
+                                                                        }
+                                                                    }
+                                                                    InboundPacket::Key {
+                                                                        action,
+                                                                        modifiers,
+                                                                        key,
                                                                         flags,
-                                                                    );
+                                                                    } => {
+                                                                        let _ = stream
+                                                                            .send_keyboard_event_non_standard(
+                                                                                key as i16, action, modifiers,
+                                                                                flags,
+                                                                            );
+                                                                    }
+                                                                    InboundPacket::Text { text } => {
+                                                                        let _ = stream.send_text(&text);
+                                                                    }
+                                                                    _ => {}
+                                                                }
                                                             }
-                                                            InboundPacket::Text { text } => {
-                                                                let _ = stream.send_text(&text);
-                                                            }
-                                                            _ => {}
                                                         }
                                                     }
                                                     Err(e) => {
@@ -1178,151 +1244,90 @@ pub async fn setup_bridge_session(
 fn setup_data_channel_handler(
     data_channel: Arc<RTCDataChannel>,
     channel: TransportChannel,
-    ml_stream: Arc<std::sync::RwLock<Option<MoonlightStream>>>,
+    ml_stream: Arc<parking_lot::RwLock<Option<MoonlightStream>>>,
 ) {
-    let last_timestamp = Arc::new(std::sync::atomic::AtomicU32::new(0));
     data_channel.on_message(Box::new(move |msg: DataChannelMessage| {
         let ml_stream = ml_stream.clone();
         let channel = channel;
-        let last_timestamp = last_timestamp.clone();
         Box::pin(async move {
             let Some(packet) = InboundPacket::deserialize(channel, &msg.data) else {
                 return;
             };
 
-            let stream_guard = ml_stream.read().unwrap();
-            let Some(stream) = stream_guard.as_ref() else {
-                return;
-            };
-
             match packet {
-                InboundPacket::GeneralStop => {
-                    info!("Received stop message on general channel");
-                }
                 InboundPacket::MouseMove {
                     delta_x, delta_y, ..
                 } => {
-                    let _ = stream.send_mouse_move(delta_x, delta_y);
+                    // try_read: skip if lock held (fire-and-forget OK for mouse move)
+                    if let Some(guard) = ml_stream.try_read() {
+                        if let Some(stream) = guard.as_ref() {
+                            let _ = stream.send_mouse_move(delta_x, delta_y);
+                        }
+                    }
                 }
                 InboundPacket::MousePosition {
                     x,
                     y,
                     reference_width,
                     reference_height,
-                    timestamp,
+                    ..
                 } => {
-                    let last_ts = last_timestamp.load(std::sync::atomic::Ordering::SeqCst);
-                    if last_ts == 0 || (timestamp.wrapping_sub(last_ts) as i32) > 0 {
-                        last_timestamp.store(timestamp, std::sync::atomic::Ordering::SeqCst);
-                        let _ = stream.send_mouse_position(x, y, reference_width, reference_height);
+                    // Latest-position-wins: always forward immediately.
+                    // Dedup via timestamp was broken (9-byte packets have no timestamp → always 0).
+                    // Back-pressure is handled client-side (drops if bufferedAmount > 9 bytes).
+                    if let Some(guard) = ml_stream.try_read() {
+                        if let Some(stream) = guard.as_ref() {
+                            let _ = stream.send_mouse_position(x, y, reference_width, reference_height);
+                        }
                     }
                 }
-                InboundPacket::MouseButton { action, button } => {
-                    let _ = stream.send_mouse_button(action, button);
-                }
-                InboundPacket::Scroll { delta_x, delta_y } => {
-                    if delta_y != 0 {
-                        let _ = stream.send_scroll(delta_y);
+                other => {
+                    // All non-mouse-move packets must wait for lock (clicks, keys, scroll are critical)
+                    let stream_guard = ml_stream.read();
+                    let Some(stream) = stream_guard.as_ref() else {
+                        return;
+                    };
+                    match other {
+                        InboundPacket::GeneralStop => {
+                            info!("Received stop message on general channel");
+                        }
+                        InboundPacket::MouseButton { action, button } => {
+                            let _ = stream.send_mouse_button(action, button);
+                        }
+                        InboundPacket::Scroll { delta_x, delta_y } => {
+                            if delta_y != 0 {
+                                let _ = stream.send_scroll(delta_y);
+                            }
+                            if delta_x != 0 {
+                                let _ = stream.send_horizontal_scroll(delta_x);
+                            }
+                        }
+                        InboundPacket::HighResScroll { delta_x, delta_y } => {
+                            if delta_y != 0 {
+                                let _ = stream.send_high_res_scroll(delta_y);
+                            }
+                            if delta_x != 0 {
+                                let _ = stream.send_high_res_horizontal_scroll(delta_x);
+                            }
+                        }
+                        InboundPacket::Key {
+                            action,
+                            modifiers,
+                            key,
+                            flags,
+                        } => {
+                            let _ = stream
+                                .send_keyboard_event_non_standard(key as i16, action, modifiers, flags);
+                        }
+                        InboundPacket::Text { text } => {
+                            let _ = stream.send_text(&text);
+                        }
+                        _ => {}
                     }
-                    if delta_x != 0 {
-                        let _ = stream.send_horizontal_scroll(delta_x);
-                    }
                 }
-                InboundPacket::HighResScroll { delta_x, delta_y } => {
-                    if delta_y != 0 {
-                        let _ = stream.send_high_res_scroll(delta_y);
-                    }
-                    if delta_x != 0 {
-                        let _ = stream.send_high_res_horizontal_scroll(delta_x);
-                    }
-                }
-                InboundPacket::Key {
-                    action,
-                    modifiers,
-                    key,
-                    flags,
-                } => {
-                    let _ = stream
-                        .send_keyboard_event_non_standard(key as i16, action, modifiers, flags);
-                }
-                InboundPacket::Text { text } => {
-                    let _ = stream.send_text(&text);
-                }
-                _ => {}
             }
         })
     }));
 }
 
-fn setup_clipboard_channel_handler(data_channel: Arc<RTCDataChannel>) {
-    let last_received_clipboard = Arc::new(std::sync::Mutex::new(String::new()));
-    let last_received_clone = last_received_clipboard.clone();
-    
-    data_channel.on_message(Box::new(move |msg: DataChannelMessage| {
-        let last_received_clone = last_received_clone.clone();
-        Box::pin(async move {
-            let text = match String::from_utf8(msg.data.to_vec()) {
-                Ok(t) => t,
-                Err(_) => return,
-            };
-            if text.is_empty() {
-                return;
-            }
-            
-            // Set host clipboard
-            let mut clipboard = match arboard::Clipboard::new() {
-                Ok(c) => c,
-                Err(e) => {
-                    tracing::warn!("Failed to initialize host clipboard: {:?}", e);
-                    return;
-                }
-            };
-            
-            *last_received_clone.lock().unwrap() = text.clone();
-            
-            if let Err(e) = clipboard.set_text(text) {
-                tracing::warn!("Failed to set host clipboard text: {:?}", e);
-            }
-        })
-    }));
-    
-    let data_channel_clone = data_channel.clone();
-    tokio::spawn(async move {
-        let mut last_clipboard_text = String::new();
-        loop {
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-            
-            let state = data_channel_clone.ready_state();
-            if state == webrtc::data_channel::data_channel_state::RTCDataChannelState::Closing
-                || state == webrtc::data_channel::data_channel_state::RTCDataChannelState::Closed
-            {
-                break;
-            }
-            if state != webrtc::data_channel::data_channel_state::RTCDataChannelState::Open {
-                continue;
-            }
-            
-            let current_text = match tokio::task::spawn_blocking(|| {
-                arboard::Clipboard::new().and_then(|mut c| c.get_text())
-            }).await {
-                Ok(Ok(text)) => text,
-                _ => continue,
-            };
-            
-            if current_text.is_empty() {
-                continue;
-            }
-            
-            let is_new = {
-                let last_recv = last_received_clipboard.lock().unwrap();
-                current_text != last_clipboard_text && current_text != *last_recv
-            };
-            
-            if is_new {
-                last_clipboard_text = current_text.clone();
-                let bytes = bytes::Bytes::from(current_text);
-                let _ = data_channel_clone.send(&bytes).await;
-            }
-        }
-    });
-}
+

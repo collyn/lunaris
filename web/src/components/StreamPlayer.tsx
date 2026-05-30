@@ -74,7 +74,6 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   const wsRef = useRef<WebSocket | null>(null);
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const channelsRef = useRef<Record<string, RTCDataChannel>>({});
-  const lastMouseMoveTimeRef = useRef<number>(0);
   const scrollXAccumulatorRef = useRef<number>(0);
   const scrollYAccumulatorRef = useRef<number>(0);
   const lastJitterResetTimeRef = useRef<number>(0);
@@ -110,11 +109,17 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   const hasCenteredThisTouchRef = useRef<boolean>(false);
   const mouseAccumulatorXRef = useRef<number>(0);
   const mouseAccumulatorYRef = useRef<number>(0);
-  const mouseRelativeAccXRef = useRef<number>(0);
-  const mouseRelativeAccYRef = useRef<number>(0);
   const latestAbsoluteMousePosRef = useRef<{ clientX: number, clientY: number } | null>(null);
   const mouseSeqRef = useRef<number>(0);
   const mouseFlushTimeoutRef = useRef<any | null>(null);
+  // Cache video bounding rect — getBoundingClientRect() forces layout reflow.
+  // Updated on resize/fullscreen only, not every mousemove.
+  const cachedVideoRectRef = useRef<DOMRect>(new DOMRect());
+
+  // Prediction cursor refs — zero-latency local cursor rendering (moonlight-web-stream technique)
+  const rawPredictionXRef = useRef<number>(-1);
+  const rawPredictionYRef = useRef<number>(-1);
+  const lastPointerRawUpdateMsRef = useRef<number>(0);
 
   const [status, setStatus] = useState<string>('Initializing...');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -366,8 +371,16 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     const handlePointerLockChange = () => {
       const locked = document.pointerLockElement === videoRef.current;
       setIsPointerLocked(locked);
-      addLog(locked ? "Pointer locked. Relative mouse mode." : "Pointer unlocked. Absolute mouse mode.");
+      addLog(locked ? "Pointer locked. Prediction cursor mode." : "Pointer unlocked. Absolute mouse mode.");
       sendSunshineCursorHide(locked ? false : (touchMode === "trackpad" ? false : !hideLocalCursor));
+
+      // Prediction cursor: show on lock, hide on unlock
+      if (locked) {
+        rawPredictionXRef.current = -1; // Will initialize to center on first event
+        rawPredictionYRef.current = -1;
+      } else {
+        // Pointer unlocked
+      }
     };
 
     document.addEventListener('pointerlockchange', handlePointerLockChange);
@@ -410,7 +423,161 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     };
   }, []);
 
+  // Cache video bounding rect — avoids getBoundingClientRect() layout reflow on every mousemove.
+  // Inspired by moonlight-web-stream's cachedStreamRect pattern.
+  useEffect(() => {
+    const invalidateRect = () => {
+      if (videoRef.current) {
+        cachedVideoRectRef.current = videoRef.current.getBoundingClientRect();
+      }
+    };
+    // Initial compute
+    invalidateRect();
+    window.addEventListener('resize', invalidateRect);
+    document.addEventListener('fullscreenchange', invalidateRect);
+    // Also refresh periodically in case of layout changes we didn't catch
+    const interval = setInterval(invalidateRect, 1000);
+    return () => {
+      window.removeEventListener('resize', invalidateRect);
+      document.removeEventListener('fullscreenchange', invalidateRect);
+      clearInterval(interval);
+    };
+  }, []);
 
+  // Prediction cursor: pointerrawupdate + pointermove listeners
+  // Zero-latency cursor technique from moonlight-web-stream:
+  // - Prediction cursor renders at full hardware rate (visual smoothness)
+  // - Network sends batched to requestAnimationFrame (~60Hz) to avoid SCTP flooding
+  //   that competes with video RTP on the shared DTLS/UDP connection.
+  //   250 packets/s (old) → ~60 packets/s = 4x reduction in SCTP overhead.
+  useEffect(() => {
+    if (status !== "Streaming") return;
+
+    // Pre-allocate send buffer — reused every frame to eliminate GC pressure
+    const sendBuffer = new ArrayBuffer(9);
+    const sendView = new DataView(sendBuffer);
+
+    // RAF-based batching: accumulate movement at full rate, send once per frame
+    let dirty = false; // true = position changed since last send
+    let rafId = 0;
+
+    // Prediction cursor visual disabled — position tracking still active for absolute mouse sends
+
+    const doSendAbsolute = (predX: number, predY: number) => {
+      const mouseAbsoluteChannel = channelsRef.current["mouse_absolute"];
+      if (!mouseAbsoluteChannel || mouseAbsoluteChannel.readyState !== "open") return;
+
+      // Back-pressure: drop if more than 1 packet (9 bytes) buffered
+      const buffered = mouseAbsoluteChannel.bufferedAmount;
+      if (buffered !== undefined && buffered > 9) return;
+
+      const rect = cachedVideoRectRef.current;
+      const video = videoRef.current;
+      if (!video || rect.width <= 0 || rect.height <= 0) return;
+
+      const vidWidth = video.videoWidth > 0 ? video.videoWidth : 1920;
+      const vidHeight = video.videoHeight > 0 ? video.videoHeight : 1080;
+
+      const elWidth = rect.width;
+      const elHeight = rect.height;
+      const elAspectRatio = elWidth / elHeight;
+      const vidAspectRatio = vidWidth / vidHeight;
+
+      let actualVidWidth = elWidth;
+      let actualVidHeight = elHeight;
+      let offsetX = 0;
+      let offsetY = 0;
+
+      if (elAspectRatio > vidAspectRatio) {
+        actualVidHeight = elHeight;
+        actualVidWidth = elHeight * vidAspectRatio;
+        offsetX = (elWidth - actualVidWidth) / 2;
+      } else {
+        actualVidWidth = elWidth;
+        actualVidHeight = elWidth / vidAspectRatio;
+        offsetY = (elHeight - actualVidHeight) / 2;
+      }
+
+      const xLocal = predX - rect.left;
+      const yLocal = predY - rect.top;
+
+      let xNorm = (xLocal - offsetX) / actualVidWidth;
+      let yNorm = (yLocal - offsetY) / actualVidHeight;
+
+      xNorm = Math.max(0, Math.min(1, xNorm));
+      yNorm = Math.max(0, Math.min(1, yNorm));
+
+      const x16 = Math.round(xNorm * 4096.0);
+      const y16 = Math.round(yNorm * 4096.0);
+
+      // Reuse pre-allocated buffer (zero GC pressure)
+      sendView.setUint8(0, 1);
+      sendView.setInt16(1, x16, false);
+      sendView.setInt16(3, y16, false);
+      sendView.setInt16(5, 4096, false);
+      sendView.setInt16(7, 4096, false);
+      mouseAbsoluteChannel.send(sendBuffer);
+    };
+
+    // RAF loop: sends latest cursor position once per display frame
+    const rafLoop = () => {
+      if (dirty && document.pointerLockElement) {
+        dirty = false;
+        doSendAbsolute(rawPredictionXRef.current, rawPredictionYRef.current);
+      }
+      rafId = requestAnimationFrame(rafLoop);
+    };
+    rafId = requestAnimationFrame(rafLoop);
+
+    const updateRawPredictionCursor = (event: PointerEvent) => {
+      if (!document.pointerLockElement) {
+        rawPredictionXRef.current = event.clientX;
+        rawPredictionYRef.current = event.clientY;
+        return;
+      }
+
+      const W = window.innerWidth;
+      const H = window.innerHeight;
+
+      if (rawPredictionXRef.current < 0) {
+        rawPredictionXRef.current = W / 2;
+        rawPredictionYRef.current = H / 2;
+      }
+
+      rawPredictionXRef.current = Math.max(0, Math.min(W, rawPredictionXRef.current + event.movementX));
+      rawPredictionYRef.current = Math.max(0, Math.min(H, rawPredictionYRef.current + event.movementY));
+
+
+      // Mark dirty — RAF loop will send latest position once per frame
+      dirty = true;
+    };
+
+    const onPointerRawUpdate = (event: PointerEvent) => {
+      if (!document.pointerLockElement) return;
+      if (event.pointerType !== 'mouse') return;
+      lastPointerRawUpdateMsRef.current = performance.now();
+      event.preventDefault();
+      updateRawPredictionCursor(event);
+    };
+
+    const onPointerMove = (event: PointerEvent) => {
+      if (!document.pointerLockElement) return;
+      if (event.pointerType !== 'mouse') return;
+      const rawUpdatedRecently = performance.now() - lastPointerRawUpdateMsRef.current < 100;
+      if (rawUpdatedRecently) return;
+      event.preventDefault();
+      updateRawPredictionCursor(event);
+    };
+
+    (document as any).addEventListener('pointerrawupdate', onPointerRawUpdate, { passive: false });
+    document.addEventListener('pointermove', onPointerMove, { passive: false });
+
+    return () => {
+      (document as any).removeEventListener('pointerrawupdate', onPointerRawUpdate);
+      document.removeEventListener('pointermove', onPointerMove);
+      cancelAnimationFrame(rafId);
+    };
+  }, [status]);
 
   // Auto-hide header menu logic
   useEffect(() => {
@@ -807,46 +974,12 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       sendKeyEvent(e.code, e.shiftKey, e.ctrlKey, e.altKey, e.metaKey, false);
     };
 
-    const handleGlobalCopy = () => {
-      const clipboardChannel = channelsRef.current["clipboard"];
-      if (clipboardChannel && clipboardChannel.readyState === "open") {
-        const text = window.getSelection()?.toString();
-        if (text) {
-          clipboardChannel.send(text);
-        }
-      }
-    };
-
-    const handleGlobalPaste = (e: ClipboardEvent) => {
-      const activeEl = document.activeElement;
-      if (
-        activeEl && 
-        (activeEl.tagName === 'INPUT' || 
-         activeEl.tagName === 'SELECT' || 
-         activeEl.tagName === 'TEXTAREA' || 
-         (activeEl as HTMLElement).isContentEditable)
-      ) {
-        return;
-      }
-      const clipboardChannel = channelsRef.current["clipboard"];
-      if (clipboardChannel && clipboardChannel.readyState === "open") {
-        const text = e.clipboardData?.getData("text");
-        if (text) {
-          clipboardChannel.send(text);
-        }
-      }
-    };
-
     window.addEventListener('keydown', handleGlobalKeyDown);
     window.addEventListener('keyup', handleGlobalKeyUp);
-    window.addEventListener('copy', handleGlobalCopy);
-    window.addEventListener('paste', handleGlobalPaste);
 
     return () => {
       window.removeEventListener('keydown', handleGlobalKeyDown);
       window.removeEventListener('keyup', handleGlobalKeyUp);
-      window.removeEventListener('copy', handleGlobalCopy);
-      window.removeEventListener('paste', handleGlobalPaste);
     };
   }, [status, showSettingsModal]);
 
@@ -865,6 +998,8 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       if (!pcRef.current) return;
       try {
         // Active video latency/delay accumulation correction
+        // Critical: video buffer grows over time, making the video cursor fall behind
+        // the prediction cursor. Keep buffer tight to minimize perceived mouse delay.
         const video = videoRef.current;
         if (video && video.buffered.length > 0) {
           if (video.paused) {
@@ -873,21 +1008,28 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
           const end = video.buffered.end(video.buffered.length - 1);
           const currentDelay = end - video.currentTime;
           
-          if (currentDelay > 0.20) {
-            // Hard reset to flush the buffer instantly if delay is very large
+          if (currentDelay > 0.10) {
+            // Hard reset to flush the buffer instantly if delay exceeds 100ms
             try {
               const stream = video.srcObject;
               video.srcObject = null;
               video.srcObject = stream;
               video.play().catch(e => console.error("Play error after srcObject reset:", e));
-              addLog(`Hard reset video srcObject to flush large delay: ${(currentDelay * 1000).toFixed(0)}ms`);
+              addLog(`Hard reset video srcObject to flush delay: ${(currentDelay * 1000).toFixed(0)}ms`);
             } catch (e) {
               console.error("Failed to reset srcObject:", e);
             }
-          } else if (currentDelay > 0.08) {
-            // Speed up playback (15% faster) to catch up smoothly
-            video.playbackRate = 1.15;
-          } else if (currentDelay <= 0.04) {
+          } else if (currentDelay > 0.05) {
+            // Seek directly to live edge for medium delays (50-100ms)
+            try {
+              video.currentTime = end;
+            } catch (e) {
+              // Ignore if seeking on MediaStream is not supported
+            }
+          } else if (currentDelay > 0.03) {
+            // Speed up playback (50% faster) to catch up smoothly for small delays
+            video.playbackRate = 1.5;
+          } else if (currentDelay <= 0.02) {
             // Restore normal playback speed once caught up
             video.playbackRate = 1.0;
           }
@@ -959,9 +1101,9 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
               lastJbDelay = Number(jbDelay);
               lastJbEmitted = Number(jbEmitted);
 
-              if (avgDelay > 0.060) { // 60ms threshold
+              if (avgDelay > 0.030) { // 30ms threshold (tighter for low-latency)
                 const now = performance.now();
-                if (now - lastJitterResetTimeRef.current > 10000) { // 10s cooldown
+                if (now - lastJitterResetTimeRef.current > 5000) { // 5s cooldown
                   lastJitterResetTimeRef.current = now;
                   addLog(`Auto-resetting WebRTC jitter buffer (detected drift delay: ${(avgDelay * 1000).toFixed(1)}ms)`);
                   if (pcRef.current) {
@@ -1038,6 +1180,8 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   };
 
   const createWebTransportChannelWrapper = (label: string, channelId: number, originalChannel: RTCDataChannel | null) => {
+    let pendingWrite: Promise<void> | null = null;
+
     return {
       label,
       readyState: "open",
@@ -1051,13 +1195,15 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
           const wtBuffer = new Uint8Array(bytes.byteLength + 1);
           wtBuffer[0] = channelId;
           wtBuffer.set(bytes, 1);
-          wtDatagramWriterRef.current.write(wtBuffer).catch((e: any) => {
-            console.warn(`WebTransport send failed for ${label}, falling back to WebRTC:`, e);
-            setIsWebTransportConnected(false);
-            if (originalChannel && originalChannel.readyState === "open") {
-              originalChannel.send(buffer);
-            }
-          });
+          // Serialize writes: only one in-flight at a time to prevent promise flooding.
+          // If a write is still pending, skip this packet (fire-and-forget OK for mouse).
+          if (!pendingWrite) {
+            pendingWrite = wtDatagramWriterRef.current.write(wtBuffer).then(() => {
+              pendingWrite = null;
+            }).catch(() => {
+              pendingWrite = null;
+            });
+          }
         } else if (originalChannel && originalChannel.readyState === "open") {
           originalChannel.send(buffer);
         }
@@ -1111,6 +1257,14 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
         wtRef.current = transport;
         wtDatagramWriterRef.current = transport.datagrams.writable.getWriter();
         setIsWebTransportConnected(true);
+        
+        // Handle transport close to revert to WebRTC automatically
+        transport.closed.then(() => {
+          addLog("WebTransport: Connection closed, reverting to WebRTC.");
+          setIsWebTransportConnected(false);
+        }).catch(() => {
+          setIsWebTransportConnected(false);
+        });
         
         // Wrap existing data channels to send via WebTransport
         const WT_CHANNELS = {
@@ -1203,27 +1357,6 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       } else {
         channelsRef.current[label] = channel;
       }
-      
-      if (label === "clipboard") {
-        channel.onmessage = async (e) => {
-          let text = "";
-          if (typeof e.data === "string") {
-            text = e.data;
-          } else if (e.data instanceof ArrayBuffer) {
-            text = new TextDecoder().decode(e.data);
-          } else if (e.data instanceof Blob) {
-            text = await e.data.text();
-          }
-          if (text) {
-            try {
-              await navigator.clipboard.writeText(text);
-            } catch (err) {
-              addLog(`Failed to write to local clipboard: ${err}`);
-            }
-          }
-        };
-      }
-      
       channel.onopen = () => {
         addLog(`Data Channel ${channel.label} opened.`);
         if (channel.label === "keyboard") {
@@ -1385,7 +1518,14 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     if (document.pointerLockElement === videoRef.current) {
       document.exitPointerLock();
     } else {
-      videoRef.current.requestPointerLock();
+      const promise = (videoRef.current as any).requestPointerLock({
+        unadjustedMovement: true,
+      });
+      if (promise && (promise as any).catch) {
+        (promise as any).catch(() => {
+          videoRef.current?.requestPointerLock();
+        });
+      }
     }
   };
 
@@ -1858,17 +1998,12 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
             // Send relative mouse movement to host
             const mouseRelativeChannel = channelsRef.current["mouse_relative"];
             if (mouseRelativeChannel && mouseRelativeChannel.readyState === "open" && (relX !== 0 || relY !== 0)) {
-              const isBufferOk = mouseQueueLimit === 0 ? true : mouseRelativeChannel.bufferedAmount < mouseQueueLimit;
-              if (isBufferOk) {
-                const buffer = new ArrayBuffer(9);
-                const view = new DataView(buffer);
-                view.setUint8(0, 0); // Type 0: MouseMove (Relative)
-                view.setInt16(1, relX, false);
-                view.setInt16(3, relY, false);
-                const seq = (mouseSeqRef.current++) >>> 0;
-                view.setUint32(5, seq, false);
-                mouseRelativeChannel.send(buffer);
-              }
+              const buffer = new ArrayBuffer(5);
+              const view = new DataView(buffer);
+              view.setUint8(0, 0); // Type 0: MouseMove (Relative)
+              view.setInt16(1, relX, false);
+              view.setInt16(3, relY, false);
+              mouseRelativeChannel.send(buffer);
             }
 
             // Viewport horizontal panning keeps cursor centered
@@ -1945,17 +2080,12 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
           // Send relative mouse movement to host
           const mouseRelativeChannel = channelsRef.current["mouse_relative"];
           if (mouseRelativeChannel && mouseRelativeChannel.readyState === "open" && (relX !== 0 || relY !== 0)) {
-            const isBufferOk = mouseQueueLimit === 0 ? true : mouseRelativeChannel.bufferedAmount < mouseQueueLimit;
-            if (isBufferOk) {
-              const buffer = new ArrayBuffer(9);
-              const view = new DataView(buffer);
-              view.setUint8(0, 0); // Type 0: MouseMove (Relative)
-              view.setInt16(1, relX, false);
-              view.setInt16(3, relY, false);
-              const seq = (mouseSeqRef.current++) >>> 0;
-              view.setUint32(5, seq, false);
-              mouseRelativeChannel.send(buffer);
-            }
+            const buffer = new ArrayBuffer(5);
+            const view = new DataView(buffer);
+            view.setUint8(0, 0); // Type 0: MouseMove (Relative)
+            view.setInt16(1, relX, false);
+            view.setInt16(3, relY, false);
+            mouseRelativeChannel.send(buffer);
           }
 
           updateVirtualCursorDOM();
@@ -2238,113 +2368,9 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     }
   };
 
-  // Send mouse position (absolute or relative) with throttling and backpressure
-  const flushMouse = () => {
-    mouseFlushTimeoutRef.current = null;
-    if (status !== "Streaming") return;
-    const now = performance.now();
-
-    if (isPointerLocked) {
-      const mouseRelativeChannel = channelsRef.current["mouse_relative"];
-      if (mouseRelativeChannel && mouseRelativeChannel.readyState === "open") {
-        const isBufferOk = mouseQueueLimit === 0 ? true : mouseRelativeChannel.bufferedAmount < mouseQueueLimit;
-        if (isBufferOk) {
-          const dx = mouseRelativeAccXRef.current;
-          const dy = mouseRelativeAccYRef.current;
-          if (dx !== 0 || dy !== 0) {
-            const buffer = new ArrayBuffer(9);
-            const view = new DataView(buffer);
-            view.setUint8(0, 0); // Type 0: MouseMove
-            view.setInt16(1, dx, false);
-            view.setInt16(3, dy, false);
-            const seq = (mouseSeqRef.current++) >>> 0;
-            view.setUint32(5, seq, false);
-            mouseRelativeChannel.send(buffer);
-
-            mouseRelativeAccXRef.current = 0;
-            mouseRelativeAccYRef.current = 0;
-            lastMouseMoveTimeRef.current = now;
-          }
-        } else {
-          // Channel congested, retry in 4ms
-          mouseFlushTimeoutRef.current = setTimeout(flushMouse, 4);
-        }
-      }
-    } else {
-      const mouseAbsoluteChannel = channelsRef.current["mouse_absolute"];
-      if (mouseAbsoluteChannel && mouseAbsoluteChannel.readyState === "open" && videoRef.current) {
-        const isBufferOk = mouseQueueLimit === 0 ? mouseAbsoluteChannel.bufferedAmount === 0 : mouseAbsoluteChannel.bufferedAmount < mouseQueueLimit;
-        if (isBufferOk) {
-          if (latestAbsoluteMousePosRef.current) {
-            const pos = latestAbsoluteMousePosRef.current;
-            latestAbsoluteMousePosRef.current = null;
-            
-            const video = videoRef.current;
-            const rect = video.getBoundingClientRect();
-            if (rect.width > 0 && rect.height > 0) {
-              const elWidth = rect.width;
-              const elHeight = rect.height;
-              const vidWidth = video.videoWidth > 0 ? video.videoWidth : 1920;
-              const vidHeight = video.videoHeight > 0 ? video.videoHeight : 1080;
-              
-              const elAspectRatio = elWidth / elHeight;
-              const vidAspectRatio = vidWidth / vidHeight;
-              
-              let actualVidWidth = elWidth;
-              let actualVidHeight = elHeight;
-              let offsetX = 0;
-              let offsetY = 0;
-              
-              if (elAspectRatio > vidAspectRatio) {
-                actualVidHeight = elHeight;
-                actualVidWidth = elHeight * vidAspectRatio;
-                offsetX = (elWidth - actualVidWidth) / 2;
-              } else {
-                actualVidWidth = elWidth;
-                actualVidHeight = elWidth / vidAspectRatio;
-                offsetY = (elHeight - actualVidHeight) / 2;
-              }
-              
-              const xLocal = pos.clientX - rect.left;
-              const yLocal = pos.clientY - rect.top;
-              
-              let xNorm = (xLocal - offsetX) / actualVidWidth;
-              let yNorm = (yLocal - offsetY) / actualVidHeight;
-              
-              xNorm = Math.max(0, Math.min(1, xNorm));
-              yNorm = Math.max(0, Math.min(1, yNorm));
-              
-              const scaledX = Math.round(xNorm * vidWidth);
-              const scaledY = Math.round(yNorm * vidHeight);
-              
-              localCursorPosRef.current = { x: scaledX, y: scaledY };
-              if (touchMode === 'trackpad') {
-                updateVirtualCursorDOM();
-              }
-              
-              const buffer = new ArrayBuffer(13);
-              const view = new DataView(buffer);
-              view.setUint8(0, 1); // Type 1: MousePosition
-              view.setInt16(1, scaledX, false);
-              view.setInt16(3, scaledY, false);
-              view.setInt16(5, vidWidth, false);
-              view.setInt16(7, vidHeight, false);
-              const seq = (mouseSeqRef.current++) >>> 0;
-              view.setUint32(9, seq, false);
-              mouseAbsoluteChannel.send(buffer);
-              
-              lastMouseMoveTimeRef.current = now;
-            }
-          }
-        } else {
-          // Channel congested, retry in 4ms
-          mouseFlushTimeoutRef.current = setTimeout(flushMouse, 4);
-        }
-      }
-    }
-  };
-
-  // Send mouse position (absolute or relative) with throttling and backpressure
+  // Send mouse position (absolute) — used only when pointer is NOT locked.
+  // When pointer IS locked, the prediction cursor useEffect handles input via
+  // pointerrawupdate/pointermove → absolute position on mouseAbsolute channel.
   const handleMouseMove = (e: React.MouseEvent<HTMLVideoElement>) => {
     // Ignore emulated mouse events from touches
     if ((e.nativeEvent as any).sourceCapabilities?.firesTouchEvents) {
@@ -2353,131 +2379,79 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
 
     if (status !== "Streaming") return;
 
-    const now = performance.now();
-
+    // When pointer locked, prediction cursor useEffect handles everything
+    // via pointerrawupdate → absolute mouse position. Skip React handler.
     if (isPointerLocked) {
-      // Accumulate relative deltas
-      mouseRelativeAccXRef.current += e.movementX;
-      mouseRelativeAccYRef.current += e.movementY;
+      return;
+    }
 
-      const mouseRelativeChannel = channelsRef.current["mouse_relative"];
-      if (mouseRelativeChannel && mouseRelativeChannel.readyState === "open") {
-        const isBufferOk = mouseQueueLimit === 0 ? true : mouseRelativeChannel.bufferedAmount < mouseQueueLimit;
-        
-        // Limit direct send to 250Hz (once every 4ms) to prevent event loop flooding,
-        // but since we accumulate, no physical movement is lost.
-        if (isBufferOk && (now - lastMouseMoveTimeRef.current >= 4)) {
-          const dx = mouseRelativeAccXRef.current;
-          const dy = mouseRelativeAccYRef.current;
-          
-          if (dx !== 0 || dy !== 0) {
-            const buffer = new ArrayBuffer(9);
-            const view = new DataView(buffer);
-            view.setUint8(0, 0); // Type 0: MouseMove
-            view.setInt16(1, dx, false);
-            view.setInt16(3, dy, false);
-            const seq = (mouseSeqRef.current++) >>> 0;
-            view.setUint32(5, seq, false);
-            mouseRelativeChannel.send(buffer);
+    // Absolute mouse mode (no pointer lock): update latest position ref
+    latestAbsoluteMousePosRef.current = { clientX: e.clientX, clientY: e.clientY };
 
-            // Reset accumulator
-            mouseRelativeAccXRef.current = 0;
-            mouseRelativeAccYRef.current = 0;
-            lastMouseMoveTimeRef.current = now;
-            
-            // Clear any pending flush timeout
-            if (mouseFlushTimeoutRef.current) {
-              clearTimeout(mouseFlushTimeoutRef.current);
-              mouseFlushTimeoutRef.current = null;
-            }
-          }
+    const mouseAbsoluteChannel = channelsRef.current["mouse_absolute"];
+    if (mouseAbsoluteChannel && mouseAbsoluteChannel.readyState === "open" && videoRef.current) {
+      // Back-pressure: drop if buffer contains more than 1 packet (9 bytes).
+      // This prevents accumulation while keeping latest position fresh.
+      const buffered = mouseAbsoluteChannel.bufferedAmount;
+      if (buffered !== undefined && buffered > 9) return;
+
+      const pos = latestAbsoluteMousePosRef.current;
+      latestAbsoluteMousePosRef.current = null;
+
+      const video = videoRef.current;
+      // Use cached rect — getBoundingClientRect() forces layout reflow
+      // and is expensive when called 60-120x/second.
+      const rect = cachedVideoRectRef.current;
+      if (rect.width > 0 && rect.height > 0) {
+        const elWidth = rect.width;
+        const elHeight = rect.height;
+        const vidWidth = video.videoWidth > 0 ? video.videoWidth : 1920;
+        const vidHeight = video.videoHeight > 0 ? video.videoHeight : 1080;
+
+        const elAspectRatio = elWidth / elHeight;
+        const vidAspectRatio = vidWidth / vidHeight;
+
+        let actualVidWidth = elWidth;
+        let actualVidHeight = elHeight;
+        let offsetX = 0;
+        let offsetY = 0;
+
+        if (elAspectRatio > vidAspectRatio) {
+          actualVidHeight = elHeight;
+          actualVidWidth = elHeight * vidAspectRatio;
+          offsetX = (elWidth - actualVidWidth) / 2;
         } else {
-          // If throttled or buffer is full, schedule a deferred flush
-          if (!mouseFlushTimeoutRef.current) {
-            mouseFlushTimeoutRef.current = setTimeout(flushMouse, 4);
-          }
+          actualVidWidth = elWidth;
+          actualVidHeight = elWidth / vidAspectRatio;
+          offsetY = (elHeight - actualVidHeight) / 2;
         }
-      }
-    } else {
-      // Absolute mouse mode: update latest position ref
-      latestAbsoluteMousePosRef.current = { clientX: e.clientX, clientY: e.clientY };
 
-      const mouseAbsoluteChannel = channelsRef.current["mouse_absolute"];
-      if (mouseAbsoluteChannel && mouseAbsoluteChannel.readyState === "open" && videoRef.current) {
-        const isBufferOk = mouseQueueLimit === 0 ? mouseAbsoluteChannel.bufferedAmount === 0 : mouseAbsoluteChannel.bufferedAmount < mouseQueueLimit;
-        
-        if (isBufferOk && (now - lastMouseMoveTimeRef.current >= 4)) {
-          const pos = latestAbsoluteMousePosRef.current;
-          latestAbsoluteMousePosRef.current = null;
-          
-          const video = videoRef.current;
-          const rect = video.getBoundingClientRect();
-          if (rect.width > 0 && rect.height > 0) {
-            const elWidth = rect.width;
-            const elHeight = rect.height;
-            const vidWidth = video.videoWidth > 0 ? video.videoWidth : 1920;
-            const vidHeight = video.videoHeight > 0 ? video.videoHeight : 1080;
-            
-            const elAspectRatio = elWidth / elHeight;
-            const vidAspectRatio = vidWidth / vidHeight;
-            
-            let actualVidWidth = elWidth;
-            let actualVidHeight = elHeight;
-            let offsetX = 0;
-            let offsetY = 0;
-            
-            if (elAspectRatio > vidAspectRatio) {
-              actualVidHeight = elHeight;
-              actualVidWidth = elHeight * vidAspectRatio;
-              offsetX = (elWidth - actualVidWidth) / 2;
-            } else {
-              actualVidWidth = elWidth;
-              actualVidHeight = elWidth / vidAspectRatio;
-              offsetY = (elHeight - actualVidHeight) / 2;
-            }
-            
-            const xLocal = pos.clientX - rect.left;
-            const yLocal = pos.clientY - rect.top;
-            
-            let xNorm = (xLocal - offsetX) / actualVidWidth;
-            let yNorm = (yLocal - offsetY) / actualVidHeight;
-            
-            xNorm = Math.max(0, Math.min(1, xNorm));
-            yNorm = Math.max(0, Math.min(1, yNorm));
-            
-            const scaledX = Math.round(xNorm * vidWidth);
-            const scaledY = Math.round(yNorm * vidHeight);
-            
-            localCursorPosRef.current = { x: scaledX, y: scaledY };
-            if (touchMode === 'trackpad') {
-              updateVirtualCursorDOM();
-            }
-            
-            const buffer = new ArrayBuffer(13);
-            const view = new DataView(buffer);
-            view.setUint8(0, 1); // Type 1: MousePosition
-            view.setInt16(1, scaledX, false);
-            view.setInt16(3, scaledY, false);
-            view.setInt16(5, vidWidth, false);
-            view.setInt16(7, vidHeight, false);
-            const seq = (mouseSeqRef.current++) >>> 0;
-            view.setUint32(9, seq, false);
-            mouseAbsoluteChannel.send(buffer);
-            
-            lastMouseMoveTimeRef.current = now;
-            
-            // Clear any pending flush timeout
-            if (mouseFlushTimeoutRef.current) {
-              clearTimeout(mouseFlushTimeoutRef.current);
-              mouseFlushTimeoutRef.current = null;
-            }
-          }
-        } else {
-          // If throttled or buffer is full, schedule a deferred flush
-          if (!mouseFlushTimeoutRef.current) {
-            mouseFlushTimeoutRef.current = setTimeout(flushMouse, 4);
-          }
+        const xLocal = pos.clientX - rect.left;
+        const yLocal = pos.clientY - rect.top;
+
+        let xNorm = (xLocal - offsetX) / actualVidWidth;
+        let yNorm = (yLocal - offsetY) / actualVidHeight;
+
+        xNorm = Math.max(0, Math.min(1, xNorm));
+        yNorm = Math.max(0, Math.min(1, yNorm));
+
+        // Send as 4096-normalized absolute position (9 bytes, matching moonlight format)
+        const x16 = Math.round(xNorm * 4096.0);
+        const y16 = Math.round(yNorm * 4096.0);
+
+        localCursorPosRef.current = { x: Math.round(xNorm * vidWidth), y: Math.round(yNorm * vidHeight) };
+        if (touchMode === 'trackpad') {
+          updateVirtualCursorDOM();
         }
+
+        const buffer = new ArrayBuffer(9);
+        const view = new DataView(buffer);
+        view.setUint8(0, 1); // Type 1: MousePosition
+        view.setInt16(1, x16, false);
+        view.setInt16(3, y16, false);
+        view.setInt16(5, 4096, false); // referenceWidth
+        view.setInt16(7, 4096, false); // referenceHeight
+        mouseAbsoluteChannel.send(buffer);
       }
     }
   };
@@ -3421,6 +3395,8 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
             <path d="M4.5 3V19.5L9.75 14.25H18L4.5 3Z" fill="#a5b4fc" stroke="#ffffff" strokeWidth="2" strokeLinejoin="round" />
           </svg>
         </div>
+
+
 
         {/* Mobile controls drawer & footer menu bar for touch screens */}
         {isStreaming && (

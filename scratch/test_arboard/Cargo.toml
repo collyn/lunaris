@@ -1,0 +1,6 @@
+[package]
+name = "test_arboard"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]

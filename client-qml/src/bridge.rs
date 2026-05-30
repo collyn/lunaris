@@ -1879,7 +1879,6 @@ async fn setup_peer_connection(
     kb_chan_ref: Arc<Mutex<Option<Arc<RTCDataChannel>>>>,
     ma_chan_ref: Arc<Mutex<Option<Arc<RTCDataChannel>>>>,
     mr_chan_ref: Arc<Mutex<Option<Arc<RTCDataChannel>>>>,
-    clipboard_chan_ref: Arc<Mutex<Option<Arc<RTCDataChannel>>>>,
     active_decoder: Arc<Mutex<Option<std::thread::JoinHandle<()>>>>,
 ) -> Result<Arc<RTCPeerConnection>, anyhow::Error> {
     // WebRTC connection setup
@@ -2475,7 +2474,6 @@ async fn setup_peer_connection(
     let k_c = Arc::clone(&kb_chan_ref);
     let ma_c = Arc::clone(&ma_chan_ref);
     let mr_c = Arc::clone(&mr_chan_ref);
-    let cb_c = Arc::clone(&clipboard_chan_ref);
 
     peer_connection.on_data_channel(Box::new(move |d: Arc<RTCDataChannel>| {
         let label = d.label().to_string();
@@ -2491,10 +2489,6 @@ async fn setup_peer_connection(
             "mouse_relative" => {
                 *mr_c.lock().unwrap() = Some(channel_ref);
             }
-            "clipboard" => {
-                *cb_c.lock().unwrap() = Some(channel_ref.clone());
-                setup_client_clipboard_channel_handler(channel_ref);
-            }
             _ => {}
         }
         Box::pin(async {})
@@ -2503,77 +2497,48 @@ async fn setup_peer_connection(
     Ok(peer_connection)
 }
 
-fn setup_client_clipboard_channel_handler(data_channel: Arc<RTCDataChannel>) {
-    let last_received_clipboard = Arc::new(std::sync::Mutex::new(String::new()));
-    let last_received_clone = last_received_clipboard.clone();
-    
-    data_channel.on_message(Box::new(move |msg: webrtc::data_channel::data_channel_message::DataChannelMessage| {
-        let last_received_clone = last_received_clone.clone();
-        Box::pin(async move {
-            let text = match String::from_utf8(msg.data.to_vec()) {
-                Ok(t) => t,
-                Err(_) => return,
-            };
-            if text.is_empty() {
-                return;
+async fn send_relative_packet(
+    packet: &[u8],
+    mr_c: &Arc<Mutex<Option<Arc<RTCDataChannel>>>>,
+    cached_chan: &mut Option<Arc<RTCDataChannel>>,
+    wt_c: &Arc<Mutex<Option<wtransport::Connection>>>,
+    has_wt: &Arc<std::sync::atomic::AtomicBool>,
+    mouse_queue_limit: u32,
+) {
+    if cached_chan.is_none() {
+        *cached_chan = mr_c.lock().unwrap().clone();
+    }
+
+    let wt_sent = if has_wt.load(std::sync::atomic::Ordering::Acquire) {
+        let lock = wt_c.lock().unwrap();
+        if let Some(ref conn) = *lock {
+            let mut wt_buf = vec![0u8; packet.len() + 1];
+            wt_buf[0] = 6; // Channel 6: mouse_relative
+            wt_buf[1..].copy_from_slice(packet);
+            if let Err(e) = conn.send_datagram(&wt_buf) {
+                eprintln!("WebTransport send_datagram mouse_rel failed: {:?}", e);
+                false
+            } else {
+                true
             }
-            
-            // Set client clipboard
-            let mut clipboard = match arboard::Clipboard::new() {
-                Ok(c) => c,
-                Err(e) => {
-                    eprintln!("Failed to initialize client clipboard: {:?}", e);
-                    return;
-                }
-            };
-            
-            *last_received_clone.lock().unwrap() = text.clone();
-            
-            if let Err(e) = clipboard.set_text(text) {
-                eprintln!("Failed to set client clipboard text: {:?}", e);
+        } else { false }
+    } else {
+        false
+    };
+
+    if !wt_sent {
+        if let Some(ref chan) = cached_chan {
+            let mut cached_buffer_ok = true;
+            if mouse_queue_limit > 0 {
+                let amt = chan.buffered_amount().await;
+                cached_buffer_ok = amt < mouse_queue_limit as usize;
             }
-        })
-    }));
-    
-    let data_channel_clone = data_channel.clone();
-    tokio::spawn(async move {
-        let mut last_clipboard_text = String::new();
-        loop {
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-            
-            let state = data_channel_clone.ready_state();
-            if state == webrtc::data_channel::data_channel_state::RTCDataChannelState::Closing
-                || state == webrtc::data_channel::data_channel_state::RTCDataChannelState::Closed
-            {
-                break;
-            }
-            if state != webrtc::data_channel::data_channel_state::RTCDataChannelState::Open {
-                continue;
-            }
-            
-            let current_text = match tokio::task::spawn_blocking(|| {
-                arboard::Clipboard::new().and_then(|mut c| c.get_text())
-            }).await {
-                Ok(Ok(text)) => text,
-                _ => continue,
-            };
-            
-            if current_text.is_empty() {
-                continue;
-            }
-            
-            let is_new = {
-                let last_recv = last_received_clipboard.lock().unwrap();
-                current_text != last_clipboard_text && current_text != *last_recv
-            };
-            
-            if is_new {
-                last_clipboard_text = current_text.clone();
-                let bytes = bytes::Bytes::from(current_text);
-                let _ = data_channel_clone.send(&bytes).await;
+
+            if cached_buffer_ok {
+                let _ = chan.send(&Bytes::from(packet.to_vec())).await;
             }
         }
-    });
+    }
 }
 
 async fn run_webrtc_client_task(
@@ -2615,6 +2580,8 @@ async fn run_webrtc_client_task(
         keyboard: kb_tx,
         mouse_abs: ma_tx,
         mouse_rel: mr_tx,
+        stream_width: width,
+        stream_height: height,
     };
     *input_senders.lock().unwrap() = Some(senders);
 
@@ -2622,16 +2589,17 @@ async fn run_webrtc_client_task(
     let kb_chan_ref: Arc<Mutex<Option<Arc<RTCDataChannel>>>> = Arc::new(Mutex::new(None));
     let ma_chan_ref: Arc<Mutex<Option<Arc<RTCDataChannel>>>> = Arc::new(Mutex::new(None));
     let mr_chan_ref: Arc<Mutex<Option<Arc<RTCDataChannel>>>> = Arc::new(Mutex::new(None));
-    let clipboard_chan_ref: Arc<Mutex<Option<Arc<RTCDataChannel>>>> = Arc::new(Mutex::new(None));
 
     let wt_conn_ref: Arc<Mutex<Option<wtransport::Connection>>> = Arc::new(Mutex::new(None));
+    let wt_connected: Arc<std::sync::atomic::AtomicBool> = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
     // Spawn input senders tasks
     let k_c = Arc::clone(&kb_chan_ref);
     let wt_c = Arc::clone(&wt_conn_ref);
+    let has_wt = Arc::clone(&wt_connected);
     tokio::spawn(async move {
         while let Some(buf) = kb_rx.recv().await {
-            let wt_sent = {
+            let wt_sent = if has_wt.load(std::sync::atomic::Ordering::Acquire) {
                 let lock = wt_c.lock().unwrap();
                 if let Some(ref conn) = *lock {
                     let mut wt_buf = vec![0u8; buf.len() + 1];
@@ -2643,9 +2611,9 @@ async fn run_webrtc_client_task(
                     } else {
                         true
                     }
-                } else {
-                    false
-                }
+                } else { false }
+            } else {
+                false
             };
 
             if !wt_sent {
@@ -2659,51 +2627,53 @@ async fn run_webrtc_client_task(
 
     let ma_c = Arc::clone(&ma_chan_ref);
     let wt_c = Arc::clone(&wt_conn_ref);
+    let has_wt = Arc::clone(&wt_connected);
     tokio::spawn(async move {
-        let mut last_check = std::time::Instant::now();
-        let mut pkts_since_check = 0;
-        let mut cached_buffer_ok = true;
-        while let Some(buf) = ma_rx.recv().await {
-            let chan = { ma_c.lock().unwrap().clone() };
-            let mut final_buf = buf;
-            while let Ok(next_buf) = ma_rx.try_recv() {
-                final_buf = next_buf;
+        let mut cached_chan: Option<Arc<RTCDataChannel>> = None;
+        let mut interval = tokio::time::interval(std::time::Duration::from_millis(8));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+        loop {
+            interval.tick().await;
+
+            let mut latest_buf = None;
+            while let Ok(buf) = ma_rx.try_recv() {
+                latest_buf = Some(buf);
             }
 
-            let wt_sent = {
-                let lock = wt_c.lock().unwrap();
-                if let Some(ref conn) = *lock {
-                    let mut wt_buf = vec![0u8; final_buf.len() + 1];
-                    wt_buf[0] = 5; // Channel 5: mouse_absolute
-                    wt_buf[1..].copy_from_slice(&final_buf);
-                    if let Err(e) = conn.send_datagram(&wt_buf) {
-                        eprintln!("WebTransport send_datagram mouse_abs failed: {:?}", e);
-                        false
-                    } else {
-                        true
-                    }
+            if let Some(final_buf) = latest_buf {
+                if cached_chan.is_none() {
+                    cached_chan = ma_c.lock().unwrap().clone();
+                }
+
+                let wt_sent = if has_wt.load(std::sync::atomic::Ordering::Acquire) {
+                    let lock = wt_c.lock().unwrap();
+                    if let Some(ref conn) = *lock {
+                        let mut wt_buf = vec![0u8; final_buf.len() + 1];
+                        wt_buf[0] = 5; // Channel 5: mouse_absolute
+                        wt_buf[1..].copy_from_slice(&final_buf);
+                        if let Err(e) = conn.send_datagram(&wt_buf) {
+                            eprintln!("WebTransport send_datagram mouse_abs failed: {:?}", e);
+                            false
+                        } else {
+                            true
+                        }
+                    } else { false }
                 } else {
                     false
-                }
-            };
+                };
 
-            if !wt_sent {
-                if let Some(chan) = chan {
-                    if mouse_queue_limit > 0 {
-                        let now = std::time::Instant::now();
-                        pkts_since_check += 1;
-                        if pkts_since_check >= 16 || now.duration_since(last_check).as_millis() >= 50 {
+                if !wt_sent {
+                    if let Some(ref chan) = cached_chan {
+                        let mut cached_buffer_ok = true;
+                        if mouse_queue_limit > 0 {
                             let amt = chan.buffered_amount().await;
                             cached_buffer_ok = amt < mouse_queue_limit as usize;
-                            last_check = now;
-                            pkts_since_check = 0;
                         }
-                    } else {
-                        cached_buffer_ok = true;
-                    }
 
-                    if cached_buffer_ok {
-                        let _ = chan.send(&final_buf).await;
+                        if cached_buffer_ok {
+                            let _ = chan.send(&final_buf).await;
+                        }
                     }
                 }
             }
@@ -2712,139 +2682,52 @@ async fn run_webrtc_client_task(
 
     let mr_c = Arc::clone(&mr_chan_ref);
     let wt_c = Arc::clone(&wt_conn_ref);
+    let has_wt = Arc::clone(&wt_connected);
     tokio::spawn(async move {
-        let mut last_check = std::time::Instant::now();
-        let mut pkts_since_check = 0;
-        let mut cached_buffer_ok = true;
-        while let Some(buf) = mr_rx.recv().await {
-            let chan = { mr_c.lock().unwrap().clone() };
-            let mut final_buf = buf;
+        let mut cached_chan: Option<Arc<RTCDataChannel>> = None;
+        let mut interval = tokio::time::interval(std::time::Duration::from_millis(8));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
-            // If this is a relative mouse motion event (Type 0), coalesce it with consecutive motions in the queue
-            if final_buf[0] == 0 {
-                let mut dx = i16::from_be_bytes([final_buf[1], final_buf[2]]);
-                let mut dy = i16::from_be_bytes([final_buf[3], final_buf[4]]);
-                let mut ts = u32::from_be_bytes([
-                    final_buf[5],
-                    final_buf[6],
-                    final_buf[7],
-                    final_buf[8],
-                ]);
-                let mut coalesced = false;
+        let mut accumulated_dx: i16 = 0;
+        let mut accumulated_dy: i16 = 0;
+        let mut has_motion = false;
 
-                while let Ok(next_buf) = mr_rx.try_recv() {
-                    if next_buf[0] == 0 {
-                        dx = dx.wrapping_add(i16::from_be_bytes([next_buf[1], next_buf[2]]));
-                        dy = dy.wrapping_add(i16::from_be_bytes([next_buf[3], next_buf[4]]));
-                        ts = u32::from_be_bytes([
-                            next_buf[5],
-                            next_buf[6],
-                            next_buf[7],
-                            next_buf[8],
-                        ]);
-                        coalesced = true;
-                    } else {
-                        // Non-motion event (e.g. click, scroll) - send current accumulated motion first
-                        let mut motion_buf = vec![0u8; 9];
-                        motion_buf[0] = 0;
-                        motion_buf[1..3].copy_from_slice(&dx.to_be_bytes());
-                        motion_buf[3..5].copy_from_slice(&dy.to_be_bytes());
-                        motion_buf[5..9].copy_from_slice(&ts.to_be_bytes());
+        loop {
+            interval.tick().await;
 
-                        let wt_sent = {
-                            let lock = wt_c.lock().unwrap();
-                            if let Some(ref conn) = *lock {
-                                let mut wt_buf = vec![0u8; motion_buf.len() + 1];
-                                wt_buf[0] = 6; // Channel 6: mouse_relative
-                                wt_buf[1..].copy_from_slice(&motion_buf);
-                                if let Err(e) = conn.send_datagram(&wt_buf) {
-                                    eprintln!("WebTransport send_datagram mouse_rel motion failed: {:?}", e);
-                                    false
-                                } else {
-                                    true
-                                }
-                            } else {
-                                false
-                            }
-                        };
-
-                        if !wt_sent {
-                            if let Some(ref c) = chan {
-                                if mouse_queue_limit > 0 {
-                                    let now = std::time::Instant::now();
-                                    pkts_since_check += 1;
-                                    if pkts_since_check >= 16
-                                        || now.duration_since(last_check).as_millis() >= 50
-                                    {
-                                        let amt = c.buffered_amount().await;
-                                        cached_buffer_ok = amt < mouse_queue_limit as usize;
-                                        last_check = now;
-                                        pkts_since_check = 0;
-                                    }
-                                } else {
-                                    cached_buffer_ok = true;
-                                }
-
-                                if cached_buffer_ok {
-                                    let _ = c.send(&Bytes::from(motion_buf)).await;
-                                }
-                            }
-                        }
-
-                        // Now transition final_buf to this non-motion event
-                        final_buf = next_buf;
-                        coalesced = false;
-                        break;
-                    }
-                }
-
-                if coalesced {
-                    let mut motion_buf = vec![0u8; 9];
-                    motion_buf[0] = 0;
-                    motion_buf[1..3].copy_from_slice(&dx.to_be_bytes());
-                    motion_buf[3..5].copy_from_slice(&dy.to_be_bytes());
-                    motion_buf[5..9].copy_from_slice(&ts.to_be_bytes());
-                    final_buf = Bytes::from(motion_buf);
-                }
-            }
-
-            let wt_sent = {
-                let lock = wt_c.lock().unwrap();
-                if let Some(ref conn) = *lock {
-                    let mut wt_buf = vec![0u8; final_buf.len() + 1];
-                    wt_buf[0] = 6; // Channel 6: mouse_relative
-                    wt_buf[1..].copy_from_slice(&final_buf);
-                    if let Err(e) = conn.send_datagram(&wt_buf) {
-                        eprintln!("WebTransport send_datagram mouse_rel final failed: {:?}", e);
-                        false
-                    } else {
-                        true
-                    }
+            while let Ok(buf) = mr_rx.try_recv() {
+                if buf[0] == 0 {
+                    accumulated_dx = accumulated_dx.wrapping_add(i16::from_be_bytes([buf[1], buf[2]]));
+                    accumulated_dy = accumulated_dy.wrapping_add(i16::from_be_bytes([buf[3], buf[4]]));
+                    has_motion = true;
                 } else {
-                    false
-                }
-            };
-
-            if !wt_sent {
-                if let Some(ref c) = chan {
-                    if mouse_queue_limit > 0 {
-                        let now = std::time::Instant::now();
-                        pkts_since_check += 1;
-                        if pkts_since_check >= 16 || now.duration_since(last_check).as_millis() >= 50 {
-                            let amt = c.buffered_amount().await;
-                            cached_buffer_ok = amt < mouse_queue_limit as usize;
-                            last_check = now;
-                            pkts_since_check = 0;
-                        }
-                    } else {
-                        cached_buffer_ok = true;
+                    // Send accumulated motion first if any
+                    if has_motion && (accumulated_dx != 0 || accumulated_dy != 0) {
+                        let mut motion_buf = vec![0u8; 5];
+                        motion_buf[0] = 0;
+                        motion_buf[1..3].copy_from_slice(&accumulated_dx.to_be_bytes());
+                        motion_buf[3..5].copy_from_slice(&accumulated_dy.to_be_bytes());
+                        send_relative_packet(&motion_buf, &mr_c, &mut cached_chan, &wt_c, &has_wt, mouse_queue_limit).await;
                     }
+                    accumulated_dx = 0;
+                    accumulated_dy = 0;
+                    has_motion = false;
 
-                    if cached_buffer_ok {
-                        let _ = c.send(&final_buf).await;
-                    }
+                    // Send the non-motion event immediately
+                    send_relative_packet(&buf, &mr_c, &mut cached_chan, &wt_c, &has_wt, mouse_queue_limit).await;
                 }
             }
+
+            if has_motion && (accumulated_dx != 0 || accumulated_dy != 0) {
+                let mut motion_buf = vec![0u8; 5];
+                motion_buf[0] = 0;
+                motion_buf[1..3].copy_from_slice(&accumulated_dx.to_be_bytes());
+                motion_buf[3..5].copy_from_slice(&accumulated_dy.to_be_bytes());
+                send_relative_packet(&motion_buf, &mr_c, &mut cached_chan, &wt_c, &has_wt, mouse_queue_limit).await;
+            }
+            accumulated_dx = 0;
+            accumulated_dy = 0;
+            has_motion = false;
         }
     });
 
@@ -2900,6 +2783,7 @@ async fn run_webrtc_client_task(
                             if input_protocol == "webtransport" {
                                 if let Some(port) = webtransport_port {
                                     let wt_conn_c = Arc::clone(&wt_conn_ref);
+                                    let wt_connected_flag = Arc::clone(&wt_connected);
                                     let server_url_c = server_url.clone();
                                     tokio::spawn(async move {
                                         if let Ok(parsed_url) = url::Url::parse(&server_url_c) {
@@ -2915,6 +2799,7 @@ async fn run_webrtc_client_task(
                                                             Ok(connection) => {
                                                                 println!("WebTransport connected successfully!");
                                                                 *wt_conn_c.lock().unwrap() = Some(connection);
+                                                                wt_connected_flag.store(true, std::sync::atomic::Ordering::Release);
                                                             }
                                                             Err(e) => {
                                                                 eprintln!("WebTransport connection to {}:{} failed: {:?}", host, port, e);
@@ -2939,7 +2824,6 @@ async fn run_webrtc_client_task(
                                 kb_chan_ref.clone(),
                                 ma_chan_ref.clone(),
                                 mr_chan_ref.clone(),
-                                clipboard_chan_ref.clone(),
                                 active_decoder.clone(),
                             )
                             .await

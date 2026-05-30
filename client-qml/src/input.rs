@@ -39,6 +39,8 @@ pub struct InputSenders {
     pub keyboard: tokio::sync::mpsc::UnboundedSender<Bytes>,
     pub mouse_abs: tokio::sync::mpsc::UnboundedSender<Bytes>,
     pub mouse_rel: tokio::sync::mpsc::UnboundedSender<Bytes>,
+    pub stream_width: u32,
+    pub stream_height: u32,
 }
 
 pub fn handle_key_event(key: i32, modifiers_mask: i32, is_down: bool, senders: &InputSenders) {
@@ -99,11 +101,21 @@ pub fn handle_mouse_move(
         buf[9..13].copy_from_slice(&ts.to_be_bytes());
         let _ = senders.mouse_abs.send(Bytes::from(buf));
     } else {
-        let mut buf = vec![0u8; 9];
-        buf[0] = 0; // Type 0: Relative Mouse Move
-        buf[1..3].copy_from_slice(&(rx as i16).to_be_bytes());
-        buf[3..5].copy_from_slice(&(ry as i16).to_be_bytes());
-        buf[5..9].copy_from_slice(&ts.to_be_bytes());
+        let scaled_rx = if senders.stream_width > 0 && width > 0 {
+            (rx as f64 * (senders.stream_width as f64 / width as f64)) as i16
+        } else {
+            rx as i16
+        };
+        let scaled_ry = if senders.stream_height > 0 && height > 0 {
+            (ry as f64 * (senders.stream_height as f64 / height as f64)) as i16
+        } else {
+            ry as i16
+        };
+
+        let mut buf = vec![0u8; 5];
+        buf[0] = 0; // Type 0: Relative Mouse Move (without timestamp)
+        buf[1..3].copy_from_slice(&scaled_rx.to_be_bytes());
+        buf[3..5].copy_from_slice(&scaled_ry.to_be_bytes());
         let _ = senders.mouse_rel.send(Bytes::from(buf));
     }
 }

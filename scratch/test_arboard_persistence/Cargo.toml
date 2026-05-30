@@ -1,0 +1,6 @@
+[package]
+name = "test_arboard_persistence"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]

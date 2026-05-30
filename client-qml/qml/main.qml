@@ -358,51 +358,54 @@ ApplicationWindow {
                 visible: gpuVideoItem.cudaSupported && window.useCuda
             }
 
-            // Overlay element to capture all mouse inputs
-            MouseArea {
-                id: streamMouseArea
-                anchors.fill: parent
-                hoverEnabled: true
-                acceptedButtons: Qt.LeftButton | Qt.MiddleButton | Qt.RightButton
-                cursorShape: (window.isPointerLocked || window.hideLocalCursor) ? Qt.BlankCursor : Qt.ArrowCursor
+        }
 
-                // Trigger top menu on hover near top edge (similar to SDL2 notch)
-                onPositionChanged: (mouse) => {
-                    if (mouse.y >= 50 && window.ignoreMenuHover) {
-                        window.ignoreMenuHover = false;
-                    }
-                    
-                    if (!window.isPointerLocked) {
-                        // Map coordinates and send to Rust
-                        bridge.sendMouseMove(mouse.x, mouse.y, width, height, 0, 0, false);
-                    }
-                }
+        // Full-window mouse input overlay — must cover the ENTIRE window,
+        // not just videoContainer, so clicks in letterbox areas (e.g., taskbar)
+        // are captured and correctly mapped to the remote desktop.
+        MouseArea {
+            id: streamMouseArea
+            anchors.fill: parent
+            hoverEnabled: true
+            acceptedButtons: Qt.LeftButton | Qt.MiddleButton | Qt.RightButton
+            cursorShape: (window.isPointerLocked || window.hideLocalCursor) ? Qt.BlankCursor : Qt.ArrowCursor
 
-                onPressed: (mouse) => {
-                    rootContainer.forceActiveFocus();
-                    if (!window.isPointerLocked) {
-                        bridge.sendMouseClick(getButtonCode(mouse.button), true);
-                    }
+            onPositionChanged: (mouse) => {
+                if (mouse.y >= 50 && window.ignoreMenuHover) {
+                    window.ignoreMenuHover = false;
                 }
+                
+                if (!window.isPointerLocked) {
+                    // Map window coordinates to videoContainer-local coordinates
+                    var mapped = streamView.mapToItem(videoContainer, mouse.x, mouse.y);
+                    bridge.sendMouseMove(mapped.x, mapped.y, videoContainer.width, videoContainer.height, 0, 0, false);
+                }
+            }
 
-                onReleased: (mouse) => {
-                    if (!window.isPointerLocked) {
-                        bridge.sendMouseClick(getButtonCode(mouse.button), false);
-                    }
+            onPressed: (mouse) => {
+                rootContainer.forceActiveFocus();
+                if (!window.isPointerLocked) {
+                    bridge.sendMouseClick(getButtonCode(mouse.button), true);
                 }
+            }
 
-                onWheel: (wheel) => {
-                    if (!window.isPointerLocked) {
-                        bridge.sendMouseWheel(wheel.angleDelta.y);
-                    }
+            onReleased: (mouse) => {
+                if (!window.isPointerLocked) {
+                    bridge.sendMouseClick(getButtonCode(mouse.button), false);
                 }
+            }
 
-                function getButtonCode(btn) {
-                    if (btn === Qt.LeftButton) return 1;
-                    if (btn === Qt.MiddleButton) return 2;
-                    if (btn === Qt.RightButton) return 3;
-                    return 0;
+            onWheel: (wheel) => {
+                if (!window.isPointerLocked) {
+                    bridge.sendMouseWheel(wheel.angleDelta.y);
                 }
+            }
+
+            function getButtonCode(btn) {
+                if (btn === Qt.LeftButton) return 1;
+                if (btn === Qt.MiddleButton) return 2;
+                if (btn === Qt.RightButton) return 3;
+                return 0;
             }
         }
 
@@ -561,11 +564,6 @@ ApplicationWindow {
             id: triggerMouseArea
             anchors.fill: parent
             hoverEnabled: true
-            onEntered: {
-                if (!window.ignoreMenuHover) {
-                    menuBar.open();
-                }
-            }
             onClicked: {
                 menuBar.open();
             }

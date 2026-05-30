@@ -647,9 +647,6 @@ pub async fn setup_bridge_session(
     let keyboard_channel = peer_connection
         .create_data_channel("keyboard", None)
         .await?;
-    let clipboard_channel = peer_connection
-        .create_data_channel("clipboard", None)
-        .await?;
 
     // Handle messages on Data Channels
     setup_data_channel_handler(
@@ -677,7 +674,6 @@ pub async fn setup_bridge_session(
         TransportChannel(TransportChannelId::KEYBOARD),
         ml_stream_clone.clone(),
     );
-    setup_clipboard_channel_handler(clipboard_channel);
 
     // ICE Candidate callback
     let ws_tx_clone = ws_tx.clone();
@@ -774,7 +770,7 @@ pub async fn setup_bridge_session(
         .start_stream(resolved_app_id, &settings, aes_key, aes_iv, "")
         .await?;
 
-    let (video_frame_tx, mut video_frame_rx) = tokio::sync::mpsc::channel::<VideoFramePayload>(24);
+    let (video_frame_tx, mut video_frame_rx) = tokio::sync::mpsc::channel::<VideoFramePayload>(2);
     let video_track_clone = video_track.clone();
     let need_idr_clone_worker = need_idr_flag.clone();
 
@@ -792,7 +788,7 @@ pub async fn setup_bridge_session(
             while let Some(mut packets) = packet_rx.recv().await {
                 let mut discarded = false;
                 let queue_len = packet_rx.len();
-                if queue_len > 30 {
+                if queue_len > 10 {
                     let mut discarded_count = 0;
                     while packet_rx.len() > 1 && discarded_count < queue_len - 1 {
                         if let Ok(next_packets) = packet_rx.try_recv() {
@@ -1266,75 +1262,4 @@ fn setup_data_channel_handler(
     }));
 }
 
-fn setup_clipboard_channel_handler(data_channel: Arc<RTCDataChannel>) {
-    let last_received_clipboard = Arc::new(std::sync::Mutex::new(String::new()));
-    let last_received_clone = last_received_clipboard.clone();
-    
-    data_channel.on_message(Box::new(move |msg: DataChannelMessage| {
-        let last_received_clone = last_received_clone.clone();
-        Box::pin(async move {
-            let text = match String::from_utf8(msg.data.to_vec()) {
-                Ok(t) => t,
-                Err(_) => return,
-            };
-            if text.is_empty() {
-                return;
-            }
-            
-            // Set host clipboard
-            let mut clipboard = match arboard::Clipboard::new() {
-                Ok(c) => c,
-                Err(e) => {
-                    tracing::warn!("Failed to initialize host clipboard: {:?}", e);
-                    return;
-                }
-            };
-            
-            *last_received_clone.lock().unwrap() = text.clone();
-            
-            if let Err(e) = clipboard.set_text(text) {
-                tracing::warn!("Failed to set host clipboard text: {:?}", e);
-            }
-        })
-    }));
-    
-    let data_channel_clone = data_channel.clone();
-    tokio::spawn(async move {
-        let mut last_clipboard_text = String::new();
-        loop {
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-            
-            let state = data_channel_clone.ready_state();
-            if state == webrtc::data_channel::data_channel_state::RTCDataChannelState::Closing
-                || state == webrtc::data_channel::data_channel_state::RTCDataChannelState::Closed
-            {
-                break;
-            }
-            if state != webrtc::data_channel::data_channel_state::RTCDataChannelState::Open {
-                continue;
-            }
-            
-            let current_text = match tokio::task::spawn_blocking(|| {
-                arboard::Clipboard::new().and_then(|mut c| c.get_text())
-            }).await {
-                Ok(Ok(text)) => text,
-                _ => continue,
-            };
-            
-            if current_text.is_empty() {
-                continue;
-            }
-            
-            let is_new = {
-                let last_recv = last_received_clipboard.lock().unwrap();
-                current_text != last_clipboard_text && current_text != *last_recv
-            };
-            
-            if is_new {
-                last_clipboard_text = current_text.clone();
-                let bytes = bytes::Bytes::from(current_text);
-                let _ = data_channel_clone.send(&bytes).await;
-            }
-        }
-    });
-}
+

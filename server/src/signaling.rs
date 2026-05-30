@@ -1061,7 +1061,7 @@ async fn stop_agentless_stream(
     };
     if let Some(session) = old_session {
         let _ = session.peer_connection.close().await;
-        let mut stream_lock = session.moonlight_stream.write().unwrap();
+        let mut stream_lock = session.moonlight_stream.write();
         if let Some(stream) = stream_lock.take() {
             stream.stop();
         }
