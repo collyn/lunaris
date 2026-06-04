@@ -8,14 +8,22 @@
 class GpuVideoItem : public QQuickItem {
     Q_OBJECT
     Q_PROPERTY(bool cudaSupported READ cudaSupported CONSTANT)
+    Q_PROPERTY(bool cudaActive READ cudaActive NOTIFY cudaActiveChanged)
 public:
     explicit GpuVideoItem(QQuickItem *parent = nullptr);
     ~GpuVideoItem();
 
     bool cudaSupported() const;
+    bool cudaActive() const;
     void cleanupCudaGL(bool skipCuda = false);
 
     static void registerTypes();
+
+public slots:
+    void setCudaActive(bool active);
+
+signals:
+    void cudaActiveChanged();
 
 protected:
     QSGNode *updatePaintNode(QSGNode *oldNode, UpdatePaintNodeData *data) override;
@@ -37,6 +45,7 @@ private:
     bool m_texturesInitialized = false;
     bool m_cudaInitialized = false;
     void* m_cudaContext = nullptr;
+    bool m_cudaActive = false;
 
     // Shader program for YUV to RGB
     unsigned int m_program = 0;

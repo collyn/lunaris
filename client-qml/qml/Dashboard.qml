@@ -37,7 +37,7 @@ Rectangle {
     property string configCodec: "h264"
     property int configBitrate: 8000
     property int configQueueLimit: 256
-    property bool configDisableCuda: false
+    property bool configDisableCuda: Qt.platform.os === "linux"
     property string configInputProtocol: "webrtc"
 
     // Add device pairing page state
@@ -794,7 +794,7 @@ Rectangle {
                                                 dashboardRoot.configCodec = "h264";
                                                 dashboardRoot.configBitrate = 8000;
                                                 dashboardRoot.configQueueLimit = 256;
-                                                dashboardRoot.configDisableCuda = false;
+                                                dashboardRoot.configDisableCuda = (Qt.platform.os === "linux");
                                                 dashboardRoot.configInputProtocol = "webrtc";
                                             }
                                             dashboardRoot.activeConfigHost = modelData;

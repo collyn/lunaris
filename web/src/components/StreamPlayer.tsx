@@ -69,7 +69,8 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   onBack,
   appId
 }) => {
-  const videoRef = useRef<HTMLVideoElement>(null);
+  const videoRef = useRef<HTMLVideoElement | HTMLCanvasElement>(null);
+  const hiddenVideoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const pcRef = useRef<RTCPeerConnection | null>(null);
@@ -104,6 +105,8 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   const twoFingerTouchStartTimeRef = useRef<number>(0);
   const isTwoFingerTapPendingRef = useRef<boolean>(false);
   const localCursorRef = useRef<HTMLDivElement>(null);
+  const isHardwareMouseActiveRef = useRef<boolean>(false);
+  const [isHardwareMouse, setIsHardwareMouse] = useState<boolean>(false);
   const localCursorPosRef = useRef<{ x: number, y: number }>({ x: 960, y: 540 });
   const initialLocalCursorPosRef = useRef<{ x: number, y: number }>({ x: 960, y: 540 });
   const hasCenteredThisTouchRef = useRef<boolean>(false);
@@ -115,13 +118,25 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   // Cache video bounding rect — getBoundingClientRect() forces layout reflow.
   // Updated on resize/fullscreen only, not every mousemove.
   const cachedVideoRectRef = useRef<DOMRect>(new DOMRect());
+  const workerRef = useRef<Worker | null>(null);
+  const lastCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const canvasTransferredRef = useRef<boolean>(false);
+  const canvasReaderRef = useRef<ReadableStreamDefaultReader<VideoFrame> | null>(null);
+  const canvasRenderLoopActiveRef = useRef<boolean>(false);
 
   // Prediction cursor refs — zero-latency local cursor rendering (moonlight-web-stream technique)
   const rawPredictionXRef = useRef<number>(-1);
   const rawPredictionYRef = useRef<number>(-1);
   const lastPointerRawUpdateMsRef = useRef<number>(0);
+  const accDxRef = useRef<number>(0);
+  const accDyRef = useRef<number>(0);
+  const touchModeRef = useRef<'direct' | 'trackpad'>('trackpad');
+  const useCanvasRendererRef = useRef<boolean>(true);
+  const mouseQueueLimitRef = useRef<number>(256);
+  const updateVirtualCursorDOMRef = useRef<() => void>(() => {});
 
   const [status, setStatus] = useState<string>('Initializing...');
+  const [canvasKey, setCanvasKey] = useState<number>(0);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [isPointerLocked, setIsPointerLocked] = useState<boolean>(false);
   const [appList, setAppList] = useState<{ id: number; title: string; icon_base64?: string | null }[] | null>(null);
@@ -149,6 +164,12 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   const [draftCodec, setDraftCodec] = useState<string>(activeCodec);
   const [draftMouseQueueLimit, setDraftMouseQueueLimit] = useState<number>(mouseQueueLimit);
   const [draftInputProtocol, setDraftInputProtocol] = useState<string>(activeInputProtocol);
+  const [activeEncoder, setActiveEncoder] = useState<string>(() => localStorage.getItem('lunaris_stream_encoder') || 'auto');
+  const [activeDisplay, setActiveDisplay] = useState<string>(() => localStorage.getItem('lunaris_stream_display') || 'default');
+  const [draftEncoder, setDraftEncoder] = useState<string>(activeEncoder);
+  const [draftDisplay, setDraftDisplay] = useState<string>(activeDisplay);
+  const [availableEncoders, setAvailableEncoders] = useState<string[]>([]);
+  const [availableDisplays, setAvailableDisplays] = useState<{id: string; name: string; width: number; height: number; refresh_rate: number; is_primary: boolean}[]>([]);
 
   const [useNativeClient, setUseNativeClient] = useState<boolean>(() => {
     if (typeof window.RTCPeerConnection === 'undefined') {
@@ -171,6 +192,25 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     const val = localStorage.getItem('lunaris_stream_muted');
     return val !== null ? val === 'true' : false;
   });
+
+  const isIOSOrSafari = typeof navigator !== 'undefined' && (
+    /iPad|iPhone|iPod/.test(navigator.userAgent) || 
+    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1) ||
+    /^((?!chrome|android).)*safari/i.test(navigator.userAgent)
+  );
+
+  const [useCanvasRenderer, setUseCanvasRenderer] = useState<boolean>(() => {
+    if (isIOSOrSafari) {
+      return false;
+    }
+    const hasProcessor = typeof (window as any).MediaStreamTrackProcessor !== 'undefined';
+    const saved = localStorage.getItem('lunaris_canvas_renderer');
+    if (saved === 'false') return false;
+    if (saved === 'true') return hasProcessor;
+    
+    return hasProcessor;
+  });
+  const [draftUseCanvasRenderer, setDraftUseCanvasRenderer] = useState<boolean>(useCanvasRenderer);
 
   // Mobile-specific States
   const [touchMode, setTouchMode] = useState<'direct' | 'trackpad'>(() => {
@@ -296,6 +336,23 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     }
   }, [browserCodecs, serverCodecModeSupport, activeCodec]);
 
+  // Update mouse control refs to avoid stale closures in the animation loop
+  useEffect(() => {
+    touchModeRef.current = touchMode;
+  }, [touchMode]);
+
+  useEffect(() => {
+    useCanvasRendererRef.current = useCanvasRenderer;
+  }, [useCanvasRenderer]);
+
+  useEffect(() => {
+    mouseQueueLimitRef.current = mouseQueueLimit;
+  }, [mouseQueueLimit]);
+
+  useEffect(() => {
+    updateVirtualCursorDOMRef.current = updateVirtualCursorDOM;
+  });
+
 
   const getCodecLabel = (
     codecName: string,
@@ -326,8 +383,11 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       setDraftMouseQueueLimit(mouseQueueLimit);
       setDraftUseNativeClient(useNativeClient);
       setDraftInputProtocol(activeInputProtocol);
+      setDraftUseCanvasRenderer(useCanvasRenderer);
+      setDraftEncoder(activeEncoder);
+      setDraftDisplay(activeDisplay);
     }
-  }, [showSettingsModal, activeResolution, activeFps, activeBitrate, activeCodec, mouseQueueLimit, useNativeClient, activeInputProtocol]);
+  }, [showSettingsModal, activeResolution, activeFps, activeBitrate, activeCodec, mouseQueueLimit, useNativeClient, activeInputProtocol, useCanvasRenderer, activeEncoder, activeDisplay]);
   const [hideLocalCursor, setHideLocalCursor] = useState<boolean>(() => localStorage.getItem('lunaris_stream_hide_cursor') !== 'false');
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
   const [isHeaderVisible, setIsHeaderVisible] = useState<boolean>(true);
@@ -372,7 +432,11 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       const locked = document.pointerLockElement === videoRef.current;
       setIsPointerLocked(locked);
       addLog(locked ? "Pointer locked. Prediction cursor mode." : "Pointer unlocked. Absolute mouse mode.");
-      sendSunshineCursorHide(locked ? false : (touchMode === "trackpad" ? false : !hideLocalCursor));
+      // When pointer is locked, show host cursor (user needs to see it in the stream).
+      // When unlocked on mobile trackpad: hide host cursor (SVG virtual cursor shown instead).
+      // When unlocked on desktop: keep host cursor visible (browser cursor overlaps it).
+      const shouldHide = locked ? false : (touchMode === "trackpad" && !isHardwareMouseActiveRef.current ? true : !hideLocalCursor);
+      sendSunshineCursorHide(shouldHide);
 
       // Prediction cursor: show on lock, hide on unlock
       if (locked) {
@@ -389,10 +453,13 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     };
   }, [hideLocalCursor, touchMode]);
 
-  // Hide host cursor when local cursor is active or touch mode is trackpad
+  // Hide host cursor when local cursor is active or touch mode is trackpad (mobile only)
   useEffect(() => {
     if (status === "Streaming") {
-      sendSunshineCursorHide(isPointerLocked ? false : (touchMode === "trackpad" ? false : !hideLocalCursor));
+      // Only hide host cursor in trackpad mode if no hardware mouse is detected (i.e. mobile).
+      // On desktop, the host cursor should always be visible.
+      const shouldHide = isPointerLocked ? false : (touchMode === "trackpad" && !isHardwareMouseActiveRef.current ? true : !hideLocalCursor);
+      sendSunshineCursorHide(shouldHide);
     }
   }, [hideLocalCursor, touchMode, status, isPointerLocked]);
 
@@ -453,103 +520,10 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   useEffect(() => {
     if (status !== "Streaming") return;
 
-    // Pre-allocate send buffer — reused every frame to eliminate GC pressure
-    const sendBuffer = new ArrayBuffer(9);
-    const sendView = new DataView(sendBuffer);
-
-    // RAF-based batching: accumulate movement at full rate, send once per frame
-    let dirty = false; // true = position changed since last send
-    let rafId = 0;
-
-    // Prediction cursor visual disabled — position tracking still active for absolute mouse sends
-
-    const doSendAbsolute = (predX: number, predY: number) => {
-      const mouseAbsoluteChannel = channelsRef.current["mouse_absolute"];
-      if (!mouseAbsoluteChannel || mouseAbsoluteChannel.readyState !== "open") return;
-
-      // Back-pressure: drop if more than 1 packet (9 bytes) buffered
-      const buffered = mouseAbsoluteChannel.bufferedAmount;
-      if (buffered !== undefined && buffered > 9) return;
-
-      const rect = cachedVideoRectRef.current;
-      const video = videoRef.current;
-      if (!video || rect.width <= 0 || rect.height <= 0) return;
-
-      const vidWidth = video.videoWidth > 0 ? video.videoWidth : 1920;
-      const vidHeight = video.videoHeight > 0 ? video.videoHeight : 1080;
-
-      const elWidth = rect.width;
-      const elHeight = rect.height;
-      const elAspectRatio = elWidth / elHeight;
-      const vidAspectRatio = vidWidth / vidHeight;
-
-      let actualVidWidth = elWidth;
-      let actualVidHeight = elHeight;
-      let offsetX = 0;
-      let offsetY = 0;
-
-      if (elAspectRatio > vidAspectRatio) {
-        actualVidHeight = elHeight;
-        actualVidWidth = elHeight * vidAspectRatio;
-        offsetX = (elWidth - actualVidWidth) / 2;
-      } else {
-        actualVidWidth = elWidth;
-        actualVidHeight = elWidth / vidAspectRatio;
-        offsetY = (elHeight - actualVidHeight) / 2;
-      }
-
-      const xLocal = predX - rect.left;
-      const yLocal = predY - rect.top;
-
-      let xNorm = (xLocal - offsetX) / actualVidWidth;
-      let yNorm = (yLocal - offsetY) / actualVidHeight;
-
-      xNorm = Math.max(0, Math.min(1, xNorm));
-      yNorm = Math.max(0, Math.min(1, yNorm));
-
-      const x16 = Math.round(xNorm * 4096.0);
-      const y16 = Math.round(yNorm * 4096.0);
-
-      // Reuse pre-allocated buffer (zero GC pressure)
-      sendView.setUint8(0, 1);
-      sendView.setInt16(1, x16, false);
-      sendView.setInt16(3, y16, false);
-      sendView.setInt16(5, 4096, false);
-      sendView.setInt16(7, 4096, false);
-      mouseAbsoluteChannel.send(sendBuffer);
-    };
-
-    // RAF loop: sends latest cursor position once per display frame
-    const rafLoop = () => {
-      if (dirty && document.pointerLockElement) {
-        dirty = false;
-        doSendAbsolute(rawPredictionXRef.current, rawPredictionYRef.current);
-      }
-      rafId = requestAnimationFrame(rafLoop);
-    };
-    rafId = requestAnimationFrame(rafLoop);
-
-    const updateRawPredictionCursor = (event: PointerEvent) => {
-      if (!document.pointerLockElement) {
-        rawPredictionXRef.current = event.clientX;
-        rawPredictionYRef.current = event.clientY;
-        return;
-      }
-
-      const W = window.innerWidth;
-      const H = window.innerHeight;
-
-      if (rawPredictionXRef.current < 0) {
-        rawPredictionXRef.current = W / 2;
-        rawPredictionYRef.current = H / 2;
-      }
-
-      rawPredictionXRef.current = Math.max(0, Math.min(W, rawPredictionXRef.current + event.movementX));
-      rawPredictionYRef.current = Math.max(0, Math.min(H, rawPredictionYRef.current + event.movementY));
-
-
-      // Mark dirty — RAF loop will send latest position once per frame
-      dirty = true;
+    const handlePointerLockMove = (event: PointerEvent) => {
+      if (!document.pointerLockElement) return;
+      accDxRef.current += event.movementX;
+      accDyRef.current += event.movementY;
     };
 
     const onPointerRawUpdate = (event: PointerEvent) => {
@@ -557,7 +531,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       if (event.pointerType !== 'mouse') return;
       lastPointerRawUpdateMsRef.current = performance.now();
       event.preventDefault();
-      updateRawPredictionCursor(event);
+      handlePointerLockMove(event);
     };
 
     const onPointerMove = (event: PointerEvent) => {
@@ -566,7 +540,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       const rawUpdatedRecently = performance.now() - lastPointerRawUpdateMsRef.current < 100;
       if (rawUpdatedRecently) return;
       event.preventDefault();
-      updateRawPredictionCursor(event);
+      handlePointerLockMove(event);
     };
 
     (document as any).addEventListener('pointerrawupdate', onPointerRawUpdate, { passive: false });
@@ -575,9 +549,120 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     return () => {
       (document as any).removeEventListener('pointerrawupdate', onPointerRawUpdate);
       document.removeEventListener('pointermove', onPointerMove);
-      cancelAnimationFrame(rafId);
     };
   }, [status]);
+
+  // Batch mouse movements at display refresh rate using requestAnimationFrame.
+  // This aggregates high-frequency inputs (gaming mouse raw updates at 500-1000Hz)
+  // and sends a single consolidated packet per display frame, eliminating SCTP flooding.
+  useEffect(() => {
+    if (status !== "Streaming") return;
+
+    let animFrameId: number;
+
+    const sendTick = () => {
+      const qLimit = mouseQueueLimitRef.current;
+
+      // 1. Process relative mouse moves (pointer locked)
+      const dx = accDxRef.current;
+      const dy = accDyRef.current;
+      if (dx !== 0 || dy !== 0) {
+        const mouseRelativeChannel = channelsRef.current["mouse_relative"];
+        if (mouseRelativeChannel && mouseRelativeChannel.readyState === "open") {
+          const buffered = mouseRelativeChannel.bufferedAmount;
+          if (buffered === undefined || buffered <= qLimit) {
+            const buffer = new ArrayBuffer(5);
+            const view = new DataView(buffer);
+            view.setUint8(0, 0); // Type 0: MouseMove (Relative)
+            view.setInt16(1, dx, false);
+            view.setInt16(3, dy, false);
+            mouseRelativeChannel.send(buffer);
+            
+            // Clear accumulated deltas only on successful transmission
+            accDxRef.current = 0;
+            accDyRef.current = 0;
+          }
+        }
+      }
+
+      // 2. Process absolute mouse moves (pointer not locked)
+      const pos = latestAbsoluteMousePosRef.current;
+      if (pos) {
+        const mouseAbsoluteChannel = channelsRef.current["mouse_absolute"];
+        if (mouseAbsoluteChannel && mouseAbsoluteChannel.readyState === "open" && videoRef.current) {
+          const buffered = mouseAbsoluteChannel.bufferedAmount;
+          if (buffered === undefined || buffered <= qLimit) {
+            latestAbsoluteMousePosRef.current = null;
+            const video = videoRef.current;
+            const activeVideo = useCanvasRendererRef.current ? hiddenVideoRef.current : (videoRef.current as HTMLVideoElement | null);
+            const rect = cachedVideoRectRef.current;
+            if (rect.width > 0 && rect.height > 0) {
+              const elWidth = rect.width;
+              const elHeight = rect.height;
+              const vidWidth = activeVideo?.videoWidth && activeVideo.videoWidth > 0 ? activeVideo.videoWidth : (video as any).width || 1920;
+              const vidHeight = activeVideo?.videoHeight && activeVideo.videoHeight > 0 ? activeVideo.videoHeight : (video as any).height || 1080;
+
+              const elAspectRatio = elWidth / elHeight;
+              const vidAspectRatio = vidWidth / vidHeight;
+
+              let actualVidWidth = elWidth;
+              let actualVidHeight = elHeight;
+              let offsetX = 0;
+              let offsetY = 0;
+
+              if (elAspectRatio > vidAspectRatio) {
+                actualVidHeight = elHeight;
+                actualVidWidth = elHeight * vidAspectRatio;
+                offsetX = (elWidth - actualVidWidth) / 2;
+              } else {
+                actualVidWidth = elWidth;
+                actualVidHeight = elWidth / vidAspectRatio;
+                offsetY = (elHeight - actualVidHeight) / 2;
+              }
+
+              const xLocal = pos.clientX - rect.left;
+              const yLocal = pos.clientY - rect.top;
+
+              let xNorm = (xLocal - offsetX) / actualVidWidth;
+              let yNorm = (yLocal - offsetY) / actualVidHeight;
+
+              xNorm = Math.max(0, Math.min(1, xNorm));
+              yNorm = Math.max(0, Math.min(1, yNorm));
+
+              // Send as 4096-normalized absolute position (13 bytes, matching moonlight format)
+              const x16 = Math.round(xNorm * 4096.0);
+              const y16 = Math.round(yNorm * 4096.0);
+
+              localCursorPosRef.current = { x: Math.round(xNorm * vidWidth), y: Math.round(yNorm * vidHeight) };
+              if (touchModeRef.current === 'trackpad') {
+                updateVirtualCursorDOMRef.current();
+              }
+
+              const buffer = new ArrayBuffer(13);
+              const view = new DataView(buffer);
+              view.setUint8(0, 1); // Type 1: MousePosition
+              view.setInt16(1, x16, false);
+              view.setInt16(3, y16, false);
+              view.setInt16(5, 4096, false); // referenceWidth
+              view.setInt16(7, 4096, false); // referenceHeight
+              const seq = (mouseSeqRef.current++) >>> 0;
+              view.setUint32(9, seq, false);
+              mouseAbsoluteChannel.send(buffer);
+            }
+          }
+        }
+      }
+
+      animFrameId = requestAnimationFrame(sendTick);
+    };
+
+    animFrameId = requestAnimationFrame(sendTick);
+    return () => {
+      cancelAnimationFrame(animFrameId);
+    };
+  }, [status]);
+
+
 
   // Auto-hide header menu logic
   useEffect(() => {
@@ -617,7 +702,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
 
     const handleFocusSync = () => {
       addLog("Stream area active or window focused, synchronizing video stream...");
-      const video = videoRef.current;
+      const video = getActiveVideoElement();
       if (video) {
         // Ensure play state is active
         video.play().catch(e => console.error("Play error on focus sync:", e));
@@ -633,15 +718,27 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
         }
       }
 
-      // Reset playoutDelayHint to force WebRTC jitter buffer re-alignment
+      // Reset playoutDelayHint and jitterBufferTarget to force WebRTC jitter buffer re-alignment
       if (pcRef.current) {
         pcRef.current.getReceivers().forEach(receiver => {
-          if ('playoutDelayHint' in receiver) {
-            (receiver as any).playoutDelayHint = 0.05;
+          try {
+            if ('jitterBufferTarget' in receiver) {
+              (receiver as any).jitterBufferTarget = 0.05;
+            }
+            if ('playoutDelayHint' in receiver) {
+              (receiver as any).playoutDelayHint = 0.05;
+            }
             setTimeout(() => {
-              (receiver as any).playoutDelayHint = 0;
+              try {
+                if ('jitterBufferTarget' in receiver) {
+                  (receiver as any).jitterBufferTarget = 0.0;
+                }
+                if ('playoutDelayHint' in receiver) {
+                  (receiver as any).playoutDelayHint = 0.0;
+                }
+              } catch (e) {}
             }, 50);
-          }
+          } catch (e) {}
         });
       }
     };
@@ -649,17 +746,9 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     window.addEventListener("focus", handleFocusSync);
     document.addEventListener("visibilitychange", handleFocusSync);
 
-    const videoElement = videoRef.current;
-    if (videoElement) {
-      videoElement.addEventListener("mouseenter", handleFocusSync);
-    }
-
     return () => {
       window.removeEventListener("focus", handleFocusSync);
       document.removeEventListener("visibilitychange", handleFocusSync);
-      if (videoElement) {
-        videoElement.removeEventListener("mouseenter", handleFocusSync);
-      }
     };
   }, [status]);
 
@@ -727,8 +816,25 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
           }
         }));
         addLog("Sent GetAppList command.");
+        // Also request host capabilities (displays & encoders)
+        ws.send(JSON.stringify({
+          event: "Signaling",
+          data: {
+            type: "GetCapabilities",
+            payload: { target_id: hostId }
+          }
+        }));
+        addLog("Sent GetCapabilities command.");
       } else {
         setStatus("Signaling...");
+        // Also request host capabilities
+        ws.send(JSON.stringify({
+          event: "Signaling",
+          data: {
+            type: "GetCapabilities",
+            payload: { target_id: hostId }
+          }
+        }));
         let width = 1920;
         let height = 1080;
         if (activeResolution === '720p') {
@@ -751,7 +857,9 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
               fps: activeFps,
               bitrate: activeBitrate,
               codec: resolvedCodec,
-              app_id: selectedAppId
+              app_id: selectedAppId,
+              encoder: activeEncoder !== 'auto' ? activeEncoder : undefined,
+              display_id: activeDisplay !== 'default' ? activeDisplay : undefined
             }
           }
         }));
@@ -774,6 +882,12 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
             setAppList(payload.apps);
             setCurrentGameId(payload.current_game_id);
             setStatus("Select App");
+            break;
+
+          case "CapabilitiesResponse":
+            addLog(`Received capabilities: ${payload.displays?.length || 0} displays, ${payload.encoders?.length || 0} encoders`);
+            if (payload.displays) setAvailableDisplays(payload.displays);
+            if (payload.encoders) setAvailableEncoders(payload.encoders);
             break;
 
           case "StopActiveStreamResponse":
@@ -871,7 +985,35 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     return () => {
       cleanup();
     };
-  }, [hostId, activeResolution, activeFps, activeBitrate, activeCodec, token, hostName, selectedAppId, useNativeClient, activeInputProtocol]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hostId, activeResolution, activeCodec, token, hostName, selectedAppId, useNativeClient, activeInputProtocol, useCanvasRenderer, activeEncoder, activeDisplay]);
+
+  // Helper to send dynamic pipeline commands via the general data channel.
+  // Format: u16 length prefix + JSON string, matching the agent's InboundPacket::deserialize.
+  const sendDynamicCommand = (type: string, value: number) => {
+    const generalChannel = channelsRef.current["general"];
+    if (!generalChannel || generalChannel.readyState !== "open") return;
+    const json = JSON.stringify({ type, value });
+    const encoder = new TextEncoder();
+    const encoded = encoder.encode(json);
+    const buffer = new ArrayBuffer(2 + encoded.length);
+    const view = new DataView(buffer);
+    view.setUint16(0, encoded.length, false); // big-endian u16 length
+    new Uint8Array(buffer, 2).set(encoded);
+    generalChannel.send(buffer);
+    addLog(`[Dynamic] Sent ${type}=${value} via general channel`);
+  };
+
+  // Send dynamic bitrate/FPS changes without reconnecting
+  useEffect(() => {
+    if (status !== "Streaming") return;
+    sendDynamicCommand("set_bitrate", activeBitrate);
+  }, [activeBitrate, status]);
+
+  useEffect(() => {
+    if (status !== "Streaming") return;
+    sendDynamicCommand("set_fps", activeFps);
+  }, [activeFps, status]);
 
   // Send keyboard event helper (global/unified)
   const sendKeyEvent = (code: string, shiftKey: boolean, ctrlKey: boolean, altKey: boolean, metaKey: boolean, isDown: boolean) => {
@@ -997,42 +1139,24 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     const interval = setInterval(async () => {
       if (!pcRef.current) return;
       try {
-        // Active video latency/delay accumulation correction
-        // Critical: video buffer grows over time, making the video cursor fall behind
-        // the prediction cursor. Keep buffer tight to minimize perceived mouse delay.
-        const video = videoRef.current;
-        if (video && video.buffered.length > 0) {
-          if (video.paused) {
-            video.play().catch(e => console.error("Play error in auto-sync:", e));
-          }
-          const end = video.buffered.end(video.buffered.length - 1);
-          const currentDelay = end - video.currentTime;
-          
-          if (currentDelay > 0.10) {
-            // Hard reset to flush the buffer instantly if delay exceeds 100ms
+        // Force WebRTC receivers to lowest latency settings
+        if (pcRef.current) {
+          pcRef.current.getReceivers().forEach(receiver => {
             try {
-              const stream = video.srcObject;
-              video.srcObject = null;
-              video.srcObject = stream;
-              video.play().catch(e => console.error("Play error after srcObject reset:", e));
-              addLog(`Hard reset video srcObject to flush delay: ${(currentDelay * 1000).toFixed(0)}ms`);
-            } catch (e) {
-              console.error("Failed to reset srcObject:", e);
-            }
-          } else if (currentDelay > 0.05) {
-            // Seek directly to live edge for medium delays (50-100ms)
-            try {
-              video.currentTime = end;
-            } catch (e) {
-              // Ignore if seeking on MediaStream is not supported
-            }
-          } else if (currentDelay > 0.03) {
-            // Speed up playback (50% faster) to catch up smoothly for small delays
-            video.playbackRate = 1.5;
-          } else if (currentDelay <= 0.02) {
-            // Restore normal playback speed once caught up
-            video.playbackRate = 1.0;
-          }
+              if ('jitterBufferTarget' in receiver && (receiver as any).jitterBufferTarget !== 0) {
+                (receiver as any).jitterBufferTarget = 0;
+              }
+              if ('playoutDelayHint' in receiver && (receiver as any).playoutDelayHint !== 0) {
+                (receiver as any).playoutDelayHint = 0;
+              }
+            } catch (e) {}
+          });
+        }
+
+        // Ensure video play state is active if paused
+        const video = getActiveVideoElement();
+        if (video && video.paused) {
+          video.play().catch(e => console.error("Play error in auto-sync:", e));
         }
 
         const statsReport = await pcRef.current.getStats();
@@ -1101,7 +1225,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
               lastJbDelay = Number(jbDelay);
               lastJbEmitted = Number(jbEmitted);
 
-              if (avgDelay > 0.030) { // 30ms threshold (tighter for low-latency)
+              if (avgDelay > 0.120) { // 120ms threshold (prevent false resets on normal 30-40ms stream buffering)
                 const now = performance.now();
                 if (now - lastJitterResetTimeRef.current > 5000) { // 5s cooldown
                   lastJitterResetTimeRef.current = now;
@@ -1361,7 +1485,11 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
         addLog(`Data Channel ${channel.label} opened.`);
         if (channel.label === "keyboard") {
           setTimeout(() => {
-            sendSunshineCursorHide(document.pointerLockElement === videoRef.current ? false : (touchMode === "trackpad" ? false : !hideLocalCursor));
+            // On initial connect: only hide host cursor on mobile trackpad mode.
+            // Desktop users (hardware mouse) should always see the host cursor.
+            const locked = document.pointerLockElement === videoRef.current;
+            const shouldHide = locked ? false : (touchMode === "trackpad" && !isHardwareMouseActiveRef.current ? true : !hideLocalCursor);
+            sendSunshineCursorHide(shouldHide);
           }, 1000);
         }
       };
@@ -1370,29 +1498,50 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     };
 
     // Handle incoming media tracks
-    const mediaStream = new MediaStream();
-    if (videoRef.current) {
-      videoRef.current.srcObject = mediaStream;
-    }
-
     pc.ontrack = (event) => {
       addLog(`Media track received: ${event.track.kind}`);
-      mediaStream.addTrack(event.track);
+      
+      if (event.track.kind === 'audio') {
+        const targetVideo = useCanvasRenderer ? hiddenVideoRef.current : (videoRef.current as HTMLVideoElement | null);
+        if (targetVideo) {
+          let stream = targetVideo.srcObject as MediaStream | null;
+          if (!stream || !(stream instanceof MediaStream)) {
+            stream = new MediaStream();
+            targetVideo.srcObject = stream;
+          }
+          stream.addTrack(event.track);
+          targetVideo.play().catch(e => addLog(`Autoplay audio track prevented: ${e}`));
+        }
+      } else if (event.track.kind === 'video') {
+        if (useCanvasRenderer) {
+          startCanvasRender(event.track);
+        } else {
+          const targetVideo = videoRef.current as HTMLVideoElement | null;
+          if (targetVideo) {
+            let stream = targetVideo.srcObject as MediaStream | null;
+            if (!stream || !(stream instanceof MediaStream)) {
+              stream = new MediaStream();
+              targetVideo.srcObject = stream;
+            }
+            stream.addTrack(event.track);
+            targetVideo.play().catch(e => addLog(`Autoplay video track prevented: ${e}`));
+          }
+        }
+      }
       
       if (event.receiver) {
         try {
+          if ('jitterBufferTarget' in event.receiver) {
+            (event.receiver as any).jitterBufferTarget = 0;
+            addLog(`Set jitterBufferTarget = 0 on receiver for track kind: ${event.track.kind}`);
+          }
           if ('playoutDelayHint' in event.receiver) {
             (event.receiver as any).playoutDelayHint = 0;
             addLog(`Set playoutDelayHint = 0 on receiver for track kind: ${event.track.kind}`);
           }
         } catch (e) {
-          addLog(`Error setting playoutDelayHint: ${e}`);
+          addLog(`Error setting receiver latency hints: ${e}`);
         }
-      }
-      
-      // Auto play video when track is added
-      if (videoRef.current) {
-        videoRef.current.play().catch(e => addLog(`Autoplay prevented: ${e}`));
       }
     };
 
@@ -1454,6 +1603,231 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     }
   };
 
+  const getActiveVideoElement = () => {
+    return useCanvasRenderer ? hiddenVideoRef.current : (videoRef.current as HTMLVideoElement | null);
+  };
+
+  const startCanvasRender = (track: MediaStreamTrack) => {
+    if (workerRef.current) {
+      try {
+        workerRef.current.terminate();
+      } catch (e) {}
+      workerRef.current = null;
+    }
+    if (canvasReaderRef.current) {
+      try {
+        canvasReaderRef.current.cancel();
+      } catch (e) {}
+      canvasReaderRef.current = null;
+    }
+
+    const canvas = videoRef.current as HTMLCanvasElement | null;
+    if (!canvas) {
+      addLog("Canvas element not ready for rendering.");
+      return;
+    }
+
+    addLog("Starting Canvas Web Worker rendering loop...");
+
+    const workerCode = `
+      let canvas = null;
+      let ctx = null;
+      let reader = null;
+      let active = false;
+
+      self.onmessage = async (e) => {
+        const { type } = e.data;
+        if (type === 'start') {
+          active = true;
+          canvas = e.data.canvas;
+          if (canvas) {
+            ctx = canvas.getContext('2d', { desynchronized: true });
+          }
+          const readable = e.data.readable;
+          if (readable) {
+            try {
+              reader = readable.getReader();
+              while (active) {
+                const { done, value: frame } = await reader.read();
+                if (done) {
+                  break;
+                }
+                if (!frame) continue;
+
+                try {
+                  if (canvas) {
+                    if (canvas.width !== frame.displayWidth || canvas.height !== frame.displayHeight) {
+                      canvas.width = frame.displayWidth;
+                      canvas.height = frame.displayHeight;
+                      self.postMessage({ type: 'resize', width: frame.displayWidth, height: frame.displayHeight });
+                    }
+
+                    if (ctx) {
+                      ctx.drawImage(frame, 0, 0, frame.displayWidth, frame.displayHeight);
+                    }
+                  }
+                } catch (err) {
+                  console.error("Worker drawImage error:", err);
+                } finally {
+                  frame.close();
+                }
+              }
+            } catch (err) {
+              console.error("Worker stream read error:", err);
+            }
+          }
+        } else if (type === 'frame') {
+          const frame = e.data.frame;
+          if (frame) {
+            try {
+              if (canvas) {
+                if (canvas.width !== frame.displayWidth || canvas.height !== frame.displayHeight) {
+                  canvas.width = frame.displayWidth;
+                  canvas.height = frame.displayHeight;
+                  self.postMessage({ type: 'resize', width: frame.displayWidth, height: frame.displayHeight });
+                }
+
+                if (ctx) {
+                  ctx.drawImage(frame, 0, 0, frame.displayWidth, frame.displayHeight);
+                }
+              }
+            } catch (err) {
+              console.error("Worker drawImage error (fallback):", err);
+            } finally {
+              frame.close();
+            }
+          }
+        } else if (type === 'stop') {
+          active = false;
+          if (reader) {
+            try {
+              reader.cancel();
+            } catch (err) {}
+            reader = null;
+          }
+        }
+      };
+    `;
+
+    const blob = new Blob([workerCode], { type: 'application/javascript' });
+    const workerUrl = URL.createObjectURL(blob);
+    const worker = new Worker(workerUrl);
+    workerRef.current = worker;
+
+    worker.onmessage = (e) => {
+      if (e.data && e.data.type === 'resize') {
+        updateVideoRect();
+      }
+    };
+
+    let offscreenCanvas: OffscreenCanvas | null = null;
+    if (lastCanvasRef.current !== canvas) {
+      lastCanvasRef.current = canvas;
+      canvasTransferredRef.current = false;
+    }
+
+    if (!canvasTransferredRef.current) {
+      try {
+        offscreenCanvas = canvas.transferControlToOffscreen();
+        canvasTransferredRef.current = true;
+      } catch (err) {
+        console.error("Failed to transfer canvas control to offscreen:", err);
+      }
+    }
+
+    // Try to create MediaStreamTrackProcessor and obtain its readable stream
+    let trackProcessor: any = null;
+    let readableStream: any = null;
+    try {
+      trackProcessor = new (window as any).MediaStreamTrackProcessor({ track });
+      readableStream = trackProcessor.readable;
+    } catch (err) {
+      console.error("Failed to create MediaStreamTrackProcessor:", err);
+    }
+
+    let streamTransferred = false;
+    if (offscreenCanvas && readableStream) {
+      try {
+        worker.postMessage({
+          type: 'start',
+          canvas: offscreenCanvas,
+          readable: readableStream
+        }, [offscreenCanvas, readableStream]);
+        streamTransferred = true;
+        addLog("Transferred OffscreenCanvas and ReadableStream to Web Worker successfully.");
+      } catch (err) {
+        console.warn("Failed to transfer ReadableStream directly to worker, using main-thread fallback:", err);
+      }
+    }
+
+    if (!streamTransferred) {
+      // Fallback: Read frames on main thread and forward to worker
+      if (offscreenCanvas) {
+        worker.postMessage({
+          type: 'start',
+          canvas: offscreenCanvas
+        }, [offscreenCanvas]);
+      }
+
+      if (readableStream) {
+        canvasRenderLoopActiveRef.current = true;
+        const reader = readableStream.getReader();
+        canvasReaderRef.current = reader;
+
+        const readFrame = async () => {
+          try {
+            while (canvasRenderLoopActiveRef.current) {
+              const { done, value: frame } = await reader.read();
+              if (done) {
+                addLog("Canvas track reader stream done.");
+                break;
+              }
+              if (!frame) continue;
+
+              try {
+                if (workerRef.current && canvasRenderLoopActiveRef.current) {
+                  workerRef.current.postMessage({
+                    type: 'frame',
+                    frame: frame
+                  }, [frame]);
+                } else {
+                  frame.close();
+                }
+              } catch (postErr) {
+                console.error("Failed to post frame to worker:", postErr);
+                frame.close();
+              }
+            }
+          } catch (err) {
+            console.error("Error reading video frame from track:", err);
+          }
+        };
+
+        readFrame();
+      }
+    }
+  };
+
+  const stopCanvasRender = () => {
+    canvasRenderLoopActiveRef.current = false;
+    if (canvasReaderRef.current) {
+      try {
+        canvasReaderRef.current.cancel();
+      } catch (e) {}
+      canvasReaderRef.current = null;
+    }
+    if (workerRef.current) {
+      try {
+        workerRef.current.postMessage({ type: 'stop' });
+        workerRef.current.terminate();
+      } catch (e) {}
+      workerRef.current = null;
+    }
+    canvasTransferredRef.current = false;
+    lastCanvasRef.current = null;
+    setCanvasKey(prev => prev + 1);
+  };
+
   const cleanup = () => {
     // Clear mouse flush timer
     if (mouseFlushTimeoutRef.current) {
@@ -1488,10 +1862,14 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       pcRef.current = null;
     }
 
-    // Clear video src
-    if (videoRef.current) {
+    // Clear video src and stop canvas loop
+    if (videoRef.current && videoRef.current instanceof HTMLVideoElement) {
       videoRef.current.srcObject = null;
     }
+    if (hiddenVideoRef.current) {
+      hiddenVideoRef.current.srcObject = null;
+    }
+    stopCanvasRender();
     
     // Close WebTransport
     if (wtDatagramWriterRef.current) {
@@ -1540,13 +1918,13 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       localStorage.setItem('lunaris_stream_fps', String(numValue));
       setActiveFps(numValue);
       setDraftFps(numValue);
-      if (numValue !== activeFps) setStatus("Connecting...");
+      // Dynamic: no reconnect needed, useEffect sends command via data channel
     } else if (key === 'bitrate') {
       const numValue = Number(value);
       localStorage.setItem('lunaris_stream_bitrate', String(numValue));
       setActiveBitrate(numValue);
       setDraftBitrate(numValue);
-      if (numValue !== activeBitrate) setStatus("Connecting...");
+      // Dynamic: no reconnect needed, useEffect sends command via data channel
     } else if (key === 'codec') {
       localStorage.setItem('lunaris_stream_codec', value);
       setActiveCodec(value);
@@ -1587,6 +1965,12 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     const wrapper = viewportWrapperRef.current;
     if (!cursorEl || !video || !wrapper) return;
 
+    if (touchModeRef.current !== 'trackpad' || status !== 'Streaming' || isHardwareMouseActiveRef.current) {
+      cursorEl.style.display = 'none';
+      return;
+    }
+    cursorEl.style.display = 'block';
+
     const rect = video.getBoundingClientRect();
     const wrapperRect = wrapper.getBoundingClientRect();
 
@@ -1594,8 +1978,9 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       return;
     }
 
-    const vidWidth = video.videoWidth > 0 ? video.videoWidth : 1920;
-    const vidHeight = video.videoHeight > 0 ? video.videoHeight : 1080;
+    const activeVideo = getActiveVideoElement();
+    const vidWidth = activeVideo?.videoWidth && activeVideo.videoWidth > 0 ? activeVideo.videoWidth : (video as any).width || 1920;
+    const vidHeight = activeVideo?.videoHeight && activeVideo.videoHeight > 0 ? activeVideo.videoHeight : (video as any).height || 1080;
 
     const elWidth = rect.width;
     const elHeight = rect.height;
@@ -1632,7 +2017,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   };
 
   const handleVideoLoadedMetadata = () => {
-    const video = videoRef.current;
+    const video = getActiveVideoElement();
     if (video) {
       localCursorPosRef.current = {
         x: video.videoWidth > 0 ? Math.round(video.videoWidth / 2) : 960,
@@ -1644,7 +2029,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
 
   useEffect(() => {
     updateVirtualCursorDOM();
-  }, [zoomScale, zoomPan, touchMode]);
+  }, [zoomScale, zoomPan, touchMode, status]);
 
   useEffect(() => {
     window.addEventListener("resize", updateVideoRect);
@@ -1671,6 +2056,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
 
   const sendTouchAbsolutePos = (clientX: number, clientY: number) => {
     const video = videoRef.current;
+    const activeVideo = getActiveVideoElement();
     const mouseAbsoluteChannel = channelsRef.current["mouse_absolute"];
     if (video && mouseAbsoluteChannel && mouseAbsoluteChannel.readyState === "open") {
       const rect = video.getBoundingClientRect();
@@ -1682,8 +2068,8 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
 
       const elWidth = rect.width;
       const elHeight = rect.height;
-      const vidWidth = video.videoWidth > 0 ? video.videoWidth : 1920;
-      const vidHeight = video.videoHeight > 0 ? video.videoHeight : 1080;
+      const vidWidth = activeVideo?.videoWidth && activeVideo.videoWidth > 0 ? activeVideo.videoWidth : (video as any).width || 1920;
+      const vidHeight = activeVideo?.videoHeight && activeVideo.videoHeight > 0 ? activeVideo.videoHeight : (video as any).height || 1080;
 
       let xNorm = 0.5;
       let yNorm = 0.5;
@@ -1712,11 +2098,11 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       xNorm = Math.max(0, Math.min(1, xNorm));
       yNorm = Math.max(0, Math.min(1, yNorm));
 
-      const scaledX = Math.round(xNorm * vidWidth);
-      const scaledY = Math.round(yNorm * vidHeight);
+      const x16 = Math.round(xNorm * 4096.0);
+      const y16 = Math.round(yNorm * 4096.0);
 
       // Keep local cursor position ref synchronized
-      localCursorPosRef.current = { x: scaledX, y: scaledY };
+      localCursorPosRef.current = { x: Math.round(xNorm * vidWidth), y: Math.round(yNorm * vidHeight) };
       if (touchMode === "trackpad") {
         updateVirtualCursorDOM();
       }
@@ -1724,10 +2110,10 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       const buffer = new ArrayBuffer(13);
       const view = new DataView(buffer);
       view.setUint8(0, 1); // Type 1: MousePosition
-      view.setInt16(1, scaledX, false);
-      view.setInt16(3, scaledY, false);
-      view.setInt16(5, vidWidth, false);
-      view.setInt16(7, vidHeight, false);
+      view.setInt16(1, x16, false);
+      view.setInt16(3, y16, false);
+      view.setInt16(5, 4096, false); // referenceWidth
+      view.setInt16(7, 4096, false); // referenceHeight
       const seq = (mouseSeqRef.current++) >>> 0;
       view.setUint32(9, seq, false);
       mouseAbsoluteChannel.send(buffer);
@@ -1786,6 +2172,11 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
 
   const handleTouchStart = (e: React.TouchEvent<HTMLDivElement>) => {
     if (status !== "Streaming") return;
+    
+    if (isHardwareMouseActiveRef.current) {
+      isHardwareMouseActiveRef.current = false;
+      setIsHardwareMouse(false);
+    }
     
     // Prevent browser from emulating mouse events (mousemove, mousedown, click)
     e.preventDefault();
@@ -1914,6 +2305,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
 
     const video = videoRef.current;
     if (!video) return;
+    const activeVideo = getActiveVideoElement();
 
     if (e.touches.length === 1) {
       const touch = e.touches[0];
@@ -1938,8 +2330,8 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
             const W_wrapper = wrapperRect.width;
             const H_wrapper = wrapperRect.height;
 
-            const vidWidth = video.videoWidth > 0 ? video.videoWidth : 1920;
-            const vidHeight = video.videoHeight > 0 ? video.videoHeight : 1080;
+            const vidWidth = activeVideo?.videoWidth && activeVideo.videoWidth > 0 ? activeVideo.videoWidth : (video as any).width || 1920;
+            const vidHeight = activeVideo?.videoHeight && activeVideo.videoHeight > 0 ? activeVideo.videoHeight : (video as any).height || 1080;
 
             const wrapperAspectRatio = W_wrapper / H_wrapper;
             const vidAspectRatio = vidWidth / vidHeight;
@@ -1995,15 +2387,24 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
 
             localCursorPosRef.current = { x: newX, y: newY };
 
-            // Send relative mouse movement to host
-            const mouseRelativeChannel = channelsRef.current["mouse_relative"];
-            if (mouseRelativeChannel && mouseRelativeChannel.readyState === "open" && (relX !== 0 || relY !== 0)) {
-              const buffer = new ArrayBuffer(5);
+            // Send absolute mouse position to host instead of relative in trackpad mode to avoid drift
+            const mouseAbsoluteChannel = channelsRef.current["mouse_absolute"];
+            if (mouseAbsoluteChannel && mouseAbsoluteChannel.readyState === "open" && (relX !== 0 || relY !== 0)) {
+              const xNorm = newX / vidWidth;
+              const yNorm = newY / vidHeight;
+              const x16 = Math.round(xNorm * 4096.0);
+              const y16 = Math.round(yNorm * 4096.0);
+
+              const buffer = new ArrayBuffer(13);
               const view = new DataView(buffer);
-              view.setUint8(0, 0); // Type 0: MouseMove (Relative)
-              view.setInt16(1, relX, false);
-              view.setInt16(3, relY, false);
-              mouseRelativeChannel.send(buffer);
+              view.setUint8(0, 1); // Type 1: MousePosition (Absolute)
+              view.setInt16(1, x16, false);
+              view.setInt16(3, y16, false);
+              view.setInt16(5, 4096, false); // referenceWidth
+              view.setInt16(7, 4096, false); // referenceHeight
+              const seq = (mouseSeqRef.current++) >>> 0;
+              view.setUint32(9, seq, false);
+              mouseAbsoluteChannel.send(buffer);
             }
 
             // Viewport horizontal panning keeps cursor centered
@@ -2041,8 +2442,8 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       } else if (touchMode === "trackpad") {
         const rect = video.getBoundingClientRect();
         if (rect.width > 0 && rect.height > 0) {
-          const vidWidth = video.videoWidth > 0 ? video.videoWidth : 1920;
-          const vidHeight = video.videoHeight > 0 ? video.videoHeight : 1080;
+          const vidWidth = activeVideo?.videoWidth && activeVideo.videoWidth > 0 ? activeVideo.videoWidth : (video as any).width || 1920;
+          const vidHeight = activeVideo?.videoHeight && activeVideo.videoHeight > 0 ? activeVideo.videoHeight : (video as any).height || 1080;
 
           // Apply trackpad acceleration
           const distance = Math.sqrt(dx * dx + dy * dy);
@@ -2077,15 +2478,24 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
 
           localCursorPosRef.current = { x: newX, y: newY };
 
-          // Send relative mouse movement to host
-          const mouseRelativeChannel = channelsRef.current["mouse_relative"];
-          if (mouseRelativeChannel && mouseRelativeChannel.readyState === "open" && (relX !== 0 || relY !== 0)) {
-            const buffer = new ArrayBuffer(5);
+          // Send absolute mouse position to host instead of relative in trackpad mode to avoid drift
+          const mouseAbsoluteChannel = channelsRef.current["mouse_absolute"];
+          if (mouseAbsoluteChannel && mouseAbsoluteChannel.readyState === "open" && (relX !== 0 || relY !== 0)) {
+            const xNorm = newX / vidWidth;
+            const yNorm = newY / vidHeight;
+            const x16 = Math.round(xNorm * 4096.0);
+            const y16 = Math.round(yNorm * 4096.0);
+
+            const buffer = new ArrayBuffer(13);
             const view = new DataView(buffer);
-            view.setUint8(0, 0); // Type 0: MouseMove (Relative)
-            view.setInt16(1, relX, false);
-            view.setInt16(3, relY, false);
-            mouseRelativeChannel.send(buffer);
+            view.setUint8(0, 1); // Type 1: MousePosition (Absolute)
+            view.setInt16(1, x16, false);
+            view.setInt16(3, y16, false);
+            view.setInt16(5, 4096, false); // referenceWidth
+            view.setInt16(7, 4096, false); // referenceHeight
+            const seq = (mouseSeqRef.current++) >>> 0;
+            view.setUint32(9, seq, false);
+            mouseAbsoluteChannel.send(buffer);
           }
 
           updateVirtualCursorDOM();
@@ -2124,8 +2534,8 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
           const W_wrapper = wrapperRect.width;
           const H_wrapper = wrapperRect.height;
 
-          const vidWidth = video.videoWidth > 0 ? video.videoWidth : 1920;
-          const vidHeight = video.videoHeight > 0 ? video.videoHeight : 1080;
+          const vidWidth = activeVideo?.videoWidth && activeVideo.videoWidth > 0 ? activeVideo.videoWidth : (video as any).width || 1920;
+          const vidHeight = activeVideo?.videoHeight && activeVideo.videoHeight > 0 ? activeVideo.videoHeight : (video as any).height || 1080;
 
           const wrapperAspectRatio = W_wrapper / H_wrapper;
           const vidAspectRatio = vidWidth / vidHeight;
@@ -2205,16 +2615,18 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
             // Send mouse absolute position
             const mouseAbsoluteChannel = channelsRef.current["mouse_absolute"];
             if (mouseAbsoluteChannel && mouseAbsoluteChannel.readyState === "open") {
-              const scaledX = Math.round(newX);
-              const scaledY = Math.round(newY);
+              const xNorm = newX / vidWidth;
+              const yNorm = newY / vidHeight;
+              const x16 = Math.round(xNorm * 4096.0);
+              const y16 = Math.round(yNorm * 4096.0);
 
               const buffer = new ArrayBuffer(13);
               const view = new DataView(buffer);
               view.setUint8(0, 1); // Type 1: MousePosition
-              view.setInt16(1, scaledX, false);
-              view.setInt16(3, scaledY, false);
-              view.setInt16(5, vidWidth, false);
-              view.setInt16(7, vidHeight, false);
+              view.setInt16(1, x16, false);
+              view.setInt16(3, y16, false);
+              view.setInt16(5, 4096, false); // referenceWidth
+              view.setInt16(7, 4096, false); // referenceHeight
               const seq = (mouseSeqRef.current++) >>> 0;
               view.setUint32(9, seq, false);
               mouseAbsoluteChannel.send(buffer);
@@ -2371,13 +2783,23 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   // Send mouse position (absolute) — used only when pointer is NOT locked.
   // When pointer IS locked, the prediction cursor useEffect handles input via
   // pointerrawupdate/pointermove → absolute position on mouseAbsolute channel.
-  const handleMouseMove = (e: React.MouseEvent<HTMLVideoElement>) => {
+  const handleMouseMove = (e: React.MouseEvent<HTMLVideoElement | HTMLCanvasElement>) => {
     // Ignore emulated mouse events from touches
     if ((e.nativeEvent as any).sourceCapabilities?.firesTouchEvents) {
       return;
     }
 
     if (status !== "Streaming") return;
+
+    if (!isHardwareMouseActiveRef.current) {
+      isHardwareMouseActiveRef.current = true;
+      setIsHardwareMouse(true);
+      updateVirtualCursorDOM();
+      // Hardware mouse detected — show host cursor in stream (undo any previous hide)
+      if (sunshineHideCursorRef.current) {
+        sendSunshineCursorHide(false);
+      }
+    }
 
     // When pointer locked, prediction cursor useEffect handles everything
     // via pointerrawupdate → absolute mouse position. Skip React handler.
@@ -2387,77 +2809,10 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
 
     // Absolute mouse mode (no pointer lock): update latest position ref
     latestAbsoluteMousePosRef.current = { clientX: e.clientX, clientY: e.clientY };
-
-    const mouseAbsoluteChannel = channelsRef.current["mouse_absolute"];
-    if (mouseAbsoluteChannel && mouseAbsoluteChannel.readyState === "open" && videoRef.current) {
-      // Back-pressure: drop if buffer contains more than 1 packet (9 bytes).
-      // This prevents accumulation while keeping latest position fresh.
-      const buffered = mouseAbsoluteChannel.bufferedAmount;
-      if (buffered !== undefined && buffered > 9) return;
-
-      const pos = latestAbsoluteMousePosRef.current;
-      latestAbsoluteMousePosRef.current = null;
-
-      const video = videoRef.current;
-      // Use cached rect — getBoundingClientRect() forces layout reflow
-      // and is expensive when called 60-120x/second.
-      const rect = cachedVideoRectRef.current;
-      if (rect.width > 0 && rect.height > 0) {
-        const elWidth = rect.width;
-        const elHeight = rect.height;
-        const vidWidth = video.videoWidth > 0 ? video.videoWidth : 1920;
-        const vidHeight = video.videoHeight > 0 ? video.videoHeight : 1080;
-
-        const elAspectRatio = elWidth / elHeight;
-        const vidAspectRatio = vidWidth / vidHeight;
-
-        let actualVidWidth = elWidth;
-        let actualVidHeight = elHeight;
-        let offsetX = 0;
-        let offsetY = 0;
-
-        if (elAspectRatio > vidAspectRatio) {
-          actualVidHeight = elHeight;
-          actualVidWidth = elHeight * vidAspectRatio;
-          offsetX = (elWidth - actualVidWidth) / 2;
-        } else {
-          actualVidWidth = elWidth;
-          actualVidHeight = elWidth / vidAspectRatio;
-          offsetY = (elHeight - actualVidHeight) / 2;
-        }
-
-        const xLocal = pos.clientX - rect.left;
-        const yLocal = pos.clientY - rect.top;
-
-        let xNorm = (xLocal - offsetX) / actualVidWidth;
-        let yNorm = (yLocal - offsetY) / actualVidHeight;
-
-        xNorm = Math.max(0, Math.min(1, xNorm));
-        yNorm = Math.max(0, Math.min(1, yNorm));
-
-        // Send as 4096-normalized absolute position (9 bytes, matching moonlight format)
-        const x16 = Math.round(xNorm * 4096.0);
-        const y16 = Math.round(yNorm * 4096.0);
-
-        localCursorPosRef.current = { x: Math.round(xNorm * vidWidth), y: Math.round(yNorm * vidHeight) };
-        if (touchMode === 'trackpad') {
-          updateVirtualCursorDOM();
-        }
-
-        const buffer = new ArrayBuffer(9);
-        const view = new DataView(buffer);
-        view.setUint8(0, 1); // Type 1: MousePosition
-        view.setInt16(1, x16, false);
-        view.setInt16(3, y16, false);
-        view.setInt16(5, 4096, false); // referenceWidth
-        view.setInt16(7, 4096, false); // referenceHeight
-        mouseAbsoluteChannel.send(buffer);
-      }
-    }
   };
 
   // Send mouse click event
-  const handleMouseButton = (e: React.MouseEvent<HTMLVideoElement>, isDown: boolean) => {
+  const handleMouseButton = (e: React.MouseEvent<HTMLVideoElement | HTMLCanvasElement>, isDown: boolean) => {
     // Ignore emulated mouse events from touches
     if ((e.nativeEvent as any).sourceCapabilities?.firesTouchEvents) {
       return;
@@ -2482,7 +2837,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   };
 
   // Send scroll wheel event
-  const handleWheel = (e: React.WheelEvent<HTMLVideoElement>) => {
+  const handleWheel = (e: React.WheelEvent<HTMLVideoElement | HTMLCanvasElement>) => {
     const mouseReliableChannel = channelsRef.current["mouse_reliable"];
     if (mouseReliableChannel && mouseReliableChannel.readyState === "open") {
       scrollXAccumulatorRef.current += e.deltaX;
@@ -2698,6 +3053,19 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
                     </label>
                   </div>
                 )}
+                <div className="settings-group full-width" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginTop: '0.5rem' }}>
+                  <input 
+                    type="checkbox" 
+                    id="useCanvasRenderer"
+                    checked={draftUseCanvasRenderer} 
+                    disabled={typeof (window as any).MediaStreamTrackProcessor === 'undefined' || isIOSOrSafari}
+                    onChange={(e) => setDraftUseCanvasRenderer(e.target.checked)}
+                    style={{ width: 'auto', margin: 0, cursor: (typeof (window as any).MediaStreamTrackProcessor === 'undefined' || isIOSOrSafari) ? 'not-allowed' : 'pointer' }}
+                  />
+                  <label htmlFor="useCanvasRenderer" style={{ cursor: (typeof (window as any).MediaStreamTrackProcessor === 'undefined' || isIOSOrSafari) ? 'not-allowed' : 'pointer', margin: 0, userSelect: 'none', fontWeight: 'normal' }}>
+                    Use Canvas Renderer {typeof (window as any).MediaStreamTrackProcessor === 'undefined' ? "(Unsupported by browser)" : isIOSOrSafari ? "(Disabled on iOS/Safari due to WebKit limits)" : "(Highly recommended - zero latency & no stutter)"}
+                  </label>
+                </div>
               </div>
 
               <div className="settings-actions">
@@ -2706,6 +3074,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
                     setDraftMouseQueueLimit(mouseQueueLimit);
                     setDraftUseNativeClient(useNativeClient);
                     setDraftInputProtocol(activeInputProtocol);
+                    setDraftUseCanvasRenderer(useCanvasRenderer);
                     setShowSettingsModal(false);
                   }}
                   className="btn-secondary"
@@ -2721,6 +3090,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
                     setMouseQueueLimit(draftMouseQueueLimit);
                     setUseNativeClient(draftUseNativeClient);
                     setActiveInputProtocol(draftInputProtocol);
+                    setUseCanvasRenderer(draftUseCanvasRenderer);
                     
                     localStorage.setItem('lunaris_stream_res', draftResolution);
                     localStorage.setItem('lunaris_stream_fps', String(draftFps));
@@ -2729,9 +3099,10 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
                     localStorage.setItem('lunaris_mouse_queue_limit', String(draftMouseQueueLimit));
                     localStorage.setItem('lunaris_tauri_use_native', String(draftUseNativeClient));
                     localStorage.setItem('lunaris_input_protocol', draftInputProtocol);
+                    localStorage.setItem('lunaris_canvas_renderer', String(draftUseCanvasRenderer));
                     
                     setShowSettingsModal(false);
-                    addLog(`Applied settings: res=${draftResolution}, fps=${draftFps}, bitrate=${draftBitrate}Kbps, codec=${draftCodec}, mouseQueueLimit=${draftMouseQueueLimit}B, useNative=${draftUseNativeClient}, inputProtocol=${draftInputProtocol}`);
+                    addLog(`Applied settings: res=${draftResolution}, fps=${draftFps}, bitrate=${draftBitrate}Kbps, codec=${draftCodec}, mouseQueueLimit=${draftMouseQueueLimit}B, useNative=${draftUseNativeClient}, inputProtocol=${draftInputProtocol}, useCanvasRenderer=${draftUseCanvasRenderer}`);
                   }}
                   className="btn-primary"
                 >
@@ -2916,6 +3287,46 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
               </div>
 
               <div className="settings-group">
+                <label htmlFor="encoder">Encoder</label>
+                <select 
+                  id="encoder" 
+                  value={draftEncoder} 
+                  onChange={(e) => setDraftEncoder(e.target.value)}
+                >
+                  <option value="auto">Auto (Recommended)</option>
+                  {availableEncoders.map(enc => (
+                    <option key={enc} value={enc}>{enc.toUpperCase()}</option>
+                  ))}
+                  {availableEncoders.length === 0 && (
+                    <>
+                      <option value="nvenc">NVENC</option>
+                      <option value="vaapi">VAAPI</option>
+                      <option value="qsv">QSV</option>
+                      <option value="software">Software</option>
+                    </>
+                  )}
+                </select>
+              </div>
+
+              {availableDisplays.length > 0 && (
+                <div className="settings-group">
+                  <label htmlFor="display">Display</label>
+                  <select 
+                    id="display" 
+                    value={draftDisplay} 
+                    onChange={(e) => setDraftDisplay(e.target.value)}
+                  >
+                    <option value="default">Default</option>
+                    {availableDisplays.map(d => (
+                      <option key={d.id} value={d.id}>
+                        {d.name} ({d.width}x{d.height} @ {d.refresh_rate.toFixed(0)}Hz){d.is_primary ? ' ★' : ''}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              <div className="settings-group">
                 <label htmlFor="bitrate">Bitrate (Kbps)</label>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
                   <input 
@@ -2977,6 +3388,19 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
                   </label>
                 </div>
               )}
+              <div className="settings-group full-width" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginTop: '0.5rem' }}>
+                <input 
+                  type="checkbox" 
+                  id="useCanvasRenderer"
+                  checked={draftUseCanvasRenderer} 
+                  disabled={typeof (window as any).MediaStreamTrackProcessor === 'undefined' || isIOSOrSafari}
+                  onChange={(e) => setDraftUseCanvasRenderer(e.target.checked)}
+                  style={{ width: 'auto', margin: 0, cursor: (typeof (window as any).MediaStreamTrackProcessor === 'undefined' || isIOSOrSafari) ? 'not-allowed' : 'pointer' }}
+                />
+                <label htmlFor="useCanvasRenderer" style={{ cursor: (typeof (window as any).MediaStreamTrackProcessor === 'undefined' || isIOSOrSafari) ? 'not-allowed' : 'pointer', margin: 0, userSelect: 'none', fontWeight: 'normal' }}>
+                  Use Canvas Renderer {typeof (window as any).MediaStreamTrackProcessor === 'undefined' ? "(Unsupported by browser)" : isIOSOrSafari ? "(Disabled on iOS/Safari due to WebKit limits)" : "(Highly recommended - zero latency & no stutter)"}
+                </label>
+              </div>
             </div>
 
             <div className="settings-actions">
@@ -2989,6 +3413,9 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
                   setDraftMouseQueueLimit(mouseQueueLimit);
                   setDraftUseNativeClient(useNativeClient);
                   setDraftInputProtocol(activeInputProtocol);
+                  setDraftUseCanvasRenderer(useCanvasRenderer);
+                  setDraftEncoder(activeEncoder);
+                  setDraftDisplay(activeDisplay);
                   setShowSettingsModal(false);
                 }} 
                 className="btn-secondary"
@@ -3005,26 +3432,35 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
                   localStorage.setItem('lunaris_mouse_queue_limit', String(draftMouseQueueLimit));
                   localStorage.setItem('lunaris_tauri_use_native', String(draftUseNativeClient));
                   localStorage.setItem('lunaris_input_protocol', draftInputProtocol);
+                  localStorage.setItem('lunaris_canvas_renderer', String(draftUseCanvasRenderer));
+                  localStorage.setItem('lunaris_stream_encoder', draftEncoder);
+                  localStorage.setItem('lunaris_stream_display', draftDisplay);
                   
-                  // Check if media parameters changed
-                  const mediaChanged = 
+                  // Check if settings requiring reconnect changed
+                  const reconnectNeeded = 
                     draftResolution !== activeResolution ||
-                    draftFps !== activeFps ||
-                    draftBitrate !== activeBitrate ||
                     draftCodec !== activeCodec ||
                     draftUseNativeClient !== useNativeClient ||
-                    draftInputProtocol !== activeInputProtocol;
+                    draftInputProtocol !== activeInputProtocol ||
+                    draftUseCanvasRenderer !== useCanvasRenderer ||
+                    draftEncoder !== activeEncoder ||
+                    draftDisplay !== activeDisplay;
 
                   setMouseQueueLimit(draftMouseQueueLimit);
 
-                  if (mediaChanged) {
+                  // Always update FPS/bitrate (dynamic, no reconnect needed)
+                  setActiveFps(draftFps);
+                  setActiveBitrate(draftBitrate);
+
+                  if (reconnectNeeded) {
                     // Update active values to trigger reconnect
                     setActiveResolution(draftResolution);
-                    setActiveFps(draftFps);
-                    setActiveBitrate(draftBitrate);
                     setActiveCodec(draftCodec);
                     setUseNativeClient(draftUseNativeClient);
                     setActiveInputProtocol(draftInputProtocol);
+                    setUseCanvasRenderer(draftUseCanvasRenderer);
+                    setActiveEncoder(draftEncoder);
+                    setActiveDisplay(draftDisplay);
                     
                     // Reset states for connection indicator
                     setStatus("Connecting...");
@@ -3206,7 +3642,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
             const newValue = !hideLocalCursor;
             setHideLocalCursor(newValue);
             localStorage.setItem('lunaris_stream_hide_cursor', String(newValue));
-            sendSunshineCursorHide(document.pointerLockElement === videoRef.current ? false : (touchMode === "trackpad" ? false : !newValue));
+            sendSunshineCursorHide(document.pointerLockElement === videoRef.current ? false : (touchMode === "trackpad" && !isHardwareMouseActiveRef.current ? true : !newValue));
           }}
           className={`stream-action-btn ${!hideLocalCursor ? 'active' : ''}`}
           title={hideLocalCursor ? "Show Local Cursor" : "Hide Local Cursor"}
@@ -3356,25 +3792,54 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
           onBlur={() => setIsKeyboardActive(false)}
         />
 
-        <video
-          ref={videoRef}
-          onMouseMove={handleMouseMove}
-          onMouseDown={(e) => handleMouseButton(e, true)}
-          onMouseUp={(e) => handleMouseButton(e, false)}
-          onMouseEnter={updateVideoRect}
-          onContextMenu={(e) => e.preventDefault()}
-          onWheel={handleWheel}
-          className={`stream-video-view ${isStreaming ? 'visible' : 'hidden'}`}
-          autoPlay
-          playsInline
-          muted={isMuted}
-          onLoadedMetadata={handleVideoLoadedMetadata}
-          style={{ 
-            cursor: (hideLocalCursor || (touchMode === 'trackpad' && /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent))) ? 'none' : 'default',
-            transform: `translate(${zoomPan.x}px, ${zoomPan.y}px) scale(${zoomScale})`,
-            transformOrigin: '0 0'
-          }}
-        />
+        {useCanvasRenderer ? (
+          <>
+            <canvas
+              key={canvasKey}
+              ref={videoRef as any}
+              onMouseMove={handleMouseMove}
+              onMouseDown={(e) => handleMouseButton(e, true)}
+              onMouseUp={(e) => handleMouseButton(e, false)}
+              onMouseEnter={updateVideoRect}
+              onContextMenu={(e) => e.preventDefault()}
+              onWheel={handleWheel}
+              className={`stream-video-view ${isStreaming ? 'visible' : 'hidden'}`}
+              style={{ 
+                cursor: (hideLocalCursor || (touchMode === 'trackpad' && !isHardwareMouse)) ? 'none' : 'default',
+                transform: `translate(${zoomPan.x}px, ${zoomPan.y}px) scale(${zoomScale})`,
+                transformOrigin: '0 0'
+              }}
+            />
+            <video
+              ref={hiddenVideoRef}
+              autoPlay
+              playsInline
+              muted={isMuted}
+              onLoadedMetadata={handleVideoLoadedMetadata}
+              style={{ display: 'none' }}
+            />
+          </>
+        ) : (
+          <video
+            ref={videoRef as any}
+            onMouseMove={handleMouseMove}
+            onMouseDown={(e) => handleMouseButton(e, true)}
+            onMouseUp={(e) => handleMouseButton(e, false)}
+            onMouseEnter={updateVideoRect}
+            onContextMenu={(e) => e.preventDefault()}
+            onWheel={handleWheel}
+            className={`stream-video-view ${isStreaming ? 'visible' : 'hidden'}`}
+            autoPlay
+            playsInline
+            muted={isMuted}
+            onLoadedMetadata={handleVideoLoadedMetadata}
+            style={{ 
+              cursor: (hideLocalCursor || (touchMode === 'trackpad' && !isHardwareMouse)) ? 'none' : 'default',
+              transform: `translate(${zoomPan.x}px, ${zoomPan.y}px) scale(${zoomScale})`,
+              transformOrigin: '0 0'
+            }}
+          />
+        )}
 
         {/* Client-side virtual cursor for mobile trackpad mode */}
         <div

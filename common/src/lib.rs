@@ -181,6 +181,16 @@ pub struct AppInfo {
     pub icon_base64: Option<String>,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct DisplayInfoMsg {
+    pub id: String,
+    pub name: String,
+    pub width: u32,
+    pub height: u32,
+    pub refresh_rate: f64,
+    pub is_primary: bool,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "type", content = "payload")]
 pub enum SignalingMessage {
@@ -192,6 +202,8 @@ pub enum SignalingMessage {
         bitrate: Option<u32>,
         codec: Option<String>,
         app_id: Option<u32>,
+        encoder: Option<String>,
+        display_id: Option<String>,
     },
     // Server notifying agent about session request
     IncomingSession {
@@ -202,6 +214,8 @@ pub enum SignalingMessage {
         bitrate: Option<u32>,
         codec: Option<String>,
         app_id: Option<u32>,
+        encoder: Option<String>,
+        display_id: Option<String>,
         ice_servers: Option<Vec<RtcIceServer>>,
     },
     // SDP / ICE Exchange
@@ -254,6 +268,15 @@ pub enum SignalingMessage {
         target_id: String,
         success: bool,
         error: Option<String>,
+    },
+    // Host Capabilities Query
+    GetCapabilities {
+        target_id: String,
+    },
+    CapabilitiesResponse {
+        target_id: String,
+        displays: Vec<DisplayInfoMsg>,
+        encoders: Vec<String>,
     },
     // Errors
     Error {

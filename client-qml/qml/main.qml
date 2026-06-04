@@ -342,7 +342,7 @@ ApplicationWindow {
                 id: videoOutput
                 anchors.fill: parent
                 fillMode: VideoOutput.Stretch
-                visible: !gpuVideoItem.cudaSupported || !window.useCuda
+                visible: !gpuVideoItem.cudaSupported || !window.useCuda || !gpuVideoItem.cudaActive
 
                 onVisibleChanged: {
                     if (visible && videoOutput.videoSink) {
@@ -355,7 +355,7 @@ ApplicationWindow {
             GpuVideoItem {
                 id: gpuVideoItem
                 anchors.fill: parent
-                visible: gpuVideoItem.cudaSupported && window.useCuda
+                visible: gpuVideoItem.cudaSupported && window.useCuda && gpuVideoItem.cudaActive
             }
 
         }

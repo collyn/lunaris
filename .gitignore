@@ -1,5 +1,6 @@
 # Rust / Cargo
 /target
+target/
 moonlight-common-rust/
 
 
@@ -53,3 +54,15 @@ yarn-error.log*
 pnpm-debug.log*
 server_token.txt
 client_frontend_logs.txt
+
+# AppImage extraction directory
+squashfs-root/
+
+# Claude/agent directory (except skill files)
+.claude/*
+!.claude/skills/
+
+# Scratch/playground files (except workspace projects)
+/scratch/*
+!/scratch/test_arboard/
+!/scratch/test_arboard_persistence/

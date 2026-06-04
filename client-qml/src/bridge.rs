@@ -1870,6 +1870,12 @@ use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::track::track_remote::TrackRemote;
+use webrtc::rtp_transceiver::rtp_codec::{
+    RTCRtpCodecCapability, RTCRtpCodecParameters, RTPCodecType
+};
+use webrtc::rtp_transceiver::RTCPFeedback;
+use webrtc::interceptor::registry::Registry;
+use webrtc::api::interceptor_registry::register_default_interceptors;
 
 async fn setup_peer_connection(
     ice_servers: Option<Vec<common::RtcIceServer>>,
@@ -1883,8 +1889,134 @@ async fn setup_peer_connection(
 ) -> Result<Arc<RTCPeerConnection>, anyhow::Error> {
     // WebRTC connection setup
     let mut media_engine = MediaEngine::default();
-    media_engine.register_default_codecs()?;
-    let api = APIBuilder::new().with_media_engine(media_engine).build();
+    
+    // Register Opus
+    media_engine.register_codec(
+        RTCRtpCodecParameters {
+            capability: RTCRtpCodecCapability {
+                mime_type: "audio/opus".to_string(),
+                clock_rate: 48000,
+                channels: 2,
+                sdp_fmtp_line: "minptime=10;useinbandfec=1".to_string(),
+                rtcp_feedback: vec![],
+            },
+            payload_type: 111,
+            ..Default::default()
+        },
+        RTPCodecType::Audio,
+    )?;
+
+    // Register H264
+    media_engine.register_codec(
+        RTCRtpCodecParameters {
+            capability: RTCRtpCodecCapability {
+                mime_type: webrtc::api::media_engine::MIME_TYPE_H264.to_string(),
+                clock_rate: 90000,
+                channels: 0,
+                sdp_fmtp_line: "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e033".to_string(),
+                rtcp_feedback: vec![
+                    RTCPFeedback {
+                        typ: "nack".to_string(),
+                        parameter: "".to_string(),
+                    },
+                    RTCPFeedback {
+                        typ: "nack".to_string(),
+                        parameter: "pli".to_string(),
+                    },
+                    RTCPFeedback {
+                        typ: "goog-remb".to_string(),
+                        parameter: "".to_string(),
+                    },
+                ],
+            },
+            payload_type: 96,
+            ..Default::default()
+        },
+        RTPCodecType::Video,
+    )?;
+
+    // Register HEVC (H265)
+    media_engine.register_codec(
+        RTCRtpCodecParameters {
+            capability: RTCRtpCodecCapability {
+                mime_type: webrtc::api::media_engine::MIME_TYPE_HEVC.to_string(),
+                clock_rate: 90000,
+                channels: 0,
+                sdp_fmtp_line: "profile-id=1;tier-flag=0;level-id=120;tx-mode=SRST".to_string(),
+                rtcp_feedback: vec![
+                    RTCPFeedback {
+                        typ: "nack".to_string(),
+                        parameter: "".to_string(),
+                    },
+                    RTCPFeedback {
+                        typ: "nack".to_string(),
+                        parameter: "pli".to_string(),
+                    },
+                    RTCPFeedback {
+                        typ: "goog-remb".to_string(),
+                        parameter: "".to_string(),
+                    },
+                ],
+            },
+            payload_type: 98,
+            ..Default::default()
+        },
+        RTPCodecType::Video,
+    )?;
+
+    // Register AV1
+    media_engine.register_codec(
+        RTCRtpCodecParameters {
+            capability: RTCRtpCodecCapability {
+                mime_type: webrtc::api::media_engine::MIME_TYPE_AV1.to_string(),
+                clock_rate: 90000,
+                channels: 0,
+                sdp_fmtp_line: "profile=0".to_string(),
+                rtcp_feedback: vec![
+                    RTCPFeedback {
+                        typ: "nack".to_string(),
+                        parameter: "".to_string(),
+                    },
+                    RTCPFeedback {
+                        typ: "nack".to_string(),
+                        parameter: "pli".to_string(),
+                    },
+                    RTCPFeedback {
+                        typ: "goog-remb".to_string(),
+                        parameter: "".to_string(),
+                    },
+                ],
+            },
+            payload_type: 102,
+            ..Default::default()
+        },
+        RTPCodecType::Video,
+    )?;
+
+    // Register RTP header extensions — critical for low-latency video and codec matching
+    const PLAYOUT_DELAY_URI: &str = "http://www.webrtc.org/experiments/rtp-hdrext/playout-delay";
+    media_engine.register_header_extension(
+        webrtc::rtp_transceiver::rtp_codec::RTCRtpHeaderExtensionCapability {
+            uri: PLAYOUT_DELAY_URI.to_string(),
+        },
+        RTPCodecType::Video,
+        None,
+    )?;
+    media_engine.register_header_extension(
+        webrtc::rtp_transceiver::rtp_codec::RTCRtpHeaderExtensionCapability {
+            uri: webrtc::sdp::extmap::ABS_SEND_TIME_URI.to_string(),
+        },
+        RTPCodecType::Video,
+        None,
+    )?;
+
+    let mut registry = Registry::new();
+    registry = register_default_interceptors(registry, &mut media_engine)?;
+
+    let api = APIBuilder::new()
+        .with_media_engine(media_engine)
+        .with_interceptor_registry(registry)
+        .build();
 
     let webrtc_ice_servers = if let Some(servers) = ice_servers {
         servers
@@ -1947,6 +2079,7 @@ async fn setup_peer_connection(
         
         Box::pin(async move {
             let mime = codec.capability.mime_type.to_lowercase();
+            println!("client-qml on_track called: kind={}, mime_type={}", track_clone.kind(), mime);
             let is_video = mime == "video/h264" || mime == "video/h265" || mime == "video/hevc" || mime == "video/av1";
             
             if is_video {
@@ -2530,8 +2663,28 @@ async fn send_relative_packet(
         if let Some(ref chan) = cached_chan {
             let mut cached_buffer_ok = true;
             if mouse_queue_limit > 0 {
-                let amt = chan.buffered_amount().await;
-                cached_buffer_ok = amt < mouse_queue_limit as usize;
+                static LAST_CHECK: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+                static LAST_RESULT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+                let now = std::time::Instant::now();
+                let should_check = {
+                    let mut guard = LAST_CHECK.lock().unwrap();
+                    match *guard {
+                        Some(last) if now.duration_since(last).as_millis() < 100 => false,
+                        _ => {
+                            *guard = Some(now);
+                            true
+                        }
+                    }
+                };
+                if should_check {
+                    let amt = chan.buffered_amount().await;
+                    let limit = if mouse_queue_limit < 10240 { 65536 } else { mouse_queue_limit as usize };
+                    let ok = amt < limit;
+                    LAST_RESULT.store(ok, std::sync::atomic::Ordering::Relaxed);
+                    cached_buffer_ok = ok;
+                } else {
+                    cached_buffer_ok = LAST_RESULT.load(std::sync::atomic::Ordering::Relaxed);
+                }
             }
 
             if cached_buffer_ok {
@@ -2630,50 +2783,69 @@ async fn run_webrtc_client_task(
     let has_wt = Arc::clone(&wt_connected);
     tokio::spawn(async move {
         let mut cached_chan: Option<Arc<RTCDataChannel>> = None;
-        let mut interval = tokio::time::interval(std::time::Duration::from_millis(8));
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-
         loop {
-            interval.tick().await;
+            let first_buf = match ma_rx.recv().await {
+                Some(buf) => buf,
+                None => break,
+            };
 
-            let mut latest_buf = None;
+            let mut latest_buf = first_buf;
+            // Drain any pending absolute mouse events to get the freshest one
             while let Ok(buf) = ma_rx.try_recv() {
-                latest_buf = Some(buf);
+                latest_buf = buf;
             }
 
-            if let Some(final_buf) = latest_buf {
-                if cached_chan.is_none() {
-                    cached_chan = ma_c.lock().unwrap().clone();
-                }
+            if cached_chan.is_none() {
+                cached_chan = ma_c.lock().unwrap().clone();
+            }
 
-                let wt_sent = if has_wt.load(std::sync::atomic::Ordering::Acquire) {
-                    let lock = wt_c.lock().unwrap();
-                    if let Some(ref conn) = *lock {
-                        let mut wt_buf = vec![0u8; final_buf.len() + 1];
-                        wt_buf[0] = 5; // Channel 5: mouse_absolute
-                        wt_buf[1..].copy_from_slice(&final_buf);
-                        if let Err(e) = conn.send_datagram(&wt_buf) {
-                            eprintln!("WebTransport send_datagram mouse_abs failed: {:?}", e);
-                            false
-                        } else {
-                            true
-                        }
-                    } else { false }
-                } else {
-                    false
-                };
+            let wt_sent = if has_wt.load(std::sync::atomic::Ordering::Acquire) {
+                let lock = wt_c.lock().unwrap();
+                if let Some(ref conn) = *lock {
+                    let mut wt_buf = vec![0u8; latest_buf.len() + 1];
+                    wt_buf[0] = 5; // Channel 5: mouse_absolute
+                    wt_buf[1..].copy_from_slice(&latest_buf);
+                    if let Err(e) = conn.send_datagram(&wt_buf) {
+                        eprintln!("WebTransport send_datagram mouse_abs failed: {:?}", e);
+                        false
+                    } else {
+                        true
+                    }
+                } else { false }
+            } else {
+                false
+            };
 
-                if !wt_sent {
-                    if let Some(ref chan) = cached_chan {
-                        let mut cached_buffer_ok = true;
-                        if mouse_queue_limit > 0 {
+            if !wt_sent {
+                if let Some(ref chan) = cached_chan {
+                    let mut cached_buffer_ok = true;
+                    if mouse_queue_limit > 0 {
+                        static LAST_CHECK: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+                        static LAST_RESULT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+                        let now = std::time::Instant::now();
+                        let should_check = {
+                            let mut guard = LAST_CHECK.lock().unwrap();
+                            match *guard {
+                                Some(last) if now.duration_since(last).as_millis() < 100 => false,
+                                _ => {
+                                    *guard = Some(now);
+                                    true
+                                }
+                            }
+                        };
+                        if should_check {
                             let amt = chan.buffered_amount().await;
-                            cached_buffer_ok = amt < mouse_queue_limit as usize;
+                            let limit = if mouse_queue_limit < 10240 { 65536 } else { mouse_queue_limit as usize };
+                            let ok = amt < limit;
+                            LAST_RESULT.store(ok, std::sync::atomic::Ordering::Relaxed);
+                            cached_buffer_ok = ok;
+                        } else {
+                            cached_buffer_ok = LAST_RESULT.load(std::sync::atomic::Ordering::Relaxed);
                         }
+                    }
 
-                        if cached_buffer_ok {
-                            let _ = chan.send(&final_buf).await;
-                        }
+                    if cached_buffer_ok {
+                        let _ = chan.send(&latest_buf).await;
                     }
                 }
             }
@@ -2685,36 +2857,37 @@ async fn run_webrtc_client_task(
     let has_wt = Arc::clone(&wt_connected);
     tokio::spawn(async move {
         let mut cached_chan: Option<Arc<RTCDataChannel>> = None;
-        let mut interval = tokio::time::interval(std::time::Duration::from_millis(8));
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-
-        let mut accumulated_dx: i16 = 0;
-        let mut accumulated_dy: i16 = 0;
-        let mut has_motion = false;
-
         loop {
-            interval.tick().await;
+            let first_buf = match mr_rx.recv().await {
+                Some(buf) => buf,
+                None => break,
+            };
 
-            while let Ok(buf) = mr_rx.try_recv() {
+            let mut accumulated_dx: i16 = 0;
+            let mut accumulated_dy: i16 = 0;
+            let mut has_motion = false;
+
+            // Process a packet and return it if it's not a relative motion event
+            let process_packet = |buf: bytes::Bytes, acc_dx: &mut i16, acc_dy: &mut i16, has_mot: &mut bool| -> Option<bytes::Bytes> {
                 if buf[0] == 0 {
-                    accumulated_dx = accumulated_dx.wrapping_add(i16::from_be_bytes([buf[1], buf[2]]));
-                    accumulated_dy = accumulated_dy.wrapping_add(i16::from_be_bytes([buf[3], buf[4]]));
-                    has_motion = true;
+                    *acc_dx = acc_dx.wrapping_add(i16::from_be_bytes([buf[1], buf[2]]));
+                    *acc_dy = acc_dy.wrapping_add(i16::from_be_bytes([buf[3], buf[4]]));
+                    *has_mot = true;
+                    None
                 } else {
-                    // Send accumulated motion first if any
-                    if has_motion && (accumulated_dx != 0 || accumulated_dy != 0) {
-                        let mut motion_buf = vec![0u8; 5];
-                        motion_buf[0] = 0;
-                        motion_buf[1..3].copy_from_slice(&accumulated_dx.to_be_bytes());
-                        motion_buf[3..5].copy_from_slice(&accumulated_dy.to_be_bytes());
-                        send_relative_packet(&motion_buf, &mr_c, &mut cached_chan, &wt_c, &has_wt, mouse_queue_limit).await;
-                    }
-                    accumulated_dx = 0;
-                    accumulated_dy = 0;
-                    has_motion = false;
+                    Some(buf)
+                }
+            };
 
-                    // Send the non-motion event immediately
-                    send_relative_packet(&buf, &mr_c, &mut cached_chan, &wt_c, &has_wt, mouse_queue_limit).await;
+            let mut non_motion_buf = process_packet(first_buf, &mut accumulated_dx, &mut accumulated_dy, &mut has_motion);
+
+            // Drain any pending relative mouse packets in queue to aggregate them
+            while non_motion_buf.is_none() {
+                match mr_rx.try_recv() {
+                    Ok(buf) => {
+                        non_motion_buf = process_packet(buf, &mut accumulated_dx, &mut accumulated_dy, &mut has_motion);
+                    }
+                    Err(_) => break,
                 }
             }
 
@@ -2725,9 +2898,10 @@ async fn run_webrtc_client_task(
                 motion_buf[3..5].copy_from_slice(&accumulated_dy.to_be_bytes());
                 send_relative_packet(&motion_buf, &mr_c, &mut cached_chan, &wt_c, &has_wt, mouse_queue_limit).await;
             }
-            accumulated_dx = 0;
-            accumulated_dy = 0;
-            has_motion = false;
+
+            if let Some(buf) = non_motion_buf {
+                send_relative_packet(&buf, &mr_c, &mut cached_chan, &wt_c, &has_wt, mouse_queue_limit).await;
+            }
         }
     });
 
@@ -2752,6 +2926,8 @@ async fn run_webrtc_client_task(
         bitrate: Some(bitrate),
         codec: Some(codec_str.clone()),
         app_id,
+        encoder: None,
+        display_id: None,
     });
     outbox_tx.send(req_msg)?;
 
@@ -2835,13 +3011,15 @@ async fn run_webrtc_client_task(
                                 }
                             };
 
-                            if let Ok(rtc_sdp) = RTCSessionDescription::offer(sdp.sdp) {
+                            if let Ok(rtc_sdp) = RTCSessionDescription::offer(sdp.sdp.clone()) {
+                                println!("SDP Offer received:\n{}", sdp.sdp);
                                 if let Err(e) = pc.set_remote_description(rtc_sdp).await {
                                     eprintln!("Failed to set remote description: {:?}", e);
                                     continue;
                                 }
 
                                 if let Ok(answer) = pc.create_answer(None).await {
+                                    println!("SDP Answer created:\n{}", answer.sdp);
                                     if let Err(e) = pc.set_local_description(answer.clone()).await {
                                         eprintln!("Failed to set local description: {:?}", e);
                                         continue;

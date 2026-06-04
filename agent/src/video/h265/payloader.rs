@@ -82,6 +82,7 @@ impl H265Payloader {
         packets
     }
 
+    #[allow(dead_code)]
     fn build_aggregation_packet(nalus: &[&Bytes], mtu: usize) -> Bytes {
         let mut aggr_nal_header = NalHeader {
             forbidden_zero_bit: false,
@@ -142,27 +143,20 @@ impl Payloader for H265Payloader {
         if let (Some(vps_nalu), Some(sps_nalu), Some(pps_nalu)) =
             (&self.vps_nalu, &self.sps_nalu, &self.pps_nalu)
         {
-            let packet = Self::build_aggregation_packet(&[vps_nalu, sps_nalu, pps_nalu], mtu);
+            // Always send parameter sets as separate single NAL unit packets
+            // instead of aggregating them, because some WebRTC implementations
+            // (like iOS Safari / WebKit) do not parse H265 Aggregation Packets (AP) correctly.
+            let packets = vec![
+                Self::build_single_packet(vps_nalu.clone()),
+                Self::build_single_packet(sps_nalu.clone()),
+                Self::build_single_packet(pps_nalu.clone()),
+            ];
 
-            if packet.len() <= mtu {
-                self.vps_nalu.take();
-                self.sps_nalu.take();
-                self.pps_nalu.take();
+            self.vps_nalu.take();
+            self.sps_nalu.take();
+            self.pps_nalu.take();
 
-                return Ok(vec![packet]);
-            } else {
-                let packets = vec![
-                    Self::build_single_packet(vps_nalu.clone()),
-                    Self::build_single_packet(sps_nalu.clone()),
-                    Self::build_single_packet(pps_nalu.clone()),
-                ];
-
-                self.vps_nalu.take();
-                self.sps_nalu.take();
-                self.pps_nalu.take();
-
-                return Ok(packets);
-            }
+            return Ok(packets);
         } else if matches!(
             header.nal_unit_type,
             NalUnitType::VpsNut | NalUnitType::SpsNut | NalUnitType::PpsNut

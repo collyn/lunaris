@@ -1,7 +1,7 @@
 #![cfg(feature = "gui")]
 
 use crate::pairing::{load_config, save_config as save_config_file, AgentConfig};
-use crate::{run_agent_loop, AGENT_ACTIVE, CONNECTED_TO_SERVER, LAST_ERROR, SUNSHINE_PID};
+use crate::{run_agent_loop, AGENT_ACTIVE, CONNECTED_TO_SERVER, LAST_ERROR};
 use std::sync::atomic::Ordering;
 use std::sync::Mutex;
 use tauri::{
@@ -22,7 +22,6 @@ pub struct ConfigResponse {
     pub client_unique_id: String,
     pub server_url: String,
     pub agent_name: String,
-    pub no_auto_start_sunshine: bool,
     pub server_token: String,
     pub autostart: bool,
     pub close_to_tray: bool,
@@ -38,8 +37,6 @@ pub struct UpdateResponse {
 pub struct StatusResponse {
     pub agent_active: bool,
     pub connected_to_server: bool,
-    pub sunshine_running: bool,
-    pub sunshine_pid: u32,
     pub last_error: Option<String>,
 }
 
@@ -108,7 +105,6 @@ fn get_config() -> Result<ConfigResponse, String> {
         client_unique_id: config.client_unique_id,
         server_url: config.server_url,
         agent_name,
-        no_auto_start_sunshine: false, // Default
         server_token: config.server_token,
         autostart: config.autostart,
         close_to_tray: config.close_to_tray,
@@ -120,7 +116,6 @@ fn save_config(
     state: State<'_, AppState>,
     server_url: String,
     _agent_name: String,
-    _no_auto_start_sunshine: bool,
     server_token: String,
     autostart: bool,
     close_to_tray: bool,
@@ -206,10 +201,6 @@ fn start_agent(state: State<'_, AppState>) -> Result<(), String> {
         let agent_future = run_agent_loop(
             config,
             name,
-            "127.0.0.1".to_string(),
-            47989,
-            false, // Default
-            "sunshine".to_string(),
             "agent_config.json".to_string(),
         );
 
@@ -229,7 +220,6 @@ fn start_agent(state: State<'_, AppState>) -> Result<(), String> {
         }
         AGENT_ACTIVE.store(false, Ordering::SeqCst);
         CONNECTED_TO_SERVER.store(false, Ordering::SeqCst);
-        SUNSHINE_PID.store(0, Ordering::SeqCst);
     });
 
     Ok(())
@@ -249,7 +239,6 @@ fn stop_agent(state: State<'_, AppState>) -> Result<(), String> {
 
     AGENT_ACTIVE.store(false, Ordering::SeqCst);
     CONNECTED_TO_SERVER.store(false, Ordering::SeqCst);
-    SUNSHINE_PID.store(0, Ordering::SeqCst);
 
     Ok(())
 }
@@ -258,11 +247,6 @@ fn stop_agent(state: State<'_, AppState>) -> Result<(), String> {
 fn get_status() -> Result<StatusResponse, String> {
     let agent_active = AGENT_ACTIVE.load(Ordering::SeqCst);
     let connected_to_server = CONNECTED_TO_SERVER.load(Ordering::SeqCst);
-    let sunshine_pid = SUNSHINE_PID.load(Ordering::SeqCst);
-
-    // Check if Sunshine is running on localhost port 47989
-    let sunshine_running =
-        sunshine_pid > 0 || std::net::TcpStream::connect("127.0.0.1:47989").is_ok();
 
     let last_error = if let Ok(mut err_lock) = LAST_ERROR.lock() {
         err_lock.take()
@@ -273,8 +257,6 @@ fn get_status() -> Result<StatusResponse, String> {
     Ok(StatusResponse {
         agent_active,
         connected_to_server,
-        sunshine_running,
-        sunshine_pid,
         last_error,
     })
 }

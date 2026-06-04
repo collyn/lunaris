@@ -195,20 +195,37 @@ async fn handle_agent_socket(socket: WebSocket, params: AgentParams, state: Arc<
         .await;
     info!("Agent registered: {} ({})", agent_name, agent_id);
 
-    // Spawn a task to handle outbound messages to the agent
+    // Spawn a task to handle outbound messages to the agent (with heartbeat to prevent idle timeouts)
     let agent_id_clone = agent_id.clone();
     let send_task = tokio::spawn(async move {
-        while let Some(msg) = rx.recv().await {
-            let json = match serde_json::to_string(&msg) {
-                Ok(j) => j,
-                Err(e) => {
-                    error!("Failed to serialize message to agent: {}", e);
-                    continue;
+        let mut ping_interval = tokio::time::interval(std::time::Duration::from_secs(15));
+        ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            tokio::select! {
+                maybe_msg = rx.recv() => {
+                    match maybe_msg {
+                        Some(msg) => {
+                            let json = match serde_json::to_string(&msg) {
+                                Ok(j) => j,
+                                Err(e) => {
+                                    error!("Failed to serialize message to agent: {}", e);
+                                    continue;
+                                }
+                            };
+                            if let Err(e) = ws_sender.send(Message::Text(json)).await {
+                                debug!("Error sending to agent {}: {}", agent_id_clone, e);
+                                break;
+                            }
+                        }
+                        None => break,
+                    }
                 }
-            };
-            if let Err(e) = ws_sender.send(Message::Text(json)).await {
-                debug!("Error sending to agent {}: {}", agent_id_clone, e);
-                break;
+                _ = ping_interval.tick() => {
+                    if let Err(e) = ws_sender.send(Message::Ping(Vec::new().into())).await {
+                        debug!("Error sending ping to agent {}: {}", agent_id_clone, e);
+                        break;
+                    }
+                }
             }
         }
     });
@@ -301,20 +318,37 @@ async fn handle_client_socket(socket: WebSocket, client_id: String, state: Arc<S
     }
     info!("Client WebSocket connected: {}", client_id);
 
-    // Spawn a task to handle outbound messages to the client
+    // Spawn a task to handle outbound messages to the client (with heartbeat to prevent idle timeouts)
     let client_id_clone = client_id.clone();
     let send_task = tokio::spawn(async move {
-        while let Some(msg) = rx.recv().await {
-            let json = match serde_json::to_string(&msg) {
-                Ok(j) => j,
-                Err(e) => {
-                    error!("Failed to serialize message to client: {}", e);
-                    continue;
+        let mut ping_interval = tokio::time::interval(std::time::Duration::from_secs(15));
+        ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            tokio::select! {
+                maybe_msg = rx.recv() => {
+                    match maybe_msg {
+                        Some(msg) => {
+                            let json = match serde_json::to_string(&msg) {
+                                Ok(j) => j,
+                                Err(e) => {
+                                    error!("Failed to serialize message to client: {}", e);
+                                    continue;
+                                }
+                            };
+                            if let Err(e) = ws_sender.send(Message::Text(json)).await {
+                                debug!("Error sending to client {}: {}", client_id_clone, e);
+                                break;
+                            }
+                        }
+                        None => break,
+                    }
                 }
-            };
-            if let Err(e) = ws_sender.send(Message::Text(json)).await {
-                debug!("Error sending to client {}: {}", client_id_clone, e);
-                break;
+                _ = ping_interval.tick() => {
+                    if let Err(e) = ws_sender.send(Message::Ping(Vec::new().into())).await {
+                        debug!("Error sending ping to client {}: {}", client_id_clone, e);
+                        break;
+                    }
+                }
             }
         }
     });
@@ -493,6 +527,17 @@ async fn handle_agent_signaling(sig: SignalingMessage, agent_id: &str, state: Ar
                 ));
             }
         }
+        SignalingMessage::CapabilitiesResponse { target_id, displays, encoders } => {
+            let clients = state.clients.read().unwrap();
+            if let Some(client_tx) = clients.get(&target_id) {
+                let msg = ServerToClientMessage::Signaling(SignalingMessage::CapabilitiesResponse {
+                    target_id: agent_id.to_string(),
+                    displays,
+                    encoders,
+                });
+                let _ = client_tx.send(msg);
+            }
+        }
         _ => {}
     }
 }
@@ -512,6 +557,8 @@ async fn handle_client_signaling(
             bitrate,
             codec,
             app_id,
+            encoder,
+            display_id,
         } => {
             info!("Client {} requested session for host {} with settings: w={:?}, h={:?}, fps={:?}, bitrate={:?}, codec={:?}, app_id={:?}", client_id, host_id, width, height, fps, bitrate, codec, app_id);
 
@@ -541,6 +588,8 @@ async fn handle_client_signaling(
                         bitrate,
                         codec: codec.clone(),
                         app_id,
+                        encoder: encoder.clone(),
+                        display_id: display_id.clone(),
                         ice_servers: Some(ice_servers),
                     });
                 if let Err(e) = agent_tx.send(incoming_msg) {
@@ -976,6 +1025,15 @@ async fn handle_client_signaling(
                         }
                     }
                 });
+            }
+        }
+        SignalingMessage::GetCapabilities { target_id } => {
+            let agents = state.agents.read().unwrap();
+            if let Some(agent_tx) = agents.get(&target_id) {
+                let msg = ServerToAgentMessage::Signaling(SignalingMessage::GetCapabilities {
+                    target_id: client_id.to_string(),
+                });
+                let _ = agent_tx.send(msg);
             }
         }
         _ => {}

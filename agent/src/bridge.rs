@@ -6,7 +6,6 @@ use std::sync::{
 use std::time::Duration;
 
 use anyhow::Result;
-use bytes::Bytes;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, trace, warn};
 
@@ -24,41 +23,31 @@ use webrtc::{
     interceptor::registry::Registry,
     media::Sample,
     peer_connection::{peer_connection_state::RTCPeerConnectionState, RTCPeerConnection},
-    rtp::{header::Header, packet::Packet, packetizer::Payloader},
+    rtp::{
+        extension::{
+            HeaderExtension,
+            abs_send_time_extension::AbsSendTimeExtension,
+            playout_delay_extension::PlayoutDelayExtension,
+        },
+        header::Header,
+        packet::Packet,
+        packetizer::Payloader,
+    },
     rtp_transceiver::{
-        rtp_codec::{RTCRtpCodecCapability, RTCRtpCodecParameters, RTPCodecType},
+        rtp_codec::{
+            RTCRtpCodecCapability, RTCRtpCodecParameters, RTCRtpHeaderExtensionCapability,
+            RTPCodecType,
+        },
         RTCPFeedback,
     },
+    sdp::extmap::ABS_SEND_TIME_URI,
     track::track_local::{
         track_local_static_rtp::TrackLocalStaticRTP,
-        track_local_static_sample::TrackLocalStaticSample, TrackLocalWriter,
+        track_local_static_sample::TrackLocalStaticSample,
     },
 };
 
-use moonlight_common::{
-    crypto::openssl::OpenSSLCryptoBackend,
-    high::tokio::MoonlightHost,
-    http::{
-        client::tokio_hyper::TokioHyperClient, ClientIdentifier, ClientSecret, ServerIdentifier,
-    },
-    stream::{
-        audio::{AudioConfig, AudioDecoder, AudioSample, OpusMultistreamConfig},
-        c::{
-            bindings::{ConnectionStatus, Stage},
-            connection::ConnectionListenerC,
-            MoonlightInstance, MoonlightStream,
-        },
-        connection::ConnectionListener,
-        control::ActiveGamepads,
-        video::{
-            ColorRange, ColorSpace, DecodeResult, SupportedVideoFormats, VideoCapabilities,
-            VideoDecodeUnit, VideoDecoder, VideoFormat, VideoSetup,
-        },
-        AesIv, AesKey, EncryptionFlags, MoonlightStreamSettings, StreamingConfig,
-    },
-};
-
-use crate::input::{InboundPacket, TransportChannel};
+use crate::input::{InboundPacket, KeyAction, MouseButton, MouseButtonAction, TransportChannel};
 use crate::pairing::AgentConfig;
 use crate::video::h264::payloader::H264Payloader;
 use crate::video::h264::reader::H264Reader;
@@ -73,17 +62,22 @@ use crate::input::TransportChannelId;
 
 pub struct BridgeSession {
     pub peer_connection: Arc<RTCPeerConnection>,
-    pub moonlight_stream: Arc<std::sync::RwLock<Option<MoonlightStream>>>,
     pub webtransport_port: Option<u16>,
     pub webtransport_cert_hash: Option<String>,
     pub _webtransport_endpoint:
         Option<Arc<wtransport::Endpoint<wtransport::endpoint::endpoint_side::Server>>>,
     pub webtransport_shutdown: Option<tokio::sync::oneshot::Sender<()>>,
+    pub pipeline_cmd: Option<tokio::sync::mpsc::Sender<lunaris_media::pipeline::PipelineCommand>>,
+    pub spawned_tasks: Vec<tokio::task::JoinHandle<()>>,
 }
 
 impl Drop for BridgeSession {
     fn drop(&mut self) {
-        info!("BridgeSession is being dropped, ensuring Moonlight stream is stopped...");
+        info!("BridgeSession is being dropped, cleaning up {} spawned tasks...", self.spawned_tasks.len());
+        // Abort all spawned tasks first to release Arc references
+        for handle in self.spawned_tasks.drain(..) {
+            handle.abort();
+        }
         if let Some(shutdown_tx) = self.webtransport_shutdown.take() {
             info!("Sending shutdown signal to WebTransport accept loop...");
             let _ = shutdown_tx.send(());
@@ -91,14 +85,17 @@ impl Drop for BridgeSession {
         if let Some(_endpoint) = self._webtransport_endpoint.take() {
             info!("Dropping WebTransport endpoint reference...");
         }
-        if let Ok(mut lock) = self.moonlight_stream.write() {
-            if let Some(stream) = lock.take() {
-                info!("Stopping Moonlight stream in BridgeSession Drop...");
-                stream.stop();
-            }
-        } else {
-            warn!("Moonlight stream RwLock was poisoned, cannot stop stream in Drop.");
+        if let Some(cmd_tx) = self.pipeline_cmd.take() {
+            info!("Stopping MediaPipeline in BridgeSession Drop...");
+            let _ = cmd_tx.try_send(lunaris_media::pipeline::PipelineCommand::Stop);
         }
+        // Close peer connection to release ICE, DTLS, SCTP resources
+        let pc = self.peer_connection.clone();
+        tokio::spawn(async move {
+            if let Err(e) = pc.close().await {
+                warn!("Error closing peer connection: {:?}", e);
+            }
+        });
     }
 }
 
@@ -113,240 +110,33 @@ pub enum VideoPayloader {
     Av1(Av1Payloader),
 }
 
-pub struct StreamVideoDecoder {
-    supported_formats: SupportedVideoFormats,
-    need_idr: Arc<AtomicBool>,
-    webrtc_connected: Arc<AtomicBool>,
-    video_frame_tx: tokio::sync::mpsc::Sender<VideoFramePayload>,
-    frame_count: u64,
-    start_time: std::time::Instant,
-    format: Option<VideoFormat>,
-    last_idr_time: std::time::Instant,
-}
-
-impl VideoDecoder for StreamVideoDecoder {
-    fn setup(&mut self, setup: VideoSetup) -> i32 {
-        info!("Video setup called from Moonlight: {:?}", setup);
-        self.format = Some(setup.format);
-        0
-    }
-
-    fn start(&mut self) {}
-    fn stop(&mut self) {}
-
-    fn submit_decode_unit(&mut self, unit: VideoDecodeUnit<'_>) -> DecodeResult {
-        if !self.webrtc_connected.load(Ordering::SeqCst) {
-            return DecodeResult::Ok;
-        }
-
-        if self.need_idr.swap(false, Ordering::SeqCst) {
-            let now = std::time::Instant::now();
-            if now.duration_since(self.last_idr_time) >= std::time::Duration::from_millis(1000) {
-                self.last_idr_time = now;
-                info!("Forcing keyframe request (DR_NEED_IDR) due to PLI/queue full");
-                return DecodeResult::NeedIdr;
-            }
-        }
-
-        let frame_num = self.frame_count;
-        self.frame_count += 1;
-
-        let elapsed = self.start_time.elapsed();
-        let timestamp = (elapsed.as_nanos() * 90000 / 1_000_000_000) as u32;
-
-        let mut full_frame = Vec::new();
-        for buffer in unit.buffers {
-            full_frame.extend_from_slice(buffer.data);
-        }
-
-        if frame_num % 120 == 0 {
-            trace!(
-                "submit_decode_unit (enqueued): frame {}, timestamp {}, buffers {}, format: {:?}",
-                frame_num,
-                timestamp,
-                unit.buffers.len(),
-                self.format
-            );
-        }
-
-        match self.video_frame_tx.try_send(VideoFramePayload {
-            full_frame,
-            timestamp,
-        }) {
-            Ok(_) => DecodeResult::Ok,
-            Err(e) => {
-                warn!("Video frame queue full or closed, dropping frame: {:?}", e);
-                self.need_idr.store(true, Ordering::SeqCst);
-
-                let now = std::time::Instant::now();
-                if now.duration_since(self.last_idr_time) >= std::time::Duration::from_millis(1000)
-                {
-                    self.need_idr.store(false, Ordering::SeqCst);
-                    self.last_idr_time = now;
-                    DecodeResult::NeedIdr
-                } else {
-                    DecodeResult::Ok
-                }
-            }
-        }
-    }
-
-    fn supported_formats(&self) -> SupportedVideoFormats {
-        self.supported_formats
-    }
-
-    fn capabilities(&self) -> VideoCapabilities {
-        VideoCapabilities::default()
-    }
-}
-
-pub struct StreamAudioDecoder {
-    audio_tx: tokio::sync::mpsc::UnboundedSender<Sample>,
-    sample_rate: u32,
-    samples_per_frame: u32,
-}
-
-impl AudioDecoder for StreamAudioDecoder {
-    fn setup(&mut self, _audio_config: AudioConfig, stream_config: OpusMultistreamConfig) -> i32 {
-        info!("Audio setup called: {:?}", stream_config);
-        self.sample_rate = stream_config.sample_rate;
-        self.samples_per_frame = stream_config.samples_per_frame;
-        0
-    }
-
-    fn start(&mut self) {}
-    fn stop(&mut self) {}
-
-    fn decode_and_play_sample(&mut self, sample: AudioSample) {
-        let duration =
-            Duration::from_secs_f64(self.samples_per_frame as f64 / self.sample_rate as f64);
-        let sample_webrtc = Sample {
-            data: Bytes::copy_from_slice(&sample.buffer),
-            duration,
-            ..Default::default()
-        };
-        let _ = self.audio_tx.send(sample_webrtc);
-    }
-
-    fn config(&self) -> AudioConfig {
-        AudioConfig::STEREO
-    }
-}
-
-pub struct StreamConnectionListener;
-
-impl ConnectionListener for StreamConnectionListener {
-    fn set_hdr_mode(&mut self, _hdr_enabled: bool) {}
-    fn controller_rumble(
-        &mut self,
-        _controller_number: u16,
-        _low_frequency_motor: u16,
-        _high_frequency_motor: u16,
-    ) {
-    }
-    fn controller_rumble_triggers(
-        &mut self,
-        _controller_number: u16,
-        _left_trigger_motor: u16,
-        _right_trigger_motor: u16,
-    ) {
-    }
-    fn controller_set_motion_event_state(
-        &mut self,
-        _controller_number: u16,
-        _motion_type: u8,
-        _report_rate_hz: u16,
-    ) {
-    }
-    fn controller_set_adaptive_triggers(
-        &mut self,
-        _controller_number: u16,
-        _event_flags: u8,
-        _type_left: u8,
-        _type_right: u8,
-        _left: &mut u8,
-        _right: &mut u8,
-    ) {
-    }
-    fn controller_set_led(&mut self, _controller_number: u16, _r: u8, _g: u8, _b: u8) {}
-}
-
-impl ConnectionListenerC for StreamConnectionListener {
-    fn stage_starting(&mut self, stage: Stage) {
-        info!("Stage starting: {:?}", stage.name());
-    }
-
-    fn stage_complete(&mut self, stage: Stage) {
-        info!("Stage complete: {:?}", stage.name());
-    }
-
-    fn stage_failed(&mut self, stage: Stage, error: i32) {
-        error!("Stage failed: {:?} with error: {}", stage.name(), error);
-    }
-
-    fn connection_started(&mut self) {
-        info!("Connection started!");
-    }
-
-    fn connection_terminated(&mut self, error_code: i32) {
-        info!("Connection terminated: {}", error_code);
-    }
-
-    fn log_message(&mut self, message: &str) {
-        info!("Moonlight C log: {}", message);
-    }
-
-    fn connection_status_update(&mut self, status: ConnectionStatus) {
-        info!("Connection status update: {:?}", status);
-    }
-}
-
-pub static MOONLIGHT_CONNECTING: AtomicBool = AtomicBool::new(false);
-
 pub async fn setup_bridge_session(
     agent_config: AgentConfig,
     client_id: String,
-    sunshine_ip: String,
-    sunshine_port: u16,
     ws_tx: mpsc::UnboundedSender<common::AgentMessage>,
     width: Option<u32>,
     height: Option<u32>,
     fps: Option<u32>,
     bitrate: Option<u32>,
     codec: Option<String>,
-    app_id: Option<u32>,
+    encoder: Option<String>,
+    display_id: Option<String>,
     ice_servers: Option<Vec<common::RtcIceServer>>,
 ) -> Result<Arc<BridgeSession>> {
-    if MOONLIGHT_CONNECTING.load(Ordering::SeqCst) {
-        warn!("A Moonlight C connection attempt is already in progress. Rejecting new session to prevent C-library conflicts.");
-        anyhow::bail!("Another connection attempt is currently in progress. Please wait a few seconds before trying again.");
-    }
+    info!("Media library active: host cursor visible by default (toggle with Ctrl+Alt+Shift+N)");
+    // Do NOT hide host cursor by default — keeping cursor visible ensures:
+    // 1. NvFBC captures cursor movement as new frames → maintains 60 FPS on static screens
+    // 2. Desktop browser users can see their cursor in the stream
+    // Users can still toggle with Ctrl+Alt+Shift+N when needed (e.g. mobile trackpad mode)
 
-    // Start Moonlight connection to Sunshine first to get capabilities
-    info!(
-        "Starting Moonlight host connection to {}:{}",
-        sunshine_ip, sunshine_port
-    );
-    let host = MoonlightHost::<TokioHyperClient>::new(
-        sunshine_ip.clone(),
-        sunshine_port,
-        Some(agent_config.client_unique_id.clone()),
-    )?;
+    let (input_tx, mut input_rx) = tokio::sync::mpsc::unbounded_channel::<(InboundPacket, Arc<std::sync::atomic::AtomicU32>)>();
+    let (key_input_tx, mut key_input_rx) = tokio::sync::mpsc::unbounded_channel::<(InboundPacket, Arc<std::sync::atomic::AtomicU32>)>();
 
-    let client_cert_pem = pem::parse(&agent_config.client_certificate)?;
-    let client_key_pem = pem::parse(&agent_config.client_private_key)?;
-    let server_cert_pem = pem::parse(&agent_config.server_certificate)?;
-
-    host.set_identity(
-        ClientIdentifier::from_pem(client_cert_pem),
-        ClientSecret::from_pem(client_key_pem),
-        ServerIdentifier::from_pem(server_cert_pem),
-    )
-    .await?;
-
-    let server_version = host.version().await?;
-    let server_gfe_version = host.gfe_version().await?;
-    let server_codec_mode_support = host.server_codec_mode_support().await?;
+    let resolution_width = width.unwrap_or(1920);
+    let resolution_height = height.unwrap_or(1080);
+    let stream_fps = fps.unwrap_or(60);
+    let stream_bitrate = bitrate.unwrap_or(8000);
+    let mut codec_str = codec.as_deref().unwrap_or("h264").to_lowercase();
 
     // 1. Setup WebRTC PeerConnection
     let mut api_settings = SettingEngine::default();
@@ -366,7 +156,7 @@ pub async fn setup_bridge_session(
                 clock_rate: 90000,
                 channels: 0,
                 sdp_fmtp_line:
-                    "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f"
+                    "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e033"
                         .to_string(),
                 rtcp_feedback: vec![
                     RTCPFeedback {
@@ -396,7 +186,7 @@ pub async fn setup_bridge_session(
                 mime_type: MIME_TYPE_HEVC.to_string(),
                 clock_rate: 90000,
                 channels: 0,
-                sdp_fmtp_line: "profile-id=1;tier-flag=0;level-id=93;tx-mode=SRST".to_string(),
+                sdp_fmtp_line: "profile-id=1;tier-flag=0;level-id=120;tx-mode=SRST".to_string(),
                 rtcp_feedback: vec![
                     RTCPFeedback {
                         typ: "nack".to_string(),
@@ -463,6 +253,27 @@ pub async fn setup_bridge_session(
         RTPCodecType::Audio,
     )?;
 
+    // Register RTP header extensions — critical for low-latency video:
+    // PlayoutDelay(0,0): tells browser jitter buffer to use ZERO playout delay.
+    //   Without this, Chrome's jitter buffer grows over time, adding increasing latency.
+    //   This is the root cause of "mouse gets slower over time".
+    // AbsSendTime: helps browser's congestion control (REMB) estimate bandwidth.
+    const PLAYOUT_DELAY_URI: &str = "http://www.webrtc.org/experiments/rtp-hdrext/playout-delay";
+    api_media.register_header_extension(
+        RTCRtpHeaderExtensionCapability {
+            uri: PLAYOUT_DELAY_URI.to_string(),
+        },
+        RTPCodecType::Video,
+        None,
+    )?;
+    api_media.register_header_extension(
+        RTCRtpHeaderExtensionCapability {
+            uri: ABS_SEND_TIME_URI.to_string(),
+        },
+        RTPCodecType::Video,
+        None,
+    )?;
+
     let mut registry = Registry::new();
     registry = register_default_interceptors(registry, &mut api_media)?;
 
@@ -502,12 +313,9 @@ pub async fn setup_bridge_session(
     let peer_connection = Arc::new(api.new_peer_connection(rtc_config).await?);
 
     // Resolve codec settings with host capability checks
-    let host_support = server_codec_mode_support.bits();
-    let _h264_supported = host_support == 0 || (host_support & 262145) != 0;
-    let hevc_supported = host_support == 0 || (host_support & 1573632) != 0;
-    let av1_supported = host_support != 0 && (host_support & 6488064) != 0;
-
-    let mut codec_str = codec.as_deref().unwrap_or("h264").to_lowercase();
+    let encoders = lunaris_media::encode::list_available_encoders();
+    let hevc_supported = encoders.iter().any(|e| e.supported_codecs.contains(&lunaris_media::VideoCodec::H265));
+    let av1_supported = encoders.iter().any(|e| e.supported_codecs.contains(&lunaris_media::VideoCodec::AV1));
     if codec_str == "av1" && !av1_supported {
         info!("AV1 requested but host doesn't support it, falling back to H.264");
         codec_str = "h264".to_string();
@@ -517,28 +325,25 @@ pub async fn setup_bridge_session(
         codec_str = "h264".to_string();
     }
 
-    let (mime_type, sdp_fmtp_line, payload_type, supported_formats, payloader) = match codec_str
+    let (mime_type, sdp_fmtp_line, payload_type, payloader) = match codec_str
         .as_str()
     {
         "h265" => (
             MIME_TYPE_HEVC.to_string(),
-            "profile-id=1;tier-flag=0;level-id=93;tx-mode=SRST".to_string(),
+            "profile-id=1;tier-flag=0;level-id=120;tx-mode=SRST".to_string(),
             98,
-            SupportedVideoFormats::H265,
             VideoPayloader::H265(H265Payloader::default()),
         ),
         "av1" => (
             MIME_TYPE_AV1.to_string(),
             "profile=0".to_string(),
             102,
-            SupportedVideoFormats::AV1_MAIN8 | SupportedVideoFormats::AV1_MAIN10,
             VideoPayloader::Av1(Av1Payloader::default()),
         ),
         _ => (
             MIME_TYPE_H264.to_string(),
-            "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f".to_string(),
+            "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e033".to_string(),
             96,
-            SupportedVideoFormats::H264,
             VideoPayloader::H264(H264Payloader::default()),
         ),
     };
@@ -557,7 +362,7 @@ pub async fn setup_bridge_session(
             ..Default::default()
         },
         "video".to_string(),
-        "moonlight".to_string(),
+        "lunaris".to_string(),
     ));
 
     let audio_track = Arc::new(TrackLocalStaticSample::new(
@@ -568,7 +373,7 @@ pub async fn setup_bridge_session(
             ..Default::default()
         },
         "audio".to_string(),
-        "moonlight".to_string(),
+        "lunaris".to_string(),
     ));
 
     let video_sender = peer_connection
@@ -582,40 +387,80 @@ pub async fn setup_bridge_session(
         )
         .await?;
 
+    let pipeline_cmd_tx_shared = Arc::new(std::sync::Mutex::new(None::<tokio::sync::mpsc::Sender<lunaris_media::pipeline::PipelineCommand>>));
+    let mut spawned_tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+    let pipeline_cmd_tx_for_pli = pipeline_cmd_tx_shared.clone();
+
     let need_idr_flag = Arc::new(AtomicBool::new(true));
     let need_idr_clone = need_idr_flag.clone();
     let video_sender_clone = video_sender.clone();
-    tokio::spawn(async move {
+    let pli_task = tokio::spawn(async move {
         let mut buf = vec![0u8; 1500];
+        let mut last_bitrate_kbps: u32 = 0;
+        let mut last_bitrate_change = std::time::Instant::now();
         while let Ok((packets, _)) = video_sender_clone.read(&mut buf).await {
             for packet in packets {
-                if packet.as_any().is::<webrtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication>() {
+                let packet_any = packet.as_any();
+                if packet_any.is::<webrtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication>() {
                     info!("Received PLI request from browser, requesting IDR frame");
                     need_idr_clone.store(true, Ordering::SeqCst);
+                    if let Some(ref cmd_tx) = *pipeline_cmd_tx_for_pli.lock().unwrap() {
+                        let _ = cmd_tx.try_send(lunaris_media::pipeline::PipelineCommand::RequestKeyframe);
+                    }
+                } else if let Some(remb) = packet_any.downcast_ref::<webrtc::rtcp::payload_feedbacks::receiver_estimated_maximum_bitrate::ReceiverEstimatedMaximumBitrate>() {
+                    let estimated_bitrate_kbps = (remb.bitrate / 1000.0) as u32;
+                    
+                    // Allow bitrate to scale down to 3000 kbps to handle network congestion and packet loss
+                    let bitrate_floor = 3000.min(stream_bitrate);
+                    let clamped_bitrate_kbps = estimated_bitrate_kbps.clamp(bitrate_floor, stream_bitrate);
+                    
+                    // Rate-limit bitrate changes: only apply if value changed AND at least 2 seconds since last change.
+                    // Rapid bitrate oscillation destabilizes the NVENC encoder and can cause video corruption.
+                    let now = std::time::Instant::now();
+                    if clamped_bitrate_kbps != last_bitrate_kbps && now.duration_since(last_bitrate_change).as_secs() >= 2 {
+                        info!(
+                            "REMB bitrate change: {} kbps -> {} kbps (estimated={} kbps, floor={}, max={})",
+                            last_bitrate_kbps, clamped_bitrate_kbps, estimated_bitrate_kbps, bitrate_floor, stream_bitrate
+                        );
+                        if let Some(ref cmd_tx) = *pipeline_cmd_tx_for_pli.lock().unwrap() {
+                            let _ = cmd_tx.try_send(lunaris_media::pipeline::PipelineCommand::SetBitrate(clamped_bitrate_kbps));
+                        }
+                        last_bitrate_kbps = clamped_bitrate_kbps;
+                        last_bitrate_change = now;
+                    }
                 }
             }
         }
     });
-
-    let moonlight_stream_rwlock: Arc<std::sync::RwLock<Option<MoonlightStream>>> =
-        Arc::new(std::sync::RwLock::new(None));
-    let ml_stream_clone = moonlight_stream_rwlock.clone();
+    spawned_tasks.push(pli_task);
 
     let webrtc_connected = Arc::new(AtomicBool::new(false));
     let webrtc_connected_clone = webrtc_connected.clone();
     // Handle Peer Connection state changes to clean up session
+    let pipeline_cmd_tx_for_state_change = pipeline_cmd_tx_shared.clone();
     peer_connection.on_peer_connection_state_change(Box::new(
         move |state: RTCPeerConnectionState| {
             let webrtc_connected = webrtc_connected_clone.clone();
+            let pipeline_cmd_tx = pipeline_cmd_tx_for_state_change.clone();
             Box::pin(async move {
                 info!("WebRTC connection state changed to: {}", state);
                 if state == RTCPeerConnectionState::Connected {
                     webrtc_connected.store(true, Ordering::SeqCst);
+                    if let Some(ref cmd_tx) = *pipeline_cmd_tx.lock().unwrap() {
+                        info!("WebRTC connected! Requesting immediate IDR keyframe from media pipeline.");
+                        let _ = cmd_tx.try_send(lunaris_media::pipeline::PipelineCommand::RequestKeyframe);
+                    }
                 } else if state == RTCPeerConnectionState::Closed
                     || state == RTCPeerConnectionState::Failed
                     || state == RTCPeerConnectionState::Disconnected
                 {
                     webrtc_connected.store(false, Ordering::SeqCst);
+                    
+                    // Stop MediaPipeline if it is active
+                    if let Some(ref cmd_tx) = *pipeline_cmd_tx.lock().unwrap() {
+                        info!("WebRTC connection state is inactive ({}). Stopping MediaPipeline...", state);
+                        let _ = cmd_tx.try_send(lunaris_media::pipeline::PipelineCommand::Stop);
+                    }
                 }
             })
         },
@@ -652,27 +497,32 @@ pub async fn setup_bridge_session(
     setup_data_channel_handler(
         general_channel,
         TransportChannel(TransportChannelId::GENERAL),
-        ml_stream_clone.clone(),
+        Some(input_tx.clone()),
+        Some(pipeline_cmd_tx_shared.clone()),
     );
     setup_data_channel_handler(
         mouse_reliable_channel,
         TransportChannel(TransportChannelId::MOUSE_RELIABLE),
-        ml_stream_clone.clone(),
+        Some(input_tx.clone()),
+        None,
     );
     setup_data_channel_handler(
         mouse_absolute_channel,
         TransportChannel(TransportChannelId::MOUSE_ABSOLUTE),
-        ml_stream_clone.clone(),
+        Some(input_tx.clone()),
+        None,
     );
     setup_data_channel_handler(
         mouse_relative_channel,
         TransportChannel(TransportChannelId::MOUSE_RELATIVE),
-        ml_stream_clone.clone(),
+        Some(input_tx.clone()),
+        None,
     );
     setup_data_channel_handler(
         keyboard_channel,
         TransportChannel(TransportChannelId::KEYBOARD),
-        ml_stream_clone.clone(),
+        Some(key_input_tx.clone()),
+        None,
     );
 
     // ICE Candidate callback
@@ -700,81 +550,135 @@ pub async fn setup_bridge_session(
         })
     }));
 
-    let resolution_width = width.unwrap_or(1920); // Default to 1080p if not specified
-    let resolution_height = height.unwrap_or(1080);
-    let stream_fps = fps.unwrap_or(60);
-    let stream_bitrate = bitrate.unwrap_or(8000); // Default 8Mbps
 
-    let mut settings = MoonlightStreamSettings {
+    let (video_frame_tx, mut video_frame_rx) = tokio::sync::mpsc::channel::<VideoFramePayload>(4);
+    let (audio_tx, mut audio_rx) = tokio::sync::mpsc::channel::<Sample>(256);
+
+    let audio_track_clone = audio_track.clone();
+    let audio_writer_task = tokio::spawn(async move {
+        while let Some(sample) = audio_rx.recv().await {
+            if let Err(e) = audio_track_clone.write_sample(&sample).await {
+                debug!("Failed to write audio sample: {:?}", e);
+            }
+        }
+    });
+    spawned_tasks.push(audio_writer_task);
+
+    let media_codec = match codec_str.as_str() {
+        "h265" => lunaris_media::types::VideoCodec::H265,
+        "av1" => lunaris_media::types::VideoCodec::AV1,
+        _ => lunaris_media::types::VideoCodec::H264,
+    };
+
+    let media_config = lunaris_media::types::StreamConfig {
         width: resolution_width,
         height: resolution_height,
         fps: stream_fps,
-        fps_x100: stream_fps * 100,
-        bitrate: stream_bitrate,
-        packet_size: 1392,
-        encryption_flags: EncryptionFlags::ALL,
-        streaming_remotely: StreamingConfig::Auto,
-        sops: true,
-        hdr: false,
-        supported_video_formats: supported_formats,
-        color_space: ColorSpace::Rec709,
-        color_range: ColorRange::Limited,
-        local_audio_play_mode: false,
-        audio_config: AudioConfig::STEREO,
-        gamepads_attached: ActiveGamepads::empty(),
-        gamepads_persist_after_disconnect: false,
+        codec: media_codec,
+        bitrate_kbps: stream_bitrate,
+        pixel_format: lunaris_media::types::PixelFormat::NV12,
+        preferred_encoder: encoder.clone(),
     };
 
-    settings.adjust_for_server(
-        server_version,
-        &server_gfe_version,
-        server_codec_mode_support,
-    )?;
+    let (pipeline, mut media_event_rx, pipeline_cmd_tx) =
+        lunaris_media::pipeline::MediaPipeline::new(media_config);
 
-    let aes_key = AesKey::new_random(&OpenSSLCryptoBackend)?;
-    let aes_iv = AesIv::new_random(&OpenSSLCryptoBackend)?;
+    *pipeline_cmd_tx_shared.lock().unwrap() = Some(pipeline_cmd_tx);
 
-    let mut resolved_app_id = app_id.unwrap_or(0);
-    if resolved_app_id == 0 {
-        match host.app_list().await {
-            Ok(apps) => {
-                info!("Retrieved app list from host: {:?}", apps);
-                if let Some(desktop_app) = apps
-                    .iter()
-                    .find(|app| app.title.to_lowercase().contains("desktop"))
-                {
-                    info!(
-                        "Found desktop app: {} (ID: {})",
-                        desktop_app.title, desktop_app.id
-                    );
-                    resolved_app_id = desktop_app.id;
-                } else if let Some(first_app) = apps.first() {
-                    info!("No desktop app found. Falling back to the first available app: {} (ID: {})", first_app.title, first_app.id);
-                    resolved_app_id = first_app.id;
-                } else {
-                    warn!("App list is empty. Falling back to App ID 1");
-                    resolved_app_id = 1;
-                }
-            }
-            Err(e) => {
-                warn!(
-                    "Failed to retrieve app list: {:?}. Falling back to App ID 1",
-                    e
-                );
-                resolved_app_id = 1;
-            }
+    let video_frame_tx_clone = video_frame_tx.clone();
+    let audio_tx_clone = audio_tx.clone();
+
+    let pipeline_task = tokio::spawn(async move {
+        info!("Running lunaris-media pipeline...");
+        let display = display_id.clone().unwrap_or_else(|| "default".to_string());
+        if let Err(e) = pipeline.run(&display).await {
+            error!("Media pipeline exited with error: {:?}", e);
         }
+    });
+    spawned_tasks.push(pipeline_task);
+
+    if let Some(injector) = lunaris_media::input::InputInjector::new() {
+        let injector = std::sync::Arc::new(injector);
+        let injector_clone = injector.clone();
+        
+        // Spawn separate task for mouse inputs
+        let input_task = tokio::spawn(async move {
+            info!("InputInjector: started mouse input processing task");
+            while let Some((packet, last_timestamp)) = input_rx.recv().await {
+                handle_inbound_packet(packet, &injector, &last_timestamp);
+                while let Ok((packet, last_timestamp)) = input_rx.try_recv() {
+                    handle_inbound_packet(packet, &injector, &last_timestamp);
+                }
+                injector.flush();
+            }
+            info!("InputInjector: stopped mouse input processing task");
+        });
+        spawned_tasks.push(input_task);
+
+        // Spawn separate task for keyboard inputs
+        let key_input_task = tokio::spawn(async move {
+            info!("InputInjector: started keyboard input processing task");
+            while let Some((packet, last_timestamp)) = key_input_rx.recv().await {
+                handle_inbound_packet(packet, &injector_clone, &last_timestamp);
+            }
+            info!("InputInjector: stopped keyboard input processing task");
+        });
+        spawned_tasks.push(key_input_task);
+    } else {
+        error!("InputInjector: failed to initialize X11 input injector");
     }
 
-    let stream_config = host
-        .start_stream(resolved_app_id, &settings, aes_key, aes_iv, "")
-        .await?;
-
-    let (video_frame_tx, mut video_frame_rx) = tokio::sync::mpsc::channel::<VideoFramePayload>(2);
+    let start_time = std::time::Instant::now();
+    let webrtc_connected_for_media = webrtc_connected.clone();
+    let media_event_task = tokio::spawn(async move {
+        while let Some(event) = media_event_rx.recv().await {
+            match event {
+                lunaris_media::pipeline::MediaEvent::VideoFrame(frame) => {
+                    // Don't queue video frames before WebRTC is connected
+                    if !webrtc_connected_for_media.load(Ordering::Relaxed) {
+                        continue;
+                    }
+                    let elapsed = start_time.elapsed();
+                    let timestamp = (elapsed.as_nanos() * 90000 / 1_000_000_000) as u32;
+                    let payload = VideoFramePayload {
+                        full_frame: frame.data,
+                        timestamp,
+                    };
+                    trace!("Received VideoFrame from media pipeline: size={}, timestamp={}", payload.full_frame.len(), timestamp);
+                    if let Err(e) = video_frame_tx_clone.try_send(payload) {
+                        warn!("Failed to forward video frame to packager: {:?}", e);
+                    }
+                }
+                lunaris_media::pipeline::MediaEvent::AudioFrame(frame) => {
+                    let duration = Duration::from_micros(frame.duration);
+                    let sample = Sample {
+                        data: bytes::Bytes::copy_from_slice(&frame.data),
+                        duration,
+                        ..Default::default()
+                    };
+                    let _ = audio_tx_clone.try_send(sample);
+                }
+                lunaris_media::pipeline::MediaEvent::CursorUpdate(cursor) => {
+                    trace!("Cursor position update: {}, {}", cursor.x, cursor.y);
+                }
+                lunaris_media::pipeline::MediaEvent::Started => {
+                    info!("Media pipeline started successfully");
+                }
+                lunaris_media::pipeline::MediaEvent::Stopped => {
+                    info!("Media pipeline stopped");
+                }
+                lunaris_media::pipeline::MediaEvent::Error(err_str) => {
+                    warn!("Media pipeline warning/error: {}", err_str);
+                }
+            }
+        }
+    });
+    spawned_tasks.push(media_event_task);
     let video_track_clone = video_track.clone();
     let need_idr_clone_worker = need_idr_flag.clone();
+    let pipeline_cmd_tx_for_writer = pipeline_cmd_tx_shared.clone();
 
-    tokio::spawn(async move {
+    let video_packager_task = tokio::spawn(async move {
         let mut frame_count: u64 = 0;
         let mut payloader = payloader;
 
@@ -783,37 +687,58 @@ pub async fn setup_bridge_session(
         let (packet_tx, mut packet_rx) = tokio::sync::mpsc::channel::<Vec<Packet>>(60);
 
         let need_idr_clone_writer = need_idr_clone_worker.clone();
+        let pipeline_cmd_tx_for_writer = pipeline_cmd_tx_for_writer.clone();
         tokio::spawn(async move {
             let mut seq: u16 = 0;
             while let Some(mut packets) = packet_rx.recv().await {
-                let mut discarded = false;
                 let queue_len = packet_rx.len();
-                if queue_len > 10 {
+                if queue_len > 60 {
                     let mut discarded_count = 0;
-                    while packet_rx.len() > 1 && discarded_count < queue_len - 1 {
-                        if let Ok(next_packets) = packet_rx.try_recv() {
-                            packets = next_packets;
-                            discarded = true;
-                            discarded_count += 1;
-                        } else {
-                            break;
+                    while let Ok(next_packets) = packet_rx.try_recv() {
+                        packets = next_packets;
+                        discarded_count += 1;
+                    }
+                    if discarded_count > 0 {
+                        warn!(
+                            "Discarding {} queued video frames to prevent latency buildup",
+                            discarded_count
+                        );
+                        need_idr_clone_writer.store(true, Ordering::SeqCst);
+                        if let Some(ref cmd_tx) = *pipeline_cmd_tx_for_writer.lock().unwrap() {
+                            let _ = cmd_tx.try_send(lunaris_media::pipeline::PipelineCommand::RequestKeyframe);
                         }
                     }
                 }
-                if discarded {
-                    warn!(
-                        "Discarding obsolete queued video frames to prevent latency and congestion"
-                    );
-                    need_idr_clone_writer.store(true, Ordering::SeqCst);
-                }
 
+                // Compute AbsSendTime for congestion control (REMB)
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default();
+                let now_secs = now.as_secs() as f64 + now.subsec_nanos() as f64 * 1e-9;
+                let abs_send_time: u64 = (now_secs * 262_144.0) as u64;
+
+                let extensions = [
+                    // PlayoutDelay(0, 0): min=0, max=0 playout delay.
+                    // Tells Chrome to use ZERO jitter buffer delay — critical for
+                    // preventing latency accumulation that makes mouse feel slower.
+                    HeaderExtension::PlayoutDelay(PlayoutDelayExtension::new(0, 0)),
+                    HeaderExtension::AbsSendTime(AbsSendTimeExtension {
+                        timestamp: abs_send_time,
+                    }),
+                ];
+
+                trace!("Writer task sending {} RTP packets (first seq={})", packets.len(), seq);
                 for packet in &mut packets {
                     packet.header.sequence_number = seq;
                     seq = seq.wrapping_add(1);
-                    if let Err(e) = video_track_clone.write_rtp(packet).await {
+                    if let Err(e) = video_track_clone
+                        .write_rtp_with_extensions(packet, &extensions)
+                        .await
+                    {
                         debug!("Failed to write video RTP packet: {:?}", e);
                     }
                 }
+                trace!("Writer task successfully sent RTP packets");
             }
         });
 
@@ -822,6 +747,7 @@ pub async fn setup_bridge_session(
             timestamp,
         }) = video_frame_rx.recv().await
         {
+            trace!("Enqueuer received frame from rx: size={}, timestamp={}", full_frame.len(), timestamp);
             let mut samples = Vec::new();
             match &mut payloader {
                 VideoPayloader::H264(_) => {
@@ -912,6 +838,7 @@ pub async fn setup_bridge_session(
             }
 
             let total_packets = packets.len();
+            trace!("Enqueuer finished packetizing: {} RTP packets", total_packets);
             if let Err(e) = packet_tx.try_send(packets) {
                 warn!("RTP frame queue full, dropping frame: {:?}", e);
                 need_idr_clone_worker.store(true, Ordering::SeqCst);
@@ -927,63 +854,7 @@ pub async fn setup_bridge_session(
             frame_count += 1;
         }
     });
-
-    let (audio_tx, mut audio_rx) = tokio::sync::mpsc::unbounded_channel::<Sample>();
-    let audio_track_clone = audio_track.clone();
-    tokio::spawn(async move {
-        while let Some(sample) = audio_rx.recv().await {
-            if let Err(e) = audio_track_clone.write_sample(&sample).await {
-                debug!("Failed to write audio sample: {:?}", e);
-            }
-        }
-    });
-
-    let video_decoder = StreamVideoDecoder {
-        supported_formats,
-        need_idr: need_idr_flag.clone(),
-        webrtc_connected: webrtc_connected.clone(),
-        video_frame_tx,
-        frame_count: 0,
-        start_time: std::time::Instant::now(),
-        format: None,
-        last_idr_time: std::time::Instant::now() - std::time::Duration::from_secs(5),
-    };
-
-    let audio_decoder = StreamAudioDecoder {
-        audio_tx,
-        sample_rate: 48000,
-        samples_per_frame: 480,
-    };
-
-    let connection_listener = StreamConnectionListener;
-    let connection_listener_c = StreamConnectionListener;
-
-    let moonlight = MoonlightInstance::global().expect("failed to find moonlight");
-
-    // Start C connection in background thread since it is blocking
-    let ml_stream_rwlock_clone = moonlight_stream_rwlock.clone();
-    MOONLIGHT_CONNECTING.store(true, Ordering::SeqCst);
-    std::thread::spawn(move || {
-        let res = moonlight.start_connection(
-            stream_config,
-            settings,
-            connection_listener,
-            connection_listener_c,
-            video_decoder,
-            audio_decoder,
-        );
-        MOONLIGHT_CONNECTING.store(false, Ordering::SeqCst);
-        match res {
-            Ok(stream) => {
-                info!("Moonlight C connection successfully started!");
-                let mut lock = ml_stream_rwlock_clone.write().unwrap();
-                *lock = Some(stream);
-            }
-            Err(e) => {
-                error!("Failed to start Moonlight connection: {:?}", e);
-            }
-        }
-    });
+    spawned_tasks.push(video_packager_task);
 
     // Start WebTransport Server
     let mut webtransport_port = None;
@@ -1019,12 +890,12 @@ pub async fn setup_bridge_session(
                         let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
                         webtransport_shutdown = Some(shutdown_tx);
 
-                        let ml_stream_clone = moonlight_stream_rwlock.clone();
+                        let input_tx_clone = input_tx.clone();
                         tokio::spawn(async move {
                             loop {
                                 tokio::select! {
                                     incoming = endpoint_arc.accept() => {
-                                        let ml_stream = ml_stream_clone.clone();
+                                        let input_tx = input_tx_clone.clone();
                                         tokio::spawn(async move {
                                             info!(
                                                 "Incoming WebTransport session from {}",
@@ -1048,6 +919,7 @@ pub async fn setup_bridge_session(
                                                 }
                                             };
                                             info!("WebTransport session accepted successfully");
+                                            let last_timestamp = Arc::new(std::sync::atomic::AtomicU32::new(0));
                                             loop {
                                                 match connection.receive_datagram().await {
                                                     Ok(datagram) => {
@@ -1067,84 +939,7 @@ pub async fn setup_bridge_session(
                                                             );
                                                             continue;
                                                         };
-                                                        let stream_guard = ml_stream.read().unwrap();
-                                                        let Some(stream) = stream_guard.as_ref() else {
-                                                            continue;
-                                                        };
-                                                        match packet {
-                                                            InboundPacket::GeneralStop => {
-                                                                info!("Received stop message on general WebTransport channel");
-                                                            }
-                                                            InboundPacket::MouseMove {
-                                                                delta_x,
-                                                                delta_y,
-                                                                ..
-                                                            } => {
-                                                                let _ = stream
-                                                                    .send_mouse_move(delta_x, delta_y);
-                                                            }
-                                                            InboundPacket::MousePosition {
-                                                                x,
-                                                                y,
-                                                                reference_width,
-                                                                reference_height,
-                                                                ..
-                                                            } => {
-                                                                let _ = stream.send_mouse_position(
-                                                                    x,
-                                                                    y,
-                                                                    reference_width,
-                                                                    reference_height,
-                                                                );
-                                                            }
-                                                            InboundPacket::MouseButton {
-                                                                action,
-                                                                button,
-                                                            } => {
-                                                                let _ = stream
-                                                                    .send_mouse_button(action, button);
-                                                            }
-                                                            InboundPacket::Scroll { delta_x, delta_y } => {
-                                                                if delta_y != 0 {
-                                                                    let _ = stream.send_scroll(delta_y);
-                                                                }
-                                                                if delta_x != 0 {
-                                                                    let _ = stream
-                                                                        .send_horizontal_scroll(delta_x);
-                                                                }
-                                                            }
-                                                            InboundPacket::HighResScroll {
-                                                                delta_x,
-                                                                delta_y,
-                                                            } => {
-                                                                if delta_y != 0 {
-                                                                    let _ = stream
-                                                                        .send_high_res_scroll(delta_y);
-                                                                }
-                                                                if delta_x != 0 {
-                                                                    let _ = stream
-                                                                        .send_high_res_horizontal_scroll(
-                                                                            delta_x,
-                                                                        );
-                                                                }
-                                                            }
-                                                            InboundPacket::Key {
-                                                                action,
-                                                                modifiers,
-                                                                key,
-                                                                flags,
-                                                            } => {
-                                                                let _ = stream
-                                                                    .send_keyboard_event_non_standard(
-                                                                        key as i16, action, modifiers,
-                                                                        flags,
-                                                                    );
-                                                            }
-                                                            InboundPacket::Text { text } => {
-                                                                let _ = stream.send_text(&text);
-                                                            }
-                                                            _ => {}
-                                                        }
+                                                        let _ = input_tx.send((packet, last_timestamp.clone()));
                                                     }
                                                     Err(e) => {
                                                         info!("WebTransport connection closed: {:?}", e);
@@ -1173,93 +968,196 @@ pub async fn setup_bridge_session(
         }
     }
 
+    let pipeline_cmd = pipeline_cmd_tx_shared.lock().unwrap().clone();
+
     Ok(Arc::new(BridgeSession {
         peer_connection,
-        moonlight_stream: moonlight_stream_rwlock,
         webtransport_port,
         webtransport_cert_hash,
         _webtransport_endpoint: webtransport_endpoint,
         webtransport_shutdown,
+        pipeline_cmd,
+        spawned_tasks,
     }))
 }
 
 fn setup_data_channel_handler(
     data_channel: Arc<RTCDataChannel>,
     channel: TransportChannel,
-    ml_stream: Arc<std::sync::RwLock<Option<MoonlightStream>>>,
+    input_tx: Option<tokio::sync::mpsc::UnboundedSender<(InboundPacket, Arc<std::sync::atomic::AtomicU32>)>>,
+    pipeline_cmd_tx: Option<Arc<std::sync::Mutex<Option<tokio::sync::mpsc::Sender<lunaris_media::pipeline::PipelineCommand>>>>>,
 ) {
     let last_timestamp = Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let label = data_channel.label().to_string();
+    info!(
+        "setup_data_channel_handler: label={}, channel_id={}, has_input_tx={}",
+        label,
+        channel.0,
+        input_tx.is_some()
+    );
     data_channel.on_message(Box::new(move |msg: DataChannelMessage| {
-        let ml_stream = ml_stream.clone();
+        let input_tx = input_tx.clone();
         let channel = channel;
         let last_timestamp = last_timestamp.clone();
+        let label = label.clone();
+        let pipeline_cmd_tx = pipeline_cmd_tx.clone();
         Box::pin(async move {
+            trace!("Received data channel msg on '{}' (id={}), len={}", label, channel.0, msg.data.len());
             let Some(packet) = InboundPacket::deserialize(channel, &msg.data) else {
+                // Only warn for non-general channels (general may have unrecognized JSON commands)
+                if channel.0 != 0 {
+                    warn!("Failed to deserialize inbound packet on channel {}", channel.0);
+                }
                 return;
             };
 
-            let stream_guard = ml_stream.read().unwrap();
-            let Some(stream) = stream_guard.as_ref() else {
-                return;
-            };
+            // Handle dynamic pipeline commands (SetBitrate, SetFps) directly
+            if let Some(ref pipeline_cmd) = pipeline_cmd_tx {
+                match &packet {
+                    InboundPacket::SetBitrate { kbps } => {
+                        info!("Dynamic bitrate change via data channel: {} kbps", kbps);
+                        if let Some(ref cmd_tx) = *pipeline_cmd.lock().unwrap() {
+                            let _ = cmd_tx.try_send(lunaris_media::pipeline::PipelineCommand::SetBitrate(*kbps));
+                        }
+                        return;
+                    }
+                    InboundPacket::SetFps { fps } => {
+                        info!("Dynamic FPS change via data channel: {} fps", fps);
+                        if let Some(ref cmd_tx) = *pipeline_cmd.lock().unwrap() {
+                            let _ = cmd_tx.try_send(lunaris_media::pipeline::PipelineCommand::SetFps(*fps));
+                        }
+                        return;
+                    }
+                    _ => {}
+                }
+            }
 
-            match packet {
-                InboundPacket::GeneralStop => {
-                    info!("Received stop message on general channel");
-                }
-                InboundPacket::MouseMove {
-                    delta_x, delta_y, ..
-                } => {
-                    let _ = stream.send_mouse_move(delta_x, delta_y);
-                }
-                InboundPacket::MousePosition {
-                    x,
-                    y,
-                    reference_width,
-                    reference_height,
-                    timestamp,
-                } => {
-                    let last_ts = last_timestamp.load(std::sync::atomic::Ordering::SeqCst);
-                    if last_ts == 0 || (timestamp.wrapping_sub(last_ts) as i32) > 0 {
-                        last_timestamp.store(timestamp, std::sync::atomic::Ordering::SeqCst);
-                        let _ = stream.send_mouse_position(x, y, reference_width, reference_height);
-                    }
-                }
-                InboundPacket::MouseButton { action, button } => {
-                    let _ = stream.send_mouse_button(action, button);
-                }
-                InboundPacket::Scroll { delta_x, delta_y } => {
-                    if delta_y != 0 {
-                        let _ = stream.send_scroll(delta_y);
-                    }
-                    if delta_x != 0 {
-                        let _ = stream.send_horizontal_scroll(delta_x);
-                    }
-                }
-                InboundPacket::HighResScroll { delta_x, delta_y } => {
-                    if delta_y != 0 {
-                        let _ = stream.send_high_res_scroll(delta_y);
-                    }
-                    if delta_x != 0 {
-                        let _ = stream.send_high_res_horizontal_scroll(delta_x);
-                    }
-                }
-                InboundPacket::Key {
-                    action,
-                    modifiers,
-                    key,
-                    flags,
-                } => {
-                    let _ = stream
-                        .send_keyboard_event_non_standard(key as i16, action, modifiers, flags);
-                }
-                InboundPacket::Text { text } => {
-                    let _ = stream.send_text(&text);
-                }
-                _ => {}
+            if let Some(ref tx) = input_tx {
+                let _ = tx.send((packet, last_timestamp));
             }
         })
     }));
+}
+
+fn handle_inbound_packet(
+    packet: InboundPacket,
+    injector: &lunaris_media::input::InputInjector,
+    last_timestamp: &std::sync::atomic::AtomicU32,
+) {
+    match packet {
+        InboundPacket::MousePosition { x, y, reference_width, reference_height, timestamp } => {
+            let last_ts = last_timestamp.load(std::sync::atomic::Ordering::SeqCst);
+            trace!("handle_inbound_packet_direct: MousePosition x={}, y={}, ref_w={}, ref_h={}, ts={}, last_ts={}", x, y, reference_width, reference_height, timestamp, last_ts);
+            if last_ts == 0 || (timestamp.wrapping_sub(last_ts) as i32) >= 0 {
+                last_timestamp.store(timestamp, std::sync::atomic::Ordering::SeqCst);
+                injector.move_mouse_absolute(x as i32, y as i32, reference_width as i32, reference_height as i32);
+            }
+        }
+        InboundPacket::MouseMove { delta_x, delta_y, .. } => {
+            trace!("handle_inbound_packet_direct: MouseMove dx={}, dy={}", delta_x, delta_y);
+            injector.move_mouse_relative(delta_x as i32, delta_y as i32);
+        }
+        InboundPacket::MouseButton { action, button } => {
+            trace!("handle_inbound_packet_direct: MouseButton action={:?}, button={:?}", action, button);
+            let is_press = match action {
+                MouseButtonAction::Press => true,
+                MouseButtonAction::Release => false,
+            };
+            let x11_btn = match button {
+                MouseButton::Left => 1,
+                MouseButton::Middle => 2,
+                MouseButton::Right => 3,
+                MouseButton::X1 => 8,
+                MouseButton::X2 => 9,
+            };
+            injector.mouse_button(x11_btn, is_press);
+        }
+        InboundPacket::Scroll { delta_y, delta_x } => {
+            trace!("handle_inbound_packet_direct: Scroll delta_y={}, delta_x={}", delta_y, delta_x);
+            if delta_y > 0 {
+                for _ in 0..delta_y {
+                    injector.mouse_button(4, true);
+                    injector.mouse_button(4, false);
+                }
+            } else if delta_y < 0 {
+                for _ in 0..-delta_y {
+                    injector.mouse_button(5, true);
+                    injector.mouse_button(5, false);
+                }
+            }
+            if delta_x > 0 {
+                for _ in 0..delta_x {
+                    injector.mouse_button(7, true);
+                    injector.mouse_button(7, false);
+                }
+            } else if delta_x < 0 {
+                for _ in 0..-delta_x {
+                    injector.mouse_button(6, true);
+                    injector.mouse_button(6, false);
+                }
+            }
+        }
+        InboundPacket::HighResScroll { delta_y, delta_x } => {
+            trace!("handle_inbound_packet_direct: HighResScroll delta_y={}, delta_x={}", delta_y, delta_x);
+            let click_y = if delta_y > 0 {
+                (delta_y + 119) / 120
+            } else {
+                -((-delta_y + 119) / 120)
+            };
+            let click_x = if delta_x > 0 {
+                (delta_x + 119) / 120
+            } else {
+                -((-delta_x + 119) / 120)
+            };
+            
+            if click_y > 0 {
+                for _ in 0..click_y {
+                    injector.mouse_button(4, true);
+                    injector.mouse_button(4, false);
+                }
+            } else if click_y < 0 {
+                for _ in 0..-click_y {
+                    injector.mouse_button(5, true);
+                    injector.mouse_button(5, false);
+                }
+            }
+            if click_x > 0 {
+                for _ in 0..click_x {
+                    injector.mouse_button(7, true);
+                    injector.mouse_button(7, false);
+                }
+            } else if click_x < 0 {
+                for _ in 0..-click_x {
+                    injector.mouse_button(6, true);
+                    injector.mouse_button(6, false);
+                }
+            }
+        }
+        InboundPacket::Key { action, key, modifiers, .. } => {
+            trace!("handle_inbound_packet_direct: Key action={:?}, key={}, modifiers={:?}", action, key, modifiers);
+            let is_press = match action {
+                KeyAction::Down => true,
+                KeyAction::Up => false,
+            };
+            
+            // Intercept Ctrl + Alt + Shift + N (toggle cursor hide)
+            // Ctrl (2) + Alt (4) + Shift (1) = 7
+            if key == 78 && modifiers.bits() == 7 {
+                if is_press {
+                    if std::env::var("LUNARIS_HIDE_HOST_CURSOR").is_ok() {
+                        info!("Intercepted Ctrl+Alt+Shift+N: Showing host cursor");
+                        std::env::remove_var("LUNARIS_HIDE_HOST_CURSOR");
+                    } else {
+                        info!("Intercepted Ctrl+Alt+Shift+N: Hiding host cursor");
+                        std::env::set_var("LUNARIS_HIDE_HOST_CURSOR", "1");
+                    }
+                }
+            }
+            
+            injector.keyboard_key(key, is_press);
+        }
+        _ => {}
+    }
 }
 
 

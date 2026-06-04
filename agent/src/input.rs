@@ -1,12 +1,101 @@
 use crate::buffer::ByteBuffer;
-use moonlight_common::stream::control::{
-    ControllerButtons, ControllerCapabilities, ControllerType, KeyAction, KeyFlags, KeyModifiers,
-    MouseButton, MouseButtonAction, TouchEventType,
-};
+use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
 use tracing::warn;
 
-// --- Transport Channel IDs ---
+// ── Input protocol types (extracted from moonlight-common) ──────────────
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MouseButtonAction {
+    Press,
+    Release,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, FromPrimitive)]
+pub enum MouseButton {
+    Left = 1,
+    Middle = 2,
+    Right = 3,
+    X1 = 4,
+    X2 = 5,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyAction {
+    Down,
+    Up,
+}
+
+bitflags::bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct KeyModifiers: i8 {
+        const SHIFT = 0x01;
+        const CTRL  = 0x02;
+        const ALT   = 0x04;
+        const META  = 0x08;
+    }
+}
+
+bitflags::bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct KeyFlags: i8 {
+        const NONE = 0;
+    }
+}
+
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TouchEventType {
+    Down,
+    Move,
+    Cancel,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, FromPrimitive)]
+pub enum ControllerType {
+    Unknown = 0,
+    Xbox = 1,
+    PlayStation = 2,
+    Nintendo = 3,
+}
+
+bitflags::bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct ControllerButtons: u32 {
+        const A              = 0x0001;
+        const B              = 0x0002;
+        const X              = 0x0004;
+        const Y              = 0x0008;
+        const UP             = 0x0010;
+        const DOWN           = 0x0020;
+        const LEFT           = 0x0040;
+        const RIGHT          = 0x0080;
+        const LB             = 0x0100;
+        const RB             = 0x0200;
+        const START          = 0x0400;
+        const BACK           = 0x0800;
+        const LS_CLICK       = 0x1000;
+        const RS_CLICK       = 0x2000;
+        const SPECIAL        = 0x4000;
+    }
+}
+
+bitflags::bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct ControllerCapabilities: u32 {
+        const ANALOG_TRIGGERS = 0x01;
+        const RUMBLE          = 0x02;
+        const TRIGGER_RUMBLE  = 0x04;
+        const TOUCHPAD        = 0x08;
+        const ACCEL           = 0x10;
+        const GYRO            = 0x20;
+        const BATTERY         = 0x40;
+        const RGB_LED         = 0x80;
+    }
+}
+
+// ── Transport Channel IDs ───────────────────────────────────────────────
+
 #[allow(dead_code)]
 pub struct TransportChannelId;
 
@@ -44,6 +133,8 @@ impl TransportChannelId {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TransportChannel(pub u8);
+
+// ── Inbound Packet ──────────────────────────────────────────────────────
 
 #[derive(Debug)]
 #[allow(dead_code)]
@@ -112,6 +203,10 @@ pub enum InboundPacket {
         right_stick_y: i16,
     },
     RequestVideoIdr,
+    /// Dynamic bitrate change from web client.
+    SetBitrate { kbps: u32 },
+    /// Dynamic FPS change from web client.
+    SetFps { fps: u32 },
 }
 
 #[allow(dead_code)]
@@ -153,6 +248,10 @@ impl InboundPacket {
                 };
                 if text.contains("\"stop\"") || text.contains("Stop") {
                     Some(Self::GeneralStop)
+                } else if let Some(value) = Self::parse_json_command(&text, "set_bitrate") {
+                    Some(Self::SetBitrate { kbps: value })
+                } else if let Some(value) = Self::parse_json_command(&text, "set_fps") {
+                    Some(Self::SetFps { fps: value })
                 } else {
                     None
                 }
@@ -307,5 +406,33 @@ impl InboundPacket {
             }
             _ => None,
         }
+    }
+
+    /// Lightweight JSON command parser for dynamic settings.
+    /// Parses commands like: {"type":"set_bitrate","value":8000}
+    /// Returns the value as u32 if the command matches.
+    fn parse_json_command(text: &str, command_type: &str) -> Option<u32> {
+        // Check if this JSON contains the right command type
+        let type_pattern = format!("\"type\":\"{}\"", command_type);
+        let type_pattern_spaced = format!("\"type\": \"{}\"", command_type);
+        if !text.contains(&type_pattern) && !text.contains(&type_pattern_spaced) {
+            return None;
+        }
+
+        // Extract the value field
+        // Look for "value": followed by a number
+        let value_str = if let Some(idx) = text.find("\"value\":") {
+            &text[idx + 8..]
+        } else if let Some(idx) = text.find("\"value\": ") {
+            &text[idx + 9..]
+        } else {
+            return None;
+        };
+
+        // Parse the numeric value (trim whitespace, stop at non-digit)
+        let value_str = value_str.trim();
+        let num_str: String = value_str.chars().take_while(|c| c.is_ascii_digit()).collect();
+
+        num_str.parse::<u32>().ok()
     }
 }

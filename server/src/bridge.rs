@@ -343,7 +343,7 @@ pub async fn setup_bridge_session(
                 clock_rate: 90000,
                 channels: 0,
                 sdp_fmtp_line:
-                    "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f"
+                    "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e033"
                         .to_string(),
                 rtcp_feedback: vec![
                     RTCPFeedback {
@@ -373,7 +373,7 @@ pub async fn setup_bridge_session(
                 mime_type: MIME_TYPE_HEVC.to_string(),
                 clock_rate: 90000,
                 channels: 0,
-                sdp_fmtp_line: "profile-id=1;tier-flag=0;level-id=93;tx-mode=SRST".to_string(),
+                sdp_fmtp_line: "profile-id=1;tier-flag=0;level-id=120;tx-mode=SRST".to_string(),
                 rtcp_feedback: vec![
                     RTCPFeedback {
                         typ: "nack".to_string(),
@@ -539,7 +539,7 @@ pub async fn setup_bridge_session(
     {
         "h265" => (
             MIME_TYPE_HEVC.to_string(),
-            "profile-id=1;tier-flag=0;level-id=93;tx-mode=SRST".to_string(),
+            "profile-id=1;tier-flag=0;level-id=120;tx-mode=SRST".to_string(),
             98,
             SupportedVideoFormats::H265,
             VideoPayloader::H265(H265Payloader::default()),
@@ -553,7 +553,7 @@ pub async fn setup_bridge_session(
         ),
         _ => (
             MIME_TYPE_H264.to_string(),
-            "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f".to_string(),
+            "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e033".to_string(),
             96,
             SupportedVideoFormats::H264,
             VideoPayloader::H264(H264Payloader::default()),
@@ -814,13 +814,13 @@ pub async fn setup_bridge_session(
         tokio::spawn(async move {
             let mut seq: u16 = 0;
             while let Some(mut packets) = packet_rx.recv().await {
-                // Frame queue management: if queue has more than 10 frames (~167ms at 60fps),
+                // Frame queue management: if queue has more than 60 frames (~1s at 60fps),
                 // skip to latest to prevent latency accumulation.
                 // Threshold must be high enough to absorb IDR keyframe bursts
                 // (IDR frames are 10-50x larger than P-frames, causing momentary queue buildup).
-                // Too low (e.g., 2) causes drop→IDR→large frame→queue full→drop cascade.
+                // Too low (e.g., 10) causes drop→IDR→large frame→queue full→drop cascade.
                 let queue_len = packet_rx.len();
-                if queue_len > 10 {
+                if queue_len > 60 {
                     let mut discarded_count = 0;
                     while let Ok(next_packets) = packet_rx.try_recv() {
                         packets = next_packets;

@@ -31,6 +31,9 @@ pub fn parse_deeplink_url(url_str: &str) -> Option<AppArgs> {
         let mut app_id: Option<u32> = None;
         let mut mouse_queue_limit = 256;
         let mut host_name = "Desktop • Host".to_string();
+        #[cfg(target_os = "linux")]
+        let mut disable_cuda = true;
+        #[cfg(not(target_os = "linux"))]
         let mut disable_cuda = false;
         let mut input_protocol = "webrtc".to_string();
 
@@ -200,6 +203,9 @@ fn parse_args() -> Option<AppArgs> {
     let mut app_id: Option<u32> = None;
     let mut mouse_queue_limit = 256;
     let mut host_name = "Desktop • Host".to_string();
+    #[cfg(target_os = "linux")]
+    let mut disable_cuda = true;
+    #[cfg(not(target_os = "linux"))]
     let mut disable_cuda = false;
     let mut input_protocol = "webrtc".to_string();
 

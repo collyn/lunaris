@@ -757,7 +757,9 @@ body {
   display: flex;
   flex-direction: column;
   width: 100vw;
+  width: 100dvw;
   height: 100vh;
+  height: 100dvh;
   position: fixed;
   top: 0;
   left: 0;
@@ -2710,15 +2712,15 @@ body {
     bottom: 0;
     left: 0;
     right: 0;
-    height: 56px;
+    height: calc(56px + env(safe-area-inset-bottom));
     background: rgba(0, 98, 255, 0.95); /* Vibrant premium blue */
     backdrop-filter: blur(16px);
     -webkit-backdrop-filter: blur(16px);
     border-top: 1px solid rgba(255, 255, 255, 0.15);
     z-index: 200;
     justify-content: space-around;
-    align-items: center;
-    padding: 0 0.5rem;
+    align-items: flex-start;
+    padding: 6px 0.5rem env(safe-area-inset-bottom);
     box-sizing: border-box;
     transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
   }

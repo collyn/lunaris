@@ -157,7 +157,7 @@ static void checkGlError(const char* op) {
 // Shaders code
 // Shaders code unused legacy version 120 removed
 
-GpuVideoItem::GpuVideoItem(QQuickItem *parent) : QQuickItem(parent) {
+GpuVideoItem::GpuVideoItem(QQuickItem *parent) : QQuickItem(parent), m_cudaActive(false) {
     std::cerr << "Lunaris: GpuVideoItem constructor called." << std::endl;
     g_activeItem = this;
     setFlag(ItemHasContents, true);
@@ -183,6 +183,18 @@ GpuVideoItem::~GpuVideoItem() {
 
 bool GpuVideoItem::cudaSupported() const {
     return g_cudaSupported;
+}
+
+bool GpuVideoItem::cudaActive() const {
+    return m_cudaActive;
+}
+
+void GpuVideoItem::setCudaActive(bool active) {
+    QMutexLocker locker(&m_mutex);
+    if (m_cudaActive != active) {
+        m_cudaActive = active;
+        emit cudaActiveChanged();
+    }
 }
 
 void GpuVideoItem::registerTypes() {
@@ -662,6 +674,8 @@ extern "C" void deliver_cuda_frame(uint64_t cuda_ctx, uint64_t y_ptr, int y_stri
     g_pendingFrame.new_frame = true;
 
     if (g_activeItem) {
+        // Set cudaActive to true thread-safely
+        QMetaObject::invokeMethod(g_activeItem, "setCudaActive", Qt::QueuedConnection, Q_ARG(bool, true));
         // Trigger a redraw of the QQuickItem
         QMetaObject::invokeMethod(g_activeItem, "update", Qt::QueuedConnection);
     }
@@ -673,7 +687,11 @@ extern "C" void register_gpu_video_item_type() {
 
 extern "C" void set_cuda_stream_active(bool active) {
     g_streamActive = active;
-    if (!active) {
+    if (active) {
+        if (g_activeItem) {
+            QMetaObject::invokeMethod(g_activeItem, "setCudaActive", Qt::QueuedConnection, Q_ARG(bool, false));
+        }
+    } else {
         {
             QMutexLocker locker(&g_frameMutex);
             g_pendingFrame.cuda_ctx = 0;
@@ -684,6 +702,7 @@ extern "C" void set_cuda_stream_active(bool active) {
 
         if (g_activeItem) {
             g_activeItem->cleanupCudaGL(true);
+            QMetaObject::invokeMethod(g_activeItem, "setCudaActive", Qt::QueuedConnection, Q_ARG(bool, false));
         }
     }
 }
