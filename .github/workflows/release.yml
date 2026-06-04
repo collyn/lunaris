@@ -31,7 +31,7 @@ jobs:
             libasound2-dev libavcodec-dev libavformat-dev libavutil-dev libswscale-dev \
             libswresample-dev libopus-dev qt6-base-dev qt6-declarative-dev qt6-multimedia-dev libgl1-mesa-dev \
             libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
-            libavfilter-dev libavdevice-dev libpostproc-dev
+            libavfilter-dev libavdevice-dev libpostproc-dev libpipewire-0.3-dev
 
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@v1
@@ -240,148 +240,9 @@ jobs:
           name: agent-windows
           path: lunaris-agent-windows.zip
 
-  build-macos:
-    name: Build macOS
-    runs-on: macos-15
-    env:
-      MACOSX_DEPLOYMENT_TARGET: "13.0"
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: 'npm'
-          cache-dependency-path: web/package-lock.json
-
-      - name: Install system dependencies
-        run: |
-          brew install ffmpeg pkg-config opus qt
-
-      - name: Configure library paths
-        run: |
-          FFMPEG_PREFIX=$(brew --prefix ffmpeg)
-          OPUS_PREFIX=$(brew --prefix opus)
-          QT_PREFIX=$(brew --prefix qt)
-
-          # Qt6 via Homebrew (keg-only)
-          echo "QMAKE=${QT_PREFIX}/bin/qmake" >> $GITHUB_ENV
-          echo "CMAKE_PREFIX_PATH=${QT_PREFIX}" >> $GITHUB_ENV
-          echo "${QT_PREFIX}/bin" >> $GITHUB_PATH
-          echo "${QT_PREFIX}/libexec" >> $GITHUB_PATH
-
-          # cxx-qt-lib includes bare headers like <QtGlobal> (not <QtCore/QtGlobal>).
-          # qmake reports /opt/homebrew/include as QT_INSTALL_HEADERS, but Qt is
-          # keg-only so that dir is empty. We must add the keg's include dirs directly
-          # so the compiler can find bare Qt headers.
-          # -F for framework-style includes (<QtCore/QByteArray>)
-          # -I for bare includes (<QtGlobal>, <QByteArray>)
-          # On macOS, Qt headers are in QtCore.framework/Headers etc. under lib/.
-          QT_CXX_FLAGS="-F${QT_PREFIX}/lib"
-          QT_CXX_FLAGS="${QT_CXX_FLAGS} -I${QT_PREFIX}/include"
-          QT_CXX_FLAGS="${QT_CXX_FLAGS} -I${QT_PREFIX}/include/QtCore -I${QT_PREFIX}/lib/QtCore.framework/Headers"
-          QT_CXX_FLAGS="${QT_CXX_FLAGS} -I${QT_PREFIX}/include/QtGui -I${QT_PREFIX}/lib/QtGui.framework/Headers"
-          QT_CXX_FLAGS="${QT_CXX_FLAGS} -I${QT_PREFIX}/include/QtQml -I${QT_PREFIX}/lib/QtQml.framework/Headers"
-          QT_CXX_FLAGS="${QT_CXX_FLAGS} -I${QT_PREFIX}/include/QtQuick -I${QT_PREFIX}/lib/QtQuick.framework/Headers"
-          QT_CXX_FLAGS="${QT_CXX_FLAGS} -I${QT_PREFIX}/include/QtMultimedia -I${QT_PREFIX}/lib/QtMultimedia.framework/Headers"
-          QT_CXX_FLAGS="${QT_CXX_FLAGS} -I${QT_PREFIX}/include/QtNetwork -I${QT_PREFIX}/lib/QtNetwork.framework/Headers"
-          echo "CXXFLAGS=${QT_CXX_FLAGS}" >> $GITHUB_ENV
-          echo "CFLAGS=${QT_CXX_FLAGS}" >> $GITHUB_ENV
-
-          echo "FFMPEG_DIR=${FFMPEG_PREFIX}" >> $GITHUB_ENV
-          echo "PKG_CONFIG_PATH=${FFMPEG_PREFIX}/lib/pkgconfig:${OPUS_PREFIX}/lib/pkgconfig:${QT_PREFIX}/lib/pkgconfig:$PKG_CONFIG_PATH" >> $GITHUB_ENV
-          echo "BINDGEN_EXTRA_CLANG_ARGS=${QT_CXX_FLAGS} -I${FFMPEG_PREFIX}/include -I${OPUS_PREFIX}/include" >> $GITHUB_ENV
-          echo "LIBRARY_PATH=${QT_PREFIX}/lib:${FFMPEG_PREFIX}/lib:${OPUS_PREFIX}/lib:$LIBRARY_PATH" >> $GITHUB_ENV
-
-      - name: Debug environment
-        run: |
-          QT_PREFIX=$(brew --prefix qt)
-          echo "=== Qt (Homebrew keg) ==="
-          echo "QT_PREFIX: $QT_PREFIX"
-          echo "QMAKE: $QMAKE"
-          $QMAKE --version || echo "qmake --version failed"
-          echo "=== qmake query ==="
-          $QMAKE -query QT_INSTALL_HEADERS || true
-          $QMAKE -query QT_INSTALL_LIBS || true
-          echo "=== Qt keg include dir ==="
-          ls "$QT_PREFIX/include/" 2>/dev/null | head -10 || echo "  (EMPTY or MISSING)"
-          echo "=== QtCore/QtGlobal check ==="
-          test -f "$QT_PREFIX/include/QtCore/QtGlobal" && echo "  FOUND in include/QtCore/QtGlobal" || echo "  NOT FOUND in include/QtCore/QtGlobal"
-          test -f "$QT_PREFIX/lib/QtCore.framework/Headers/QtGlobal" && echo "  FOUND in QtCore.framework/Headers/QtGlobal" || echo "  NOT FOUND in QtCore.framework/Headers/QtGlobal"
-          echo "=== Linked path check ==="
-          test -f "/opt/homebrew/include/QtCore/QtGlobal" && echo "  FOUND: /opt/homebrew/include/QtCore/QtGlobal" || echo "  NOT FOUND at linked path (expected — keg-only)"
-          echo "=== CXXFLAGS ==="
-          echo "$CXXFLAGS"
-          echo "=== FFmpeg ==="
-          pkg-config --libs libavcodec || echo "libavcodec.pc not found"
-          echo "=== Opus ==="
-          pkg-config --libs opus || echo "opus.pc not found"
-
-      - name: Setup Rust toolchain
-        uses: dtolnay/rust-toolchain@v1
-        with:
-          toolchain: nightly-2026-04-17
-          targets: aarch64-apple-darwin, x86_64-apple-darwin
-
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
-
-      - name: Build Web Frontend
-        run: |
-          cd web
-          npm ci || npm install
-          npm run build
-
-      - name: Build Rust Workspace (Native Target)
-        run: cargo build --release --workspace
-
-      - name: Package Server and Web
-        run: |
-          mkdir -p lunaris-server/web
-          cp target/release/server lunaris-server/
-          cp -r web/dist lunaris-server/web/dist
-          tar -czf lunaris-server-macos.tar.gz -C lunaris-server .
-
-      - name: Upload Server Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: server-macos
-          path: lunaris-server-macos.tar.gz
-
-      - name: Package Client Desktop
-        run: |
-          mkdir -p lunaris-client-desktop
-          cp target/release/client-desktop lunaris-client-desktop/
-          tar -czf lunaris-client-desktop-macos.tar.gz -C lunaris-client-desktop .
-
-          # Package QML Client separately
-          mkdir -p lunaris-client-qml
-          cp target/release/client-desktop lunaris-client-qml/client-qml
-          tar -czf lunaris-client-qml-macos.tar.gz -C lunaris-client-qml .
-
-      - name: Upload Client Desktop Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: client-desktop-macos
-          path: lunaris-client-desktop-macos.tar.gz
-
-      - name: Upload Client QML Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: client-qml-macos
-          path: lunaris-client-qml-macos.tar.gz
-
-      - name: Upload Agent Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: agent-macos
-          path: target/release/agent
-
   release:
     name: Create Release
-    needs: [build-linux, build-windows, build-macos]
+    needs: [build-linux, build-windows]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -423,23 +284,7 @@ jobs:
           name: client-qml-windows
           path: ./artifacts/windows-client-qml
 
-      - name: Download macOS Server Artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: server-macos
-          path: ./artifacts/macos-server
 
-      - name: Download macOS Client Desktop Artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: client-desktop-macos
-          path: ./artifacts/macos-client-desktop
-
-      - name: Download macOS Client QML Artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: client-qml-macos
-          path: ./artifacts/macos-client-qml
 
       - name: Download Linux Agent Artifact
         uses: actions/download-artifact@v4
@@ -459,11 +304,7 @@ jobs:
           name: client-desktop-installer-windows
           path: ./artifacts/windows-client-desktop-installer
 
-      - name: Download macOS Agent Artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: agent-macos
-          path: ./artifacts/macos-agent
+
 
       - name: Organize Release Files
         run: |
@@ -482,11 +323,7 @@ jobs:
           mv ./artifacts/windows-agent/lunaris-agent-windows.zip ./release-files/
           mv ./artifacts/windows-client-desktop-installer/lunaris-client-installer.exe ./release-files/lunaris-client-installer-windows.exe
 
-          # macOS
-          mv ./artifacts/macos-server/lunaris-server-macos.tar.gz ./release-files/
-          mv ./artifacts/macos-client-desktop/lunaris-client-desktop-macos.tar.gz ./release-files/
-          mv ./artifacts/macos-client-qml/lunaris-client-qml-macos.tar.gz ./release-files/
-          mv ./artifacts/macos-agent/agent ./release-files/lunaris-agent-macos
+
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -505,9 +342,6 @@ jobs:
             release-files/lunaris-client-qml-windows.zip
             release-files/lunaris-agent-windows.zip
             release-files/lunaris-client-installer-windows.exe
-            release-files/lunaris-server-macos.tar.gz
-            release-files/lunaris-client-desktop-macos.tar.gz
-            release-files/lunaris-client-qml-macos.tar.gz
-            release-files/lunaris-agent-macos
+
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
