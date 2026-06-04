@@ -23,13 +23,6 @@ pub struct AuthResponse {
     pub role: String,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct PairHostRequest {
-    pub name: String,
-    pub ip_address: String,
-    pub sunshine_username: Option<String>,
-    pub sunshine_password: Option<String>,
-}
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct HostInfo {
@@ -233,23 +226,6 @@ pub enum SignalingMessage {
     // Session termination
     EndSession {
         target_id: String,
-    },
-    // Sunshine Config Exchange
-    GetSunshineConfig {
-        target_id: String,
-    },
-    SunshineConfigResponse {
-        target_id: String,
-        config: String,
-    },
-    UpdateSunshineConfig {
-        target_id: String,
-        config: String,
-    },
-    UpdateSunshineConfigResponse {
-        target_id: String,
-        success: bool,
-        error: Option<String>,
     },
     // App List Query
     GetAppList {

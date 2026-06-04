@@ -40,14 +40,7 @@ Rectangle {
     property bool configDisableCuda: Qt.platform.os === "linux"
     property string configInputProtocol: "webrtc"
 
-    // Add device pairing page state
-    property bool showPairingPage: false
-    property string pairName: ""
-    property string pairIp: ""
-    property string pairUser: ""
-    property string pairPass: ""
-    property bool pairLoading: false
-    property string pairError: ""
+
 
     // Agent configuration token
     property string agentToken: ""
@@ -58,12 +51,7 @@ Rectangle {
     property string localAgentHostname: ""
     property bool localAgentRunning: false
 
-    onShowPairingPageChanged: {
-        if (showPairingPage) {
-            dashboardRoot.agentTokenLoading = true;
-            bridge.fetchAgentToken(dashboardRoot.serverUrl, dashboardRoot.token);
-        }
-    }
+
 
     // Connect to bridge signals
     Connections {
@@ -111,28 +99,7 @@ Rectangle {
             }
         }
 
-        function onPairResult(success, errorMsg) {
-            dashboardRoot.pairLoading = false;
-            if (success) {
-                dashboardRoot.showPairingPage = false;
-                dashboardRoot.pairName = "";
-                dashboardRoot.pairIp = "";
-                dashboardRoot.pairUser = "";
-                dashboardRoot.pairPass = "";
-                dashboardRoot.pairError = "";
-                bridge.fetchHosts();
-            } else {
-                dashboardRoot.pairError = errorMsg;
-            }
-        }
 
-        function onUnpairResult(success, errorMsg) {
-            if (success) {
-                bridge.fetchHosts();
-            } else {
-                console.log("Unpair failed: " + errorMsg);
-            }
-        }
 
         function onAppsResult(success, errorMsg, hostId, appsJson) {
             dashboardRoot.appsLoading = false;
@@ -161,16 +128,7 @@ Rectangle {
         dashboardRoot.localAgentHostname = bridge.getLocalHostname();
     }
 
-    // Timer to periodically poll local agent subprocess status when pairing page is open
-    Timer {
-        id: localAgentStatusTimer
-        interval: 1000
-        running: dashboardRoot.isLoggedIn && dashboardRoot.showPairingPage
-        repeat: true
-        onTriggered: {
-            dashboardRoot.localAgentRunning = bridge.isLocalAgentRunning();
-        }
-    }
+
 
     // Soft fading decorative orbs matching React Web ambient glow
     Item {
@@ -500,7 +458,7 @@ Rectangle {
                             dashboardRoot.isLoggedIn = false;
                             dashboardRoot.token = "";
                             dashboardRoot.username = "";
-                            dashboardRoot.showPairingPage = false;
+
                         }
                         background: Rectangle {
                             implicitWidth: 32; implicitHeight: 32; radius: 6
@@ -550,7 +508,7 @@ Rectangle {
                     anchors.fill: parent
                     sourceComponent: dashboardRoot.selectedHost !== null 
                         ? appDirectoryComponent 
-                        : (dashboardRoot.showPairingPage ? pairingPageComponent : hostsGridComponent)
+                        : hostsGridComponent
                 }
             }
         }
@@ -615,25 +573,7 @@ Rectangle {
                         }
                     }
 
-                    // Add Device Button
-                    Button {
-                        id: addBtn
-                        onClicked: {
-                            dashboardRoot.showPairingPage = true;
-                        }
-                        background: Rectangle {
-                            implicitWidth: 120; implicitHeight: 38; radius: 8
-                            color: addBtn.hovered ? "#00e0ff" : "#00f0ff"
-                        }
-                        contentItem: Text {
-                            text: "+ Add Device"
-                            color: "#000000"
-                            font.bold: true
-                            font.pixelSize: 13
-                            horizontalAlignment: Text.AlignHCenter
-                            verticalAlignment: Text.AlignVCenter
-                        }
-                    }
+
                 }
             }
 
@@ -659,7 +599,7 @@ Rectangle {
                         width: 260
                         height: 180
 
-                        property bool isHostHovered: cardMouseArea.containsMouse || gearBtn.hovered || trashBtn.hovered
+                        property bool isHostHovered: cardMouseArea.containsMouse || gearBtn.hovered
 
                         // Static background click handler to avoid hover-translation flicker
                         MouseArea {
@@ -830,34 +770,6 @@ Rectangle {
                                         }
                                     }
 
-                                    // Delete/Unpair trash icon (Sleek custom vector trash bin)
-                                    Button {
-                                        id: trashBtn
-                                        onClicked: {
-                                            bridge.unpairHost(modelData.id);
-                                        }
-                                        background: Rectangle {
-                                            implicitWidth: 32; implicitHeight: 32; radius: 6
-                                            color: trashBtn.hovered ? Qt.rgba(239/255, 68/255, 68/255, 0.1) : "transparent"
-                                            border.color: trashBtn.hovered ? "#ef4444" : "transparent"
-                                            border.width: 1
-                                        }
-                                        contentItem: Item {
-                                            implicitWidth: 16; implicitHeight: 16
-                                            Item {
-                                                width: 16; height: 16
-                                                anchors.centerIn: parent
-                                                Rectangle { x: 2; y: 2; width: 12; height: 1.5; radius: 0.5; color: trashBtn.hovered ? "#ef4444" : "#94a3b8" }
-                                                Rectangle { x: 6; y: 0.5; width: 4; height: 1.5; radius: 0.5; color: trashBtn.hovered ? "#ef4444" : "#94a3b8" }
-                                                Rectangle {
-                                                    x: 3.5; y: 4.5; width: 9; height: 10.5; radius: 1
-                                                    color: "transparent"; border.color: trashBtn.hovered ? "#ef4444" : "#94a3b8"; border.width: 1.5
-                                                }
-                                                Rectangle { x: 6; y: 7; width: 1.2; height: 6; color: trashBtn.hovered ? "#ef4444" : "#94a3b8" }
-                                                Rectangle { x: 8.8; y: 7; width: 1.2; height: 6; color: trashBtn.hovered ? "#ef4444" : "#94a3b8" }
-                                            }
-                                        }
-                                    }
                                 }
                             }
                         }
@@ -870,455 +782,13 @@ Rectangle {
                 anchors.centerIn: parent
                 visible: dashboardRoot.hostsList.length === 0 && !dashboardRoot.hostsLoading
                 spacing: 16
-                Text { text: "No hosts paired yet"; font.pixelSize: 16; font.bold: true; color: "#94a3b8"; anchors.horizontalCenter: parent.horizontalCenter }
-                Button {
-                    id: pairEmptyBtn
-                    onClicked: {
-                        dashboardRoot.showPairingPage = true;
-                    }
-                    background: Rectangle { implicitWidth: 140; implicitHeight: 38; radius: 8; color: "#00f0ff" }
-                    contentItem: Text { text: "+ Pair First Host"; color: "#000000"; font.bold: true; font.pixelSize: 13; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-                }
+                Text { text: "No agents connected yet"; font.pixelSize: 16; font.bold: true; color: "#94a3b8"; anchors.horizontalCenter: parent.horizontalCenter }
+                Text { text: "Agents will appear here automatically once registered"; font.pixelSize: 12; color: "#64748b"; anchors.horizontalCenter: parent.horizontalCenter }
             }
         }
     }
 
-    // ----------------------------------------------------
-    // COMPONENT: Device Pairing Page (Split Screen Layout)
-    // ----------------------------------------------------
-    Component {
-        id: pairingPageComponent
-        Item {
-            anchors.fill: parent
 
-            // Back Header & Breadcrumbs
-            Row {
-                id: pairNavHeader
-                spacing: 16
-                anchors.top: parent.top
-
-                Button {
-                    id: pairBackBtn
-                    onClicked: {
-                        dashboardRoot.showPairingPage = false;
-                        bridge.fetchHosts();
-                    }
-                    background: Rectangle {
-                        implicitWidth: 36; implicitHeight: 36; radius: 18
-                        color: pairBackBtn.hovered ? Qt.rgba(0, 240/255, 255/255, 0.1) : "transparent"
-                        border.color: pairBackBtn.hovered ? "#00f0ff" : "transparent"
-                        border.width: 1
-                        Behavior on color { ColorAnimation { duration: 150 } }
-                        Behavior on border.color { ColorAnimation { duration: 150 } }
-                    }
-                    contentItem: Item {
-                        implicitWidth: 16; implicitHeight: 16
-                        Shape {
-                            id: pairBackArrow
-                            anchors.centerIn: parent
-                            width: 8; height: 12
-                            
-                            property color arrowColor: pairBackBtn.hovered ? "#00f0ff" : "#cbd5e1"
-                            
-                            ShapePath {
-                                strokeColor: pairBackArrow.arrowColor
-                                strokeWidth: 2
-                                fillColor: "transparent"
-                                capStyle: ShapePath.RoundCap
-                                joinStyle: ShapePath.RoundJoin
-                                
-                                startX: 6
-                                startY: 2
-                                
-                                PathLine { x: 2; y: 6 }
-                                PathLine { x: 6; y: 10 }
-                            }
-                        }
-                    }
-                }
-
-                Column {
-                    anchors.verticalCenter: pairBackBtn.verticalCenter
-                    Row {
-                        spacing: 6
-                        Text { text: "Device Directory"; font.pixelSize: 12; color: "#64748b" }
-                        Text { text: "/"; font.pixelSize: 12; color: "#64748b" }
-                        Text { text: "Pair & Setup"; font.pixelSize: 12; font.bold: true; color: "#00f0ff" }
-                    }
-                }
-            }
-
-            Text {
-                id: pairTitle
-                text: "Host Pairing & Setup"
-                font.pixelSize: 22
-                font.bold: true
-                color: "#ffffff"
-                anchors.top: pairNavHeader.bottom
-                anchors.topMargin: 12
-            }
-
-            Text {
-                id: pairSubtitle
-                text: "Pair with local Sunshine devices or configure agents"
-                font.pixelSize: 12
-                color: "#64748b"
-                anchors.top: pairTitle.bottom
-                anchors.topMargin: 4
-            }
-
-            // Split View Layout
-            RowLayout {
-                anchors.top: pairSubtitle.bottom
-                anchors.bottom: parent.bottom
-                anchors.left: parent.left
-                anchors.right: parent.right
-                anchors.topMargin: 24
-                spacing: 24
-
-                // Left Column: Pair Form
-                Rectangle {
-                    Layout.fillWidth: true
-                    Layout.fillHeight: true
-                    Layout.preferredWidth: 60
-                    radius: 16
-                    color: Qt.rgba(15/255, 22/255, 38/255, 0.8)
-                    border.color: Qt.rgba(255, 255, 255, 0.08)
-                    border.width: 1
-
-                    ScrollView {
-                        anchors.fill: parent
-                        contentWidth: parent.width - 48
-                        clip: true
-
-                        Column {
-                            width: parent.width
-                            padding: 24
-                            spacing: 16
-
-                            Text { text: "Pair New Host"; font.pixelSize: 16; font.bold: true; color: "#ffffff" }
-                            Text { text: "Pair directly with a device running Sunshine on your network."; font.pixelSize: 12; color: "#64748b" }
-
-                            // Host Name Input
-                            Column {
-                                width: parent.width; spacing: 6
-                                Text { text: "Friendly Name"; color: "#cbd5e1"; font.pixelSize: 11; font.bold: true }
-                                Rectangle {
-                                    width: parent.width; height: 38; color: "#0f172a"; radius: 8; border.color: pNameInput.activeFocus ? "#00f0ff" : Qt.rgba(255, 255, 255, 0.08)
-                                    border.width: 1
-                                    TextInput { id: pNameInput; anchors.fill: parent; anchors.margins: 10; color: "#ffffff"; font.pixelSize: 13; text: dashboardRoot.pairName; onTextChanged: dashboardRoot.pairName = text; verticalAlignment: Text.AlignVCenter; selectByMouse: true }
-                                }
-                            }
-
-                            // Host IP Input
-                            Column {
-                                width: parent.width; spacing: 6
-                                Text { text: "IP Address / Hostname"; color: "#cbd5e1"; font.pixelSize: 11; font.bold: true }
-                                Rectangle {
-                                    width: parent.width; height: 38; color: "#0f172a"; radius: 8; border.color: pIpInput.activeFocus ? "#00f0ff" : Qt.rgba(255, 255, 255, 0.08)
-                                    border.width: 1
-                                    TextInput { id: pIpInput; anchors.fill: parent; anchors.margins: 10; color: "#ffffff"; font.pixelSize: 13; text: dashboardRoot.pairIp; onTextChanged: dashboardRoot.pairIp = text; verticalAlignment: Text.AlignVCenter; selectByMouse: true }
-                                }
-                            }
-
-                            // Sunshine Username
-                            Column {
-                                width: parent.width; spacing: 6
-                                Text { text: "Sunshine Username"; color: "#cbd5e1"; font.pixelSize: 11; font.bold: true }
-                                Rectangle {
-                                    width: parent.width; height: 38; color: "#0f172a"; radius: 8; border.color: pUserInput.activeFocus ? "#00f0ff" : Qt.rgba(255, 255, 255, 0.08)
-                                    border.width: 1
-                                    TextInput { id: pUserInput; anchors.fill: parent; anchors.margins: 10; color: "#ffffff"; font.pixelSize: 13; text: dashboardRoot.pairUser; onTextChanged: dashboardRoot.pairUser = text; verticalAlignment: Text.AlignVCenter; selectByMouse: true }
-                                }
-                            }
-
-                            // Sunshine Password
-                            Column {
-                                width: parent.width; spacing: 6
-                                Text { text: "Sunshine Password"; color: "#cbd5e1"; font.pixelSize: 11; font.bold: true }
-                                Rectangle {
-                                    width: parent.width; height: 38; color: "#0f172a"; radius: 8; border.color: pPassInput.activeFocus ? "#00f0ff" : Qt.rgba(255, 255, 255, 0.08)
-                                    border.width: 1
-                                    TextInput { id: pPassInput; anchors.fill: parent; anchors.margins: 10; color: "#ffffff"; font.pixelSize: 13; text: dashboardRoot.pairPass; onTextChanged: dashboardRoot.pairPass = text; echoMode: TextInput.Password; verticalAlignment: Text.AlignVCenter; selectByMouse: true }
-                                }
-                            }
-
-                            Text { text: dashboardRoot.pairError; color: "#ef4444"; font.pixelSize: 12; wrapMode: Text.Wrap; width: parent.width; visible: text.length > 0 }
-
-                            Button {
-                                id: pSubmitBtn
-                                width: parent.width
-                                enabled: !dashboardRoot.pairLoading
-                                onClicked: {
-                                    dashboardRoot.pairError = "";
-                                    if (pIpInput.text.trim().length === 0 || pNameInput.text.trim().length === 0) {
-                                        dashboardRoot.pairError = "IP and Friendly Name are required";
-                                        return;
-                                    }
-                                    dashboardRoot.pairLoading = true;
-                                    bridge.pairHost(pNameInput.text.trim(), pIpInput.text.trim(), pUserInput.text.trim(), pPassInput.text);
-                                }
-                                background: Rectangle { implicitHeight: 40; radius: 8; color: pSubmitBtn.hovered ? "#00e0ff" : "#00f0ff" }
-                                contentItem: Text { text: dashboardRoot.pairLoading ? "Pairing..." : "Pair & Add Host"; color: "#000000"; font.bold: true; font.pixelSize: 13; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-                            }
-                        }
-                    }
-                }
-
-                // Right Column: Agent Configuration & Local agent launch
-                Rectangle {
-                    Layout.fillWidth: true
-                    Layout.fillHeight: true
-                    Layout.preferredWidth: 40
-                    radius: 16
-                    color: Qt.rgba(15/255, 22/255, 38/255, 0.8)
-                    border.color: Qt.rgba(255, 255, 255, 0.08)
-                    border.width: 1
-
-                    ScrollView {
-                        anchors.fill: parent
-                        contentWidth: parent.width - 48
-                        clip: true
-
-                        Column {
-                            width: parent.width
-                            padding: 24
-                            spacing: 16
-
-                            Text { text: "Host Agent Setup"; font.pixelSize: 16; font.bold: true; color: "#ffffff" }
-                            Text { text: "Install and configure the Lunaris Agent to share a host from this machine or a remote machine."; font.pixelSize: 12; color: "#64748b" }
-
-                            // Server URL
-                            Column {
-                                width: parent.width; spacing: 4
-                                Text { text: "Signaling Server URL"; color: "#cbd5e1"; font.pixelSize: 11; font.bold: true }
-                                Rectangle {
-                                    width: parent.width; height: 34; color: "#0f172a"; radius: 6; border.color: Qt.rgba(255,255,255,0.08)
-                                    TextInput { anchors.fill: parent; anchors.margins: 8; color: "#cbd5e1"; font.pixelSize: 11; font.family: "monospace"; text: dashboardRoot.serverUrl; readOnly: true; verticalAlignment: Text.AlignVCenter; selectByMouse: true }
-                                }
-                            }
-
-                            // Connection token
-                            Column {
-                                width: parent.width; spacing: 4
-                                Text { text: "Agent Connection Token"; color: "#cbd5e1"; font.pixelSize: 11; font.bold: true }
-                                RowLayout {
-                                    width: parent.width; spacing: 6
-                                    property bool revealToken: false
-
-                                    Rectangle {
-                                        Layout.fillWidth: true; height: 34; color: "#0f172a"; radius: 6; border.color: Qt.rgba(255,255,255,0.08)
-                                        TextInput {
-                                            id: tokenField; anchors.fill: parent; anchors.margins: 8; color: "#cbd5e1"; font.pixelSize: 11; font.family: "monospace"
-                                            text: dashboardRoot.agentTokenLoading ? "Fetching..." : (dashboardRoot.agentTokenError.length > 0 ? dashboardRoot.agentTokenError : dashboardRoot.agentToken)
-                                            readOnly: true; verticalAlignment: Text.AlignVCenter; selectByMouse: true
-                                            echoMode: parent.revealToken ? TextInput.Normal : TextInput.Password
-                                        }
-                                    }
-
-                                    Button {
-                                        id: revealBtn
-                                        Layout.preferredWidth: 34; Layout.preferredHeight: 34
-                                        onClicked: parent.revealToken = !parent.revealToken
-                                        background: Rectangle { radius: 6; color: "#1e293b"; border.color: Qt.rgba(255,255,255,0.1) }
-                                        contentItem: Item {
-                                            implicitWidth: 16; implicitHeight: 16
-                                            // Custom Vector eye outline with slash toggle
-                                            Item {
-                                                width: 16; height: 16
-                                                anchors.centerIn: parent
-                                                Rectangle {
-                                                    anchors.centerIn: parent; width: 14; height: 8; radius: 4
-                                                    color: "transparent"; border.color: "#cbd5e1"; border.width: 1.5
-                                                }
-                                                Rectangle {
-                                                    anchors.centerIn: parent; width: 4; height: 4; radius: 2; color: "#cbd5e1"
-                                                }
-                                                Rectangle {
-                                                    anchors.centerIn: parent; width: 18; height: 1.5; color: "#cbd5e1"; rotation: 45
-                                                    visible: !revealBtn.parent.revealToken; antialiasing: true
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-
-                            // Divider
-                            Rectangle {
-                                width: parent.width; height: 1
-                                color: Qt.rgba(255,255,255,0.08)
-                            }
-
-                            // Local Agent Control Card
-                            Text { text: "Local Agent Control"; font.pixelSize: 14; font.bold: true; color: "#00f0ff" }
-
-                            // Hostname Input
-                            Column {
-                                width: parent.width; spacing: 4
-                                Text { text: "Agent Hostname"; color: "#cbd5e1"; font.pixelSize: 11; font.bold: true }
-                                Rectangle {
-                                    width: parent.width; height: 34; color: "#0f172a"; radius: 6; border.color: agentHostInput.activeFocus ? "#00f0ff" : Qt.rgba(255, 255, 255, 0.08)
-                                    border.width: 1
-                                    TextInput { id: agentHostInput; anchors.fill: parent; anchors.margins: 8; color: "#ffffff"; font.pixelSize: 12; text: dashboardRoot.localAgentHostname; onTextChanged: dashboardRoot.localAgentHostname = text; verticalAlignment: Text.AlignVCenter; selectByMouse: true }
-                                }
-                            }
-
-                            // Status Row
-                            Row {
-                                spacing: 8
-                                Text { text: "Local Status:"; font.pixelSize: 12; color: "#cbd5e1"; font.bold: true }
-                                Row {
-                                    spacing: 6
-                                    Rectangle {
-                                        width: 8; height: 8; radius: 4
-                                        anchors.verticalCenter: parent.verticalCenter
-                                        color: dashboardRoot.localAgentRunning ? "#22c55e" : "#ef4444"
-                                    }
-                                    Text {
-                                        text: dashboardRoot.localAgentRunning ? "Running" : "Stopped"
-                                        font.pixelSize: 12
-                                        font.bold: true
-                                        color: dashboardRoot.localAgentRunning ? "#22c55e" : "#ef4444"
-                                    }
-                                }
-                            }
-
-                            // Autostart Option
-                            Row {
-                                spacing: 8
-                                width: parent.width
-
-                                MouseArea {
-                                    id: autostartCheckArea
-                                    width: 14
-                                    height: 14
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    hoverEnabled: true
-
-                                    Rectangle {
-                                        anchors.fill: parent
-                                        radius: 3
-                                        color: "#0f172a"
-                                        border.color: window.autostartEnabled ? "#00f0ff" : (autostartCheckArea.containsMouse ? "#00f0ff" : Qt.rgba(255, 255, 255, 0.2))
-                                        border.width: 1
-                                        Behavior on border.color { ColorAnimation { duration: 150 } }
-
-                                        Rectangle {
-                                            anchors.fill: parent
-                                            anchors.margins: 3
-                                            radius: 1.5
-                                            color: "#00f0ff"
-                                            visible: window.autostartEnabled
-                                        }
-                                    }
-
-                                    onClicked: {
-                                        var nextState = !window.autostartEnabled;
-                                        bridge.setAutostartEnabled(nextState);
-                                        window.autostartEnabled = bridge.isAutostartEnabled();
-                                    }
-                                }
-
-                                Text {
-                                    text: "Start Client on System Boot"
-                                    color: "#cbd5e1"
-                                    font.pixelSize: 11
-                                    font.bold: true
-                                    anchors.verticalCenter: autostartCheckArea.verticalCenter
-
-                                    MouseArea {
-                                        anchors.fill: parent
-                                        onClicked: autostartCheckArea.clicked(null)
-                                    }
-                                }
-                            }
-
-                            // Close to Tray Option
-                            Row {
-                                spacing: 8
-                                width: parent.width
-
-                                MouseArea {
-                                    id: closeToTrayCheckArea
-                                    width: 14
-                                    height: 14
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    hoverEnabled: true
-
-                                    Rectangle {
-                                        anchors.fill: parent
-                                        radius: 3
-                                        color: "#0f172a"
-                                        border.color: window.closeToTray ? "#00f0ff" : (closeToTrayCheckArea.containsMouse ? "#00f0ff" : Qt.rgba(255, 255, 255, 0.2))
-                                        border.width: 1
-                                        Behavior on border.color { ColorAnimation { duration: 150 } }
-
-                                        Rectangle {
-                                            anchors.fill: parent
-                                            anchors.margins: 3
-                                            radius: 1.5
-                                            color: "#00f0ff"
-                                            visible: window.closeToTray
-                                        }
-                                    }
-
-                                    onClicked: {
-                                        window.closeToTray = !window.closeToTray;
-                                    }
-                                }
-
-                                Text {
-                                    text: "Minimize to System Tray on Close"
-                                    color: "#cbd5e1"
-                                    font.pixelSize: 11
-                                    font.bold: true
-                                    anchors.verticalCenter: closeToTrayCheckArea.verticalCenter
-
-                                    MouseArea {
-                                        anchors.fill: parent
-                                        onClicked: closeToTrayCheckArea.clicked(null)
-                                    }
-                                }
-                            }
-
-                            // Start/Stop Subprocess
-                            Button {
-                                id: localAgentBtn
-                                width: parent.width
-                                onClicked: {
-                                    if (dashboardRoot.localAgentRunning) {
-                                        bridge.stopLocalAgent();
-                                    } else {
-                                        if (agentHostInput.text.trim().length === 0) return;
-                                        bridge.startLocalAgent(dashboardRoot.serverUrl, dashboardRoot.agentToken, agentHostInput.text.trim());
-                                    }
-                                    dashboardRoot.localAgentRunning = bridge.isLocalAgentRunning();
-                                }
-                                background: Rectangle {
-                                    implicitHeight: 36
-                                    radius: 6
-                                    color: dashboardRoot.localAgentRunning 
-                                        ? (localAgentBtn.hovered ? Qt.rgba(239/255, 68/255, 68/255, 0.2) : Qt.rgba(239/255, 68/255, 68/255, 0.1))
-                                        : (localAgentBtn.hovered ? Qt.rgba(34/255, 197/255, 94/255, 0.2) : Qt.rgba(34/255, 197/255, 94/255, 0.1))
-                                    border.color: dashboardRoot.localAgentRunning ? "#ef4444" : "#22c55e"
-                                    border.width: 1
-                                }
-                                contentItem: Text {
-                                    text: dashboardRoot.localAgentRunning ? "Stop Local Agent" : "Start Local Agent"
-                                    color: dashboardRoot.localAgentRunning ? "#ef4444" : "#22c55e"
-                                    font.bold: true
-                                    font.pixelSize: 12
-                                    horizontalAlignment: Text.AlignHCenter
-                                    verticalAlignment: Text.AlignVCenter
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
 
     // ----------------------------------------------------
     // COMPONENT: Application Directory (Grid View)
@@ -1398,7 +868,7 @@ Rectangle {
 
             Text {
                 id: appsSubtitle
-                text: "Select and stream Sunshine-configured apps from " + dashboardRoot.selectedHost.name
+                text: "Select and stream apps from " + dashboardRoot.selectedHost.name
                 font.pixelSize: 12
                 color: "#64748b"
                 anchors.top: appsTitle.bottom
@@ -1407,7 +877,7 @@ Rectangle {
 
             // Removed Direct Desktop button as it is already included as a standard app option by default
 
-            // Apps Grid (Moonlight aspect-ratio cards)
+            // Apps Grid
             ScrollView {
                 anchors.top: appsSubtitle.bottom
                 anchors.bottom: parent.bottom
@@ -1633,7 +1103,7 @@ Rectangle {
                 anchors.centerIn: parent
                 visible: dashboardRoot.appsList.length === 0 && !dashboardRoot.appsLoading
                 spacing: 12
-                Text { text: "No games/apps advertised by Sunshine"; font.pixelSize: 14; color: "#94a3b8"; anchors.horizontalCenter: parent.horizontalCenter }
+                Text { text: "No games/apps available"; font.pixelSize: 14; color: "#94a3b8"; anchors.horizontalCenter: parent.horizontalCenter }
             }
         }
     }

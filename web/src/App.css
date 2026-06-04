@@ -1310,7 +1310,7 @@ body {
   box-shadow: 0 4px 12px rgba(0, 240, 255, 0.1);
 }
 
-/* Sunshine Host Configuration Modal */
+/* Host Configuration Modal */
 .host-settings-overlay {
   position: fixed;
   top: 0;
@@ -1677,7 +1677,7 @@ body {
   }
 }
 
-/* Portrait Cover Grid for Sunshine Apps */
+/* Portrait Cover Grid for Apps */
 .apps-card-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
@@ -1731,7 +1731,7 @@ body {
   justify-content: center;
 }
 
-/* Fallback Card Style to mimic Moonlight */
+/* Fallback Card Style */
 .fallback-card-gradient {
   width: 100%;
   height: 100%;

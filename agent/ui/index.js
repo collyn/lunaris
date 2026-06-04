@@ -5,14 +5,13 @@ document.addEventListener('DOMContentLoaded', () => {
   // DOM Elements
   const agentStatusBadge = document.getElementById('agent-status-badge');
   const agentStatusText = document.getElementById('agent-status-text');
-  const sunshineStatusBadge = document.getElementById('sunshine-status-badge');
-  const sunshineStatusText = document.getElementById('sunshine-status-text');
+
   const agentIdVal = document.getElementById('agent-id-val');
   
   const serverUrlInput = document.getElementById('server-url');
   const serverTokenInput = document.getElementById('server-token');
   const agentNameInput = document.getElementById('agent-name');
-  const autostartSunshineInput = document.getElementById('autostart-sunshine');
+
   const autostartAgentInput = document.getElementById('autostart-agent');
   const closeToTrayAgentInput = document.getElementById('close-to-tray-agent');
   
@@ -65,7 +64,7 @@ document.addEventListener('DOMContentLoaded', () => {
       serverUrlInput.value = config.server_url || 'ws://127.0.0.1:8080';
       serverTokenInput.value = config.server_token || '';
       agentNameInput.value = config.agent_name || '';
-      autostartSunshineInput.checked = !config.no_auto_start_sunshine;
+
       autostartAgentInput.checked = !!config.autostart;
       closeToTrayAgentInput.checked = !!config.close_to_tray;
       agentIdVal.textContent = config.client_unique_id || 'N/A';
@@ -82,14 +81,13 @@ document.addEventListener('DOMContentLoaded', () => {
       const serverUrl = serverUrlInput.value.trim();
       const serverToken = serverTokenInput.value.trim();
       const agentName = agentNameInput.value.trim();
-      const noAutoStartSunshine = !autostartSunshineInput.checked;
+
       const autostart = autostartAgentInput.checked;
       const closeToTray = closeToTrayAgentInput.checked;
 
       await invoke('save_config', {
         serverUrl,
         agentName,
-        noAutoStartSunshine,
         serverToken,
         autostart,
         closeToTray
@@ -146,14 +144,7 @@ document.addEventListener('DOMContentLoaded', () => {
       }
       toggleAgentBtn.disabled = false;
 
-      // Update Sunshine State
-      if (status.sunshine_running) {
-        sunshineStatusBadge.className = 'status-badge status-online';
-        sunshineStatusText.textContent = status.sunshine_pid ? `Running (PID: ${status.sunshine_pid})` : 'Running';
-      } else {
-        sunshineStatusBadge.className = 'status-badge status-offline';
-        sunshineStatusText.textContent = 'Not Running';
-      }
+
 
       // If an error is reported from the background loop
       if (status.last_error) {

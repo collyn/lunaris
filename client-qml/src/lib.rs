@@ -347,8 +347,16 @@ pub fn run() {
         info!("No stream configurations provided on command-line. Starting in Launcher Dashboard mode.");
     }
 
-    // Force Qt Quick to use OpenGL RHI backend to support CUDA-GL interop
-    std::env::set_var("QSG_RHI_BACKEND", "opengl");
+    // Select Qt Quick RHI backend:
+    // - If CUDA-GL interop is needed → force OpenGL
+    // - If user already set QSG_RHI_BACKEND → respect their choice
+    // - Otherwise → prefer Vulkan (OpenGL/GLX can fail on some NVIDIA setups)
+    let cuda_enabled = APP_ARGS.get().map_or(false, |a| !a.disable_cuda);
+    if cuda_enabled {
+        std::env::set_var("QSG_RHI_BACKEND", "opengl");
+    } else if std::env::var("QSG_RHI_BACKEND").is_err() {
+        std::env::set_var("QSG_RHI_BACKEND", "vulkan");
+    }
 
     // 1. Create QGuiApplication
     let mut app = QGuiApplication::new();

@@ -157,7 +157,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     });
 
     if args.pair {
-        info!("Pairing is no longer needed. Sunshine has been removed; lunaris-media is the only backend.");
+        info!("lunaris-media is the streaming backend.");
         return Ok(());
     }
 

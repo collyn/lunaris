@@ -3,7 +3,7 @@ use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
 use tracing::warn;
 
-// ── Input protocol types (extracted from moonlight-common) ──────────────
+// ── Input protocol types ────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MouseButtonAction {

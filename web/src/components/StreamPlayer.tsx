@@ -124,7 +124,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   const canvasReaderRef = useRef<ReadableStreamDefaultReader<VideoFrame> | null>(null);
   const canvasRenderLoopActiveRef = useRef<boolean>(false);
 
-  // Prediction cursor refs — zero-latency local cursor rendering (moonlight-web-stream technique)
+  // Prediction cursor refs — zero-latency local cursor rendering
   const rawPredictionXRef = useRef<number>(-1);
   const rawPredictionYRef = useRef<number>(-1);
   const lastPointerRawUpdateMsRef = useRef<number>(0);
@@ -435,8 +435,6 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       // When pointer is locked, show host cursor (user needs to see it in the stream).
       // When unlocked on mobile trackpad: hide host cursor (SVG virtual cursor shown instead).
       // When unlocked on desktop: keep host cursor visible (browser cursor overlaps it).
-      const shouldHide = locked ? false : (touchMode === "trackpad" && !isHardwareMouseActiveRef.current ? true : !hideLocalCursor);
-      sendSunshineCursorHide(shouldHide);
 
       // Prediction cursor: show on lock, hide on unlock
       if (locked) {
@@ -453,15 +451,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     };
   }, [hideLocalCursor, touchMode]);
 
-  // Hide host cursor when local cursor is active or touch mode is trackpad (mobile only)
-  useEffect(() => {
-    if (status === "Streaming") {
-      // Only hide host cursor in trackpad mode if no hardware mouse is detected (i.e. mobile).
-      // On desktop, the host cursor should always be visible.
-      const shouldHide = isPointerLocked ? false : (touchMode === "trackpad" && !isHardwareMouseActiveRef.current ? true : !hideLocalCursor);
-      sendSunshineCursorHide(shouldHide);
-    }
-  }, [hideLocalCursor, touchMode, status, isPointerLocked]);
+
 
   // Listen to fullscreen changes (e.g. user presses ESC)
   useEffect(() => {
@@ -491,7 +481,6 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   }, []);
 
   // Cache video bounding rect — avoids getBoundingClientRect() layout reflow on every mousemove.
-  // Inspired by moonlight-web-stream's cachedStreamRect pattern.
   useEffect(() => {
     const invalidateRect = () => {
       if (videoRef.current) {
@@ -512,7 +501,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   }, []);
 
   // Prediction cursor: pointerrawupdate + pointermove listeners
-  // Zero-latency cursor technique from moonlight-web-stream:
+  // Zero-latency cursor technique:
   // - Prediction cursor renders at full hardware rate (visual smoothness)
   // - Network sends batched to requestAnimationFrame (~60Hz) to avoid SCTP flooding
   //   that competes with video RTP on the shared DTLS/UDP connection.
@@ -629,7 +618,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
               xNorm = Math.max(0, Math.min(1, xNorm));
               yNorm = Math.max(0, Math.min(1, yNorm));
 
-              // Send as 4096-normalized absolute position (13 bytes, matching moonlight format)
+              // Send as 4096-normalized absolute position (13 bytes)
               const x16 = Math.round(xNorm * 4096.0);
               const y16 = Math.round(yNorm * 4096.0);
 
@@ -1051,30 +1040,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     }
   };
 
-  const sunshineHideCursorRef = useRef<boolean>(false);
-  const sendSunshineCursorHide = (hide: boolean) => {
-    if (hide === sunshineHideCursorRef.current) return;
 
-    const ctrlMod = 2;
-    const caMod = 2 | 4;
-    const casMod = 2 | 4 | 1;
-
-    // 1. Press Ctrl
-    sendRawKeyEvent(17, true, 0);
-    // 2. Press Alt
-    sendRawKeyEvent(18, true, ctrlMod);
-    // 3. Press Shift
-    sendRawKeyEvent(16, true, caMod);
-    // 4. Press N
-    sendRawKeyEvent(78, true, casMod);
-    sendRawKeyEvent(78, false, casMod);
-    // 5. Release Modifiers
-    sendRawKeyEvent(16, false, caMod);
-    sendRawKeyEvent(18, false, ctrlMod);
-    sendRawKeyEvent(17, false, 0);
-
-    sunshineHideCursorRef.current = hide;
-  };
 
   // Global window-level keyboard listeners when streaming is active
   useEffect(() => {
@@ -1483,15 +1449,6 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       }
       channel.onopen = () => {
         addLog(`Data Channel ${channel.label} opened.`);
-        if (channel.label === "keyboard") {
-          setTimeout(() => {
-            // On initial connect: only hide host cursor on mobile trackpad mode.
-            // Desktop users (hardware mouse) should always see the host cursor.
-            const locked = document.pointerLockElement === videoRef.current;
-            const shouldHide = locked ? false : (touchMode === "trackpad" && !isHardwareMouseActiveRef.current ? true : !hideLocalCursor);
-            sendSunshineCursorHide(shouldHide);
-          }, 1000);
-        }
       };
       channel.onclose = () => addLog(`Data Channel ${channel.label} closed.`);
       channel.onerror = (e) => addLog(`Data Channel ${channel.label} error: ${e}`);
@@ -2795,10 +2752,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       isHardwareMouseActiveRef.current = true;
       setIsHardwareMouse(true);
       updateVirtualCursorDOM();
-      // Hardware mouse detected — show host cursor in stream (undo any previous hide)
-      if (sunshineHideCursorRef.current) {
-        sendSunshineCursorHide(false);
-      }
+      // Hardware mouse detected
     }
 
     // When pointer locked, prediction cursor useEffect handles everything
@@ -3642,7 +3596,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
             const newValue = !hideLocalCursor;
             setHideLocalCursor(newValue);
             localStorage.setItem('lunaris_stream_hide_cursor', String(newValue));
-            sendSunshineCursorHide(document.pointerLockElement === videoRef.current ? false : (touchMode === "trackpad" && !isHardwareMouseActiveRef.current ? true : !newValue));
+
           }}
           className={`stream-action-btn ${!hideLocalCursor ? 'active' : ''}`}
           title={hideLocalCursor ? "Show Local Cursor" : "Hide Local Cursor"}
@@ -4195,7 +4149,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
                 <div className="tech-loader"></div>
                 <h3>Connecting to {hostName}</h3>
                 <p>{status}</p>
-                <div className="connecting-subtext">Initializing Moonlight WebRTC session...</div>
+                <div className="connecting-subtext">Initializing WebRTC session...</div>
               </div>
             )}
           </div>

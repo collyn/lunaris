@@ -18,14 +18,7 @@ pub enum PendingDashboardEvent {
         error_msg: String,
         hosts_json: String,
     },
-    PairResult {
-        success: bool,
-        error_msg: String,
-    },
-    UnpairResult {
-        success: bool,
-        error_msg: String,
-    },
+
     AppsResult {
         success: bool,
         error_msg: String,
@@ -463,11 +456,7 @@ pub mod qobject {
             hosts_json: QString,
         );
 
-        #[qsignal]
-        fn pair_result(self: Pin<&mut StreamBridge>, success: bool, error_msg: QString);
 
-        #[qsignal]
-        fn unpair_result(self: Pin<&mut StreamBridge>, success: bool, error_msg: QString);
 
         #[qsignal]
         fn apps_result(
@@ -575,17 +564,7 @@ pub mod qobject {
         #[qinvokable]
         fn fetch_hosts(self: Pin<&mut StreamBridge>);
 
-        #[qinvokable]
-        fn pair_host(
-            self: Pin<&mut StreamBridge>,
-            name: QString,
-            ip: QString,
-            user: QString,
-            pass: QString,
-        );
 
-        #[qinvokable]
-        fn unpair_host(self: Pin<&mut StreamBridge>, host_id: QString);
 
         #[qinvokable]
         fn fetch_apps(self: Pin<&mut StreamBridge>, host_id: QString);
@@ -1130,173 +1109,7 @@ impl qobject::StreamBridge {
         });
     }
 
-    pub fn pair_host(
-        self: Pin<&mut Self>,
-        name: QString,
-        ip: QString,
-        user: QString,
-        pass: QString,
-    ) {
-        let name_str = name.to_string();
-        let ip_str = ip.to_string();
-        let user_str = user.to_string();
-        let pass_str = pass.to_string();
 
-        let settings = match load_settings() {
-            Some(s) => s,
-            None => {
-                PENDING_EVENTS
-                    .lock()
-                    .unwrap()
-                    .push(PendingDashboardEvent::PairResult {
-                        success: false,
-                        error_msg: "Not authenticated".to_string(),
-                    });
-                return;
-            }
-        };
-
-        let server_str = settings.server_url;
-        let token_str = settings.token;
-
-        let mut rust_obj = self.rust_mut();
-        let rt = rust_obj.get_or_init_runtime();
-
-        rt.spawn(async move {
-            let client = reqwest::Client::new();
-            let url = format!("{}/api/hosts/pair", server_str);
-
-            let pair_req = common::PairHostRequest {
-                name: name_str,
-                ip_address: ip_str,
-                sunshine_username: if user_str.is_empty() {
-                    None
-                } else {
-                    Some(user_str)
-                },
-                sunshine_password: if pass_str.is_empty() {
-                    None
-                } else {
-                    Some(pass_str)
-                },
-            };
-
-            let res = client
-                .post(&url)
-                .header("Authorization", format!("Bearer {}", token_str))
-                .json(&pair_req)
-                .send()
-                .await;
-
-            match res {
-                Ok(resp) => {
-                    if resp.status().is_success() {
-                        PENDING_EVENTS
-                            .lock()
-                            .unwrap()
-                            .push(PendingDashboardEvent::PairResult {
-                                success: true,
-                                error_msg: "".to_string(),
-                            });
-                    } else {
-                        let err_msg = if let Ok(err_data) = resp.json::<serde_json::Value>().await {
-                            err_data
-                                .get("error")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("Pairing failed")
-                                .to_string()
-                        } else {
-                            "Pairing failed".to_string()
-                        };
-                        PENDING_EVENTS
-                            .lock()
-                            .unwrap()
-                            .push(PendingDashboardEvent::PairResult {
-                                success: false,
-                                error_msg: err_msg,
-                            });
-                    }
-                }
-                Err(e) => {
-                    let err_msg = format!("Connection failed: {}", e);
-                    PENDING_EVENTS
-                        .lock()
-                        .unwrap()
-                        .push(PendingDashboardEvent::PairResult {
-                            success: false,
-                            error_msg: err_msg,
-                        });
-                }
-            }
-        });
-    }
-
-    pub fn unpair_host(self: Pin<&mut Self>, host_id: QString) {
-        let host_id_str = host_id.to_string();
-
-        let settings = match load_settings() {
-            Some(s) => s,
-            None => {
-                PENDING_EVENTS
-                    .lock()
-                    .unwrap()
-                    .push(PendingDashboardEvent::UnpairResult {
-                        success: false,
-                        error_msg: "Not authenticated".to_string(),
-                    });
-                return;
-            }
-        };
-
-        let server_str = settings.server_url;
-        let token_str = settings.token;
-
-        let mut rust_obj = self.rust_mut();
-        let rt = rust_obj.get_or_init_runtime();
-
-        rt.spawn(async move {
-            let client = reqwest::Client::new();
-            let url = format!("{}/api/hosts/{}", server_str, host_id_str);
-
-            let res = client
-                .delete(&url)
-                .header("Authorization", format!("Bearer {}", token_str))
-                .send()
-                .await;
-
-            match res {
-                Ok(resp) => {
-                    if resp.status().is_success() {
-                        PENDING_EVENTS
-                            .lock()
-                            .unwrap()
-                            .push(PendingDashboardEvent::UnpairResult {
-                                success: true,
-                                error_msg: "".to_string(),
-                            });
-                    } else {
-                        PENDING_EVENTS
-                            .lock()
-                            .unwrap()
-                            .push(PendingDashboardEvent::UnpairResult {
-                                success: false,
-                                error_msg: "Failed to unpair host".to_string(),
-                            });
-                    }
-                }
-                Err(e) => {
-                    let err_msg = format!("Connection failed: {}", e);
-                    PENDING_EVENTS
-                        .lock()
-                        .unwrap()
-                        .push(PendingDashboardEvent::UnpairResult {
-                            success: false,
-                            error_msg: err_msg,
-                        });
-                }
-            }
-        });
-    }
 
     pub fn fetch_apps(self: Pin<&mut Self>, host_id: QString) {
         let host_id_str = host_id.to_string();
@@ -1550,14 +1363,7 @@ impl qobject::StreamBridge {
                     let hosts_qstr = QString::from(&hosts_json);
                     self.as_mut().hosts_result(success, err_qstr, hosts_qstr);
                 }
-                PendingDashboardEvent::PairResult { success, error_msg } => {
-                    let err_qstr = QString::from(&error_msg);
-                    self.as_mut().pair_result(success, err_qstr);
-                }
-                PendingDashboardEvent::UnpairResult { success, error_msg } => {
-                    let err_qstr = QString::from(&error_msg);
-                    self.as_mut().unpair_result(success, err_qstr);
-                }
+
                 PendingDashboardEvent::AppsResult {
                     success,
                     error_msg,

@@ -5,7 +5,7 @@ use axum::{
     routing::{delete, get, post},
     Json, Router,
 };
-use common::{AuthResponse, HostInfo, HostStatus, LoginRequest, PairHostRequest};
+use common::{AuthResponse, HostInfo, HostStatus, LoginRequest};
 use std::sync::Arc;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
@@ -18,7 +18,7 @@ pub mod bridge;
 pub mod buffer;
 mod db;
 pub mod input;
-pub mod pairing;
+
 pub mod signaling;
 pub mod video;
 
@@ -164,8 +164,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/auth/login", post(login_handler))
         .route("/api/auth/me", get(admin::get_current_user))
         .route("/api/hosts", get(hosts_handler))
-        .route("/api/hosts/pair", post(pair_host_handler))
-        .route("/api/hosts/:id", delete(unpair_host_handler))
+        .route("/api/hosts/:id", delete(delete_host_handler))
         .route("/api/agent/token", get(agent_token_handler))
         .route(
             "/api/admin/users",
@@ -384,91 +383,7 @@ async fn hosts_handler(
     Ok((StatusCode::OK, Json(hosts)))
 }
 
-async fn pair_host_handler(
-    user: AuthenticatedUser,
-    State(state): State<Arc<SignalingState>>,
-    Json(payload): Json<PairHostRequest>,
-) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    info!("Pairing host: {} at {}", payload.name, payload.ip_address);
-
-    let username = match payload.sunshine_username.as_deref() {
-        Some(u) if !u.trim().is_empty() => u,
-        _ => {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({ "error": "Sunshine Web UI username is required" })),
-            ));
-        }
-    };
-
-    let password = match payload.sunshine_password.as_deref() {
-        Some(p) if !p.is_empty() => p,
-        _ => {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({ "error": "Sunshine Web UI password is required" })),
-            ));
-        }
-    };
-
-    // 1. Perform pairing handshake using Moonlight client implementation
-    let config = crate::pairing::perform_pairing(
-        &payload.ip_address,
-        47989, // Sunshine default port
-        username,
-        password,
-        &payload.name,
-    )
-    .await
-    .map_err(|e| {
-        error!("Pairing failed: {}", e);
-        (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "error": format!("Pairing failed: {}", e) })),
-        )
-    })?;
-
-    // 2. Insert host into DB
-    sqlx::query(
-        "INSERT INTO hosts (id, name, status, ip_address, owner_id, client_unique_id, client_private_key, client_certificate, server_certificate, server_codec_mode_support)
-         VALUES (?, ?, 'Online', ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(id) DO UPDATE SET
-            name = excluded.name,
-            ip_address = excluded.ip_address,
-            owner_id = excluded.owner_id,
-            client_unique_id = excluded.client_unique_id,
-            client_private_key = excluded.client_private_key,
-            client_certificate = excluded.client_certificate,
-            server_certificate = excluded.server_certificate,
-            server_codec_mode_support = excluded.server_codec_mode_support,
-            status = 'Online';"
-    )
-    .bind(&config.client_unique_id)
-    .bind(&payload.name)
-    .bind(&payload.ip_address)
-    .bind(&user.user_id)
-    .bind(&config.client_unique_id)
-    .bind(&config.client_private_key)
-    .bind(&config.client_certificate)
-    .bind(&config.server_certificate)
-    .bind(config.server_codec_mode_support as i64)
-    .execute(&state.db)
-    .await
-    .map_err(|e| {
-        error!("Database error: {}", e);
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({ "error": "Failed to save host to database" })),
-        )
-    })?;
-
-    Ok((
-        StatusCode::CREATED,
-        Json(serde_json::json!({ "id": config.client_unique_id })),
-    ))
-}
-
-async fn unpair_host_handler(
+async fn delete_host_handler(
     host_id_path: axum::extract::Path<String>,
     State(state): State<Arc<SignalingState>>,
 ) -> impl IntoResponse {

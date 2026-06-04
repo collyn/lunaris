@@ -339,6 +339,16 @@ fn open_url(url: String) -> Result<(), String> {
 // GUI Entrypoint
 // -------------------------------------------------------------------------
 pub fn run_gui(minimized: bool) {
+    // On Linux, WebKitGTK may crash with "Could not create GBM EGL display"
+    // on NVIDIA systems with broken EGL drivers. Disable the DMA-BUF renderer
+    // to force software compositing in WebKit as a fallback.
+    #[cfg(target_os = "linux")]
+    {
+        if std::env::var("WEBKIT_DISABLE_DMABUF_RENDERER").is_err() {
+            std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+        }
+    }
+
     let config = load_config("agent_config.json").unwrap_or_else(|_| AgentConfig {
         client_unique_id: "".to_string(),
         client_private_key: "".to_string(),

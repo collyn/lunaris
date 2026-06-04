@@ -1,10 +1,65 @@
 use crate::buffer::ByteBuffer;
-use moonlight_common::stream::control::{
-    ControllerButtons, ControllerCapabilities, ControllerType, KeyAction, KeyFlags, KeyModifiers,
-    MouseButton, MouseButtonAction, TouchEventType,
-};
+use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
 use tracing::warn;
+
+// --- Types previously imported from moonlight_common::stream::control ---
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, FromPrimitive)]
+#[repr(u8)]
+pub enum MouseButton {
+    Left = 0,
+    Middle = 1,
+    Right = 2,
+    X1 = 3,
+    X2 = 4,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MouseButtonAction {
+    Press,
+    Release,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyAction {
+    Down,
+    Up,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeyModifiers(pub i8);
+
+impl KeyModifiers {
+    pub fn from_bits(bits: i8) -> Option<Self> {
+        Some(Self(bits))
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeyFlags(pub u32);
+
+impl KeyFlags {
+    pub fn empty() -> Self {
+        Self(0)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TouchEventType {
+    Down,
+    Move,
+    Cancel,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ControllerButtons(pub u32);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ControllerCapabilities(pub u32);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ControllerType(pub u32);
 
 // --- Transport Channel IDs ---
 pub struct TransportChannelId;

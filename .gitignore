@@ -1,7 +1,7 @@
 # Rust / Cargo
 /target
 target/
-moonlight-common-rust/
+
 
 
 # Build outputs & Binaries

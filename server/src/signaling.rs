@@ -472,31 +472,7 @@ async fn handle_agent_signaling(sig: SignalingMessage, agent_id: &str, state: Ar
             }
             state.set_host_status(agent_id, HostStatus::Online).await;
         }
-        SignalingMessage::SunshineConfigResponse { target_id, config } => {
-            if let Some(client_tx) = state.clients.read().unwrap().get(&target_id) {
-                let _ = client_tx.send(ServerToClientMessage::Signaling(
-                    SignalingMessage::SunshineConfigResponse {
-                        target_id: agent_id.to_string(),
-                        config,
-                    },
-                ));
-            }
-        }
-        SignalingMessage::UpdateSunshineConfigResponse {
-            target_id,
-            success,
-            error,
-        } => {
-            if let Some(client_tx) = state.clients.read().unwrap().get(&target_id) {
-                let _ = client_tx.send(ServerToClientMessage::Signaling(
-                    SignalingMessage::UpdateSunshineConfigResponse {
-                        target_id: agent_id.to_string(),
-                        success,
-                        error,
-                    },
-                ));
-            }
-        }
+
         SignalingMessage::AppListResponse {
             target_id,
             apps,
@@ -614,156 +590,13 @@ async fn handle_client_signaling(
                 }
             }
 
-            // Fallback: direct server-side bridge (Agent-less mode)
-            // Retrieve host credentials from DB
-            let row: Option<(Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<i64>)> = sqlx::query_as(
-                "SELECT ip_address, client_unique_id, client_private_key, client_certificate, server_certificate, server_codec_mode_support FROM hosts WHERE id = ?"
-            )
-            .bind(&host_id)
-            .fetch_optional(&state.db)
-            .await
-            .unwrap_or(None);
-
-            let (
-                ip_address,
-                client_unique_id,
-                client_private_key,
-                client_certificate,
-                server_certificate,
-                server_codec_mode_support,
-            ) = match row {
-                Some((
-                    Some(ip),
-                    Some(uuid),
-                    Some(key),
-                    Some(cert),
-                    Some(srv_cert),
-                    support_val,
-                )) => (
-                    ip,
-                    uuid,
-                    key,
-                    cert,
-                    srv_cert,
-                    support_val.unwrap_or(0) as u32,
-                ),
-                _ => {
-                    error!(
-                        "Host {} credentials not found or incomplete in database",
-                        host_id
-                    );
-                    if let Some(client_tx) = state.clients.read().unwrap().get(client_id) {
-                        let _ = client_tx.send(ServerToClientMessage::Signaling(SignalingMessage::Error {
-                            message: "Host credentials not found or incomplete. Please pair the host again.".to_string(),
-                        }));
-                    }
-                    return;
-                }
-            };
-
-            let agent_config = crate::pairing::AgentConfig {
-                client_unique_id,
-                client_private_key,
-                client_certificate,
-                server_certificate,
-                server_codec_mode_support,
-            };
-
-            let client_tx = match state.clients.read().unwrap().get(client_id).cloned() {
-                Some(tx) => tx,
-                None => {
-                    warn!(
-                        "Client {} disconnected before session could be set up",
-                        client_id
-                    );
-                    return;
-                }
-            };
-
-            // Setup bridge session (Sunshine runs on port 47989 by default)
-            let ice_servers = state.fetch_ice_servers().await;
-            let session = match crate::bridge::setup_bridge_session(
-                agent_config,
-                client_id.to_string(),
-                ip_address,
-                47989,
-                client_tx.clone(),
-                host_id.clone(),
-                width,
-                height,
-                fps,
-                bitrate,
-                codec.clone(),
-                app_id,
-                Some(ice_servers.clone()),
-            )
-            .await
-            {
-                Ok(s) => s,
-                Err(e) => {
-                    error!("Failed to setup WebRTC bridge session: {:?}", e);
-                    let _ =
-                        client_tx.send(ServerToClientMessage::Signaling(SignalingMessage::Error {
-                            message: format!("Failed to bridge connection to Sunshine: {:?}", e),
-                        }));
-                    return;
-                }
-            };
-
-            // Generate SDP Offer
-            let offer = match session.peer_connection.create_offer(None).await {
-                Ok(o) => o,
-                Err(e) => {
-                    error!("Failed to create SDP Offer: {:?}", e);
-                    let _ =
-                        client_tx.send(ServerToClientMessage::Signaling(SignalingMessage::Error {
-                            message: format!("Failed to create WebRTC Offer: {:?}", e),
-                        }));
-                    return;
-                }
-            };
-
-            if let Err(e) = session
-                .peer_connection
-                .set_local_description(offer.clone())
-                .await
-            {
-                error!("Failed to set local description: {:?}", e);
+            // No agent available for this host
+            error!("No agent connected for host {}", host_id);
+            if let Some(client_tx) = state.clients.read().unwrap().get(client_id) {
                 let _ = client_tx.send(ServerToClientMessage::Signaling(SignalingMessage::Error {
-                    message: format!("Failed to set local description: {:?}", e),
+                    message: "No agent connected for this host. Please ensure the agent is running.".to_string(),
                 }));
-                return;
             }
-
-            // Send Offer back to Client
-            let sdp_msg = ServerToClientMessage::Signaling(SignalingMessage::Sdp {
-                target_id: host_id.clone(),
-                sdp: common::RtcSessionDescription {
-                    ty: common::RtcSdpType::Offer,
-                    sdp: offer.sdp,
-                },
-                ice_servers: Some(ice_servers),
-                webtransport_port: session.webtransport_port,
-                webtransport_cert_hash: session.webtransport_cert_hash.clone(),
-            });
-            let _ = client_tx.send(sdp_msg);
-
-            // Store active session and client-to-host mapping
-            state
-                .client_to_agent
-                .write()
-                .unwrap()
-                .insert(client_id.to_string(), host_id.clone());
-            state
-                .local_sessions
-                .write()
-                .unwrap()
-                .insert(host_id.clone(), session);
-            state.set_host_status(&host_id, HostStatus::Busy).await;
-            info!(
-                "Local bridge session initialized for host {} and client {}",
-                host_id, client_id
-            );
         }
         SignalingMessage::Sdp {
             target_id,
@@ -908,25 +741,7 @@ async fn handle_client_signaling(
             state.client_to_agent.write().unwrap().remove(client_id);
             state.set_host_status(&target_id, HostStatus::Online).await;
         }
-        SignalingMessage::GetSunshineConfig { target_id } => {
-            if let Some(agent_tx) = state.agents.read().unwrap().get(&target_id) {
-                let _ = agent_tx.send(ServerToAgentMessage::Signaling(
-                    SignalingMessage::GetSunshineConfig {
-                        target_id: client_id.to_string(),
-                    },
-                ));
-            }
-        }
-        SignalingMessage::UpdateSunshineConfig { target_id, config } => {
-            if let Some(agent_tx) = state.agents.read().unwrap().get(&target_id) {
-                let _ = agent_tx.send(ServerToAgentMessage::Signaling(
-                    SignalingMessage::UpdateSunshineConfig {
-                        target_id: client_id.to_string(),
-                        config,
-                    },
-                ));
-            }
-        }
+
         SignalingMessage::GetAppList { target_id } => {
             let agent_tx_opt = {
                 let agents = state.agents.read().unwrap();
@@ -939,41 +754,14 @@ async fn handle_client_signaling(
                     },
                 ));
             } else {
-                let state_clone = state.clone();
-                let client_id_clone = client_id.to_string();
-                let host_id = target_id.clone();
-                tokio::spawn(async move {
-                    match get_agentless_app_list(&state_clone, &host_id).await {
-                        Ok((apps, current_game_id)) => {
-                            if let Some(client_tx) =
-                                state_clone.clients.read().unwrap().get(&client_id_clone)
-                            {
-                                let _ = client_tx.send(ServerToClientMessage::Signaling(
-                                    SignalingMessage::AppListResponse {
-                                        target_id: host_id,
-                                        apps,
-                                        current_game_id,
-                                    },
-                                ));
-                            }
-                        }
-                        Err(e) => {
-                            error!(
-                                "Failed to get app list for agentless host {}: {:?}",
-                                host_id, e
-                            );
-                            if let Some(client_tx) =
-                                state_clone.clients.read().unwrap().get(&client_id_clone)
-                            {
-                                let _ = client_tx.send(ServerToClientMessage::Signaling(
-                                    SignalingMessage::Error {
-                                        message: format!("Failed to retrieve app list: {:?}", e),
-                                    },
-                                ));
-                            }
-                        }
-                    }
-                });
+                warn!("No agent connected for host {}, cannot get app list", target_id);
+                if let Some(client_tx) = state.clients.read().unwrap().get(client_id) {
+                    let _ = client_tx.send(ServerToClientMessage::Signaling(
+                        SignalingMessage::Error {
+                            message: "No agent connected for this host.".to_string(),
+                        },
+                    ));
+                }
             }
         }
         SignalingMessage::StopActiveStream { target_id } => {
@@ -988,43 +776,16 @@ async fn handle_client_signaling(
                     },
                 ));
             } else {
-                let state_clone = state.clone();
-                let client_id_clone = client_id.to_string();
-                let host_id = target_id.clone();
-                tokio::spawn(async move {
-                    match stop_agentless_stream(&state_clone, &host_id).await {
-                        Ok(success) => {
-                            if let Some(client_tx) =
-                                state_clone.clients.read().unwrap().get(&client_id_clone)
-                            {
-                                let _ = client_tx.send(ServerToClientMessage::Signaling(
-                                    SignalingMessage::StopActiveStreamResponse {
-                                        target_id: host_id,
-                                        success,
-                                        error: None,
-                                    },
-                                ));
-                            }
-                        }
-                        Err(e) => {
-                            error!(
-                                "Failed to stop stream for agentless host {}: {:?}",
-                                host_id, e
-                            );
-                            if let Some(client_tx) =
-                                state_clone.clients.read().unwrap().get(&client_id_clone)
-                            {
-                                let _ = client_tx.send(ServerToClientMessage::Signaling(
-                                    SignalingMessage::StopActiveStreamResponse {
-                                        target_id: host_id,
-                                        success: false,
-                                        error: Some(format!("{:?}", e)),
-                                    },
-                                ));
-                            }
-                        }
-                    }
-                });
+                warn!("No agent connected for host {}, cannot stop stream", target_id);
+                if let Some(client_tx) = state.clients.read().unwrap().get(client_id) {
+                    let _ = client_tx.send(ServerToClientMessage::Signaling(
+                        SignalingMessage::StopActiveStreamResponse {
+                            target_id: target_id.clone(),
+                            success: false,
+                            error: Some("No agent connected for this host.".to_string()),
+                        },
+                    ));
+                }
             }
         }
         SignalingMessage::GetCapabilities { target_id } => {
@@ -1040,120 +801,4 @@ async fn handle_client_signaling(
     }
 }
 
-async fn get_agentless_app_list(
-    state: &SignalingState,
-    host_id: &str,
-) -> Result<(Vec<common::AppInfo>, u32), anyhow::Error> {
-    use moonlight_common::high::tokio::MoonlightHost;
-    use moonlight_common::http::client::tokio_hyper::TokioHyperClient;
-    use moonlight_common::http::{ClientIdentifier, ClientSecret, ServerIdentifier};
 
-    let row: Option<(Option<String>, Option<String>, Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
-        "SELECT ip_address, client_unique_id, client_private_key, client_certificate, server_certificate FROM hosts WHERE id = ?"
-    )
-    .bind(host_id)
-    .fetch_optional(&state.db)
-    .await?;
-
-    let (ip_address, client_unique_id, client_private_key, client_certificate, server_certificate) =
-        match row {
-            Some((Some(ip), Some(uuid), Some(key), Some(cert), Some(srv_cert))) => {
-                (ip, uuid, key, cert, srv_cert)
-            }
-            _ => return Err(anyhow::anyhow!("Host credentials not found or incomplete")),
-        };
-
-    let host = MoonlightHost::<TokioHyperClient>::new(ip_address, 47989, Some(client_unique_id))?;
-
-    let client_cert_pem = pem::parse(&client_certificate)?;
-    let client_key_pem = pem::parse(&client_private_key)?;
-    let server_cert_pem = pem::parse(&server_certificate)?;
-
-    host.set_identity(
-        ClientIdentifier::from_pem(client_cert_pem),
-        ClientSecret::from_pem(client_key_pem),
-        ServerIdentifier::from_pem(server_cert_pem),
-    )
-    .await?;
-
-    let apps = host.app_list().await?;
-    let current_game = host.current_game().await?;
-
-    let host_ref = &host;
-    let mut futures = Vec::new();
-    for app in apps {
-        futures.push(async move {
-            let icon_base64 = match host_ref.request_app_image(app.id).await {
-                Ok(bytes) => {
-                    use common::base64::Engine;
-                    Some(common::base64::prelude::BASE64_STANDARD.encode(bytes))
-                }
-                Err(e) => {
-                    error!("Failed to fetch icon for app {}: {:?}", app.id, e);
-                    None
-                }
-            };
-            common::AppInfo {
-                id: app.id,
-                title: app.title,
-                icon_base64,
-            }
-        });
-    }
-    let app_infos = futures_util::future::join_all(futures).await;
-
-    Ok((app_infos, current_game))
-}
-
-async fn stop_agentless_stream(
-    state: &SignalingState,
-    host_id: &str,
-) -> Result<bool, anyhow::Error> {
-    use moonlight_common::high::tokio::MoonlightHost;
-    use moonlight_common::http::client::tokio_hyper::TokioHyperClient;
-    use moonlight_common::http::{ClientIdentifier, ClientSecret, ServerIdentifier};
-
-    let old_session = {
-        let mut sessions = state.local_sessions.write().unwrap();
-        sessions.remove(host_id)
-    };
-    if let Some(session) = old_session {
-        let _ = session.peer_connection.close().await;
-        let mut stream_lock = session.moonlight_stream.write();
-        if let Some(stream) = stream_lock.take() {
-            stream.stop();
-        }
-    }
-
-    let row: Option<(Option<String>, Option<String>, Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
-        "SELECT ip_address, client_unique_id, client_private_key, client_certificate, server_certificate FROM hosts WHERE id = ?"
-    )
-    .bind(host_id)
-    .fetch_optional(&state.db)
-    .await?;
-
-    let (ip_address, client_unique_id, client_private_key, client_certificate, server_certificate) =
-        match row {
-            Some((Some(ip), Some(uuid), Some(key), Some(cert), Some(srv_cert))) => {
-                (ip, uuid, key, cert, srv_cert)
-            }
-            _ => return Err(anyhow::anyhow!("Host credentials not found or incomplete")),
-        };
-
-    let host = MoonlightHost::<TokioHyperClient>::new(ip_address, 47989, Some(client_unique_id))?;
-
-    let client_cert_pem = pem::parse(&client_certificate)?;
-    let client_key_pem = pem::parse(&client_private_key)?;
-    let server_cert_pem = pem::parse(&server_certificate)?;
-
-    host.set_identity(
-        ClientIdentifier::from_pem(client_cert_pem),
-        ClientSecret::from_pem(client_key_pem),
-        ServerIdentifier::from_pem(server_cert_pem),
-    )
-    .await?;
-
-    let cancelled = host.cancel().await?;
-    state.set_host_status(host_id, HostStatus::Online).await;
-    Ok(cancelled)
-}
