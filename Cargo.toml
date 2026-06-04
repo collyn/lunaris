@@ -4,7 +4,7 @@ members = [
     "agent",
     "common",
     "client-desktop",
-    "client-qml", "scratch/test_arboard",
+    "client-qml",
 ]
 resolver = "2"
 
