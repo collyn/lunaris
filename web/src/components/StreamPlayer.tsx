@@ -3013,7 +3013,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
                   )}
                 </div>
 
-                <div className="settings-group">
+                <div className="settings-group full-width">
                   <label htmlFor="bitrate">Bitrate (Kbps)</label>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
                     <input 
@@ -3060,42 +3060,41 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
                   </select>
                 </div>
                 {!!(window as any).__TAURI__ && (
-                  <div className="settings-group full-width" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginTop: '0.5rem' }}>
+                  <div className="settings-checkbox-group">
                     <input 
                       type="checkbox" 
                       id="useNativeClient"
                       checked={typeof window.RTCPeerConnection === 'undefined' ? true : draftUseNativeClient} 
                       disabled={typeof window.RTCPeerConnection === 'undefined'}
                       onChange={(e) => setDraftUseNativeClient(e.target.checked)}
-                      style={{ width: 'auto', margin: 0, cursor: typeof window.RTCPeerConnection === 'undefined' ? 'not-allowed' : 'pointer' }}
+                      style={{ cursor: typeof window.RTCPeerConnection === 'undefined' ? 'not-allowed' : 'pointer' }}
                     />
-                    <label htmlFor="useNativeClient" style={{ cursor: typeof window.RTCPeerConnection === 'undefined' ? 'not-allowed' : 'pointer', margin: 0, userSelect: 'none', fontWeight: 'normal' }}>
+                    <label htmlFor="useNativeClient" style={{ cursor: typeof window.RTCPeerConnection === 'undefined' ? 'not-allowed' : 'pointer' }}>
                       Use native client binary {typeof window.RTCPeerConnection === 'undefined' ? "(Forced: Webview WebRTC unsupported on Linux WebKitGTK)" : "(bypasses WebView-based WebRTC, recommended for Desktop)"}
                     </label>
                   </div>
                 )}
-                <div className="settings-group full-width" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginTop: '0.5rem' }}>
+                <div className="settings-checkbox-group">
                   <input 
                     type="checkbox" 
                     id="useCanvasRenderer"
                     checked={draftUseCanvasRenderer} 
                     disabled={typeof (window as any).MediaStreamTrackProcessor === 'undefined' || isIOSOrSafari}
                     onChange={(e) => setDraftUseCanvasRenderer(e.target.checked)}
-                    style={{ width: 'auto', margin: 0, cursor: (typeof (window as any).MediaStreamTrackProcessor === 'undefined' || isIOSOrSafari) ? 'not-allowed' : 'pointer' }}
+                    style={{ cursor: (typeof (window as any).MediaStreamTrackProcessor === 'undefined' || isIOSOrSafari) ? 'not-allowed' : 'pointer' }}
                   />
-                  <label htmlFor="useCanvasRenderer" style={{ cursor: (typeof (window as any).MediaStreamTrackProcessor === 'undefined' || isIOSOrSafari) ? 'not-allowed' : 'pointer', margin: 0, userSelect: 'none', fontWeight: 'normal' }}>
+                  <label htmlFor="useCanvasRenderer" style={{ cursor: (typeof (window as any).MediaStreamTrackProcessor === 'undefined' || isIOSOrSafari) ? 'not-allowed' : 'pointer' }}>
                     Use Canvas Renderer {typeof (window as any).MediaStreamTrackProcessor === 'undefined' ? "(Unsupported by browser)" : isIOSOrSafari ? "(Disabled on iOS/Safari due to WebKit limits)" : "(Highly recommended - zero latency & no stutter)"}
                   </label>
                 </div>
-                <div className="settings-group full-width" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginTop: '0.5rem' }}>
+                <div className="settings-checkbox-group">
                   <input 
                     type="checkbox" 
                     id="virtualDisplay"
                     checked={draftVirtualDisplay} 
                     onChange={(e) => setDraftVirtualDisplay(e.target.checked)}
-                    style={{ width: 'auto', margin: 0, cursor: 'pointer' }}
                   />
-                  <label htmlFor="virtualDisplay" style={{ cursor: 'pointer', margin: 0, userSelect: 'none', fontWeight: 'normal' }}>
+                  <label htmlFor="virtualDisplay">
                     Create Virtual Display (Linux: xrandr virtual output, Windows: IddSampleDriver required)
                   </label>
                 </div>
@@ -3351,7 +3350,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
               </div>
 
               {availableDisplays.length > 0 && (
-                <div className="settings-group">
+                <div className="settings-group full-width">
                   <label htmlFor="display">Display</label>
                   <select 
                     id="display" 
@@ -3368,7 +3367,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
                 </div>
               )}
 
-              <div className="settings-group">
+              <div className="settings-group full-width">
                 <label htmlFor="bitrate">Bitrate (Kbps)</label>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
                   <input 
@@ -3416,42 +3415,41 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
                 </select>
               </div>
               {!!(window as any).__TAURI__ && (
-                <div className="settings-group full-width" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginTop: '0.5rem' }}>
+                <div className="settings-checkbox-group">
                   <input 
                     type="checkbox" 
                     id="useNativeClient"
                     checked={typeof window.RTCPeerConnection === 'undefined' ? true : draftUseNativeClient} 
                     disabled={typeof window.RTCPeerConnection === 'undefined'}
                     onChange={(e) => setDraftUseNativeClient(e.target.checked)}
-                    style={{ width: 'auto', margin: 0, cursor: typeof window.RTCPeerConnection === 'undefined' ? 'not-allowed' : 'pointer' }}
+                    style={{ cursor: typeof window.RTCPeerConnection === 'undefined' ? 'not-allowed' : 'pointer' }}
                   />
-                  <label htmlFor="useNativeClient" style={{ cursor: typeof window.RTCPeerConnection === 'undefined' ? 'not-allowed' : 'pointer', margin: 0, userSelect: 'none', fontWeight: 'normal' }}>
+                  <label htmlFor="useNativeClient" style={{ cursor: typeof window.RTCPeerConnection === 'undefined' ? 'not-allowed' : 'pointer' }}>
                     Use native client binary {typeof window.RTCPeerConnection === 'undefined' ? "(Forced: Webview WebRTC unsupported on Linux WebKitGTK)" : "(bypasses WebView-based WebRTC, recommended for Desktop)"}
                   </label>
                 </div>
               )}
-              <div className="settings-group full-width" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginTop: '0.5rem' }}>
+              <div className="settings-checkbox-group">
                 <input 
                   type="checkbox" 
                   id="useCanvasRenderer"
                   checked={draftUseCanvasRenderer} 
                   disabled={typeof (window as any).MediaStreamTrackProcessor === 'undefined' || isIOSOrSafari}
                   onChange={(e) => setDraftUseCanvasRenderer(e.target.checked)}
-                  style={{ width: 'auto', margin: 0, cursor: (typeof (window as any).MediaStreamTrackProcessor === 'undefined' || isIOSOrSafari) ? 'not-allowed' : 'pointer' }}
+                  style={{ cursor: (typeof (window as any).MediaStreamTrackProcessor === 'undefined' || isIOSOrSafari) ? 'not-allowed' : 'pointer' }}
                 />
-                <label htmlFor="useCanvasRenderer" style={{ cursor: (typeof (window as any).MediaStreamTrackProcessor === 'undefined' || isIOSOrSafari) ? 'not-allowed' : 'pointer', margin: 0, userSelect: 'none', fontWeight: 'normal' }}>
+                <label htmlFor="useCanvasRenderer" style={{ cursor: (typeof (window as any).MediaStreamTrackProcessor === 'undefined' || isIOSOrSafari) ? 'not-allowed' : 'pointer' }}>
                   Use Canvas Renderer {typeof (window as any).MediaStreamTrackProcessor === 'undefined' ? "(Unsupported by browser)" : isIOSOrSafari ? "(Disabled on iOS/Safari due to WebKit limits)" : "(Highly recommended - zero latency & no stutter)"}
                 </label>
               </div>
-              <div className="settings-group full-width" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginTop: '0.5rem' }}>
+              <div className="settings-checkbox-group">
                 <input 
                   type="checkbox" 
                   id="virtualDisplay"
                   checked={draftVirtualDisplay} 
                   onChange={(e) => setDraftVirtualDisplay(e.target.checked)}
-                  style={{ width: 'auto', margin: 0, cursor: 'pointer' }}
                 />
-                <label htmlFor="virtualDisplay" style={{ cursor: 'pointer', margin: 0, userSelect: 'none', fontWeight: 'normal' }}>
+                <label htmlFor="virtualDisplay">
                   Create Virtual Display (Linux: xrandr virtual output, Windows: IddSampleDriver required)
                 </label>
               </div>
