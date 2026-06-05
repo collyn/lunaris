@@ -233,6 +233,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   const [zoomScale, setZoomScale] = useState<number>(1);
   const [zoomPan, setZoomPan] = useState<{ x: number, y: number }>({ x: 0, y: 0 });
   const [showMobileMenu, setShowMobileMenu] = useState<boolean>(false);
+  const [showDesktopMenu, setShowDesktopMenu] = useState<boolean>(false);
   const [isKeyboardActive, setIsKeyboardActive] = useState<boolean>(false);
   const [isMobileFooterVisible, setIsMobileFooterVisible] = useState<boolean>(true);
   const [modifierKeys, setModifierKeys] = useState<{ ctrl: boolean; alt: boolean; shift: boolean; meta: boolean }>({
@@ -675,7 +676,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       return;
     }
 
-    if (showSettingsModal || isHeaderPinned) {
+    if (showSettingsModal || isHeaderPinned || showDesktopMenu) {
       if (headerTimeoutRef.current) {
         clearTimeout(headerTimeoutRef.current);
         headerTimeoutRef.current = null;
@@ -698,7 +699,14 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
         clearTimeout(headerTimeoutRef.current);
       }
     };
-  }, [isHeaderVisible, isHeaderPinned, showSettingsModal, status]);
+  }, [isHeaderVisible, isHeaderPinned, showSettingsModal, status, showDesktopMenu]);
+
+  // Sync desktop menu visibility with header visibility
+  useEffect(() => {
+    if (!isHeaderVisible) {
+      setShowDesktopMenu(false);
+    }
+  }, [isHeaderVisible]);
 
   // Sync to live edge on focus, tab visibility change, or mouse enter
   useEffect(() => {
@@ -3795,6 +3803,21 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
           )}
         </button>
 
+        {/* More Options Desktop Action */}
+        <button 
+          onClick={() => {
+            setShowDesktopMenu(prev => !prev);
+          }}
+          className={`stream-action-btn ${showDesktopMenu ? 'active' : ''}`}
+          title="More Options"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="12" cy="12" r="1.5" />
+            <circle cx="12" cy="5" r="1.5" />
+            <circle cx="12" cy="19" r="1.5" />
+          </svg>
+        </button>
+
         {/* Collapse Header Action */}
         <button 
           onClick={() => {
@@ -3811,6 +3834,184 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
           </svg>
         </button>
       </div>
+
+      {/* Desktop Controls Popover Menu */}
+      {isStreaming && showDesktopMenu && isHeaderVisible && (
+        <div 
+          className="desktop-controls-menu"
+          onMouseEnter={() => {
+            if (headerTimeoutRef.current) {
+              clearTimeout(headerTimeoutRef.current);
+              headerTimeoutRef.current = null;
+            }
+          }}
+          onMouseLeave={() => {
+            if (status === "Streaming" && !showSettingsModal && !isHeaderPinned) {
+              if (headerTimeoutRef.current) {
+                clearTimeout(headerTimeoutRef.current);
+              }
+              headerTimeoutRef.current = setTimeout(() => {
+                setIsHeaderVisible(false);
+              }, 3000);
+            }
+          }}
+        >
+          <div className="drawer-header">
+            <h4>Controls & Settings</h4>
+          </div>
+
+          {/* Mouse Mode Section */}
+          <div className="drawer-section">
+            <span className="section-label">Mouse Mode</span>
+            <div className="mode-toggle-grid">
+              <button 
+                onClick={() => {
+                  setTouchMode('direct');
+                  localStorage.setItem('lunaris_mobile_touch_mode', 'direct');
+                }}
+                className={`btn-toggle-option ${touchMode === 'direct' ? 'active' : ''}`}
+              >
+                Touchscreen
+              </button>
+              <button 
+                onClick={() => {
+                  setTouchMode('trackpad');
+                  localStorage.setItem('lunaris_mobile_touch_mode', 'trackpad');
+                }}
+                className={`btn-toggle-option ${touchMode === 'trackpad' ? 'active' : ''}`}
+              >
+                Trackpad
+              </button>
+            </div>
+          </div>
+
+          {/* Finger/Cursor Offset Section */}
+          {touchMode === 'direct' && (
+            <div className="drawer-section">
+              <span className="section-label">Finger/Cursor Offset</span>
+              <div className="mode-toggle-grid">
+                <button 
+                  onClick={() => {
+                    setUseTouchOffset(true);
+                    localStorage.setItem('lunaris_mobile_touch_offset', 'true');
+                  }}
+                  className={`btn-toggle-option ${useTouchOffset ? 'active' : ''}`}
+                >
+                  Enabled (-40px)
+                </button>
+                <button 
+                  onClick={() => {
+                    setUseTouchOffset(false);
+                    localStorage.setItem('lunaris_mobile_touch_offset', 'false');
+                  }}
+                  className={`btn-toggle-option ${!useTouchOffset ? 'active' : ''}`}
+                >
+                  Disabled
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Actions Section */}
+          <div className="drawer-section">
+            <span className="section-label">Actions</span>
+            <div className="action-buttons-grid">
+              <button 
+                onClick={() => {
+                  if (keyboardInputRef.current) {
+                    if (isKeyboardActive) {
+                      keyboardInputRef.current.blur();
+                      setIsKeyboardActive(false);
+                    } else {
+                      keyboardInputRef.current.focus();
+                      setIsKeyboardActive(true);
+                    }
+                  }
+                }}
+                className={`btn-action-option ${isKeyboardActive ? 'active' : ''}`}
+              >
+                ⌨️ Virtual Keyboard
+              </button>
+              <button 
+                onClick={() => {
+                  setZoomScale(1);
+                  setZoomPan({ x: 0, y: 0 });
+                }}
+                className="btn-action-option"
+                disabled={zoomScale === 1}
+              >
+                🔄 Reset Zoom
+              </button>
+              <button 
+                onClick={() => {
+                  setShowSettingsModal(true);
+                  setShowDesktopMenu(false);
+                }}
+                className="btn-action-option"
+              >
+                ⚙️ Settings
+              </button>
+            </div>
+          </div>
+
+          {/* Modifier Keys Section */}
+          {isKeyboardActive && (
+            <div className="drawer-section modifier-keys-section">
+              <span className="section-label">Modifier Keys</span>
+              <div className="modifiers-grid">
+                <button 
+                  onClick={() => {
+                    setModifierKeys(prev => ({ ...prev, ctrl: !prev.ctrl }));
+                    sendRawKeyEvent(17, !modifierKeys.ctrl, 0);
+                  }}
+                  className={`btn-modifier-key ${modifierKeys.ctrl ? 'active' : ''}`}
+                >
+                  Ctrl
+                </button>
+                <button 
+                  onClick={() => {
+                    setModifierKeys(prev => ({ ...prev, alt: !prev.alt }));
+                    sendRawKeyEvent(18, !modifierKeys.alt, modifierKeys.ctrl ? 2 : 0);
+                  }}
+                  className={`btn-modifier-key ${modifierKeys.alt ? 'active' : ''}`}
+                >
+                  Alt
+                </button>
+                <button 
+                  onClick={() => {
+                    setModifierKeys(prev => ({ ...prev, shift: !prev.shift }));
+                    sendRawKeyEvent(16, !modifierKeys.shift, (modifierKeys.ctrl ? 2 : 0) | (modifierKeys.alt ? 4 : 0));
+                  }}
+                  className={`btn-modifier-key ${modifierKeys.shift ? 'active' : ''}`}
+                >
+                  Shift
+                </button>
+                <button 
+                  onClick={() => {
+                    setModifierKeys(prev => ({ ...prev, meta: !prev.meta }));
+                    sendRawKeyEvent(91, !modifierKeys.meta, (modifierKeys.ctrl ? 2 : 0) | (modifierKeys.alt ? 4 : 0) | (modifierKeys.shift ? 1 : 0));
+                  }}
+                  className={`btn-modifier-key ${modifierKeys.meta ? 'active' : ''}`}
+                >
+                  Win
+                </button>
+                <button 
+                  onClick={() => sendSpecialKeyRemote("Escape")}
+                  className="btn-modifier-key"
+                >
+                  Esc
+                </button>
+                <button 
+                  onClick={() => sendSpecialKeyRemote("Tab")}
+                  className="btn-modifier-key"
+                >
+                  Tab
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Main Stream Area */}
       <div 
