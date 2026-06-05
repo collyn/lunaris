@@ -157,7 +157,7 @@ pub async fn setup_bridge_session(
                 clock_rate: 90000,
                 channels: 0,
                 sdp_fmtp_line:
-                    "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=640033"
+                    "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e033"
                         .to_string(),
                 rtcp_feedback: vec![
                     RTCPFeedback {
@@ -343,7 +343,7 @@ pub async fn setup_bridge_session(
         ),
         _ => (
             MIME_TYPE_H264.to_string(),
-            "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=640033".to_string(),
+            "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e033".to_string(),
             96,
             VideoPayloader::H264(H264Payloader::default()),
         ),
