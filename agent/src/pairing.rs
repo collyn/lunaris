@@ -71,6 +71,7 @@ pub fn import_config_file(imported_path: &str, target_path: &str) -> Result<(), 
 
 
 
+#[cfg(target_os = "linux")]
 fn get_autostart_path_linux() -> Option<std::path::PathBuf> {
     let home = std::env::var("HOME").ok()?;
     let mut path = std::path::PathBuf::from(home);

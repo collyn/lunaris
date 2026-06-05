@@ -67,6 +67,7 @@ impl H264Payloader {
     }
 
     // https://datatracker.ietf.org/doc/html/rfc3984#section-5.7.1
+    #[allow(dead_code)]
     fn build_stap_a_packet(nalus: &[&Bytes]) -> BytesMut {
         let mut stap_len = 1;
         let mut nal_ref_idc = 0;
