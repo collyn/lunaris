@@ -181,8 +181,17 @@ function Setup-Environment {
     if (-not (Test-Path $vcpkgRoot)) {
         Write-Host "Installing vcpkg to $vcpkgRoot..." -ForegroundColor Yellow
         & git clone https://github.com/microsoft/vcpkg.git $vcpkgRoot
-        & "$vcpkgRoot\bootstrap-vcpkg.bat"
     }
+
+    # Pin vcpkg to tag 2024.03.25 to ensure FFmpeg 6.x is installed (FFmpeg 7.0+ is incompatible with lunaris-media)
+    Write-Host "Pinning vcpkg to release 2024.03.25 (FFmpeg 6.x compatibility)..." -ForegroundColor Yellow
+    Push-Location $vcpkgRoot
+    & git fetch origin tag 2024.03.25 --no-tags
+    & git checkout -f 2024.03.25
+    Pop-Location
+
+    # Re-bootstrap vcpkg to match the checked-out version
+    & "$vcpkgRoot\bootstrap-vcpkg.bat"
     
     # Configure triplet to build release-only dependencies (much faster)
     Write-Host "Configuring vcpkg release-only triplet..." -ForegroundColor Yellow
@@ -195,6 +204,10 @@ function Setup-Environment {
     } else {
         Set-Content -Path $tripletPath -Value "set(VCPKG_BUILD_TYPE release)"
     }
+
+    # Remove previously installed packages to ensure we cleanly reinstall compatible versions
+    Write-Host "Removing any existing vcpkg package cache..." -ForegroundColor Yellow
+    & "$vcpkgRoot\vcpkg.exe" remove ffmpeg:x64-windows opus:x64-windows openssl:x64-windows --recurse -ErrorAction SilentlyContinue
 
     Write-Host "Installing FFmpeg, Opus, and OpenSSL via vcpkg (this may take a few minutes)..." -ForegroundColor Yellow
     & "$vcpkgRoot\vcpkg.exe" install ffmpeg:x64-windows opus:x64-windows openssl:x64-windows
