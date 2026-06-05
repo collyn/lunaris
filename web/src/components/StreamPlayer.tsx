@@ -242,25 +242,21 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     meta: false
   });
 
-  const [browserCodecs, setBrowserCodecs] = useState<{ h264: boolean; h265: boolean; av1: boolean }>({
-    h264: true,
-    h265: true,
-    av1: true,
-  });
-
-  // Query browser codec support
-  useEffect(() => {
+  const [browserCodecs] = useState<{ h264: boolean; h265: boolean; av1: boolean }>(() => {
     let h264 = true;
     let h265 = false;
     let av1 = false;
+    let hasGetCapabilities = false;
+
     if (typeof RTCRtpReceiver !== 'undefined' && RTCRtpReceiver.getCapabilities) {
       const capabilities = RTCRtpReceiver.getCapabilities('video');
       if (capabilities && capabilities.codecs) {
+        hasGetCapabilities = true;
         console.log("WebRTC Video Codec Capabilities:", capabilities.codecs);
         h264 = capabilities.codecs.some(codec => 
           codec.mimeType.toLowerCase() === 'video/h264'
         );
-        h265 = capabilities.codecs.some(codec => 
+        h265 = isIOSOrSafari && capabilities.codecs.some(codec => 
           codec.mimeType.toLowerCase() === 'video/h265' || 
           codec.mimeType.toLowerCase() === 'video/hevc'
         );
@@ -268,13 +264,12 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
           codec.mimeType.toLowerCase() === 'video/av1'
         );
       }
-    } else {
-      h265 = true;
-      av1 = true;
     }
 
-    // Additional fallback checks using standard HTML5 video tag support
-    if (!h265 && typeof document !== 'undefined') {
+    // Only run fallback checks using standard HTML5 video tag support if we couldn't 
+    // query the WebRTC receiver capabilities directly. WebRTC capabilities are the 
+    // source of truth for real-time video stream decoding support.
+    if (isIOSOrSafari && !hasGetCapabilities && typeof document !== 'undefined') {
       try {
         const tempVideo = document.createElement('video');
         if (tempVideo && tempVideo.canPlayType) {
@@ -294,9 +289,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       } catch (e) {
         console.error("HEVC fallback check error:", e);
       }
-    }
 
-    if (!av1 && typeof document !== 'undefined') {
       try {
         const tempVideo = document.createElement('video');
         if (tempVideo && tempVideo.canPlayType) {
@@ -314,8 +307,8 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       }
     }
 
-    setBrowserCodecs({ h264, h265, av1 });
-  }, []);
+    return { h264, h265, av1 };
+  });
 
   const hostH264Supported = serverCodecModeSupport === undefined || serverCodecModeSupport === 0 || (serverCodecModeSupport & 262145) !== 0;
   const hostH265Supported = serverCodecModeSupport === undefined || serverCodecModeSupport === 0 || (serverCodecModeSupport & 1573632) !== 0;
@@ -1490,6 +1483,17 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
         }
       } else if (event.track.kind === 'video') {
         if (useCanvasRenderer) {
+          // Attach video track to hidden video element to force decoding in Chromium
+          const targetVideo = hiddenVideoRef.current;
+          if (targetVideo) {
+            let stream = targetVideo.srcObject as MediaStream | null;
+            if (!stream || !(stream instanceof MediaStream)) {
+              stream = new MediaStream();
+              targetVideo.srcObject = stream;
+            }
+            stream.addTrack(event.track);
+            targetVideo.play().catch(e => addLog(`Autoplay hidden video track prevented: ${e}`));
+          }
           startCanvasRender(event.track);
         } else {
           const targetVideo = videoRef.current as HTMLVideoElement | null;
