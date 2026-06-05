@@ -46,6 +46,12 @@ function Get-MissingDeps {
     }
     if (-not $hasMSVC) { $missing += "MSVC Build Tools" }
     
+    # Check for LLVM/Clang (required by bindgen)
+    $llvmPath = if ($env:LIBCLANG_PATH) { $env:LIBCLANG_PATH } else { "C:\Program Files\LLVM\bin" }
+    if (-not (Test-Path "$llvmPath\libclang.dll") -and -not (Test-Path "$llvmPath\clang.dll")) {
+        $missing += "LLVM/Clang (required by bindgen)"
+    }
+    
     # Check vcpkg & libraries
     $vcpkgRoot = if ($env:VCPKG_ROOT) { $env:VCPKG_ROOT } else { "C:\vcpkg" }
     if (-not (Test-Path "$vcpkgRoot\vcpkg.exe")) {
@@ -124,6 +130,13 @@ function Setup-Environment {
         winget install --id Microsoft.VisualStudio.2022.BuildTools -e --override "--add Microsoft.VisualStudio.Workload.VCTools --includeRecommended --passive" --accept-source-agreements --accept-package-agreements
     }
 
+    # 5b. Install LLVM/Clang (required by bindgen)
+    $llvmPath = "C:\Program Files\LLVM\bin"
+    if (-not (Test-Path "$llvmPath\libclang.dll") -and -not (Test-Path "$llvmPath\clang.dll")) {
+        Write-Host "Installing LLVM/Clang..." -ForegroundColor Yellow
+        winget install --id LLVM.LLVM -e --no-upgrade --accept-source-agreements --accept-package-agreements
+    }
+
     # 6. Install Rustup & Toolchain
     if (-not (Get-Command rustup -ErrorAction SilentlyContinue)) {
         Write-Host "Installing Rust (Rustup)..." -ForegroundColor Yellow
@@ -190,10 +203,11 @@ function Setup-Environment {
     [System.Environment]::SetEnvironmentVariable("VCPKG_ROOT", $vcpkgRoot, [System.EnvironmentVariableTarget]::User)
     [System.Environment]::SetEnvironmentVariable("PKG_CONFIG_PATH", "$vcpkgRoot\installed\x64-windows\lib\pkgconfig", [System.EnvironmentVariableTarget]::User)
     [System.Environment]::SetEnvironmentVariable("FFMPEG_DIR", "$vcpkgRoot\installed\x64-windows", [System.EnvironmentVariableTarget]::User)
+    [System.Environment]::SetEnvironmentVariable("LIBCLANG_PATH", $llvmPath, [System.EnvironmentVariableTarget]::User)
 
     # Prepend bin folders to PATH (User level)
     $userPath = [System.Environment]::GetEnvironmentVariable("Path", [System.EnvironmentVariableTarget]::User)
-    $pathsToAdd = @("$qtRoot\bin", "$vcpkgRoot\installed\x64-windows\bin")
+    $pathsToAdd = @("$qtRoot\bin", "$vcpkgRoot\installed\x64-windows\bin", $llvmPath)
     foreach ($p in $pathsToAdd) {
         if ($userPath -notlike "*$p*") {
             $userPath = "$p;$userPath"
@@ -207,7 +221,8 @@ function Setup-Environment {
     $env:VCPKG_ROOT = $vcpkgRoot
     $env:PKG_CONFIG_PATH = "$vcpkgRoot\installed\x64-windows\lib\pkgconfig"
     $env:FFMPEG_DIR = "$vcpkgRoot\installed\x64-windows"
-    $env:Path = "$qtRoot\bin;$vcpkgRoot\installed\x64-windows\bin;$env:Path"
+    $env:LIBCLANG_PATH = $llvmPath
+    $env:Path = "$qtRoot\bin;$vcpkgRoot\installed\x64-windows\bin;$llvmPath;$env:Path"
 
     Write-Host "`nEnvironment Setup Completed Successfully!" -ForegroundColor Green
     Write-Host "IMPORTANT: Please close this terminal and open a new one (or restart your IDE) to apply the persistent environment variables." -ForegroundColor Green
@@ -231,6 +246,9 @@ function Load-Environment {
     if (-not $env:FFMPEG_DIR) {
         $env:FFMPEG_DIR = [System.Environment]::GetEnvironmentVariable("FFMPEG_DIR", [System.EnvironmentVariableTarget]::User)
     }
+    if (-not $env:LIBCLANG_PATH) {
+        $env:LIBCLANG_PATH = [System.Environment]::GetEnvironmentVariable("LIBCLANG_PATH", [System.EnvironmentVariableTarget]::User)
+    }
 
     # Standard Fallback values if not set
     if (-not $env:QT_ROOT_DIR) { $env:QT_ROOT_DIR = "C:\Qt\6.7.3\msvc2019_64" }
@@ -238,12 +256,15 @@ function Load-Environment {
     if (-not $env:VCPKG_ROOT) { $env:VCPKG_ROOT = "C:\vcpkg" }
     if (-not $env:PKG_CONFIG_PATH) { $env:PKG_CONFIG_PATH = "$env:VCPKG_ROOT\installed\x64-windows\lib\pkgconfig" }
     if (-not $env:FFMPEG_DIR) { $env:FFMPEG_DIR = "$env:VCPKG_ROOT\installed\x64-windows" }
+    if (-not $env:LIBCLANG_PATH) { $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin" }
 
-    # Ensure Qt bin and vcpkg bin are in the Session PATH so compiled binaries can run
+    # Ensure Qt, vcpkg, and LLVM bins are in the Session PATH so compiled binaries can run
     $qtBin = "$env:QT_ROOT_DIR\bin"
     $vcpkgBin = "$env:VCPKG_ROOT\installed\x64-windows\bin"
+    $llvmBin = $env:LIBCLANG_PATH
     if ($env:Path -notlike "*$qtBin*") { $env:Path = "$qtBin;$env:Path" }
     if ($env:Path -notlike "*$vcpkgBin*") { $env:Path = "$vcpkgBin;$env:Path" }
+    if ($env:Path -notlike "*$llvmBin*") { $env:Path = "$llvmBin;$env:Path" }
 }
 
 # Load environment on startup
