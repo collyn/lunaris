@@ -386,10 +386,17 @@ pub async fn run_agent_loop(
                                 webtransport_port: session.webtransport_port,
                                 webtransport_cert_hash: session.webtransport_cert_hash.clone(),
                             });
-                            let _ = agent_tx.send(sdp_msg);
 
-                            let mut lock = active_session.lock().await;
-                            *lock = Some(session);
+                            // CRITICAL: Store session BEFORE sending the offer to avoid a race
+                            // condition where the client's SDP answer arrives before the session
+                            // is stored, causing it to be silently dropped (=> no ICE candidate
+                            // pairs => connection timeout after ~7s).
+                            {
+                                let mut lock = active_session.lock().await;
+                                *lock = Some(session);
+                            }
+
+                            let _ = agent_tx.send(sdp_msg);
                             info!("SDP Offer sent to client: {}", client_id);
                         }
                         SignalingMessage::Sdp { target_id, sdp, .. } => {
