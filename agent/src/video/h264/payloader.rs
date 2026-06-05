@@ -148,35 +148,31 @@ impl Payloader for H264Payloader {
 
         let nal_header = NalHeader::parse([b[0]]);
 
+        // Skip Access Unit Delimiters and Filler Data — these are not useful
+        // to the browser decoder and wasting bandwidth.
         match nal_header.nal_unit_type {
             NalUnitType::AccessUnitDelimiter | NalUnitType::FillerData => {
                 return Ok(vec![]);
             }
-            NalUnitType::Pps => {
-                self.pps_nalu = Some(b.clone());
-                return Ok(vec![]);
-            }
-            NalUnitType::Sps => {
-                self.sps_nalu = Some(b.clone());
-                return Ok(vec![]);
+            // SPS and PPS: send as individual single-NAL-unit RTP packets immediately.
+            //
+            // We intentionally DO NOT buffer SPS/PPS and emit them as STAP-A (NAL type 24).
+            // Chrome's WebRTC H264 decoder does NOT reliably process STAP-A packets —
+            // it drops them silently, causing the decoder to have no SPS/PPS context,
+            // which makes every IDR frame fail to decode and triggers an infinite PLI loop.
+            //
+            // Sending SPS and PPS as separate single-NAL RTP packets ensures Chrome
+            // processes them before the following IDR slice arrives.
+            NalUnitType::Sps | NalUnitType::Pps => {
+                // Clear any stale SPS/PPS state to avoid incorrect STAP-A on next IDR
+                self.sps_nalu = None;
+                self.pps_nalu = None;
+                return Ok(vec![b.clone()]);
             }
             _ => {}
         }
 
         let mut packets = vec![];
-
-        if let (Some(pps), Some(sps)) = (self.pps_nalu.as_ref(), self.sps_nalu.as_ref()) {
-            let stap_a = Self::build_stap_a_packet(&[sps, pps]);
-
-            if stap_a.len() >= mtu {
-                return Ok(vec![]);
-            }
-
-            self.pps_nalu.take();
-            self.sps_nalu.take();
-
-            packets.push(stap_a.freeze());
-        }
 
         if b.len() <= mtu {
             packets.push(Self::build_single_nal(b.clone()));
