@@ -166,8 +166,10 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   const [draftInputProtocol, setDraftInputProtocol] = useState<string>(activeInputProtocol);
   const [activeEncoder, setActiveEncoder] = useState<string>(() => localStorage.getItem('lunaris_stream_encoder') || 'auto');
   const [activeDisplay, setActiveDisplay] = useState<string>(() => localStorage.getItem('lunaris_stream_display') || 'default');
+  const [activeVirtualDisplay, setActiveVirtualDisplay] = useState<boolean>(() => localStorage.getItem('lunaris_stream_virtual_display') === 'true');
   const [draftEncoder, setDraftEncoder] = useState<string>(activeEncoder);
   const [draftDisplay, setDraftDisplay] = useState<string>(activeDisplay);
+  const [draftVirtualDisplay, setDraftVirtualDisplay] = useState<boolean>(activeVirtualDisplay);
   const [availableEncoders, setAvailableEncoders] = useState<string[]>([]);
   const [availableDisplays, setAvailableDisplays] = useState<{id: string; name: string; width: number; height: number; refresh_rate: number; is_primary: boolean}[]>([]);
 
@@ -386,8 +388,9 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       setDraftUseCanvasRenderer(useCanvasRenderer);
       setDraftEncoder(activeEncoder);
       setDraftDisplay(activeDisplay);
+      setDraftVirtualDisplay(activeVirtualDisplay);
     }
-  }, [showSettingsModal, activeResolution, activeFps, activeBitrate, activeCodec, mouseQueueLimit, useNativeClient, activeInputProtocol, useCanvasRenderer, activeEncoder, activeDisplay]);
+  }, [showSettingsModal, activeResolution, activeFps, activeBitrate, activeCodec, mouseQueueLimit, useNativeClient, activeInputProtocol, useCanvasRenderer, activeEncoder, activeDisplay, activeVirtualDisplay]);
   const [hideLocalCursor, setHideLocalCursor] = useState<boolean>(() => localStorage.getItem('lunaris_stream_hide_cursor') !== 'false');
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
   const [isHeaderVisible, setIsHeaderVisible] = useState<boolean>(true);
@@ -848,7 +851,8 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
               codec: resolvedCodec,
               app_id: selectedAppId,
               encoder: activeEncoder !== 'auto' ? activeEncoder : undefined,
-              display_id: activeDisplay !== 'default' ? activeDisplay : undefined
+              display_id: activeDisplay !== 'default' ? activeDisplay : undefined,
+              virtual_display: activeVirtualDisplay ? true : undefined
             }
           }
         }));
@@ -975,7 +979,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       cleanup();
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hostId, activeResolution, activeCodec, token, hostName, selectedAppId, useNativeClient, activeInputProtocol, useCanvasRenderer, activeEncoder, activeDisplay]);
+  }, [hostId, activeResolution, activeCodec, token, hostName, selectedAppId, useNativeClient, activeInputProtocol, useCanvasRenderer, activeEncoder, activeDisplay, activeVirtualDisplay]);
 
   // Helper to send dynamic pipeline commands via the general data channel.
   // Format: u16 length prefix + JSON string, matching the agent's InboundPacket::deserialize.
@@ -3020,6 +3024,18 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
                     Use Canvas Renderer {typeof (window as any).MediaStreamTrackProcessor === 'undefined' ? "(Unsupported by browser)" : isIOSOrSafari ? "(Disabled on iOS/Safari due to WebKit limits)" : "(Highly recommended - zero latency & no stutter)"}
                   </label>
                 </div>
+                <div className="settings-group full-width" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginTop: '0.5rem' }}>
+                  <input 
+                    type="checkbox" 
+                    id="virtualDisplay"
+                    checked={draftVirtualDisplay} 
+                    onChange={(e) => setDraftVirtualDisplay(e.target.checked)}
+                    style={{ width: 'auto', margin: 0, cursor: 'pointer' }}
+                  />
+                  <label htmlFor="virtualDisplay" style={{ cursor: 'pointer', margin: 0, userSelect: 'none', fontWeight: 'normal' }}>
+                    Create Virtual Display (Linux: xrandr virtual output, Windows: IddSampleDriver required)
+                  </label>
+                </div>
               </div>
 
               <div className="settings-actions">
@@ -3029,6 +3045,9 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
                     setDraftUseNativeClient(useNativeClient);
                     setDraftInputProtocol(activeInputProtocol);
                     setDraftUseCanvasRenderer(useCanvasRenderer);
+                    setDraftEncoder(activeEncoder);
+                    setDraftDisplay(activeDisplay);
+                    setDraftVirtualDisplay(activeVirtualDisplay);
                     setShowSettingsModal(false);
                   }}
                   className="btn-secondary"
@@ -3045,6 +3064,9 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
                     setUseNativeClient(draftUseNativeClient);
                     setActiveInputProtocol(draftInputProtocol);
                     setUseCanvasRenderer(draftUseCanvasRenderer);
+                    setActiveEncoder(draftEncoder);
+                    setActiveDisplay(draftDisplay);
+                    setActiveVirtualDisplay(draftVirtualDisplay);
                     
                     localStorage.setItem('lunaris_stream_res', draftResolution);
                     localStorage.setItem('lunaris_stream_fps', String(draftFps));
@@ -3054,9 +3076,12 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
                     localStorage.setItem('lunaris_tauri_use_native', String(draftUseNativeClient));
                     localStorage.setItem('lunaris_input_protocol', draftInputProtocol);
                     localStorage.setItem('lunaris_canvas_renderer', String(draftUseCanvasRenderer));
+                    localStorage.setItem('lunaris_stream_encoder', draftEncoder);
+                    localStorage.setItem('lunaris_stream_display', draftDisplay);
+                    localStorage.setItem('lunaris_stream_virtual_display', String(draftVirtualDisplay));
                     
                     setShowSettingsModal(false);
-                    addLog(`Applied settings: res=${draftResolution}, fps=${draftFps}, bitrate=${draftBitrate}Kbps, codec=${draftCodec}, mouseQueueLimit=${draftMouseQueueLimit}B, useNative=${draftUseNativeClient}, inputProtocol=${draftInputProtocol}, useCanvasRenderer=${draftUseCanvasRenderer}`);
+                    addLog(`Applied settings: res=${draftResolution}, fps=${draftFps}, bitrate=${draftBitrate}Kbps, codec=${draftCodec}, mouseQueueLimit=${draftMouseQueueLimit}B, useNative=${draftUseNativeClient}, inputProtocol=${draftInputProtocol}, useCanvasRenderer=${draftUseCanvasRenderer}, encoder=${draftEncoder}, display=${draftDisplay}, virtualDisplay=${draftVirtualDisplay}`);
                   }}
                   className="btn-primary"
                 >
@@ -3355,6 +3380,18 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
                   Use Canvas Renderer {typeof (window as any).MediaStreamTrackProcessor === 'undefined' ? "(Unsupported by browser)" : isIOSOrSafari ? "(Disabled on iOS/Safari due to WebKit limits)" : "(Highly recommended - zero latency & no stutter)"}
                 </label>
               </div>
+              <div className="settings-group full-width" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginTop: '0.5rem' }}>
+                <input 
+                  type="checkbox" 
+                  id="virtualDisplay"
+                  checked={draftVirtualDisplay} 
+                  onChange={(e) => setDraftVirtualDisplay(e.target.checked)}
+                  style={{ width: 'auto', margin: 0, cursor: 'pointer' }}
+                />
+                <label htmlFor="virtualDisplay" style={{ cursor: 'pointer', margin: 0, userSelect: 'none', fontWeight: 'normal' }}>
+                  Create Virtual Display (Linux: xrandr virtual output, Windows: IddSampleDriver required)
+                </label>
+              </div>
             </div>
 
             <div className="settings-actions">
@@ -3370,6 +3407,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
                   setDraftUseCanvasRenderer(useCanvasRenderer);
                   setDraftEncoder(activeEncoder);
                   setDraftDisplay(activeDisplay);
+                  setDraftVirtualDisplay(activeVirtualDisplay);
                   setShowSettingsModal(false);
                 }} 
                 className="btn-secondary"
@@ -3389,6 +3427,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
                   localStorage.setItem('lunaris_canvas_renderer', String(draftUseCanvasRenderer));
                   localStorage.setItem('lunaris_stream_encoder', draftEncoder);
                   localStorage.setItem('lunaris_stream_display', draftDisplay);
+                  localStorage.setItem('lunaris_stream_virtual_display', String(draftVirtualDisplay));
                   
                   // Check if settings requiring reconnect changed
                   const reconnectNeeded = 
@@ -3398,7 +3437,8 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
                     draftInputProtocol !== activeInputProtocol ||
                     draftUseCanvasRenderer !== useCanvasRenderer ||
                     draftEncoder !== activeEncoder ||
-                    draftDisplay !== activeDisplay;
+                    draftDisplay !== activeDisplay ||
+                    draftVirtualDisplay !== activeVirtualDisplay;
 
                   setMouseQueueLimit(draftMouseQueueLimit);
 
@@ -3415,6 +3455,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
                     setUseCanvasRenderer(draftUseCanvasRenderer);
                     setActiveEncoder(draftEncoder);
                     setActiveDisplay(draftDisplay);
+                    setActiveVirtualDisplay(draftVirtualDisplay);
                     
                     // Reset states for connection indicator
                     setStatus("Connecting...");

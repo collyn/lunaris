@@ -197,6 +197,7 @@ pub enum SignalingMessage {
         app_id: Option<u32>,
         encoder: Option<String>,
         display_id: Option<String>,
+        virtual_display: Option<bool>,
     },
     // Server notifying agent about session request
     IncomingSession {
@@ -209,6 +210,7 @@ pub enum SignalingMessage {
         app_id: Option<u32>,
         encoder: Option<String>,
         display_id: Option<String>,
+        virtual_display: Option<bool>,
         ice_servers: Option<Vec<RtcIceServer>>,
     },
     // SDP / ICE Exchange

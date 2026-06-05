@@ -535,8 +535,9 @@ async fn handle_client_signaling(
             app_id,
             encoder,
             display_id,
+            virtual_display,
         } => {
-            info!("Client {} requested session for host {} with settings: w={:?}, h={:?}, fps={:?}, bitrate={:?}, codec={:?}, app_id={:?}", client_id, host_id, width, height, fps, bitrate, codec, app_id);
+            info!("Client {} requested session for host {} with settings: w={:?}, h={:?}, fps={:?}, bitrate={:?}, codec={:?}, app_id={:?}, virtual_display={:?}", client_id, host_id, width, height, fps, bitrate, codec, app_id, virtual_display);
 
             // Check if there is an active session for host_id, if so terminate it first
             let old_session = {
@@ -566,6 +567,7 @@ async fn handle_client_signaling(
                         app_id,
                         encoder: encoder.clone(),
                         display_id: display_id.clone(),
+                        virtual_display,
                         ice_servers: Some(ice_servers),
                     });
                 if let Err(e) = agent_tx.send(incoming_msg) {

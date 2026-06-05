@@ -2734,6 +2734,7 @@ async fn run_webrtc_client_task(
         app_id,
         encoder: None,
         display_id: None,
+        virtual_display: None,
     });
     outbox_tx.send(req_msg)?;
 

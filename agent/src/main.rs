@@ -299,6 +299,7 @@ pub async fn run_agent_loop(
                             app_id: _,
                             encoder,
                             display_id,
+                            virtual_display,
                             ice_servers,
                         } => {
                             info!("Incoming session request from client: {}", client_id);
@@ -336,6 +337,7 @@ pub async fn run_agent_loop(
                                 codec,
                                 encoder,
                                 display_id,
+                                virtual_display,
                                 ice_servers,
                             )
                             .await

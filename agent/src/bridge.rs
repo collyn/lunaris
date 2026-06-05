@@ -121,6 +121,7 @@ pub async fn setup_bridge_session(
     codec: Option<String>,
     encoder: Option<String>,
     display_id: Option<String>,
+    virtual_display: Option<bool>,
     ice_servers: Option<Vec<common::RtcIceServer>>,
 ) -> Result<Arc<BridgeSession>> {
     info!("Media library active: host cursor visible by default (toggle with Ctrl+Alt+Shift+N)");
@@ -578,6 +579,7 @@ pub async fn setup_bridge_session(
         bitrate_kbps: stream_bitrate,
         pixel_format: lunaris_media::types::PixelFormat::NV12,
         preferred_encoder: encoder.clone(),
+        virtual_display: virtual_display.unwrap_or(false),
     };
 
     let (pipeline, mut media_event_rx, pipeline_cmd_tx) =
