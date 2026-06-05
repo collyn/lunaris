@@ -211,7 +211,7 @@ function Setup-Environment {
     & "$vcpkgRoot\vcpkg.exe" remove ffmpeg:x64-windows opus:x64-windows openssl:x64-windows --recurse 2>$null
 
     Write-Host "Installing FFmpeg, Opus, and OpenSSL via vcpkg (this may take a few minutes)..." -ForegroundColor Yellow
-    & "$vcpkgRoot\vcpkg.exe" install ffmpeg:x64-windows opus:x64-windows openssl:x64-windows
+    & "$vcpkgRoot\vcpkg.exe" install "ffmpeg[avcodec,avdevice,avfilter,avformat,core,swresample,swscale,x264,gpl,nvcodec,amf]:x64-windows" opus:x64-windows openssl:x64-windows
 
     # 9. Install Qt6
     $qtRoot = "C:\Qt\6.7.3\msvc2019_64"
