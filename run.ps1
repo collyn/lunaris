@@ -232,6 +232,22 @@ function Setup-Environment {
     [System.Environment]::SetEnvironmentVariable("FFMPEG_DIR", "$vcpkgRoot\installed\x64-windows", [System.EnvironmentVariableTarget]::User)
     [System.Environment]::SetEnvironmentVariable("LIBCLANG_PATH", $llvmPath, [System.EnvironmentVariableTarget]::User)
 
+    # Persist INCLUDE and LIB to search vcpkg headers/libraries using standard MSVC build scripts
+    $vcpkgInclude = "$vcpkgRoot\installed\x64-windows\include"
+    $vcpkgLib = "$vcpkgRoot\installed\x64-windows\lib"
+
+    $userInclude = [System.Environment]::GetEnvironmentVariable("INCLUDE", [System.EnvironmentVariableTarget]::User)
+    if ($userInclude -notlike "*$vcpkgInclude*") {
+        $userInclude = if ($userInclude) { "$vcpkgInclude;$userInclude" } else { $vcpkgInclude }
+        [System.Environment]::SetEnvironmentVariable("INCLUDE", $userInclude, [System.EnvironmentVariableTarget]::User)
+    }
+
+    $userLib = [System.Environment]::GetEnvironmentVariable("LIB", [System.EnvironmentVariableTarget]::User)
+    if ($userLib -notlike "*$vcpkgLib*") {
+        $userLib = if ($userLib) { "$vcpkgLib;$userLib" } else { $vcpkgLib }
+        [System.Environment]::SetEnvironmentVariable("LIB", $userLib, [System.EnvironmentVariableTarget]::User)
+    }
+
     # Prepend bin folders to PATH (User level)
     $userPath = [System.Environment]::GetEnvironmentVariable("Path", [System.EnvironmentVariableTarget]::User)
     $pathsToAdd = @("$qtRoot\bin", "$vcpkgRoot\installed\x64-windows\bin", $llvmPath)
@@ -249,6 +265,8 @@ function Setup-Environment {
     $env:PKG_CONFIG_PATH = "$vcpkgRoot\installed\x64-windows\lib\pkgconfig"
     $env:FFMPEG_DIR = "$vcpkgRoot\installed\x64-windows"
     $env:LIBCLANG_PATH = $llvmPath
+    $env:INCLUDE = if ($env:INCLUDE) { "$vcpkgInclude;$env:INCLUDE" } else { $vcpkgInclude }
+    $env:LIB = if ($env:LIB) { "$vcpkgLib;$env:LIB" } else { $vcpkgLib }
     $env:Path = "$qtRoot\bin;$vcpkgRoot\installed\x64-windows\bin;$llvmPath;$env:Path"
 
     Write-Host "`nEnvironment Setup Completed Successfully!" -ForegroundColor Green
@@ -284,6 +302,24 @@ function Load-Environment {
     if (-not $env:PKG_CONFIG_PATH) { $env:PKG_CONFIG_PATH = "$env:VCPKG_ROOT\installed\x64-windows\lib\pkgconfig" }
     if (-not $env:FFMPEG_DIR) { $env:FFMPEG_DIR = "$env:VCPKG_ROOT\installed\x64-windows" }
     if (-not $env:LIBCLANG_PATH) { $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin" }
+
+    # Load INCLUDE and LIB if they are in User environment but not in session
+    if (-not $env:INCLUDE) {
+        $env:INCLUDE = [System.Environment]::GetEnvironmentVariable("INCLUDE", [System.EnvironmentVariableTarget]::User)
+    }
+    if (-not $env:LIB) {
+        $env:LIB = [System.Environment]::GetEnvironmentVariable("LIB", [System.EnvironmentVariableTarget]::User)
+    }
+
+    # Ensure vcpkg headers and libraries are in session INCLUDE and LIB
+    $vcpkgInclude = "$env:VCPKG_ROOT\installed\x64-windows\include"
+    $vcpkgLib = "$env:VCPKG_ROOT\installed\x64-windows\lib"
+    if ($env:INCLUDE -notlike "*$vcpkgInclude*") {
+        $env:INCLUDE = if ($env:INCLUDE) { "$vcpkgInclude;$env:INCLUDE" } else { $vcpkgInclude }
+    }
+    if ($env:LIB -notlike "*$vcpkgLib*") {
+        $env:LIB = if ($env:LIB) { "$vcpkgLib;$env:LIB" } else { $vcpkgLib }
+    }
 
     # Ensure Qt, vcpkg, and LLVM bins are in the Session PATH so compiled binaries can run
     $qtBin = "$env:QT_ROOT_DIR\bin"
