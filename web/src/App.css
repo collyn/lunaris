@@ -2708,11 +2708,13 @@ body {
 
   .mobile-footer-bar {
     display: flex;
-    position: absolute;
+    position: fixed;  /* fixed avoids being hidden behind browser address bar */
     bottom: 0;
     left: 0;
     right: 0;
-    height: calc(56px + env(safe-area-inset-bottom));
+    /* Use dvh-safe height: 56px buttons + safe area */
+    height: auto;
+    min-height: 56px;
     background: rgba(0, 98, 255, 0.95); /* Vibrant premium blue */
     backdrop-filter: blur(16px);
     -webkit-backdrop-filter: blur(16px);
@@ -2720,9 +2722,13 @@ body {
     z-index: 200;
     justify-content: space-around;
     align-items: flex-start;
-    padding: 6px 0.5rem env(safe-area-inset-bottom);
+    padding: 6px 0.25rem;
+    /* Add bottom padding to clear browser navigation bar/home indicator */
+    padding-bottom: max(env(safe-area-inset-bottom, 0px), 8px);
     box-sizing: border-box;
     transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+    /* Ensure overflow hidden so we don't get scroll in the bar itself */
+    overflow: hidden;
   }
 
   .mobile-footer-bar.collapsed {
@@ -2764,7 +2770,7 @@ body {
     display: flex;
     align-items: center;
     justify-content: center;
-    position: absolute;
+    position: fixed;  /* fixed to match the fixed footer bar */
     bottom: 0;
     left: 50%;
     transform: translateX(-50%);
@@ -2783,14 +2789,14 @@ body {
   }
 
   .mobile-controls-drawer {
-    position: absolute;
-    bottom: 64px; /* Render above the 56px footer bar */
+    position: fixed;  /* fixed to match footer bar */
+    bottom: calc(56px + max(env(safe-area-inset-bottom, 0px), 8px) + 8px);
     left: 50%;
     transform: translateX(-50%);
     z-index: 210;
     width: calc(100% - 2rem);
     max-width: 360px;
-    max-height: calc(100vh - 140px);
+    max-height: calc(100dvh - 180px);
     margin: 0;
     animation: drawer-mobile-fadeIn 0.25s cubic-bezier(0.16, 1, 0.3, 1);
   }

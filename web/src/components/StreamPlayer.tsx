@@ -4000,12 +4000,65 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
                     >
                       🔄 Reset Zoom
                     </button>
+                    <button
+                      onClick={() => {
+                        const newValue = !isMuted;
+                        setIsMuted(newValue);
+                        localStorage.setItem('lunaris_stream_muted', String(newValue));
+                      }}
+                      className={`btn-action-option ${isMuted ? '' : 'active'}`}
+                    >
+                      {isMuted ? '🔇 Unmute Audio' : '🔊 Mute Audio'}
+                    </button>
+                    <button
+                      onClick={toggleFullscreen}
+                      className={`btn-action-option ${isFullscreen ? 'active' : ''}`}
+                    >
+                      {isFullscreen ? '⊡ Exit Fullscreen' : '⛶ Fullscreen'}
+                    </button>
                     <button 
                       onClick={handleStopActiveStream}
                       className="btn-action-option btn-danger-option"
                     >
                       🛑 Disconnect
                     </button>
+                  </div>
+                </div>
+
+                <div className="drawer-section">
+                  <span className="section-label">Stream Quality</span>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+                    <select
+                      value={activeCodec}
+                      onChange={(e) => updateSetting('codec', e.target.value)}
+                      className="stream-select"
+                      style={{ width: '100%', fontSize: '0.8rem' }}
+                    >
+                      <option value="auto">🎬 Auto ({resolvedActiveCodec.toUpperCase()})</option>
+                      <option value="h264" disabled={!supportedCodecs.h264}>H264</option>
+                      <option value="h265" disabled={!supportedCodecs.h265}>H265</option>
+                      <option value="av1" disabled={!supportedCodecs.av1}>AV1</option>
+                    </select>
+                    <select
+                      value={activeResolution}
+                      onChange={(e) => updateSetting('res', e.target.value)}
+                      className="stream-select"
+                      style={{ width: '100%', fontSize: '0.8rem' }}
+                    >
+                      <option value="1080p">📺 1080p</option>
+                      <option value="720p">📺 720p</option>
+                      <option value="540p">📺 540p</option>
+                    </select>
+                    <select
+                      value={activeFps}
+                      onChange={(e) => updateSetting('fps', e.target.value)}
+                      className="stream-select"
+                      style={{ width: '100%', fontSize: '0.8rem' }}
+                    >
+                      <option value={60}>🎯 60 FPS</option>
+                      <option value={30}>🎯 30 FPS</option>
+                      <option value={120}>🎯 120 FPS</option>
+                    </select>
                   </div>
                 </div>
 
@@ -4162,6 +4215,53 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
                 </svg>
               </button>
 
+              {/* Mute Button */}
+              <button 
+                onClick={() => {
+                  const newValue = !isMuted;
+                  setIsMuted(newValue);
+                  localStorage.setItem('lunaris_stream_muted', String(newValue));
+                }}
+                className={`mobile-footer-btn ${!isMuted ? 'active' : ''}`}
+                title={isMuted ? "Unmute Audio" : "Mute Audio"}
+              >
+                {isMuted ? (
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M11 5L6 9H2v6h4l5 4V5z" />
+                    <line x1="22" y1="9" x2="16" y2="15" />
+                    <line x1="16" y1="9" x2="22" y2="15" />
+                  </svg>
+                ) : (
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M11 5L6 9H2v6h4l5 4V5z" />
+                    <path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07" />
+                  </svg>
+                )}
+              </button>
+
+              {/* Fullscreen Button */}
+              <button
+                onClick={toggleFullscreen}
+                className={`mobile-footer-btn ${isFullscreen ? 'active' : ''}`}
+                title={isFullscreen ? 'Exit Fullscreen' : 'Fullscreen'}
+              >
+                {isFullscreen ? (
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="4 14 10 14 10 20" />
+                    <polyline points="20 10 14 10 14 4" />
+                    <line x1="10" y1="14" x2="3" y2="21" />
+                    <line x1="21" y1="3" x2="14" y2="10" />
+                  </svg>
+                ) : (
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="15 3 21 3 21 9" />
+                    <polyline points="9 21 3 21 3 15" />
+                    <line x1="21" y1="3" x2="14" y2="10" />
+                    <line x1="3" y1="21" x2="10" y2="14" />
+                  </svg>
+                )}
+              </button>
+
               {/* Stats Overlay Toggle Button */}
               <button 
                 onClick={() => {
@@ -4180,6 +4280,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
               </button>
 
               {/* More Menu / Controls Drawer Button */}
+
               <button 
                 onClick={() => setShowMobileMenu(prev => !prev)}
                 className={`mobile-footer-btn ${showMobileMenu ? 'active' : ''}`}
