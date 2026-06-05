@@ -551,6 +551,24 @@ pub async fn setup_bridge_session(
         })
     }));
 
+    // ICE Gathering state change callback — helps diagnose ICE failures in production logs
+    peer_connection.on_ice_gathering_state_change(Box::new(
+        move |state: webrtc::ice_transport::ice_gatherer_state::RTCIceGathererState| {
+            Box::pin(async move {
+                warn!("[ICE] Gathering state changed: {:?}", state);
+            })
+        },
+    ));
+
+    // ICE Connection state change callback — logs actual ICE connectivity progress
+    peer_connection.on_ice_connection_state_change(Box::new(
+        move |state: webrtc::ice_transport::ice_connection_state::RTCIceConnectionState| {
+            Box::pin(async move {
+                warn!("[ICE] Connection state changed: {:?}", state);
+            })
+        },
+    ));
+
 
     let (video_frame_tx, mut video_frame_rx) = tokio::sync::mpsc::channel::<VideoFramePayload>(4);
     let (audio_tx, mut audio_rx) = tokio::sync::mpsc::channel::<Sample>(256);

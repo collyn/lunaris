@@ -118,7 +118,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                             if cfg!(debug_assertions) {
                                 "info,agent=info,webrtc_sctp=off,dtls=error"
                             } else {
-                                "warn,webrtc_sctp=off,dtls=error"
+                                "info,agent=info,lunaris_media=info,webrtc_sctp=off,dtls=error,webrtc_ice=warn"
                             }
                         }
                         .into()
@@ -397,10 +397,10 @@ pub async fn run_agent_loop(
                             }
 
                             let _ = agent_tx.send(sdp_msg);
-                            info!("SDP Offer sent to client: {}", client_id);
+                            warn!("[SIGNALING] SDP Offer sent to client: {}", client_id);
                         }
                         SignalingMessage::Sdp { target_id, sdp, .. } => {
-                            info!("Received SDP description from client: {}", target_id);
+                            warn!("[SIGNALING] Received SDP answer from client: {}", target_id);
                             let lock = active_session.lock().await;
                             if let Some(session) = lock.as_ref() {
                                 match RTCSessionDescription::answer(sdp.sdp) {
@@ -410,17 +410,17 @@ pub async fn run_agent_loop(
                                             .set_remote_description(rtc_sdp)
                                             .await
                                         {
-                                            error!("Failed to set remote description: {:?}", e);
+                                            error!("[SIGNALING] Failed to set remote description: {:?}", e);
                                         } else {
-                                            info!("SDP Answer set successfully!");
+                                            warn!("[SIGNALING] SDP Answer set successfully! WebRTC negotiation in progress.");
                                         }
                                     }
                                     Err(e) => {
-                                        error!("Failed to parse SDP Answer: {:?}", e);
+                                        error!("[SIGNALING] Failed to parse SDP Answer: {:?}", e);
                                     }
                                 }
                             } else {
-                                warn!("Received SDP without an active session");
+                                warn!("[SIGNALING] *** BUG: Received SDP answer but active_session is None! Answer dropped.");
                             }
                         }
                         SignalingMessage::IceCandidate {
