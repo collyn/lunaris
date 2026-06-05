@@ -51,11 +51,14 @@ function Get-MissingDeps {
     if (-not (Test-Path "$vcpkgRoot\vcpkg.exe")) {
         $missing += "vcpkg"
     } else {
-        if (-not (Test-Path "$vcpkgRoot\installed\x64-windows\bin\avcodec-80.dll") -and -not (Test-Path "$vcpkgRoot\installed\x64-windows\bin\avcodec-61.dll") -and -not (Test-Path "$vcpkgRoot\installed\x64-windows\bin\avcodec-60.dll")) {
+        if (-not (Test-Path "$vcpkgRoot\installed\x64-windows\lib\avcodec.lib")) {
             $missing += "FFmpeg (via vcpkg)"
         }
         if (-not (Test-Path "$vcpkgRoot\installed\x64-windows\lib\opus.lib")) {
             $missing += "Opus (via vcpkg)"
+        }
+        if (-not (Test-Path "$vcpkgRoot\installed\x64-windows\lib\libssl.lib")) {
+            $missing += "OpenSSL (via vcpkg)"
         }
     }
     
