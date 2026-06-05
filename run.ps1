@@ -281,14 +281,54 @@ function Load-Environment {
     if ($env:Path -notlike "*$llvmBin*") { $env:Path = "$llvmBin;$env:Path" }
 
     # Configure Clang include paths dynamically for bindgen (fixes errno.h/stddef.h not found)
-    if ($env:INCLUDE -and -not $env:BINDGEN_EXTRA_CLANG_ARGS) {
-        $clangArgs = @()
-        foreach ($path in $env:INCLUDE -split ';') {
-            if ($path.Trim() -and (Test-Path $path)) {
-                $clangArgs += "-I`"$path`""
+    if (-not $env:BINDGEN_EXTRA_CLANG_ARGS) {
+        $includePaths = @()
+        
+        # 1. Try using the existing INCLUDE environment variable (if running in Developer PowerShell)
+        if ($env:INCLUDE) {
+            foreach ($path in $env:INCLUDE -split ';') {
+                if ($path.Trim() -and (Test-Path $path)) {
+                    $includePaths += $path.Trim()
+                }
             }
         }
-        if ($clangArgs.Count -gt 0) {
+        
+        # 2. If INCLUDE is empty (standard PowerShell), dynamically discover Visual Studio and Windows SDK paths
+        if ($includePaths.Count -eq 0) {
+            $vsWhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+            if (Test-Path $vsWhere) {
+                $vsPath = & $vsWhere -latest -property installationPath
+                if ($vsPath) {
+                    $msvcBase = Join-Path $vsPath "VC\Tools\MSVC"
+                    if (Test-Path $msvcBase) {
+                        $msvcVersion = Get-ChildItem -Path $msvcBase -Directory | Sort-Object Name -Descending | Select-Object -First 1
+                        if ($msvcVersion) {
+                            $msvcInclude = Join-Path $msvcVersion.FullName "include"
+                            if (Test-Path $msvcInclude) { $includePaths += $msvcInclude }
+                        }
+                    }
+                }
+            }
+            
+            $sdkBase = "C:\Program Files (x86)\Windows Kits\10\Include"
+            if (Test-Path $sdkBase) {
+                $sdkVersion = Get-ChildItem -Path $sdkBase -Directory | Sort-Object Name -Descending | Select-Object -First 1
+                if ($sdkVersion) {
+                    $subfolders = @("ucrt", "shared", "um", "winrt")
+                    foreach ($sub in $subfolders) {
+                        $p = Join-Path $sdkVersion.FullName $sub
+                        if (Test-Path $p) { $includePaths += $p }
+                    }
+                }
+            }
+        }
+        
+        # 3. Export to BINDGEN_EXTRA_CLANG_ARGS
+        if ($includePaths.Count -gt 0) {
+            $clangArgs = @()
+            foreach ($path in ($includePaths | Select-Object -Unique)) {
+                $clangArgs += "-I`"$path`""
+            }
             $env:BINDGEN_EXTRA_CLANG_ARGS = $clangArgs -join ' '
         }
     }
