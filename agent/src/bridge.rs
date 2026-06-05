@@ -157,7 +157,18 @@ pub async fn setup_bridge_session(
                 clock_rate: 90000,
                 channels: 0,
                 sdp_fmtp_line:
-                    "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e033"
+                    // Use 42e01f (Constrained Baseline, Level 3.1) to exactly match Chrome's
+                    // advertised H264 capability. Chrome only lists 42e01f in its WebRTC codec
+                    // capabilities. When we offer 42e033 (Level 5.1), Chrome answers with 42e01f
+                    // (Level 3.1) and configures its decoder for Level 3.1 frame size constraints.
+                    // Our encoder outputs Level 4.2 SPS (1080p requires Level 4.1+), which Chrome
+                    // then rejects as exceeding the negotiated Level 3.1 → continuous PLI loop.
+                    //
+                    // With level-asymmetry-allowed=1, we can still SEND Level 4.2 streams —
+                    // Chrome accepts them because the base profile 42e0 now matches exactly, and
+                    // the asymmetry flag tells Chrome that sender level may differ from the
+                    // negotiated level.
+                    "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f"
                         .to_string(),
                 rtcp_feedback: vec![
                     RTCPFeedback {
@@ -343,7 +354,7 @@ pub async fn setup_bridge_session(
         ),
         _ => (
             MIME_TYPE_H264.to_string(),
-            "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e033".to_string(),
+            "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f".to_string(),
             96,
             VideoPayloader::H264(H264Payloader::default()),
         ),
