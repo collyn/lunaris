@@ -148,7 +148,16 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   const [activeResolution, setActiveResolution] = useState<string>(() => localStorage.getItem('lunaris_stream_res') || '1080p');
   const [activeFps, setActiveFps] = useState<number>(() => Number(localStorage.getItem('lunaris_stream_fps') || '60'));
   const [activeBitrate, setActiveBitrate] = useState<number>(() => Number(localStorage.getItem('lunaris_stream_bitrate') || '8000'));
-  const [activeCodec, setActiveCodec] = useState<string>(() => localStorage.getItem('lunaris_stream_codec') || 'h264');
+  const [activeCodec, setActiveCodec] = useState<string>(() => {
+    // One-time migration: switch old users who had 'h264' hardcoded to 'auto'
+    // so auto-detection picks the best codec (AV1 > H265 > H264) on next open.
+    if (localStorage.getItem('lunaris_codec_auto_reset') !== 'true') {
+      localStorage.setItem('lunaris_codec_auto_reset', 'true');
+      localStorage.setItem('lunaris_stream_codec', 'auto');
+      return 'auto';
+    }
+    return localStorage.getItem('lunaris_stream_codec') || 'auto';
+  });
   const [mouseQueueLimit, setMouseQueueLimit] = useState<number>(() => {
     const val = localStorage.getItem('lunaris_mouse_queue_limit');
     if (val === null || val === '0') {
@@ -318,23 +327,26 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     av1: browserCodecs.av1 && hostAv1Supported,
   };
 
-  // Sync activeCodec if it's not supported by host/browser capabilities
+  // Resolve 'auto' to the best available codec: AV1 > H265 > H264
+  // Called every time we need the actual codec string to send to the agent.
+  const resolveAutoCodec = (): string => {
+    if (supportedCodecs.av1) return 'av1';
+    if (supportedCodecs.h265) return 'h265';
+    return 'h264';
+  };
+
+  // For display: when auto, show the resolved codec in parentheses
+  const resolvedActiveCodec = activeCodec === 'auto' ? resolveAutoCodec() : activeCodec;
+
+  // Sync activeCodec if a manually-selected codec is no longer supported
   useEffect(() => {
+    if (activeCodec === 'auto') return; // auto always resolves dynamically
     const currentCodec = activeCodec as 'h264' | 'h265' | 'av1';
     if (!supportedCodecs[currentCodec]) {
-      let fallbackCodec = 'h264';
-      if (supportedCodecs.h265) {
-        fallbackCodec = 'h265';
-      } else if (supportedCodecs.h264) {
-        fallbackCodec = 'h264';
-      } else if (supportedCodecs.av1) {
-        fallbackCodec = 'av1';
-      }
-
-      addLog(`Active codec ${activeCodec} is not supported. Falling back to ${fallbackCodec}`);
-      setActiveCodec(fallbackCodec);
-      setDraftCodec(fallbackCodec);
-      localStorage.setItem('lunaris_stream_codec', fallbackCodec);
+      addLog(`Active codec ${activeCodec} is not supported. Switching to Auto.`);
+      setActiveCodec('auto');
+      setDraftCodec('auto');
+      localStorage.setItem('lunaris_stream_codec', 'auto');
     }
   }, [browserCodecs, serverCodecModeSupport, activeCodec]);
 
@@ -752,7 +764,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
 
     const tauri = (window as any).__TAURI__;
     if (tauri && useNativeClient && selectedAppId !== null) {
-      const resolvedCodec = activeCodec === 'h265' ? 'h265' : activeCodec === 'av1' ? 'av1' : 'h264';
+      const resolvedCodec = activeCodec === 'auto' ? resolveAutoCodec() : (activeCodec === 'h265' ? 'h265' : activeCodec === 'av1' ? 'av1' : 'h264');
       const resStr = activeResolution === '720p' ? '1280x720' : activeResolution === '540p' ? '960x540' : '1920x1080';
       const backendHost = getBackendHost();
       const serverUrl = `${window.location.protocol === 'https:' ? 'https:' : 'http:'}//${backendHost}`;
@@ -777,8 +789,11 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       return;
     }
 
-    let resolvedCodec = activeCodec;
-    if (activeCodec === 'h265' && !supportedCodecs.h265) {
+    // Resolve 'auto' to the best supported codec before sending to agent
+    let resolvedCodec = activeCodec === 'auto' ? resolveAutoCodec() : activeCodec;
+    if (activeCodec === 'auto') {
+      addLog(`Auto codec resolved to: ${resolvedCodec.toUpperCase()} (browser support: H264=${browserCodecs.h264}, H265=${browserCodecs.h265}, AV1=${browserCodecs.av1})`);
+    } else if (activeCodec === 'h265' && !supportedCodecs.h265) {
       addLog("Warning: H.265 (HEVC) might not be supported by your browser. Proceeding anyway.");
     } else if (activeCodec === 'av1' && !supportedCodecs.av1) {
       addLog("Warning: AV1 might not be supported by your browser. Proceeding anyway.");
@@ -1535,6 +1550,38 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       sdp: offerSdp
     }));
     addLog("Remote description (Offer) set.");
+
+    // Apply codec preference filter using setCodecPreferences.
+    // This ensures Chrome's SDP answer only includes the negotiated codec,
+    // preventing profile-level-id mismatches when multiple H264 variants exist.
+    const codecForSession = activeCodec === 'auto' ? resolveAutoCodec() : activeCodec;
+    try {
+      const transceivers = pc.getTransceivers();
+      const videoTransceiver = transceivers.find(t => t.receiver.track.kind === 'video');
+      if (videoTransceiver && RTCRtpReceiver.getCapabilities) {
+        const caps = RTCRtpReceiver.getCapabilities('video');
+        if (caps && caps.codecs) {
+          // Build ordered codec preference: put selected codec first, keep RED/ULPFEC/FlexFEC
+          const mimeTarget = codecForSession === 'h265' ? ['video/h265', 'video/hevc']
+            : codecForSession === 'av1' ? ['video/av1']
+            : ['video/h264'];
+          const preferred = caps.codecs.filter(c =>
+            mimeTarget.some(m => c.mimeType.toLowerCase() === m)
+          );
+          const rest = caps.codecs.filter(c =>
+            !mimeTarget.some(m => c.mimeType.toLowerCase() === m) &&
+            !['video/vp8', 'video/vp9'].includes(c.mimeType.toLowerCase())
+          );
+          const ordered = [...preferred, ...rest];
+          if (ordered.length > 0 && (videoTransceiver as any).setCodecPreferences) {
+            (videoTransceiver as any).setCodecPreferences(ordered);
+            addLog(`Set codec preference: ${codecForSession.toUpperCase()} (${preferred.length} variant(s) preferred)`);
+          }
+        }
+      }
+    } catch (e) {
+      addLog(`setCodecPreferences not supported or failed: ${e}`);
+    }
 
     // Create SDP Answer
     const answer = await pc.createAnswer();
@@ -2938,6 +2985,9 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
                     value={draftCodec} 
                     onChange={(e) => setDraftCodec(e.target.value)}
                   >
+                    <option value="auto">
+                      Auto (Best Available: {resolveAutoCodec().toUpperCase()})
+                    </option>
                     <option value="h264" disabled={!supportedCodecs.h264}>
                       {getCodecLabel("H.264", browserCodecs.h264, hostH264Supported)}
                     </option>
@@ -2948,6 +2998,11 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
                       {getCodecLabel("AV1", browserCodecs.av1, hostAv1Supported)}
                     </option>
                   </select>
+                  {draftCodec === 'auto' && (
+                    <p style={{ margin: '0.25rem 0 0', fontSize: '0.75rem', color: 'var(--text-muted, #888)' }}>
+                      Browser: H264={browserCodecs.h264?'✓':'✗'} H265={browserCodecs.h265?'✓':'✗'} AV1={browserCodecs.av1?'✓':'✗'}
+                    </p>
+                  )}
                 </div>
 
                 <div className="settings-group">
@@ -3568,17 +3623,12 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
           value={activeCodec}
           onChange={(e) => updateSetting('codec', e.target.value)}
           className="stream-select"
-          title="Video Codec"
+          title={`Video Codec${activeCodec === 'auto' ? ` (Auto → ${resolvedActiveCodec.toUpperCase()})` : ''}`}
         >
-          <option value="h264" disabled={!supportedCodecs.h264}>
-            H264
-          </option>
-          <option value="h265" disabled={!supportedCodecs.h265}>
-            H265
-          </option>
-          <option value="av1" disabled={!supportedCodecs.av1}>
-            AV1
-          </option>
+          <option value="auto">Auto ({resolvedActiveCodec.toUpperCase()})</option>
+          <option value="h264" disabled={!supportedCodecs.h264}>H264</option>
+          <option value="h265" disabled={!supportedCodecs.h265}>H265</option>
+          <option value="av1" disabled={!supportedCodecs.av1}>AV1</option>
         </select>
 
         {/* Mouse Queue Limit Dropdown */}
@@ -4165,7 +4215,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
             <div>Encode Latency: <span className="stat-value">{(2.2 + (new Date().getMilliseconds() % 5) * 0.1).toFixed(1)} ms</span></div>
             <div>FPS: <span className="stat-value">{stats.fps}</span></div>
             <div>Bitrate: <span className="stat-value">{stats.bitrate} Kbps</span></div>
-            <div>Codec: <span className="stat-value">{activeCodec.toUpperCase()}</span></div>
+            <div>Codec: <span className="stat-value">{activeCodec === 'auto' ? `Auto (${resolvedActiveCodec.toUpperCase()})` : activeCodec.toUpperCase()}</span></div>
             <div>Input Protocol: <span className="stat-value" style={{ color: isWebTransportConnected ? '#4ade80' : '#38bdf8', fontWeight: 'bold' }}>
               {isWebTransportConnected ? "WebTransport (QUIC)" : "WebRTC (SCTP)"}
             </span></div>
