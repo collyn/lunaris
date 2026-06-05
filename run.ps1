@@ -279,6 +279,19 @@ function Load-Environment {
     if ($env:Path -notlike "*$qtBin*") { $env:Path = "$qtBin;$env:Path" }
     if ($env:Path -notlike "*$vcpkgBin*") { $env:Path = "$vcpkgBin;$env:Path" }
     if ($env:Path -notlike "*$llvmBin*") { $env:Path = "$llvmBin;$env:Path" }
+
+    # Configure Clang include paths dynamically for bindgen (fixes errno.h/stddef.h not found)
+    if ($env:INCLUDE -and -not $env:BINDGEN_EXTRA_CLANG_ARGS) {
+        $clangArgs = @()
+        foreach ($path in $env:INCLUDE -split ';') {
+            if ($path.Trim() -and (Test-Path $path)) {
+                $clangArgs += "-I`"$path`""
+            }
+        }
+        if ($clangArgs.Count -gt 0) {
+            $env:BINDGEN_EXTRA_CLANG_ARGS = $clangArgs -join ' '
+        }
+    }
 }
 
 # Load environment on startup
