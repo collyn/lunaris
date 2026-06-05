@@ -399,23 +399,40 @@ pub async fn setup_bridge_session(
         let mut buf = vec![0u8; 1500];
         let mut last_bitrate_kbps: u32 = 0;
         let mut last_bitrate_change = std::time::Instant::now();
+        // PLI debounce: only generate one IDR per second from PLI requests.
+        // Without debouncing, on slow networks (low REMB), PLI every 200ms causes
+        // 5 large IDR floods/sec, saturating the network and making REMB unable to climb.
+        let mut last_pli_idr_time = std::time::Instant::now()
+            .checked_sub(std::time::Duration::from_secs(60))
+            .unwrap_or_else(std::time::Instant::now);
         while let Ok((packets, _)) = video_sender_clone.read(&mut buf).await {
             for packet in packets {
                 let packet_any = packet.as_any();
                 if packet_any.is::<webrtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication>() {
-                    info!("Received PLI request from browser, requesting IDR frame");
-                    need_idr_clone.store(true, Ordering::SeqCst);
-                    if let Some(ref cmd_tx) = *pipeline_cmd_tx_for_pli.lock().unwrap() {
-                        let _ = cmd_tx.try_send(lunaris_media::pipeline::PipelineCommand::RequestKeyframe);
+                    let now = std::time::Instant::now();
+                    let elapsed_ms = now.duration_since(last_pli_idr_time).as_millis();
+                    if elapsed_ms >= 1000 {
+                        // Enough time has passed — honor this PLI and generate IDR.
+                        info!("Received PLI request from browser, requesting IDR frame (last IDR {}ms ago)", elapsed_ms);
+                        last_pli_idr_time = now;
+                        need_idr_clone.store(true, Ordering::SeqCst);
+                        if let Some(ref cmd_tx) = *pipeline_cmd_tx_for_pli.lock().unwrap() {
+                            let _ = cmd_tx.try_send(lunaris_media::pipeline::PipelineCommand::RequestKeyframe);
+                        }
+                    } else {
+                        // Too soon — suppress this PLI to avoid IDR flood on slow networks.
+                        debug!("PLI from browser suppressed: last IDR only {}ms ago (debounce=1000ms)", elapsed_ms);
                     }
                 } else if let Some(remb) = packet_any.downcast_ref::<webrtc::rtcp::payload_feedbacks::receiver_estimated_maximum_bitrate::ReceiverEstimatedMaximumBitrate>() {
                     let estimated_bitrate_kbps = (remb.bitrate / 1000.0) as u32;
                     
-                    // Allow bitrate to scale down to 500 kbps minimum to handle slow/congested
-                    // network connections. The old 3000 kbps floor caused infinite PLI loops on
-                    // connections with REMB < 3000 kbps: we'd always encode at 3000 kbps,
-                    // causing packet drops, which caused PLI, which caused more 3000 kbps IDR frames.
-                    let bitrate_floor = 500.min(stream_bitrate);
+                    // Allow bitrate to scale down to 100 kbps minimum.
+                    // The old 500 kbps floor caused congestion collapse on connections with
+                    // REMB < 500 kbps: encoding above available bandwidth caused packet drops,
+                    // which prevented REMB from measuring true capacity, which kept us at 500 kbps
+                    // floor, causing more drops. Floor at 100 kbps allows REMB to guide bitrate
+                    // down to actual capacity and then climb back up organically.
+                    let bitrate_floor = 100.min(stream_bitrate);
                     let clamped_bitrate_kbps = estimated_bitrate_kbps.clamp(bitrate_floor, stream_bitrate);
                     
                     // Rate-limit bitrate changes: only apply if value changed AND at least 2 seconds since last change.
