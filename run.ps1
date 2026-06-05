@@ -95,6 +95,13 @@ function Setup-Environment {
         return
     }
 
+    # Terminate any running workspace applications to release file locks on dependencies
+    Write-Host "Stopping any running Lunaris processes to release file locks..." -ForegroundColor Yellow
+    Stop-Process -Name "agent" -Force -ErrorAction SilentlyContinue
+    Stop-Process -Name "client-desktop" -Force -ErrorAction SilentlyContinue
+    Stop-Process -Name "server" -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Seconds 1
+
     # 1. Install Git
     if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
         Write-Host "Installing Git..." -ForegroundColor Yellow
