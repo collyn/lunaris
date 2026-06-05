@@ -48,7 +48,14 @@ function Get-MissingDeps {
     
     # Check for LLVM/Clang (required by bindgen)
     $llvmPath = if ($env:LIBCLANG_PATH) { $env:LIBCLANG_PATH } else { "C:\Program Files\LLVM\bin" }
-    if (-not (Test-Path "$llvmPath\libclang.dll") -and -not (Test-Path "$llvmPath\clang.dll")) {
+    $hasLibClang = $false
+    if (Test-Path "$llvmPath\libclang.dll") {
+        if ((Get-Item "$llvmPath\libclang.dll").Length -gt 0) { $hasLibClang = $true }
+    }
+    if (Test-Path "$llvmPath\clang.dll") {
+        if ((Get-Item "$llvmPath\clang.dll").Length -gt 0) { $hasLibClang = $true }
+    }
+    if (-not $hasLibClang) {
         $missing += "LLVM/Clang (required by bindgen)"
     }
     
@@ -132,9 +139,16 @@ function Setup-Environment {
 
     # 5b. Install LLVM/Clang (required by bindgen)
     $llvmPath = "C:\Program Files\LLVM\bin"
-    if (-not (Test-Path "$llvmPath\libclang.dll") -and -not (Test-Path "$llvmPath\clang.dll")) {
-        Write-Host "Installing LLVM/Clang..." -ForegroundColor Yellow
-        winget install --id LLVM.LLVM -e --no-upgrade --accept-source-agreements --accept-package-agreements
+    $needLLVM = $true
+    if (Test-Path "$llvmPath\libclang.dll") {
+        if ((Get-Item "$llvmPath\libclang.dll").Length -gt 0) { $needLLVM = $false }
+    }
+    if (Test-Path "$llvmPath\clang.dll") {
+        if ((Get-Item "$llvmPath\clang.dll").Length -gt 0) { $needLLVM = $false }
+    }
+    if ($needLLVM) {
+        Write-Host "Installing LLVM/Clang (forcing overwrite of any corrupted DLLs)..." -ForegroundColor Yellow
+        winget install --id LLVM.LLVM -e --force --no-upgrade --accept-source-agreements --accept-package-agreements
     }
 
     # 6. Install Rustup & Toolchain
