@@ -17,8 +17,3 @@ opt-level = 3
 lto = true
 codegen-units = 1
 panic = "abort"
-
-[patch."https://github.com/collyn/lunaris-media.git"]
-lunaris-media = { path = "../lunaris-media" }
-
-
