@@ -332,6 +332,9 @@ function Load-Environment {
             $env:BINDGEN_EXTRA_CLANG_ARGS = $clangArgs -join ' '
         }
     }
+
+    # Fix legacy CMake compatibility issue for new CMake versions (e.g. CMake 4.0+)
+    $env:CMAKE_POLICY_VERSION_MINIMUM = "3.5"
 }
 
 # Load environment on startup
