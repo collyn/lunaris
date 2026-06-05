@@ -157,7 +157,7 @@ pub async fn setup_bridge_session(
                 clock_rate: 90000,
                 channels: 0,
                 sdp_fmtp_line:
-                    "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e033"
+                    "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=640033"
                         .to_string(),
                 rtcp_feedback: vec![
                     RTCPFeedback {
@@ -343,7 +343,7 @@ pub async fn setup_bridge_session(
         ),
         _ => (
             MIME_TYPE_H264.to_string(),
-            "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e033".to_string(),
+            "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=640033".to_string(),
             96,
             VideoPayloader::H264(H264Payloader::default()),
         ),
@@ -411,8 +411,11 @@ pub async fn setup_bridge_session(
                 } else if let Some(remb) = packet_any.downcast_ref::<webrtc::rtcp::payload_feedbacks::receiver_estimated_maximum_bitrate::ReceiverEstimatedMaximumBitrate>() {
                     let estimated_bitrate_kbps = (remb.bitrate / 1000.0) as u32;
                     
-                    // Allow bitrate to scale down to 3000 kbps to handle network congestion and packet loss
-                    let bitrate_floor = 3000.min(stream_bitrate);
+                    // Allow bitrate to scale down to 500 kbps minimum to handle slow/congested
+                    // network connections. The old 3000 kbps floor caused infinite PLI loops on
+                    // connections with REMB < 3000 kbps: we'd always encode at 3000 kbps,
+                    // causing packet drops, which caused PLI, which caused more 3000 kbps IDR frames.
+                    let bitrate_floor = 500.min(stream_bitrate);
                     let clamped_bitrate_kbps = estimated_bitrate_kbps.clamp(bitrate_floor, stream_bitrate);
                     
                     // Rate-limit bitrate changes: only apply if value changed AND at least 2 seconds since last change.
