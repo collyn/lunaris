@@ -403,7 +403,9 @@ pub async fn run_agent_loop(
                             warn!("[SIGNALING] Received SDP answer from client: {}", target_id);
                             let lock = active_session.lock().await;
                             if let Some(session) = lock.as_ref() {
-                                match RTCSessionDescription::answer(sdp.sdp) {
+                                // Force Level 4.2 in SDP Answer to prevent browser decoder from silently rejecting Level 4.0/4.2 AMF GPU streams.
+                                let forced_sdp = sdp.sdp.replace("profile-level-id=42001f", "profile-level-id=42002a");
+                                match RTCSessionDescription::answer(forced_sdp) {
                                     Ok(rtc_sdp) => {
                                         if let Err(e) = session
                                             .peer_connection
