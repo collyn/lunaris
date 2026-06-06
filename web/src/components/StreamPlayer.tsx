@@ -4086,18 +4086,19 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
           className="host-remote-cursor"
           style={{
             position: 'absolute',
-            width: '22px',
-            height: '28px',
+            width: '32px',
+            height: '32px',
             pointerEvents: 'none',
             zIndex: 145,
             transform: 'translate(-1px, -1px)',
             transition: 'none',
             display: 'none',
-            filter: 'drop-shadow(0 1px 2px rgba(0, 0, 0, 0.65))',
+            filter: 'drop-shadow(1px 1px 1px rgba(0, 0, 0, 0.45))',
           }}
         >
-          <svg width="22" height="28" viewBox="0 0 22 28" fill="none" aria-hidden="true">
-            <path d="M3 2.5L3 22.5L8.8 16.5L13.5 26L17.1 24.2L12.5 15H20L3 2.5Z" fill="#ffffff" stroke="#111827" strokeWidth="1.6" strokeLinejoin="round" />
+          <svg width="32" height="32" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+            <path d="M1.5 1.5V24.2L8.2 17.7L12.6 28.5L17.7 26.4L13.2 15.8H22.9L1.5 1.5Z" fill="#ffffff" stroke="#000000" strokeWidth="1.35" strokeLinejoin="round" />
+            <path d="M4.2 6.1V17.9L7.6 14.6H10.7L4.2 6.1Z" fill="#ffffff" opacity="0.92" />
           </svg>
         </div>
 
