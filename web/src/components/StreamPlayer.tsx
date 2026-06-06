@@ -170,6 +170,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   const hostCursorImageRef = useRef<HTMLImageElement>(null);
   const hostCursorImageMetricsRef = useRef<HostCursorImageMetrics | null>(null);
   const hostCursorMouseDownRef = useRef<boolean>(false);
+  const lastHostCursorLocalPredictionAtRef = useRef<number>(0);
   const hostCursorPosRef = useRef<{ x: number, y: number, visible: boolean, kind: HostCursorKind }>({ x: 0, y: 0, visible: false, kind: 'arrow' });
   const isHardwareMouseActiveRef = useRef<boolean>(false);
   const localCursorPosRef = useRef<{ x: number, y: number }>({ x: 960, y: 540 });
@@ -723,9 +724,16 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
               const x16 = Math.round(xNorm * 4096.0);
               const y16 = Math.round(yNorm * 4096.0);
 
-              localCursorPosRef.current = { x: Math.round(xNorm * vidWidth), y: Math.round(yNorm * vidHeight) };
+              const predictedX = Math.round(xNorm * vidWidth);
+              const predictedY = Math.round(yNorm * vidHeight);
+              localCursorPosRef.current = { x: predictedX, y: predictedY };
               if (touchModeRef.current === 'trackpad') {
                 updateVirtualCursorDOMRef.current();
+              }
+              if (!hostCursorMouseDownRef.current) {
+                const hostCursor = hostCursorPosRef.current;
+                lastHostCursorLocalPredictionAtRef.current = performance.now();
+                updateHostCursorDOM(predictedX, predictedY, true, hostCursor.kind, null);
               }
 
               const buffer = new ArrayBuffer(13);
@@ -1556,7 +1564,13 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       const image = parseHostCursorImage(message.image);
       if (!Number.isFinite(x) || !Number.isFinite(y)) return;
 
-      updateHostCursorDOM(x, y, visible, kind, image);
+      const hostCursor = hostCursorPosRef.current;
+      const localPredictionFresh = performance.now() - lastHostCursorLocalPredictionAtRef.current < 140;
+      if (localPredictionFresh && visible) {
+        updateHostCursorDOM(hostCursor.x, hostCursor.y, visible, kind, image);
+      } else {
+        updateHostCursorDOM(x, y, visible, kind, image);
+      }
     } catch {
       // Ignore non-JSON control messages on the shared general channel.
     }
@@ -1631,13 +1645,13 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
         addLog(`Data Channel ${channel.label} opened.`);
       };
       channel.onmessage = (messageEvent) => {
-        if (label === 'general') {
+        if (label === 'general' || label === 'cursor') {
           void handleGeneralDataChannelMessage(messageEvent.data);
         }
       };
       channel.onclose = () => {
         addLog(`Data Channel ${channel.label} closed.`);
-        if (label === 'general') {
+        if (label === 'general' || label === 'cursor') {
           hostCursorImageMetricsRef.current = null;
           if (hostCursorImageRef.current) {
             hostCursorImageRef.current.src = '/cursors/windows-aero-arrow.png';
@@ -2249,8 +2263,9 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     const clientX = xNorm * actualVidWidth + offsetX + rect.left;
     const clientY = yNorm * actualVidHeight + offsetY + rect.top;
 
-    cursorEl.style.left = `${clientX - wrapperRect.left - cursorMetrics.hotspotX}px`;
-    cursorEl.style.top = `${clientY - wrapperRect.top - cursorMetrics.hotspotY}px`;
+    const left = clientX - wrapperRect.left - cursorMetrics.hotspotX;
+    const top = clientY - wrapperRect.top - cursorMetrics.hotspotY;
+    cursorEl.style.transform = `translate3d(${left}px, ${top}px, 0)`;
     cursorEl.style.display = 'block';
   };
 
@@ -4229,9 +4244,13 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
             height: '32px',
             pointerEvents: 'none',
             zIndex: 145,
-            transform: 'translate(-1px, -1px)',
+            left: 0,
+            top: 0,
+            transform: 'translate3d(0, 0, 0)',
             transition: 'none',
             display: 'none',
+            willChange: 'transform',
+            contain: 'layout paint style',
           }}
         >
           <img

@@ -536,7 +536,17 @@ pub async fn setup_bridge_session(
 
     // Create Data Channels
     let general_channel = peer_connection.create_data_channel("general", None).await?;
-    let general_channel_for_cursor = general_channel.clone();
+
+    let cursor_channel_init = RTCDataChannelInit {
+        ordered: Some(false),
+        max_retransmits: Some(0),
+        ..Default::default()
+    };
+    let cursor_channel = peer_connection
+        .create_data_channel("cursor", Some(cursor_channel_init))
+        .await?;
+    let cursor_channel_for_cursor = cursor_channel.clone();
+
     let mouse_reliable_channel = peer_connection
         .create_data_channel("mouse_reliable", None)
         .await?;
@@ -719,7 +729,7 @@ pub async fn setup_bridge_session(
     let webrtc_connected_for_media = webrtc_connected.clone();
     let ws_tx_for_media = ws_tx.clone();
     let client_id_for_media = client_id.clone();
-    let cursor_channel_for_media = general_channel_for_cursor.clone();
+    let cursor_channel_for_media = cursor_channel_for_cursor.clone();
     let media_event_task = tokio::spawn(async move {
         let mut metrics_started = Instant::now();
         let mut forwarded_frames: u64 = 0;
