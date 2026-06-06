@@ -6,6 +6,7 @@ use std::sync::{
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
+use base64::Engine;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, trace, warn};
 
@@ -806,12 +807,22 @@ pub async fn setup_bridge_session(
                         cursor.kind.as_str()
                     );
                     if cursor_channel_for_media.ready_state() == RTCDataChannelState::Open {
+                        let image = cursor.image.as_ref().map(|image| {
+                            serde_json::json!({
+                                "width": image.width,
+                                "height": image.height,
+                                "hotspot_x": image.hotspot_x,
+                                "hotspot_y": image.hotspot_y,
+                                "rgba": base64::engine::general_purpose::STANDARD.encode(&image.rgba_data),
+                            })
+                        });
                         let payload = serde_json::json!({
                             "type": "host_cursor",
                             "x": cursor.x,
                             "y": cursor.y,
                             "visible": cursor.visible,
                             "kind": cursor.kind.as_str(),
+                            "image": image,
                         })
                         .to_string();
                         if let Err(err) = cursor_channel_for_media.send_text(payload).await {

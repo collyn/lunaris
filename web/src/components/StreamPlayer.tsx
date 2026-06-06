@@ -41,6 +41,20 @@ type HostCursorKind =
   | 'unavailable'
   | 'unknown';
 
+type HostCursorImagePayload = {
+  width: number;
+  height: number;
+  hotspotX: number;
+  hotspotY: number;
+  rgba: string;
+};
+
+type HostCursorImageMetrics = {
+  hotspotX: number;
+  hotspotY: number;
+  native: boolean;
+};
+
 const HOST_CURSOR_ASSETS: Record<HostCursorKind, { src: string; hotspotX: number; hotspotY: number }> = {
   arrow: { src: '/cursors/windows-aero-arrow.png', hotspotX: 0, hotspotY: 0 },
   ibeam: { src: '/cursors/windows-aero-ibeam.png', hotspotX: 16, hotspotY: 16 },
@@ -59,6 +73,20 @@ const normalizeHostCursorKind = (kind: unknown): HostCursorKind => {
   return typeof kind === 'string' && kind in HOST_CURSOR_ASSETS
     ? (kind as HostCursorKind)
     : 'arrow';
+};
+
+const parseHostCursorImage = (image: any): HostCursorImagePayload | null => {
+  if (!image || typeof image !== 'object') return null;
+  const width = Number(image.width);
+  const height = Number(image.height);
+  const hotspotX = Number(image.hotspot_x);
+  const hotspotY = Number(image.hotspot_y);
+  const rgba = typeof image.rgba === 'string' ? image.rgba : '';
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0 || !rgba) {
+    return null;
+  }
+  if (!Number.isFinite(hotspotX) || !Number.isFinite(hotspotY)) return null;
+  return { width, height, hotspotX, hotspotY, rgba };
 };
 
 
@@ -140,6 +168,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   const localCursorRef = useRef<HTMLDivElement>(null);
   const hostCursorRef = useRef<HTMLDivElement>(null);
   const hostCursorImageRef = useRef<HTMLImageElement>(null);
+  const hostCursorImageMetricsRef = useRef<HostCursorImageMetrics | null>(null);
   const hostCursorMouseDownRef = useRef<boolean>(false);
   const hostCursorPosRef = useRef<{ x: number, y: number, visible: boolean, kind: HostCursorKind }>({ x: 0, y: 0, visible: false, kind: 'arrow' });
   const isHardwareMouseActiveRef = useRef<boolean>(false);
@@ -1524,9 +1553,10 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       const y = Number(message.y);
       const visible = Boolean(message.visible);
       const kind = normalizeHostCursorKind(message.kind);
+      const image = parseHostCursorImage(message.image);
       if (!Number.isFinite(x) || !Number.isFinite(y)) return;
 
-      updateHostCursorDOM(x, y, visible, kind);
+      updateHostCursorDOM(x, y, visible, kind, image);
     } catch {
       // Ignore non-JSON control messages on the shared general channel.
     }
@@ -1608,7 +1638,13 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       channel.onclose = () => {
         addLog(`Data Channel ${channel.label} closed.`);
         if (label === 'general') {
-          updateHostCursorDOM(0, 0, false, 'arrow');
+          hostCursorImageMetricsRef.current = null;
+          if (hostCursorImageRef.current) {
+            hostCursorImageRef.current.src = '/cursors/windows-aero-arrow.png';
+            hostCursorImageRef.current.style.width = '32px';
+            hostCursorImageRef.current.style.height = '32px';
+          }
+          updateHostCursorDOM(0, 0, false, 'arrow', null);
         }
       };
       channel.onerror = (e) => addLog(`Data Channel ${channel.label} error: ${e}`);
@@ -2119,7 +2155,13 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     }
   };
 
-  const updateHostCursorDOM = (x: number, y: number, visible: boolean, kind: HostCursorKind = 'arrow') => {
+  const updateHostCursorDOM = (
+    x: number,
+    y: number,
+    visible: boolean,
+    kind: HostCursorKind = 'arrow',
+    image: HostCursorImagePayload | null = null,
+  ) => {
     const cursorEl = hostCursorRef.current;
     const imageEl = hostCursorImageRef.current;
     const video = videoRef.current;
@@ -2132,9 +2174,46 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       return;
     }
 
-    const cursorAsset = HOST_CURSOR_ASSETS[cursorKind];
-    if (imageEl && !imageEl.src.endsWith(cursorAsset.src)) {
-      imageEl.src = cursorAsset.src;
+    let cursorMetrics = hostCursorImageMetricsRef.current;
+    if (image && imageEl) {
+      try {
+        const binary = atob(image.rgba);
+        const bytes = new Uint8ClampedArray(binary.length);
+        for (let i = 0; i < binary.length; i += 1) {
+          bytes[i] = binary.charCodeAt(i);
+        }
+        if (bytes.length === image.width * image.height * 4) {
+          const canvas = document.createElement('canvas');
+          canvas.width = image.width;
+          canvas.height = image.height;
+          const ctx = canvas.getContext('2d');
+          if (ctx) {
+            ctx.putImageData(new ImageData(bytes, image.width, image.height), 0, 0);
+            imageEl.src = canvas.toDataURL('image/png');
+            imageEl.style.width = `${image.width}px`;
+            imageEl.style.height = `${image.height}px`;
+            cursorMetrics = { hotspotX: image.hotspotX, hotspotY: image.hotspotY, native: true };
+            hostCursorImageMetricsRef.current = cursorMetrics;
+          }
+        }
+      } catch {
+        // Keep the previous cursor image if decoding fails.
+      }
+    }
+
+    if (!cursorMetrics || !cursorMetrics.native) {
+      const cursorAsset = HOST_CURSOR_ASSETS[cursorKind];
+      if (imageEl && !imageEl.src.endsWith(cursorAsset.src)) {
+        imageEl.src = cursorAsset.src;
+        imageEl.style.width = '32px';
+        imageEl.style.height = '32px';
+      }
+      cursorMetrics = {
+        hotspotX: cursorAsset.hotspotX,
+        hotspotY: cursorAsset.hotspotY,
+        native: false,
+      };
+      hostCursorImageMetricsRef.current = cursorMetrics;
     }
 
     const rect = video.getBoundingClientRect();
@@ -2170,8 +2249,8 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     const clientX = xNorm * actualVidWidth + offsetX + rect.left;
     const clientY = yNorm * actualVidHeight + offsetY + rect.top;
 
-    cursorEl.style.left = `${clientX - wrapperRect.left - cursorAsset.hotspotX}px`;
-    cursorEl.style.top = `${clientY - wrapperRect.top - cursorAsset.hotspotY}px`;
+    cursorEl.style.left = `${clientX - wrapperRect.left - cursorMetrics.hotspotX}px`;
+    cursorEl.style.top = `${clientY - wrapperRect.top - cursorMetrics.hotspotY}px`;
     cursorEl.style.display = 'block';
   };
 
@@ -4160,7 +4239,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
             src="/cursors/windows-aero-arrow.png"
             alt=""
             draggable={false}
-            style={{ width: '32px', height: '32px', display: 'block' }}
+            style={{ width: '32px', height: '32px', display: 'block', maxWidth: 'none' }}
           />
         </div>
 

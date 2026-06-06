@@ -48,6 +48,7 @@ name = "agent"
 version = "0.1.10"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "bitflags 2.13.0",
  "bytes",
  "clap",
@@ -3855,7 +3856,7 @@ checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
 [[package]]
 name = "lunaris-media"
 version = "0.1.0"
-source = "git+https://github.com/collyn/lunaris-media.git#13889d86537703066a49c7429ffe1ebe6e84d9af"
+source = "git+https://github.com/collyn/lunaris-media.git#81e83be60809c70286de8a7e84dcf20f33730f9d"
 dependencies = [
  "ashpd 0.9.3",
  "async-trait",
