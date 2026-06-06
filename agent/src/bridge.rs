@@ -157,11 +157,11 @@ pub async fn setup_bridge_session(
                 clock_rate: 90000,
                 channels: 0,
                 sdp_fmtp_line:
-                    // Use 42001f (Baseline, Level 3.1) to support both CBP (Constrained Baseline)
+                    // Use 42002a (Baseline, Level 4.2) to support both CBP (Constrained Baseline)
                     // and AMD AMF standard Baseline (which outputs profile_idc=66, constraints=0x40).
-                    // Chrome's WebRTC decoder supports 42001f natively and will accept the 42402a
+                    // Chrome's WebRTC decoder supports 42002a natively and will accept the 42402a
                     // AMD stream without rejecting it or entering an infinite PLI loop.
-                    "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42001f"
+                    "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42002a"
                         .to_string(),
                 rtcp_feedback: vec![
                     RTCPFeedback {
@@ -347,7 +347,7 @@ pub async fn setup_bridge_session(
         ),
         _ => (
             MIME_TYPE_H264.to_string(),
-            "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42001f".to_string(),
+            "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42002a".to_string(),
             96,
             VideoPayloader::H264(H264Payloader::default()),
         ),
