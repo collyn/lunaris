@@ -246,12 +246,12 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   const [draftDisplay, setDraftDisplay] = useState<string>(activeDisplay);
   const [draftVirtualDisplay, setDraftVirtualDisplay] = useState<boolean>(activeVirtualDisplay);
   const [availableEncoders, setAvailableEncoders] = useState<string[]>([]);
-  const [agentGpuInfo, setAgentGpuInfo] = useState<string>('Unknown');
+  const [agentGpuInfo, setAgentGpuInfo] = useState<string>('');
   const [agentHostOs, setAgentHostOs] = useState<string>('unknown');
   const [activeEncoderStatus, setActiveEncoderStatus] = useState<{ encoder: string; hwType: string; gpuInfo: string; requestedEncoder: string }>({
     encoder: 'Pending',
     hwType: 'Unknown',
-    gpuInfo: 'Unknown',
+    gpuInfo: '',
     requestedEncoder: activeEncoder
   });
   const [availableDisplays, setAvailableDisplays] = useState<{id: string; name: string; width: number; height: number; refresh_rate: number; is_primary: boolean}[]>([]);
@@ -1000,10 +1000,11 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
             setActiveEncoderStatus({
               encoder: payload.encoder || 'Unknown',
               hwType: payload.hw_type || 'Unknown',
-              gpuInfo: payload.gpu_info || 'Unknown',
+              gpuInfo: payload.gpu_info || agentGpuInfo || '',
               requestedEncoder: payload.requested_encoder || 'auto'
             });
             if (payload.gpu_info) setAgentGpuInfo(payload.gpu_info);
+            if (payload.host_os) setAgentHostOs(String(payload.host_os).toLowerCase());
             addLog(`Agent encoder active: ${payload.encoder || 'unknown'} (${payload.hw_type || 'unknown'}) on ${payload.gpu_info || 'unknown GPU'}`);
             break;
 
@@ -4703,7 +4704,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
             <div>Bitrate: <span className="stat-value">{stats.bitrate} Kbps</span></div>
             <div>Codec: <span className="stat-value">{activeCodec === 'auto' ? `Auto (${resolvedActiveCodec.toUpperCase()})` : activeCodec.toUpperCase()}</span></div>
             <div>Encoder: <span className="stat-value">{activeEncoderStatus.encoder} ({activeEncoderStatus.hwType})</span></div>
-            <div>GPU: <span className="stat-value">{activeEncoderStatus.gpuInfo || agentGpuInfo}</span></div>
+            <div>GPU: <span className="stat-value">{activeEncoderStatus.gpuInfo || agentGpuInfo || 'Unknown'}</span></div>
             <div>Host OS: <span className="stat-value">{agentHostOs}</span></div>
             <div>Requested Encoder: <span className="stat-value">{activeEncoderStatus.requestedEncoder}</span></div>
             <div>Input Protocol: <span className="stat-value" style={{ color: isWebTransportConnected ? '#4ade80' : '#38bdf8', fontWeight: 'bold' }}>

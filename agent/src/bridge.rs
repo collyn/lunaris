@@ -756,6 +756,7 @@ pub async fn setup_bridge_session(
                             hw_type: encoder.hw_type.to_string(),
                             gpu_info: gpu_name,
                             requested_encoder,
+                            host_os: Some(std::env::consts::OS.to_string()),
                         },
                     ));
                 }

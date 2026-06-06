@@ -526,7 +526,7 @@ pub async fn run_agent_loop(
                                         target_id,
                                         displays,
                                         encoders,
-                                        gpu_info: None,
+                                        gpu_info: lunaris_media::encode::describe_host_gpu(None),
                                         host_os: Some(std::env::consts::OS.to_string()),
                                     },
                                 );

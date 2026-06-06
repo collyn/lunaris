@@ -264,6 +264,7 @@ pub enum SignalingMessage {
         hw_type: String,
         gpu_info: Option<String>,
         requested_encoder: Option<String>,
+        host_os: Option<String>,
     },
     // Errors
     Error {
