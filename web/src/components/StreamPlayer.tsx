@@ -108,7 +108,6 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   const hostCursorRef = useRef<HTMLDivElement>(null);
   const hostCursorPosRef = useRef<{ x: number, y: number, visible: boolean }>({ x: 0, y: 0, visible: false });
   const isHardwareMouseActiveRef = useRef<boolean>(false);
-  const [isHardwareMouse, setIsHardwareMouse] = useState<boolean>(false);
   const localCursorPosRef = useRef<{ x: number, y: number }>({ x: 960, y: 540 });
   const initialLocalCursorPosRef = useRef<{ x: number, y: number }>({ x: 960, y: 540 });
   const hasCenteredThisTouchRef = useRef<boolean>(false);
@@ -2355,7 +2354,6 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     
     if (isHardwareMouseActiveRef.current) {
       isHardwareMouseActiveRef.current = false;
-      setIsHardwareMouse(false);
     }
     
     // Prevent browser from emulating mouse events (mousemove, mousedown, click)
@@ -2973,7 +2971,6 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
 
     if (!isHardwareMouseActiveRef.current) {
       isHardwareMouseActiveRef.current = true;
-      setIsHardwareMouse(true);
       updateVirtualCursorDOM();
       // Hardware mouse detected
     }
@@ -4044,7 +4041,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
               onWheel={handleWheel}
               className={`stream-video-view ${isStreaming ? 'visible' : 'hidden'}`}
               style={{ 
-                cursor: (hideLocalCursor || (touchMode === 'trackpad' && !isHardwareMouse)) ? 'none' : 'default',
+                cursor: isStreaming ? 'none' : 'default',
                 transform: `translate(${zoomPan.x}px, ${zoomPan.y}px) scale(${zoomScale})`,
                 transformOrigin: '0 0'
               }}
@@ -4073,7 +4070,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
             muted={isMuted}
             onLoadedMetadata={handleVideoLoadedMetadata}
             style={{ 
-              cursor: (hideLocalCursor || (touchMode === 'trackpad' && !isHardwareMouse)) ? 'none' : 'default',
+              cursor: isStreaming ? 'none' : 'default',
               transform: `translate(${zoomPan.x}px, ${zoomPan.y}px) scale(${zoomScale})`,
               transformOrigin: '0 0'
             }}
@@ -4093,13 +4090,14 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
             transform: 'translate(-1px, -1px)',
             transition: 'none',
             display: 'none',
-            filter: 'drop-shadow(1px 1px 1px rgba(0, 0, 0, 0.45))',
           }}
         >
-          <svg width="32" height="32" viewBox="0 0 32 32" fill="none" aria-hidden="true">
-            <path d="M1.5 1.5V24.2L8.2 17.7L12.6 28.5L17.7 26.4L13.2 15.8H22.9L1.5 1.5Z" fill="#ffffff" stroke="#000000" strokeWidth="1.35" strokeLinejoin="round" />
-            <path d="M4.2 6.1V17.9L7.6 14.6H10.7L4.2 6.1Z" fill="#ffffff" opacity="0.92" />
-          </svg>
+          <img
+            src="/cursors/windows-aero-arrow.png"
+            alt=""
+            draggable={false}
+            style={{ width: '32px', height: '32px', display: 'block' }}
+          />
         </div>
 
         {/* Client-side virtual cursor for mobile trackpad mode */}
