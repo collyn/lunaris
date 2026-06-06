@@ -3,7 +3,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
 };
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use tokio::sync::mpsc;
@@ -25,9 +25,8 @@ use webrtc::{
     peer_connection::{peer_connection_state::RTCPeerConnectionState, RTCPeerConnection},
     rtp::{
         extension::{
-            HeaderExtension,
             abs_send_time_extension::AbsSendTimeExtension,
-            playout_delay_extension::PlayoutDelayExtension,
+            playout_delay_extension::PlayoutDelayExtension, HeaderExtension,
         },
         header::Header,
         packet::Packet,
@@ -73,7 +72,10 @@ pub struct BridgeSession {
 
 impl Drop for BridgeSession {
     fn drop(&mut self) {
-        info!("BridgeSession is being dropped, cleaning up {} spawned tasks...", self.spawned_tasks.len());
+        info!(
+            "BridgeSession is being dropped, cleaning up {} spawned tasks...",
+            self.spawned_tasks.len()
+        );
         // Abort all spawned tasks first to release Arc references
         for handle in self.spawned_tasks.drain(..) {
             handle.abort();
@@ -130,8 +132,12 @@ pub async fn setup_bridge_session(
     // 2. Desktop browser users can see their cursor in the stream
     // Users can still toggle with Ctrl+Alt+Shift+N when needed (e.g. mobile trackpad mode)
 
-    let (input_tx, mut input_rx) = tokio::sync::mpsc::unbounded_channel::<(InboundPacket, Arc<std::sync::atomic::AtomicU32>)>();
-    let (key_input_tx, mut key_input_rx) = tokio::sync::mpsc::unbounded_channel::<(InboundPacket, Arc<std::sync::atomic::AtomicU32>)>();
+    let (input_tx, mut input_rx) =
+        tokio::sync::mpsc::unbounded_channel::<(InboundPacket, Arc<std::sync::atomic::AtomicU32>)>(
+        );
+    let (key_input_tx, mut key_input_rx) =
+        tokio::sync::mpsc::unbounded_channel::<(InboundPacket, Arc<std::sync::atomic::AtomicU32>)>(
+        );
 
     let resolution_width = width.unwrap_or(1920);
     let resolution_height = height.unwrap_or(1080);
@@ -319,8 +325,13 @@ pub async fn setup_bridge_session(
 
     // Resolve codec settings with host capability checks
     let encoders = lunaris_media::encode::list_available_encoders();
-    let hevc_supported = encoders.iter().any(|e| e.supported_codecs.contains(&lunaris_media::VideoCodec::H265));
-    let av1_supported = encoders.iter().any(|e| e.supported_codecs.contains(&lunaris_media::VideoCodec::AV1));
+    let hevc_supported = encoders.iter().any(|e| {
+        e.supported_codecs
+            .contains(&lunaris_media::VideoCodec::H265)
+    });
+    let av1_supported = encoders
+        .iter()
+        .any(|e| e.supported_codecs.contains(&lunaris_media::VideoCodec::AV1));
     if codec_str == "av1" && !av1_supported {
         info!("AV1 requested but host doesn't support it, falling back to H.264");
         codec_str = "h264".to_string();
@@ -330,9 +341,7 @@ pub async fn setup_bridge_session(
         codec_str = "h264".to_string();
     }
 
-    let (mime_type, sdp_fmtp_line, payload_type, payloader) = match codec_str
-        .as_str()
-    {
+    let (mime_type, sdp_fmtp_line, payload_type, payloader) = match codec_str.as_str() {
         "h265" => (
             MIME_TYPE_HEVC.to_string(),
             "profile-id=1;tier-flag=0;level-id=120;tx-mode=SRST".to_string(),
@@ -392,7 +401,9 @@ pub async fn setup_bridge_session(
         )
         .await?;
 
-    let pipeline_cmd_tx_shared = Arc::new(std::sync::Mutex::new(None::<tokio::sync::mpsc::Sender<lunaris_media::pipeline::PipelineCommand>>));
+    let pipeline_cmd_tx_shared = Arc::new(std::sync::Mutex::new(
+        None::<tokio::sync::mpsc::Sender<lunaris_media::pipeline::PipelineCommand>>,
+    ));
     let mut spawned_tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
     let pipeline_cmd_tx_for_pli = pipeline_cmd_tx_shared.clone();
 
@@ -401,8 +412,10 @@ pub async fn setup_bridge_session(
     let video_sender_clone = video_sender.clone();
     let pli_task = tokio::spawn(async move {
         let mut buf = vec![0u8; 1500];
-        let mut last_bitrate_kbps: u32 = 0;
-        let mut last_bitrate_change = std::time::Instant::now();
+        let mut last_bitrate_kbps: u32 = stream_bitrate;
+        let mut last_bitrate_change = Instant::now();
+        let remb_started = Instant::now();
+        let mut low_remb_samples: u32 = 0;
         // PLI debounce: only generate one IDR per second from PLI requests.
         // Without debouncing, on slow networks (low REMB), PLI every 200ms causes
         // 5 large IDR floods/sec, saturating the network and making REMB unable to climb.
@@ -429,19 +442,47 @@ pub async fn setup_bridge_session(
                     }
                 } else if let Some(remb) = packet_any.downcast_ref::<webrtc::rtcp::payload_feedbacks::receiver_estimated_maximum_bitrate::ReceiverEstimatedMaximumBitrate>() {
                     let estimated_bitrate_kbps = (remb.bitrate / 1000.0) as u32;
-                    
-                    // Allow bitrate to scale down to 100 kbps minimum.
-                    // The old 500 kbps floor caused congestion collapse on connections with
-                    // REMB < 500 kbps: encoding above available bandwidth caused packet drops,
-                    // which prevented REMB from measuring true capacity, which kept us at 500 kbps
-                    // floor, causing more drops. Floor at 100 kbps allows REMB to guide bitrate
-                    // down to actual capacity and then climb back up organically.
-                    let bitrate_floor = 100.min(stream_bitrate);
+
+                    // Chrome can report very low REMB during startup before the decoder/jitter
+                    // buffer settles. For realtime desktop streaming, avoid collapsing 1080p60
+                    // into sub-megabit mode unless several low samples arrive after warmup.
+                    let realtime_floor = if stream_fps >= 50 && resolution_width >= 1920 {
+                        6_000
+                    } else if stream_fps >= 50 {
+                        3_000
+                    } else {
+                        1_500
+                    };
+                    let bitrate_floor = stream_bitrate
+                        .min((stream_bitrate / 3).max(realtime_floor).max(1_000));
                     let clamped_bitrate_kbps = estimated_bitrate_kbps.clamp(bitrate_floor, stream_bitrate);
-                    
+                    let now = Instant::now();
+                    if now.duration_since(remb_started) < Duration::from_secs(5)
+                        && estimated_bitrate_kbps < bitrate_floor
+                    {
+                        debug!(
+                            "Ignoring startup REMB below realtime floor: estimated={} kbps, floor={} kbps, max={} kbps",
+                            estimated_bitrate_kbps, bitrate_floor, stream_bitrate
+                        );
+                        continue;
+                    }
+                    if clamped_bitrate_kbps < last_bitrate_kbps
+                        && clamped_bitrate_kbps < stream_bitrate.saturating_mul(2) / 3
+                    {
+                        low_remb_samples += 1;
+                        if low_remb_samples < 3 {
+                            debug!(
+                                "Waiting for stable low REMB before bitrate drop: sample {}/3, estimated={} kbps, target={} kbps",
+                                low_remb_samples, estimated_bitrate_kbps, clamped_bitrate_kbps
+                            );
+                            continue;
+                        }
+                    } else if clamped_bitrate_kbps >= last_bitrate_kbps {
+                        low_remb_samples = 0;
+                    }
+
                     // Rate-limit bitrate changes: only apply if value changed AND at least 2 seconds since last change.
-                    // Rapid bitrate oscillation destabilizes the NVENC encoder and can cause video corruption.
-                    let now = std::time::Instant::now();
+                    // Rapid bitrate oscillation destabilizes hardware encoders and can cause video corruption.
                     if clamped_bitrate_kbps != last_bitrate_kbps && now.duration_since(last_bitrate_change).as_secs() >= 2 {
                         info!(
                             "REMB bitrate change: {} kbps -> {} kbps (estimated={} kbps, floor={}, max={})",
@@ -452,6 +493,7 @@ pub async fn setup_bridge_session(
                         }
                         last_bitrate_kbps = clamped_bitrate_kbps;
                         last_bitrate_change = now;
+                        low_remb_samples = 0;
                     }
                 }
             }
@@ -480,7 +522,7 @@ pub async fn setup_bridge_session(
                     || state == RTCPeerConnectionState::Disconnected
                 {
                     webrtc_connected.store(false, Ordering::SeqCst);
-                    
+
                     // Stop MediaPipeline if it is active
                     if let Some(ref cmd_tx) = *pipeline_cmd_tx.lock().unwrap() {
                         info!("WebRTC connection state is inactive ({}). Stopping MediaPipeline...", state);
@@ -593,7 +635,6 @@ pub async fn setup_bridge_session(
         },
     ));
 
-
     let (video_frame_tx, mut video_frame_rx) = tokio::sync::mpsc::channel::<VideoFramePayload>(4);
     let (audio_tx, mut audio_rx) = tokio::sync::mpsc::channel::<Sample>(256);
 
@@ -644,7 +685,7 @@ pub async fn setup_bridge_session(
     if let Some(injector) = lunaris_media::input::InputInjector::new() {
         let injector = std::sync::Arc::new(injector);
         let injector_clone = injector.clone();
-        
+
         // Spawn separate task for mouse inputs
         let input_task = tokio::spawn(async move {
             info!("InputInjector: started mouse input processing task");
@@ -672,9 +713,13 @@ pub async fn setup_bridge_session(
         error!("InputInjector: failed to initialize X11 input injector");
     }
 
-    let start_time = std::time::Instant::now();
+    let start_time = Instant::now();
     let webrtc_connected_for_media = webrtc_connected.clone();
     let media_event_task = tokio::spawn(async move {
+        let mut metrics_started = Instant::now();
+        let mut forwarded_frames: u64 = 0;
+        let mut dropped_frames: u64 = 0;
+        let mut forwarded_bytes: u64 = 0;
         while let Some(event) = media_event_rx.recv().await {
             match event {
                 lunaris_media::pipeline::MediaEvent::VideoFrame(frame) => {
@@ -688,9 +733,33 @@ pub async fn setup_bridge_session(
                         full_frame: frame.data,
                         timestamp,
                     };
-                    trace!("Received VideoFrame from media pipeline: size={}, timestamp={}", payload.full_frame.len(), timestamp);
+                    let frame_size = payload.full_frame.len() as u64;
+                    trace!(
+                        "Received VideoFrame from media pipeline: size={}, timestamp={}",
+                        frame_size,
+                        timestamp
+                    );
                     if let Err(e) = video_frame_tx_clone.try_send(payload) {
+                        dropped_frames += 1;
                         warn!("Failed to forward video frame to packager: {:?}", e);
+                    } else {
+                        forwarded_frames += 1;
+                        forwarded_bytes += frame_size;
+                    }
+                    let elapsed = metrics_started.elapsed();
+                    if elapsed >= Duration::from_secs(1) {
+                        let secs = elapsed.as_secs_f64();
+                        info!(
+                            "Agent media ingress: forwarded={:.1}/s dropped={} bitrate={:.2}Mbps packager_queue={}",
+                            forwarded_frames as f64 / secs,
+                            dropped_frames,
+                            (forwarded_bytes as f64 * 8.0 / secs) / 1_000_000.0,
+                            video_frame_tx_clone.max_capacity() - video_frame_tx_clone.capacity()
+                        );
+                        metrics_started = Instant::now();
+                        forwarded_frames = 0;
+                        dropped_frames = 0;
+                        forwarded_bytes = 0;
                     }
                 }
                 lunaris_media::pipeline::MediaEvent::AudioFrame(frame) => {
@@ -726,30 +795,41 @@ pub async fn setup_bridge_session(
         let mut frame_count: u64 = 0;
         let mut payloader = payloader;
 
-        // Bounded channel for complete frames (each represented as Vec<Packet>).
-        // Capacity of 60 frames handles keyframe bursts cleanly without dropping frames at high refresh rates like 240Hz.
-        let (packet_tx, mut packet_rx) = tokio::sync::mpsc::channel::<Vec<Packet>>(60);
+        // Bounded channel for complete RTP frames. Keep this small so the browser sees
+        // current frames instead of a delayed backlog when networking briefly stalls.
+        const RTP_FRAME_QUEUE_CAPACITY: usize = 12;
+        const RTP_FRAME_QUEUE_DROP_THRESHOLD: usize = 6;
+        let (packet_tx, mut packet_rx) =
+            tokio::sync::mpsc::channel::<Vec<Packet>>(RTP_FRAME_QUEUE_CAPACITY);
 
         let need_idr_clone_writer = need_idr_clone_worker.clone();
         let pipeline_cmd_tx_for_writer = pipeline_cmd_tx_for_writer.clone();
         tokio::spawn(async move {
             let mut seq: u16 = 0;
+            let mut metrics_started = Instant::now();
+            let mut sent_frames: u64 = 0;
+            let mut sent_packets: u64 = 0;
+            let mut discarded_frames: u64 = 0;
             while let Some(mut packets) = packet_rx.recv().await {
                 let queue_len = packet_rx.len();
-                if queue_len > 60 {
+                if queue_len > RTP_FRAME_QUEUE_DROP_THRESHOLD {
                     let mut discarded_count = 0;
                     while let Ok(next_packets) = packet_rx.try_recv() {
                         packets = next_packets;
                         discarded_count += 1;
                     }
                     if discarded_count > 0 {
+                        discarded_frames += discarded_count;
                         warn!(
-                            "Discarding {} queued video frames to prevent latency buildup",
-                            discarded_count
+                            "Discarding {} queued video frames to prevent latency buildup (queue_len={})",
+                            discarded_count,
+                            queue_len
                         );
                         need_idr_clone_writer.store(true, Ordering::SeqCst);
                         if let Some(ref cmd_tx) = *pipeline_cmd_tx_for_writer.lock().unwrap() {
-                            let _ = cmd_tx.try_send(lunaris_media::pipeline::PipelineCommand::RequestKeyframe);
+                            let _ = cmd_tx.try_send(
+                                lunaris_media::pipeline::PipelineCommand::RequestKeyframe,
+                            );
                         }
                     }
                 }
@@ -771,7 +851,12 @@ pub async fn setup_bridge_session(
                     }),
                 ];
 
-                trace!("Writer task sending {} RTP packets (first seq={})", packets.len(), seq);
+                let packet_count = packets.len() as u64;
+                trace!(
+                    "Writer task sending {} RTP packets (first seq={})",
+                    packets.len(),
+                    seq
+                );
                 for packet in &mut packets {
                     packet.header.sequence_number = seq;
                     seq = seq.wrapping_add(1);
@@ -782,6 +867,23 @@ pub async fn setup_bridge_session(
                         debug!("Failed to write video RTP packet: {:?}", e);
                     }
                 }
+                sent_frames += 1;
+                sent_packets += packet_count;
+                let elapsed = metrics_started.elapsed();
+                if elapsed >= Duration::from_secs(1) {
+                    let secs = elapsed.as_secs_f64();
+                    info!(
+                        "RTP writer metrics: sent_frames={:.1}/s sent_packets={:.1}/s discarded={} queue={}",
+                        sent_frames as f64 / secs,
+                        sent_packets as f64 / secs,
+                        discarded_frames,
+                        packet_rx.len()
+                    );
+                    metrics_started = Instant::now();
+                    sent_frames = 0;
+                    sent_packets = 0;
+                    discarded_frames = 0;
+                }
                 trace!("Writer task successfully sent RTP packets");
             }
         });
@@ -791,7 +893,11 @@ pub async fn setup_bridge_session(
             timestamp,
         }) = video_frame_rx.recv().await
         {
-            trace!("Enqueuer received frame from rx: size={}, timestamp={}", full_frame.len(), timestamp);
+            trace!(
+                "Enqueuer received frame from rx: size={}, timestamp={}",
+                full_frame.len(),
+                timestamp
+            );
             let mut samples = Vec::new();
             match &mut payloader {
                 VideoPayloader::H264(_) => {
@@ -882,7 +988,10 @@ pub async fn setup_bridge_session(
             }
 
             let total_packets = packets.len();
-            trace!("Enqueuer finished packetizing: {} RTP packets", total_packets);
+            trace!(
+                "Enqueuer finished packetizing: {} RTP packets",
+                total_packets
+            );
             if let Err(e) = packet_tx.try_send(packets) {
                 warn!("RTP frame queue full, dropping frame: {:?}", e);
                 need_idr_clone_worker.store(true, Ordering::SeqCst);
@@ -1028,8 +1137,16 @@ pub async fn setup_bridge_session(
 fn setup_data_channel_handler(
     data_channel: Arc<RTCDataChannel>,
     channel: TransportChannel,
-    input_tx: Option<tokio::sync::mpsc::UnboundedSender<(InboundPacket, Arc<std::sync::atomic::AtomicU32>)>>,
-    pipeline_cmd_tx: Option<Arc<std::sync::Mutex<Option<tokio::sync::mpsc::Sender<lunaris_media::pipeline::PipelineCommand>>>>>,
+    input_tx: Option<
+        tokio::sync::mpsc::UnboundedSender<(InboundPacket, Arc<std::sync::atomic::AtomicU32>)>,
+    >,
+    pipeline_cmd_tx: Option<
+        Arc<
+            std::sync::Mutex<
+                Option<tokio::sync::mpsc::Sender<lunaris_media::pipeline::PipelineCommand>>,
+            >,
+        >,
+    >,
 ) {
     let last_timestamp = Arc::new(std::sync::atomic::AtomicU32::new(0));
     let label = data_channel.label().to_string();
@@ -1046,11 +1163,19 @@ fn setup_data_channel_handler(
         let label = label.clone();
         let pipeline_cmd_tx = pipeline_cmd_tx.clone();
         Box::pin(async move {
-            trace!("Received data channel msg on '{}' (id={}), len={}", label, channel.0, msg.data.len());
+            trace!(
+                "Received data channel msg on '{}' (id={}), len={}",
+                label,
+                channel.0,
+                msg.data.len()
+            );
             let Some(packet) = InboundPacket::deserialize(channel, &msg.data) else {
                 // Only warn for non-general channels (general may have unrecognized JSON commands)
                 if channel.0 != 0 {
-                    warn!("Failed to deserialize inbound packet on channel {}", channel.0);
+                    warn!(
+                        "Failed to deserialize inbound packet on channel {}",
+                        channel.0
+                    );
                 }
                 return;
             };
@@ -1061,14 +1186,17 @@ fn setup_data_channel_handler(
                     InboundPacket::SetBitrate { kbps } => {
                         info!("Dynamic bitrate change via data channel: {} kbps", kbps);
                         if let Some(ref cmd_tx) = *pipeline_cmd.lock().unwrap() {
-                            let _ = cmd_tx.try_send(lunaris_media::pipeline::PipelineCommand::SetBitrate(*kbps));
+                            let _ = cmd_tx.try_send(
+                                lunaris_media::pipeline::PipelineCommand::SetBitrate(*kbps),
+                            );
                         }
                         return;
                     }
                     InboundPacket::SetFps { fps } => {
                         info!("Dynamic FPS change via data channel: {} fps", fps);
                         if let Some(ref cmd_tx) = *pipeline_cmd.lock().unwrap() {
-                            let _ = cmd_tx.try_send(lunaris_media::pipeline::PipelineCommand::SetFps(*fps));
+                            let _ = cmd_tx
+                                .try_send(lunaris_media::pipeline::PipelineCommand::SetFps(*fps));
                         }
                         return;
                     }
@@ -1089,20 +1217,41 @@ fn handle_inbound_packet(
     last_timestamp: &std::sync::atomic::AtomicU32,
 ) {
     match packet {
-        InboundPacket::MousePosition { x, y, reference_width, reference_height, timestamp } => {
+        InboundPacket::MousePosition {
+            x,
+            y,
+            reference_width,
+            reference_height,
+            timestamp,
+        } => {
             let last_ts = last_timestamp.load(std::sync::atomic::Ordering::SeqCst);
             trace!("handle_inbound_packet_direct: MousePosition x={}, y={}, ref_w={}, ref_h={}, ts={}, last_ts={}", x, y, reference_width, reference_height, timestamp, last_ts);
             if last_ts == 0 || (timestamp.wrapping_sub(last_ts) as i32) >= 0 {
                 last_timestamp.store(timestamp, std::sync::atomic::Ordering::SeqCst);
-                injector.move_mouse_absolute(x as i32, y as i32, reference_width as i32, reference_height as i32);
+                injector.move_mouse_absolute(
+                    x as i32,
+                    y as i32,
+                    reference_width as i32,
+                    reference_height as i32,
+                );
             }
         }
-        InboundPacket::MouseMove { delta_x, delta_y, .. } => {
-            trace!("handle_inbound_packet_direct: MouseMove dx={}, dy={}", delta_x, delta_y);
+        InboundPacket::MouseMove {
+            delta_x, delta_y, ..
+        } => {
+            trace!(
+                "handle_inbound_packet_direct: MouseMove dx={}, dy={}",
+                delta_x,
+                delta_y
+            );
             injector.move_mouse_relative(delta_x as i32, delta_y as i32);
         }
         InboundPacket::MouseButton { action, button } => {
-            trace!("handle_inbound_packet_direct: MouseButton action={:?}, button={:?}", action, button);
+            trace!(
+                "handle_inbound_packet_direct: MouseButton action={:?}, button={:?}",
+                action,
+                button
+            );
             let is_press = match action {
                 MouseButtonAction::Press => true,
                 MouseButtonAction::Release => false,
@@ -1117,7 +1266,11 @@ fn handle_inbound_packet(
             injector.mouse_button(x11_btn, is_press);
         }
         InboundPacket::Scroll { delta_y, delta_x } => {
-            trace!("handle_inbound_packet_direct: Scroll delta_y={}, delta_x={}", delta_y, delta_x);
+            trace!(
+                "handle_inbound_packet_direct: Scroll delta_y={}, delta_x={}",
+                delta_y,
+                delta_x
+            );
             if delta_y > 0 {
                 for _ in 0..delta_y {
                     injector.mouse_button(4, true);
@@ -1142,7 +1295,11 @@ fn handle_inbound_packet(
             }
         }
         InboundPacket::HighResScroll { delta_y, delta_x } => {
-            trace!("handle_inbound_packet_direct: HighResScroll delta_y={}, delta_x={}", delta_y, delta_x);
+            trace!(
+                "handle_inbound_packet_direct: HighResScroll delta_y={}, delta_x={}",
+                delta_y,
+                delta_x
+            );
             let click_y = if delta_y > 0 {
                 (delta_y + 119) / 120
             } else {
@@ -1153,7 +1310,7 @@ fn handle_inbound_packet(
             } else {
                 -((-delta_x + 119) / 120)
             };
-            
+
             if click_y > 0 {
                 for _ in 0..click_y {
                     injector.mouse_button(4, true);
@@ -1177,13 +1334,23 @@ fn handle_inbound_packet(
                 }
             }
         }
-        InboundPacket::Key { action, key, modifiers, .. } => {
-            trace!("handle_inbound_packet_direct: Key action={:?}, key={}, modifiers={:?}", action, key, modifiers);
+        InboundPacket::Key {
+            action,
+            key,
+            modifiers,
+            ..
+        } => {
+            trace!(
+                "handle_inbound_packet_direct: Key action={:?}, key={}, modifiers={:?}",
+                action,
+                key,
+                modifiers
+            );
             let is_press = match action {
                 KeyAction::Down => true,
                 KeyAction::Up => false,
             };
-            
+
             // Intercept Ctrl + Alt + Shift + N (toggle cursor hide)
             // Ctrl (2) + Alt (4) + Shift (1) = 7
             if key == 78 && modifiers.bits() == 7 {
@@ -1197,11 +1364,9 @@ fn handle_inbound_packet(
                     }
                 }
             }
-            
+
             injector.keyboard_key(key, is_press);
         }
         _ => {}
     }
 }
-
-

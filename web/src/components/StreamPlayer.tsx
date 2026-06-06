@@ -147,7 +147,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   // Settings States
   const [activeResolution, setActiveResolution] = useState<string>(() => localStorage.getItem('lunaris_stream_res') || '1080p');
   const [activeFps, setActiveFps] = useState<number>(() => Number(localStorage.getItem('lunaris_stream_fps') || '60'));
-  const [activeBitrate, setActiveBitrate] = useState<number>(() => Number(localStorage.getItem('lunaris_stream_bitrate') || '8000'));
+  const [activeBitrate, setActiveBitrate] = useState<number>(() => Number(localStorage.getItem('lunaris_stream_bitrate') || '15000'));
   const [activeCodec, setActiveCodec] = useState<string>(() => {
     // One-time migration: switch old users who had 'h264' hardcoded to 'auto'
     // so auto-detection picks the best codec (AV1 > H265 > H264) on next open.
@@ -409,6 +409,8 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     iceState: string;
     connState: string;
     fps: number;
+    decodedFps: number;
+    renderFps: number;
     bitrate: number;
     ping: number;
     decodeLatency: number;
@@ -418,12 +420,31 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     iceState: 'new',
     connState: 'new',
     fps: 0,
+    decodedFps: 0,
+    renderFps: 0,
     bitrate: 0,
     ping: 0,
     decodeLatency: 0,
     jitter: 0,
     connectionType: 'P2P (Direct)'
   });
+  const renderFpsRef = useRef<number>(0);
+  const renderFrameCounterRef = useRef<{ frames: number; lastMs: number }>({
+    frames: 0,
+    lastMs: performance.now()
+  });
+
+  const recordRenderedFrame = () => {
+    const now = performance.now();
+    const counter = renderFrameCounterRef.current;
+    counter.frames += 1;
+    const elapsed = now - counter.lastMs;
+    if (elapsed >= 1000) {
+      renderFpsRef.current = Math.round((counter.frames * 1000) / elapsed);
+      counter.frames = 0;
+      counter.lastMs = now;
+    }
+  };
 
   const addLog = (msg: string) => {
     console.log(`[Lunaris] ${msg}`);
@@ -1109,6 +1130,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
 
     let lastDecodeTime = 0;
     let lastFramesDecoded = 0;
+    let lastFramesDecodedTimestamp = 0;
     let lastBytesReceived = 0;
     let lastTimestamp = 0;
     let lastJbDelay = 0;
@@ -1141,6 +1163,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
         let currentRtt = 0;
         let videoDecodeLatency = 0;
         let videoFps = 0;
+        let videoDecodedFps = 0;
         let videoBitrate = 0;
         let videoJitter = 0;
         let connectionType = "P2P (Direct)";
@@ -1234,13 +1257,18 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
 
             const totalDecodeTime = report.totalDecodeTime || 0;
             const framesDecoded = report.framesDecoded || 0;
+            const decodeTimestamp = report.timestamp || performance.now();
             if (lastFramesDecoded > 0 && framesDecoded > lastFramesDecoded) {
               const deltaDecodeTime = totalDecodeTime - lastDecodeTime;
               const deltaFrames = framesDecoded - lastFramesDecoded;
               videoDecodeLatency = (deltaDecodeTime / deltaFrames) * 1000;
+              if (lastFramesDecodedTimestamp > 0 && decodeTimestamp > lastFramesDecodedTimestamp) {
+                videoDecodedFps = Math.round((deltaFrames * 1000) / (decodeTimestamp - lastFramesDecodedTimestamp));
+              }
             }
             lastDecodeTime = totalDecodeTime;
             lastFramesDecoded = framesDecoded;
+            lastFramesDecodedTimestamp = decodeTimestamp;
           }
         });
 
@@ -1249,6 +1277,8 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
           ping: currentRtt,
           decodeLatency: videoDecodeLatency,
           fps: videoFps || prev.fps,
+          decodedFps: videoDecodedFps || prev.decodedFps,
+          renderFps: renderFpsRef.current || prev.renderFps,
           bitrate: videoBitrate || prev.bitrate,
           jitter: videoJitter || prev.jitter,
           connectionType
@@ -1260,6 +1290,29 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
 
     return () => clearInterval(interval);
   }, [status]);
+
+  useEffect(() => {
+    if (status !== "Streaming" || useCanvasRenderer) return;
+    const video = getActiveVideoElement();
+    if (!video || !("requestVideoFrameCallback" in video)) return;
+
+    let active = true;
+    let callbackId = 0;
+    const onFrame = () => {
+      recordRenderedFrame();
+      if (active) {
+        callbackId = (video as any).requestVideoFrameCallback(onFrame);
+      }
+    };
+    callbackId = (video as any).requestVideoFrameCallback(onFrame);
+
+    return () => {
+      active = false;
+      if ("cancelVideoFrameCallback" in video && callbackId) {
+        (video as any).cancelVideoFrameCallback(callbackId);
+      }
+    };
+  }, [status, useCanvasRenderer]);
 
   const parseCandidateIp = (candidateStr: string) => {
     const parts = candidateStr.split(' ');
@@ -1676,6 +1729,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
 
                     if (ctx) {
                       ctx.drawImage(frame, 0, 0, frame.displayWidth, frame.displayHeight);
+                      self.postMessage({ type: 'frameDrawn' });
                     }
                   }
                 } catch (err) {
@@ -1701,6 +1755,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
 
                 if (ctx) {
                   ctx.drawImage(frame, 0, 0, frame.displayWidth, frame.displayHeight);
+                  self.postMessage({ type: 'frameDrawn' });
                 }
               }
             } catch (err) {
@@ -1729,6 +1784,8 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     worker.onmessage = (e) => {
       if (e.data && e.data.type === 'resize') {
         updateVideoRect();
+      } else if (e.data && e.data.type === 'frameDrawn') {
+        recordRenderedFrame();
       }
     };
 
@@ -4329,8 +4386,9 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
             <div>Ping (RTT): <span className="stat-value">{stats.ping.toFixed(1)} ms</span></div>
             <div>Jitter: <span className="stat-value">{stats.jitter.toFixed(1)} ms</span></div>
             <div>Decode Latency: <span className="stat-value">{stats.decodeLatency.toFixed(1)} ms</span></div>
-            <div>Encode Latency: <span className="stat-value">{(2.2 + (new Date().getMilliseconds() % 5) * 0.1).toFixed(1)} ms</span></div>
-            <div>FPS: <span className="stat-value">{stats.fps}</span></div>
+            <div>WebRTC FPS: <span className="stat-value">{stats.fps}</span></div>
+            <div>Decoded FPS: <span className="stat-value">{stats.decodedFps}</span></div>
+            <div>Render FPS: <span className="stat-value">{stats.renderFps}</span></div>
             <div>Bitrate: <span className="stat-value">{stats.bitrate} Kbps</span></div>
             <div>Codec: <span className="stat-value">{activeCodec === 'auto' ? `Auto (${resolvedActiveCodec.toUpperCase()})` : activeCodec.toUpperCase()}</span></div>
             <div>Input Protocol: <span className="stat-value" style={{ color: isWebTransportConnected ? '#4ade80' : '#38bdf8', fontWeight: 'bold' }}>
