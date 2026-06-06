@@ -799,10 +799,11 @@ pub async fn setup_bridge_session(
                 }
                 lunaris_media::pipeline::MediaEvent::CursorUpdate(cursor) => {
                     trace!(
-                        "Cursor position update: {}, {} visible={}",
+                        "Cursor position update: {}, {} visible={} kind={}",
                         cursor.x,
                         cursor.y,
-                        cursor.visible
+                        cursor.visible,
+                        cursor.kind.as_str()
                     );
                     if cursor_channel_for_media.ready_state() == RTCDataChannelState::Open {
                         let payload = serde_json::json!({
@@ -810,6 +811,7 @@ pub async fn setup_bridge_session(
                             "x": cursor.x,
                             "y": cursor.y,
                             "visible": cursor.visible,
+                            "kind": cursor.kind.as_str(),
                         })
                         .to_string();
                         if let Err(err) = cursor_channel_for_media.send_text(payload).await {

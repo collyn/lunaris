@@ -28,6 +28,39 @@ const getBackendProtocol = () => {
   };
 };
 
+type HostCursorKind =
+  | 'arrow'
+  | 'ibeam'
+  | 'hand'
+  | 'cross'
+  | 'move'
+  | 'resize_ns'
+  | 'resize_ew'
+  | 'resize_nesw'
+  | 'resize_nwse'
+  | 'unavailable'
+  | 'unknown';
+
+const HOST_CURSOR_ASSETS: Record<HostCursorKind, { src: string; hotspotX: number; hotspotY: number }> = {
+  arrow: { src: '/cursors/windows-aero-arrow.png', hotspotX: 0, hotspotY: 0 },
+  ibeam: { src: '/cursors/windows-aero-ibeam.png', hotspotX: 16, hotspotY: 16 },
+  hand: { src: '/cursors/windows-aero-hand.png', hotspotX: 6, hotspotY: 1 },
+  cross: { src: '/cursors/windows-aero-cross.png', hotspotX: 16, hotspotY: 16 },
+  move: { src: '/cursors/windows-aero-move.png', hotspotX: 16, hotspotY: 16 },
+  resize_ns: { src: '/cursors/windows-aero-resize-ns.png', hotspotX: 16, hotspotY: 16 },
+  resize_ew: { src: '/cursors/windows-aero-resize-ew.png', hotspotX: 16, hotspotY: 16 },
+  resize_nesw: { src: '/cursors/windows-aero-resize-nesw.png', hotspotX: 16, hotspotY: 16 },
+  resize_nwse: { src: '/cursors/windows-aero-resize-nwse.png', hotspotX: 16, hotspotY: 16 },
+  unavailable: { src: '/cursors/windows-aero-unavailable.png', hotspotX: 16, hotspotY: 16 },
+  unknown: { src: '/cursors/windows-aero-arrow.png', hotspotX: 0, hotspotY: 0 },
+};
+
+const normalizeHostCursorKind = (kind: unknown): HostCursorKind => {
+  return typeof kind === 'string' && kind in HOST_CURSOR_ASSETS
+    ? (kind as HostCursorKind)
+    : 'arrow';
+};
+
 
 interface StreamPlayerProps {
   hostId: string;
@@ -106,7 +139,9 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   const isTwoFingerTapPendingRef = useRef<boolean>(false);
   const localCursorRef = useRef<HTMLDivElement>(null);
   const hostCursorRef = useRef<HTMLDivElement>(null);
-  const hostCursorPosRef = useRef<{ x: number, y: number, visible: boolean }>({ x: 0, y: 0, visible: false });
+  const hostCursorImageRef = useRef<HTMLImageElement>(null);
+  const hostCursorMouseDownRef = useRef<boolean>(false);
+  const hostCursorPosRef = useRef<{ x: number, y: number, visible: boolean, kind: HostCursorKind }>({ x: 0, y: 0, visible: false, kind: 'arrow' });
   const isHardwareMouseActiveRef = useRef<boolean>(false);
   const localCursorPosRef = useRef<{ x: number, y: number }>({ x: 960, y: 540 });
   const initialLocalCursorPosRef = useRef<{ x: number, y: number }>({ x: 960, y: 540 });
@@ -1488,9 +1523,10 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       const x = Number(message.x);
       const y = Number(message.y);
       const visible = Boolean(message.visible);
+      const kind = normalizeHostCursorKind(message.kind);
       if (!Number.isFinite(x) || !Number.isFinite(y)) return;
 
-      updateHostCursorDOM(x, y, visible);
+      updateHostCursorDOM(x, y, visible, kind);
     } catch {
       // Ignore non-JSON control messages on the shared general channel.
     }
@@ -1572,7 +1608,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       channel.onclose = () => {
         addLog(`Data Channel ${channel.label} closed.`);
         if (label === 'general') {
-          updateHostCursorDOM(0, 0, false);
+          updateHostCursorDOM(0, 0, false, 'arrow');
         }
       };
       channel.onerror = (e) => addLog(`Data Channel ${channel.label} error: ${e}`);
@@ -2083,15 +2119,22 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     }
   };
 
-  const updateHostCursorDOM = (x: number, y: number, visible: boolean) => {
+  const updateHostCursorDOM = (x: number, y: number, visible: boolean, kind: HostCursorKind = 'arrow') => {
     const cursorEl = hostCursorRef.current;
+    const imageEl = hostCursorImageRef.current;
     const video = videoRef.current;
     const wrapper = viewportWrapperRef.current;
-    hostCursorPosRef.current = { x, y, visible };
+    const cursorKind = normalizeHostCursorKind(kind);
+    hostCursorPosRef.current = { x, y, visible, kind: cursorKind };
 
-    if (!cursorEl || !video || !wrapper || !visible) {
+    if (!cursorEl || !video || !wrapper || !visible || hostCursorMouseDownRef.current) {
       if (cursorEl) cursorEl.style.display = 'none';
       return;
+    }
+
+    const cursorAsset = HOST_CURSOR_ASSETS[cursorKind];
+    if (imageEl && !imageEl.src.endsWith(cursorAsset.src)) {
+      imageEl.src = cursorAsset.src;
     }
 
     const rect = video.getBoundingClientRect();
@@ -2127,15 +2170,31 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     const clientX = xNorm * actualVidWidth + offsetX + rect.left;
     const clientY = yNorm * actualVidHeight + offsetY + rect.top;
 
-    cursorEl.style.left = `${clientX - wrapperRect.left}px`;
-    cursorEl.style.top = `${clientY - wrapperRect.top}px`;
+    cursorEl.style.left = `${clientX - wrapperRect.left - cursorAsset.hotspotX}px`;
+    cursorEl.style.top = `${clientY - wrapperRect.top - cursorAsset.hotspotY}px`;
     cursorEl.style.display = 'block';
   };
+
+  useEffect(() => {
+    const releaseHostCursorSuppression = () => {
+      if (!hostCursorMouseDownRef.current) return;
+      hostCursorMouseDownRef.current = false;
+      const hostCursor = hostCursorPosRef.current;
+      updateHostCursorDOM(hostCursor.x, hostCursor.y, hostCursor.visible, hostCursor.kind);
+    };
+
+    window.addEventListener('mouseup', releaseHostCursorSuppression);
+    window.addEventListener('blur', releaseHostCursorSuppression);
+    return () => {
+      window.removeEventListener('mouseup', releaseHostCursorSuppression);
+      window.removeEventListener('blur', releaseHostCursorSuppression);
+    };
+  }, []);
 
   const updateVideoRect = () => {
     updateVirtualCursorDOM();
     const hostCursor = hostCursorPosRef.current;
-    updateHostCursorDOM(hostCursor.x, hostCursor.y, hostCursor.visible);
+    updateHostCursorDOM(hostCursor.x, hostCursor.y, hostCursor.visible, hostCursor.kind);
   };
 
   const updateVirtualCursorDOM = () => {
@@ -2994,6 +3053,10 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
 
     // Prevent context menu from right clicks
     e.preventDefault();
+
+    hostCursorMouseDownRef.current = isDown ? true : e.buttons !== 0;
+    const hostCursor = hostCursorPosRef.current;
+    updateHostCursorDOM(hostCursor.x, hostCursor.y, hostCursor.visible, hostCursor.kind);
     
     const mouseReliableChannel = channelsRef.current["mouse_reliable"];
     if (mouseReliableChannel && mouseReliableChannel.readyState === "open") {
@@ -4093,6 +4156,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
           }}
         >
           <img
+            ref={hostCursorImageRef}
             src="/cursors/windows-aero-arrow.png"
             alt=""
             draggable={false}
