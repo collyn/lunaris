@@ -256,6 +256,7 @@ pub enum SignalingMessage {
         displays: Vec<DisplayInfoMsg>,
         encoders: Vec<String>,
         gpu_info: Option<String>,
+        host_os: Option<String>,
     },
     EncoderStatus {
         target_id: String,

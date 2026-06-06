@@ -247,6 +247,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   const [draftVirtualDisplay, setDraftVirtualDisplay] = useState<boolean>(activeVirtualDisplay);
   const [availableEncoders, setAvailableEncoders] = useState<string[]>([]);
   const [agentGpuInfo, setAgentGpuInfo] = useState<string>('Unknown');
+  const [agentHostOs, setAgentHostOs] = useState<string>('unknown');
   const [activeEncoderStatus, setActiveEncoderStatus] = useState<{ encoder: string; hwType: string; gpuInfo: string; requestedEncoder: string }>({
     encoder: 'Pending',
     hwType: 'Unknown',
@@ -470,6 +471,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     }
   }, [showSettingsModal, activeResolution, activeFps, activeBitrate, activeCodec, mouseQueueLimit, useNativeClient, activeInputProtocol, useCanvasRenderer, activeEncoder, activeDisplay, activeVirtualDisplay]);
   const [hideLocalCursor, setHideLocalCursor] = useState<boolean>(() => localStorage.getItem('lunaris_stream_hide_cursor') !== 'false');
+  const [isMouseButtonDown, setIsMouseButtonDown] = useState<boolean>(false);
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
   const [isHeaderVisible, setIsHeaderVisible] = useState<boolean>(true);
   const [isHeaderPinned, setIsHeaderPinned] = useState<boolean>(() => localStorage.getItem('lunaris_header_pinned') === 'true');
@@ -991,6 +993,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
             if (payload.displays) setAvailableDisplays(payload.displays);
             if (payload.encoders) setAvailableEncoders(payload.encoders);
             if (payload.gpu_info) setAgentGpuInfo(payload.gpu_info);
+            if (payload.host_os) setAgentHostOs(String(payload.host_os).toLowerCase());
             break;
 
           case "EncoderStatus":
@@ -2273,6 +2276,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     const releaseHostCursorSuppression = () => {
       if (!hostCursorMouseDownRef.current) return;
       hostCursorMouseDownRef.current = false;
+      setIsMouseButtonDown(false);
       const hostCursor = hostCursorPosRef.current;
       updateHostCursorDOM(hostCursor.x, hostCursor.y, hostCursor.visible, hostCursor.kind);
     };
@@ -3149,6 +3153,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     e.preventDefault();
 
     hostCursorMouseDownRef.current = isDown ? true : e.buttons !== 0;
+    setIsMouseButtonDown(hostCursorMouseDownRef.current);
     const hostCursor = hostCursorPosRef.current;
     updateHostCursorDOM(hostCursor.x, hostCursor.y, hostCursor.visible, hostCursor.kind);
     
@@ -3238,6 +3243,9 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   };
 
   const isStreaming = status === "Streaming";
+  const isLinuxHost = agentHostOs === "linux";
+  const showBrowserCursorDuringLinuxDrag = isLinuxHost && isMouseButtonDown && !isPointerLocked;
+  const streamCursorStyle = isStreaming && hideLocalCursor && !showBrowserCursorDuringLinuxDrag ? "none" : "default";
 
   if (selectedAppId === null) {
     return (
@@ -4198,7 +4206,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
               onWheel={handleWheel}
               className={`stream-video-view ${isStreaming ? 'visible' : 'hidden'}`}
               style={{ 
-                cursor: isStreaming ? 'none' : 'default',
+                cursor: streamCursorStyle,
                 transform: `translate(${zoomPan.x}px, ${zoomPan.y}px) scale(${zoomScale})`,
                 transformOrigin: '0 0'
               }}
@@ -4227,7 +4235,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
             muted={isMuted}
             onLoadedMetadata={handleVideoLoadedMetadata}
             style={{ 
-              cursor: isStreaming ? 'none' : 'default',
+              cursor: streamCursorStyle,
               transform: `translate(${zoomPan.x}px, ${zoomPan.y}px) scale(${zoomScale})`,
               transformOrigin: '0 0'
             }}
@@ -4696,6 +4704,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
             <div>Codec: <span className="stat-value">{activeCodec === 'auto' ? `Auto (${resolvedActiveCodec.toUpperCase()})` : activeCodec.toUpperCase()}</span></div>
             <div>Encoder: <span className="stat-value">{activeEncoderStatus.encoder} ({activeEncoderStatus.hwType})</span></div>
             <div>GPU: <span className="stat-value">{activeEncoderStatus.gpuInfo || agentGpuInfo}</span></div>
+            <div>Host OS: <span className="stat-value">{agentHostOs}</span></div>
             <div>Requested Encoder: <span className="stat-value">{activeEncoderStatus.requestedEncoder}</span></div>
             <div>Input Protocol: <span className="stat-value" style={{ color: isWebTransportConnected ? '#4ade80' : '#38bdf8', fontWeight: 'bold' }}>
               {isWebTransportConnected ? "WebTransport (QUIC)" : "WebRTC (SCTP)"}

@@ -503,7 +503,7 @@ async fn handle_agent_signaling(sig: SignalingMessage, agent_id: &str, state: Ar
                 ));
             }
         }
-        SignalingMessage::CapabilitiesResponse { target_id, displays, encoders, gpu_info } => {
+        SignalingMessage::CapabilitiesResponse { target_id, displays, encoders, gpu_info, host_os } => {
             let clients = state.clients.read().unwrap();
             if let Some(client_tx) = clients.get(&target_id) {
                 let msg = ServerToClientMessage::Signaling(SignalingMessage::CapabilitiesResponse {
@@ -511,6 +511,7 @@ async fn handle_agent_signaling(sig: SignalingMessage, agent_id: &str, state: Ar
                     displays,
                     encoders,
                     gpu_info,
+                    host_os,
                 });
                 let _ = client_tx.send(msg);
             }

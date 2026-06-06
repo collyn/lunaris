@@ -527,6 +527,7 @@ pub async fn run_agent_loop(
                                         displays,
                                         encoders,
                                         gpu_info: None,
+                                        host_os: Some(std::env::consts::OS.to_string()),
                                     },
                                 );
                                 let _ = agent_tx_clone.send(resp);
