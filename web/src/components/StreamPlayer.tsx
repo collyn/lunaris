@@ -180,6 +180,13 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   const [draftDisplay, setDraftDisplay] = useState<string>(activeDisplay);
   const [draftVirtualDisplay, setDraftVirtualDisplay] = useState<boolean>(activeVirtualDisplay);
   const [availableEncoders, setAvailableEncoders] = useState<string[]>([]);
+  const [agentGpuInfo, setAgentGpuInfo] = useState<string>('Unknown');
+  const [activeEncoderStatus, setActiveEncoderStatus] = useState<{ encoder: string; hwType: string; gpuInfo: string; requestedEncoder: string }>({
+    encoder: 'Pending',
+    hwType: 'Unknown',
+    gpuInfo: 'Unknown',
+    requestedEncoder: activeEncoder
+  });
   const [availableDisplays, setAvailableDisplays] = useState<{id: string; name: string; width: number; height: number; refresh_rate: number; is_primary: boolean}[]>([]);
 
   const [useNativeClient, setUseNativeClient] = useState<boolean>(() => {
@@ -910,6 +917,18 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
             addLog(`Received capabilities: ${payload.displays?.length || 0} displays, ${payload.encoders?.length || 0} encoders`);
             if (payload.displays) setAvailableDisplays(payload.displays);
             if (payload.encoders) setAvailableEncoders(payload.encoders);
+            if (payload.gpu_info) setAgentGpuInfo(payload.gpu_info);
+            break;
+
+          case "EncoderStatus":
+            setActiveEncoderStatus({
+              encoder: payload.encoder || 'Unknown',
+              hwType: payload.hw_type || 'Unknown',
+              gpuInfo: payload.gpu_info || 'Unknown',
+              requestedEncoder: payload.requested_encoder || 'auto'
+            });
+            if (payload.gpu_info) setAgentGpuInfo(payload.gpu_info);
+            addLog(`Agent encoder active: ${payload.encoder || 'unknown'} (${payload.hw_type || 'unknown'}) on ${payload.gpu_info || 'unknown GPU'}`);
             break;
 
           case "StopActiveStreamResponse":
@@ -3381,25 +3400,35 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
               </div>
 
               <div className="settings-group">
-                <label htmlFor="encoder">Encoder</label>
+                <label htmlFor="encoder">Encoder Backend</label>
                 <select 
                   id="encoder" 
                   value={draftEncoder} 
                   onChange={(e) => setDraftEncoder(e.target.value)}
                 >
                   <option value="auto">Auto (Recommended)</option>
-                  {availableEncoders.map(enc => (
-                    <option key={enc} value={enc}>{enc.toUpperCase()}</option>
-                  ))}
+                  <option value="native">Native GPU</option>
+                  <option value="ffmpeg">FFmpeg GPU</option>
+                  <option value="software">Software</option>
+                  <option disabled>──────────</option>
+                  {availableEncoders
+                    .filter(enc => !['auto', 'native', 'ffmpeg', 'software'].includes(enc))
+                    .map(enc => (
+                      <option key={enc} value={enc}>{enc.replace(/_/g, ' ').toUpperCase()}</option>
+                    ))}
                   {availableEncoders.length === 0 && (
                     <>
-                      <option value="nvenc">NVENC</option>
-                      <option value="vaapi">VAAPI</option>
-                      <option value="qsv">QSV</option>
-                      <option value="software">Software</option>
+                      <option value="native_nvenc_d3d11">Native NVENC D3D11</option>
+                      <option value="native_amf_d3d11">Native AMF D3D11</option>
+                      <option value="ffmpeg_nvenc">FFmpeg NVENC</option>
+                      <option value="ffmpeg_amf">FFmpeg AMF</option>
+                      <option value="ffmpeg_qsv">FFmpeg QSV</option>
                     </>
                   )}
                 </select>
+                <small style={{ color: 'var(--text-muted)', marginTop: '0.35rem', display: 'block' }}>
+                  Active: {activeEncoderStatus.encoder} ({activeEncoderStatus.hwType})
+                </small>
               </div>
 
               {availableDisplays.length > 0 && (
@@ -4391,6 +4420,9 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
             <div>Render FPS: <span className="stat-value">{stats.renderFps}</span></div>
             <div>Bitrate: <span className="stat-value">{stats.bitrate} Kbps</span></div>
             <div>Codec: <span className="stat-value">{activeCodec === 'auto' ? `Auto (${resolvedActiveCodec.toUpperCase()})` : activeCodec.toUpperCase()}</span></div>
+            <div>Encoder: <span className="stat-value">{activeEncoderStatus.encoder} ({activeEncoderStatus.hwType})</span></div>
+            <div>GPU: <span className="stat-value">{activeEncoderStatus.gpuInfo || agentGpuInfo}</span></div>
+            <div>Requested Encoder: <span className="stat-value">{activeEncoderStatus.requestedEncoder}</span></div>
             <div>Input Protocol: <span className="stat-value" style={{ color: isWebTransportConnected ? '#4ade80' : '#38bdf8', fontWeight: 'bold' }}>
               {isWebTransportConnected ? "WebTransport (QUIC)" : "WebRTC (SCTP)"}
             </span></div>

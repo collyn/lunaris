@@ -715,6 +715,8 @@ pub async fn setup_bridge_session(
 
     let start_time = Instant::now();
     let webrtc_connected_for_media = webrtc_connected.clone();
+    let ws_tx_for_media = ws_tx.clone();
+    let client_id_for_media = client_id.clone();
     let media_event_task = tokio::spawn(async move {
         let mut metrics_started = Instant::now();
         let mut forwarded_frames: u64 = 0;
@@ -722,6 +724,28 @@ pub async fn setup_bridge_session(
         let mut forwarded_bytes: u64 = 0;
         while let Some(event) = media_event_rx.recv().await {
             match event {
+                lunaris_media::pipeline::MediaEvent::EncoderStarted {
+                    encoder,
+                    gpu_name,
+                    requested_encoder,
+                } => {
+                    info!(
+                        "Active media encoder: {} ({}) on {} requested={}",
+                        encoder.name,
+                        encoder.hw_type,
+                        gpu_name.as_deref().unwrap_or("unknown GPU"),
+                        requested_encoder.as_deref().unwrap_or("auto")
+                    );
+                    let _ = ws_tx_for_media.send(common::AgentMessage::Signaling(
+                        common::SignalingMessage::EncoderStatus {
+                            target_id: client_id_for_media.clone(),
+                            encoder: encoder.name,
+                            hw_type: encoder.hw_type.to_string(),
+                            gpu_info: gpu_name,
+                            requested_encoder,
+                        },
+                    ));
+                }
                 lunaris_media::pipeline::MediaEvent::VideoFrame(frame) => {
                     // Don't queue video frames before WebRTC is connected
                     if !webrtc_connected_for_media.load(Ordering::Relaxed) {

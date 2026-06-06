@@ -502,12 +502,18 @@ pub async fn run_agent_loop(
                                     }
                                 }
 
-                                // Query available encoders
+                                // Query available encoders. Generic entries control backend family;
+                                // concrete entries allow advanced users to force a specific encoder.
+                                encoders.push("native".to_string());
+                                encoders.push("ffmpeg".to_string());
                                 let encoder_list = lunaris_media::encode::list_available_encoders();
                                 for enc in encoder_list {
-                                    let enc_name = format!("{}", enc.hw_type).to_lowercase();
-                                    if !encoders.contains(&enc_name) {
-                                        encoders.push(enc_name);
+                                    if !encoders.contains(&enc.name) {
+                                        encoders.push(enc.name.clone());
+                                    }
+                                    let hw_name = format!("{}", enc.hw_type).to_lowercase();
+                                    if !encoders.contains(&hw_name) {
+                                        encoders.push(hw_name);
                                     }
                                 }
                                 // Always include software as fallback
@@ -520,6 +526,7 @@ pub async fn run_agent_loop(
                                         target_id,
                                         displays,
                                         encoders,
+                                        gpu_info: None,
                                     },
                                 );
                                 let _ = agent_tx_clone.send(resp);

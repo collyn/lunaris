@@ -255,6 +255,14 @@ pub enum SignalingMessage {
         target_id: String,
         displays: Vec<DisplayInfoMsg>,
         encoders: Vec<String>,
+        gpu_info: Option<String>,
+    },
+    EncoderStatus {
+        target_id: String,
+        encoder: String,
+        hw_type: String,
+        gpu_info: Option<String>,
+        requested_encoder: Option<String>,
     },
     // Errors
     Error {
