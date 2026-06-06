@@ -105,6 +105,8 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   const twoFingerTouchStartTimeRef = useRef<number>(0);
   const isTwoFingerTapPendingRef = useRef<boolean>(false);
   const localCursorRef = useRef<HTMLDivElement>(null);
+  const hostCursorRef = useRef<HTMLDivElement>(null);
+  const hostCursorPosRef = useRef<{ x: number, y: number, visible: boolean }>({ x: 0, y: 0, visible: false });
   const isHardwareMouseActiveRef = useRef<boolean>(false);
   const [isHardwareMouse, setIsHardwareMouse] = useState<boolean>(false);
   const localCursorPosRef = useRef<{ x: number, y: number }>({ x: 960, y: 540 });
@@ -1466,6 +1468,35 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     setIsWebTransportConnected(false);
   };
 
+  const decodeDataChannelText = async (data: any): Promise<string | null> => {
+    if (typeof data === 'string') return data;
+    if (data instanceof ArrayBuffer) return new TextDecoder().decode(data);
+    if (data instanceof Blob) return data.text();
+    if (ArrayBuffer.isView(data)) {
+      return new TextDecoder().decode(data as ArrayBufferView);
+    }
+    return null;
+  };
+
+  const handleGeneralDataChannelMessage = async (data: any) => {
+    const text = await decodeDataChannelText(data);
+    if (!text) return;
+
+    try {
+      const message = JSON.parse(text);
+      if (message?.type !== 'host_cursor') return;
+
+      const x = Number(message.x);
+      const y = Number(message.y);
+      const visible = Boolean(message.visible);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+
+      updateHostCursorDOM(x, y, visible);
+    } catch {
+      // Ignore non-JSON control messages on the shared general channel.
+    }
+  };
+
   const handleSdpOffer = async (
     agentId: string, 
     offerSdp: string, 
@@ -1534,7 +1565,17 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       channel.onopen = () => {
         addLog(`Data Channel ${channel.label} opened.`);
       };
-      channel.onclose = () => addLog(`Data Channel ${channel.label} closed.`);
+      channel.onmessage = (messageEvent) => {
+        if (label === 'general') {
+          void handleGeneralDataChannelMessage(messageEvent.data);
+        }
+      };
+      channel.onclose = () => {
+        addLog(`Data Channel ${channel.label} closed.`);
+        if (label === 'general') {
+          updateHostCursorDOM(0, 0, false);
+        }
+      };
       channel.onerror = (e) => addLog(`Data Channel ${channel.label} error: ${e}`);
     };
 
@@ -2043,8 +2084,59 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     }
   };
 
+  const updateHostCursorDOM = (x: number, y: number, visible: boolean) => {
+    const cursorEl = hostCursorRef.current;
+    const video = videoRef.current;
+    const wrapper = viewportWrapperRef.current;
+    hostCursorPosRef.current = { x, y, visible };
+
+    if (!cursorEl || !video || !wrapper || !visible) {
+      if (cursorEl) cursorEl.style.display = 'none';
+      return;
+    }
+
+    const rect = video.getBoundingClientRect();
+    const wrapperRect = wrapper.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0 || wrapperRect.width <= 0 || wrapperRect.height <= 0) {
+      cursorEl.style.display = 'none';
+      return;
+    }
+
+    const activeVideo = getActiveVideoElement();
+    const vidWidth = activeVideo?.videoWidth && activeVideo.videoWidth > 0 ? activeVideo.videoWidth : (video as any).width || 1920;
+    const vidHeight = activeVideo?.videoHeight && activeVideo.videoHeight > 0 ? activeVideo.videoHeight : (video as any).height || 1080;
+
+    const elAspectRatio = rect.width / rect.height;
+    const vidAspectRatio = vidWidth / vidHeight;
+    let actualVidWidth = rect.width;
+    let actualVidHeight = rect.height;
+    let offsetX = 0;
+    let offsetY = 0;
+
+    if (elAspectRatio > vidAspectRatio) {
+      actualVidHeight = rect.height;
+      actualVidWidth = rect.height * vidAspectRatio;
+      offsetX = (rect.width - actualVidWidth) / 2;
+    } else {
+      actualVidWidth = rect.width;
+      actualVidHeight = rect.width / vidAspectRatio;
+      offsetY = (rect.height - actualVidHeight) / 2;
+    }
+
+    const xNorm = Math.max(0, Math.min(1, x / vidWidth));
+    const yNorm = Math.max(0, Math.min(1, y / vidHeight));
+    const clientX = xNorm * actualVidWidth + offsetX + rect.left;
+    const clientY = yNorm * actualVidHeight + offsetY + rect.top;
+
+    cursorEl.style.left = `${clientX - wrapperRect.left}px`;
+    cursorEl.style.top = `${clientY - wrapperRect.top}px`;
+    cursorEl.style.display = 'block';
+  };
+
   const updateVideoRect = () => {
     updateVirtualCursorDOM();
+    const hostCursor = hostCursorPosRef.current;
+    updateHostCursorDOM(hostCursor.x, hostCursor.y, hostCursor.visible);
   };
 
   const updateVirtualCursorDOM = () => {
@@ -3987,6 +4079,27 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
             }}
           />
         )}
+
+        {/* Host cursor forwarded by the agent. It stays outside the video frame to preserve GPU zero-copy. */}
+        <div
+          ref={hostCursorRef}
+          className="host-remote-cursor"
+          style={{
+            position: 'absolute',
+            width: '22px',
+            height: '28px',
+            pointerEvents: 'none',
+            zIndex: 145,
+            transform: 'translate(-1px, -1px)',
+            transition: 'none',
+            display: 'none',
+            filter: 'drop-shadow(0 1px 2px rgba(0, 0, 0, 0.65))',
+          }}
+        >
+          <svg width="22" height="28" viewBox="0 0 22 28" fill="none" aria-hidden="true">
+            <path d="M3 2.5L3 22.5L8.8 16.5L13.5 26L17.1 24.2L12.5 15H20L3 2.5Z" fill="#ffffff" stroke="#111827" strokeWidth="1.6" strokeLinejoin="round" />
+          </svg>
+        </div>
 
         {/* Client-side virtual cursor for mobile trackpad mode */}
         <div

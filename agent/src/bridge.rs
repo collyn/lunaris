@@ -18,7 +18,7 @@ use webrtc::{
     },
     data_channel::{
         data_channel_init::RTCDataChannelInit, data_channel_message::DataChannelMessage,
-        RTCDataChannel,
+        data_channel_state::RTCDataChannelState, RTCDataChannel,
     },
     interceptor::registry::Registry,
     media::Sample,
@@ -535,6 +535,7 @@ pub async fn setup_bridge_session(
 
     // Create Data Channels
     let general_channel = peer_connection.create_data_channel("general", None).await?;
+    let general_channel_for_cursor = general_channel.clone();
     let mouse_reliable_channel = peer_connection
         .create_data_channel("mouse_reliable", None)
         .await?;
@@ -717,6 +718,7 @@ pub async fn setup_bridge_session(
     let webrtc_connected_for_media = webrtc_connected.clone();
     let ws_tx_for_media = ws_tx.clone();
     let client_id_for_media = client_id.clone();
+    let cursor_channel_for_media = general_channel_for_cursor.clone();
     let media_event_task = tokio::spawn(async move {
         let mut metrics_started = Instant::now();
         let mut forwarded_frames: u64 = 0;
@@ -796,7 +798,24 @@ pub async fn setup_bridge_session(
                     let _ = audio_tx_clone.try_send(sample);
                 }
                 lunaris_media::pipeline::MediaEvent::CursorUpdate(cursor) => {
-                    trace!("Cursor position update: {}, {}", cursor.x, cursor.y);
+                    trace!(
+                        "Cursor position update: {}, {} visible={}",
+                        cursor.x,
+                        cursor.y,
+                        cursor.visible
+                    );
+                    if cursor_channel_for_media.ready_state() == RTCDataChannelState::Open {
+                        let payload = serde_json::json!({
+                            "type": "host_cursor",
+                            "x": cursor.x,
+                            "y": cursor.y,
+                            "visible": cursor.visible,
+                        })
+                        .to_string();
+                        if let Err(err) = cursor_channel_for_media.send_text(payload).await {
+                            trace!("Failed to send host cursor update: {:?}", err);
+                        }
+                    }
                 }
                 lunaris_media::pipeline::MediaEvent::Started => {
                     info!("Media pipeline started successfully");
