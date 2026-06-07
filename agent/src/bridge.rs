@@ -179,6 +179,65 @@ fn read_av1_leb128(input: &[u8], mut pos: usize) -> Option<(usize, usize)> {
     None
 }
 
+fn encoder_supports_codec(
+    encoder: &lunaris_media::EncoderInfo,
+    codec: lunaris_media::VideoCodec,
+) -> bool {
+    encoder.supported_codecs.contains(&codec)
+}
+
+fn host_gpu_likely_supports_av1_encode() -> bool {
+    let Some(gpu) = lunaris_media::encode::describe_host_gpu(None) else {
+        return false;
+    };
+    let gpu = gpu.to_ascii_lowercase();
+
+    if gpu.contains("nvidia") {
+        return gpu.contains("rtx 40")
+            || gpu.contains("rtx 50")
+            || gpu.contains("ada")
+            || gpu.contains("blackwell")
+            || gpu.contains(" l4")
+            || gpu.contains(" l40");
+    }
+
+    if gpu.contains("intel") {
+        return gpu.contains("arc")
+            || gpu.contains("battlemage")
+            || gpu.contains("data center gpu")
+            || gpu.contains(" flex");
+    }
+
+    if gpu.contains("amd") || gpu.contains("radeon") {
+        return gpu.contains("rx 7")
+            || gpu.contains("rx 8")
+            || gpu.contains("rx 9")
+            || gpu.contains("rdna3")
+            || gpu.contains("rdna 3");
+    }
+
+    false
+}
+
+fn codec_supported_for_realtime(
+    encoders: &[lunaris_media::EncoderInfo],
+    codec: lunaris_media::VideoCodec,
+) -> bool {
+    match codec {
+        lunaris_media::VideoCodec::H264 => encoders.iter().any(|e| encoder_supports_codec(e, codec)),
+        lunaris_media::VideoCodec::H265 => encoders.iter().any(|e| {
+            e.hw_type != lunaris_media::HwAccelType::Software && encoder_supports_codec(e, codec)
+        }),
+        lunaris_media::VideoCodec::AV1 => {
+            host_gpu_likely_supports_av1_encode()
+                && encoders.iter().any(|e| {
+                    e.hw_type != lunaris_media::HwAccelType::Software
+                        && encoder_supports_codec(e, codec)
+                })
+        }
+    }
+}
+
 pub async fn setup_bridge_session(
     agent_config: AgentConfig,
     client_id: String,
@@ -404,15 +463,11 @@ pub async fn setup_bridge_session(
     };
     let peer_connection = Arc::new(api.new_peer_connection(rtc_config).await?);
 
-    // Resolve codec settings with host capability checks
+    // Resolve codec settings with host capability checks. Do not let H.265/AV1
+    // requests fall through to software encoders for interactive remote desktop.
     let encoders = lunaris_media::encode::list_available_encoders();
-    let hevc_supported = encoders.iter().any(|e| {
-        e.supported_codecs
-            .contains(&lunaris_media::VideoCodec::H265)
-    });
-    let av1_supported = encoders
-        .iter()
-        .any(|e| e.supported_codecs.contains(&lunaris_media::VideoCodec::AV1));
+    let hevc_supported = codec_supported_for_realtime(&encoders, lunaris_media::VideoCodec::H265);
+    let av1_supported = codec_supported_for_realtime(&encoders, lunaris_media::VideoCodec::AV1);
     if codec_str == "av1" && !av1_supported {
         info!("AV1 requested but host doesn't support it, falling back to H.264");
         codec_str = "h264".to_string();

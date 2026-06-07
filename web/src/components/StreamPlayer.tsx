@@ -344,10 +344,10 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
         h264 = capabilities.codecs.some(codec => 
           codec.mimeType.toLowerCase() === 'video/h264'
         );
-        h265 = isIOSOrSafari && capabilities.codecs.some(codec => 
-          codec.mimeType.toLowerCase() === 'video/h265' || 
-          codec.mimeType.toLowerCase() === 'video/hevc'
-        );
+        h265 = capabilities.codecs.some(codec => {
+          const mimeType = codec.mimeType.toLowerCase();
+          return mimeType === 'video/h265' || mimeType === 'video/hevc';
+        });
         av1 = capabilities.codecs.some(codec => 
           codec.mimeType.toLowerCase() === 'video/av1'
         );
@@ -357,7 +357,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     // Only run fallback checks using standard HTML5 video tag support if we couldn't 
     // query the WebRTC receiver capabilities directly. WebRTC capabilities are the 
     // source of truth for real-time video stream decoding support.
-    if (isIOSOrSafari && !hasGetCapabilities && typeof document !== 'undefined') {
+    if (isIOSOrSafari && (!hasGetCapabilities || !h265 || !av1) && typeof document !== 'undefined') {
       try {
         const tempVideo = document.createElement('video');
         if (tempVideo && tempVideo.canPlayType) {

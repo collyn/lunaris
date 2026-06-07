@@ -38,6 +38,65 @@ fn get_current_time_ms() -> u64 {
         .as_millis() as u64
 }
 
+fn encoder_supports_codec(
+    encoder: &lunaris_media::EncoderInfo,
+    codec: lunaris_media::VideoCodec,
+) -> bool {
+    encoder.supported_codecs.contains(&codec)
+}
+
+fn host_gpu_likely_supports_av1_encode() -> bool {
+    let Some(gpu) = lunaris_media::encode::describe_host_gpu(None) else {
+        return false;
+    };
+    let gpu = gpu.to_ascii_lowercase();
+
+    if gpu.contains("nvidia") {
+        return gpu.contains("rtx 40")
+            || gpu.contains("rtx 50")
+            || gpu.contains("ada")
+            || gpu.contains("blackwell")
+            || gpu.contains(" l4")
+            || gpu.contains(" l40");
+    }
+
+    if gpu.contains("intel") {
+        return gpu.contains("arc")
+            || gpu.contains("battlemage")
+            || gpu.contains("data center gpu")
+            || gpu.contains(" flex");
+    }
+
+    if gpu.contains("amd") || gpu.contains("radeon") {
+        return gpu.contains("rx 7")
+            || gpu.contains("rx 8")
+            || gpu.contains("rx 9")
+            || gpu.contains("rdna3")
+            || gpu.contains("rdna 3");
+    }
+
+    false
+}
+
+fn codec_supported_for_realtime(
+    encoders: &[lunaris_media::EncoderInfo],
+    codec: lunaris_media::VideoCodec,
+) -> bool {
+    match codec {
+        lunaris_media::VideoCodec::H264 => encoders.iter().any(|e| encoder_supports_codec(e, codec)),
+        lunaris_media::VideoCodec::H265 => encoders.iter().any(|e| {
+            e.hw_type != lunaris_media::HwAccelType::Software && encoder_supports_codec(e, codec)
+        }),
+        lunaris_media::VideoCodec::AV1 => {
+            host_gpu_likely_supports_av1_encode()
+                && encoders.iter().any(|e| {
+                    e.hw_type != lunaris_media::HwAccelType::Software
+                        && encoder_supports_codec(e, codec)
+                })
+        }
+    }
+}
+
 use crate::bridge::{setup_bridge_session, BridgeSession};
 use crate::pairing::AgentConfig;
 
@@ -198,22 +257,12 @@ pub async fn run_agent_loop(
 
     // Query codec support from lunaris-media encoders. H.264 software is a
     // practical fallback; H.265/AV1 software is too slow for interactive remote
-    // desktop, so only advertise those when a hardware encoder exists.
+    // desktop, so only advertise those when a realtime-capable hardware encoder exists.
     let codec_support = {
         let encoders = lunaris_media::encode::list_available_encoders();
-        let h264 = encoders.iter().any(|e| {
-            e.supported_codecs
-                .contains(&lunaris_media::VideoCodec::H264)
-        });
-        let h265 = encoders.iter().any(|e| {
-            e.hw_type != lunaris_media::HwAccelType::Software
-                && e.supported_codecs
-                    .contains(&lunaris_media::VideoCodec::H265)
-        });
-        let av1 = encoders.iter().any(|e| {
-            e.hw_type != lunaris_media::HwAccelType::Software
-                && e.supported_codecs.contains(&lunaris_media::VideoCodec::AV1)
-        });
+        let h264 = codec_supported_for_realtime(&encoders, lunaris_media::VideoCodec::H264);
+        let h265 = codec_supported_for_realtime(&encoders, lunaris_media::VideoCodec::H265);
+        let av1 = codec_supported_for_realtime(&encoders, lunaris_media::VideoCodec::AV1);
         let mut bits: u32 = 0;
         if h264 {
             bits |= 262145;
