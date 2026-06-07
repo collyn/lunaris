@@ -4441,9 +4441,12 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
                       className="stream-select"
                       style={{ width: '100%', fontSize: '0.8rem' }}
                     >
+                      <option value={240}>🎯 240 FPS</option>
+                      <option value={144}>🎯 144 FPS</option>
+                      <option value={120}>🎯 120 FPS</option>
+                      <option value={90}>🎯 90 FPS</option>
                       <option value={60}>🎯 60 FPS</option>
                       <option value={30}>🎯 30 FPS</option>
-                      <option value={120}>🎯 120 FPS</option>
                     </select>
                   </div>
                 </div>

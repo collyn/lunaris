@@ -806,7 +806,7 @@ pub async fn setup_bridge_session(
                     let elapsed = metrics_started.elapsed();
                     if elapsed >= Duration::from_secs(1) {
                         let secs = elapsed.as_secs_f64();
-                        info!(
+                        debug!(
                             "Agent media ingress: forwarded={:.1}/s dropped={} bitrate={:.2}Mbps packager_queue={}",
                             forwarded_frames as f64 / secs,
                             dropped_frames,
@@ -979,7 +979,7 @@ pub async fn setup_bridge_session(
                 let elapsed = metrics_started.elapsed();
                 if elapsed >= Duration::from_secs(1) {
                     let secs = elapsed.as_secs_f64();
-                    info!(
+                    debug!(
                         "RTP writer metrics: sent_frames={:.1}/s sent_packets={:.1}/s discarded={} queue={}",
                         sent_frames as f64 / secs,
                         sent_packets as f64 / secs,
