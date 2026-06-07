@@ -210,7 +210,21 @@ pub async fn setup_bridge_session(
     let resolution_height = height.unwrap_or(1080);
     let stream_fps = fps.unwrap_or(60);
     let stream_bitrate = bitrate.unwrap_or(8000);
-    let mut codec_str = codec.as_deref().unwrap_or("h264").to_lowercase();
+    let requested_codec = codec.as_deref().unwrap_or("h264").to_lowercase();
+    let mut codec_str = requested_codec.clone();
+
+    info!(
+        "Session media request: client={} res={}x{} fps={} bitrate={}kbps codec={} encoder={} display={} virtual_display={}",
+        client_id,
+        resolution_width,
+        resolution_height,
+        stream_fps,
+        stream_bitrate,
+        requested_codec,
+        encoder.as_deref().unwrap_or("auto"),
+        display_id.as_deref().unwrap_or("default"),
+        virtual_display.unwrap_or(false)
+    );
 
     // 1. Setup WebRTC PeerConnection
     let mut api_settings = SettingEngine::default();
@@ -430,8 +444,8 @@ pub async fn setup_bridge_session(
     };
 
     info!(
-        "Configured WebRTC video track codec: {} (Mime: {}, PT: {})",
-        codec_str, mime_type, payload_type
+        "Configured WebRTC video track codec: {} (requested={}, Mime: {}, PT: {}, host_h265={}, host_av1={})",
+        codec_str, requested_codec, mime_type, payload_type, hevc_supported, av1_supported
     );
 
     // Create video and audio tracks

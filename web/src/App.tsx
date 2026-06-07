@@ -689,7 +689,7 @@ function App() {
                                         const resStr = rawRes === '720p' ? '1280x720' : rawRes === '540p' ? '960x540' : (rawRes.includes('x') ? rawRes : '1920x1080');
                                         const fps = localStorage.getItem('lunaris_stream_fps') || '60';
                                         const bitrate = localStorage.getItem('lunaris_stream_bitrate') || '8000';
-                                        const codec = localStorage.getItem('lunaris_stream_codec') || 'h264';
+                                        const codec = localStorage.getItem('lunaris_stream_codec') || 'auto';
                                         const mouseQueueLimit = localStorage.getItem('lunaris_mouse_queue_limit') || '256';
                                         const hostToUse = currentViewingHost || viewingHost;
 

@@ -91,6 +91,9 @@ const parseHostCursorImage = (image: any): HostCursorImagePayload | null => {
 };
 
 
+type CodecName = 'h264' | 'h265' | 'av1';
+type CodecChoice = CodecName | 'auto';
+
 interface StreamPlayerProps {
   hostId: string;
   hostName: string;
@@ -216,14 +219,24 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   const [activeFps, setActiveFps] = useState<number>(() => Number(localStorage.getItem('lunaris_stream_fps') || '60'));
   const [activeBitrate, setActiveBitrate] = useState<number>(() => Number(localStorage.getItem('lunaris_stream_bitrate') || '15000'));
   const [activeCodec, setActiveCodec] = useState<string>(() => {
-    // One-time migration: switch old users who had 'h264' hardcoded to 'auto'
-    // so auto-detection picks the best codec (AV1 > H265 > H264) on next open.
+    const savedCodec = localStorage.getItem('lunaris_stream_codec') || 'auto';
+
+    // One-time migrations: old builds defaulted or persisted H264 before AV1/HEVC
+    // negotiation was wired. Move only H264/default users back to Auto once.
     if (localStorage.getItem('lunaris_codec_auto_reset') !== 'true') {
       localStorage.setItem('lunaris_codec_auto_reset', 'true');
       localStorage.setItem('lunaris_stream_codec', 'auto');
       return 'auto';
     }
-    return localStorage.getItem('lunaris_stream_codec') || 'auto';
+    if (localStorage.getItem('lunaris_codec_auto_reset_v2') !== 'true') {
+      localStorage.setItem('lunaris_codec_auto_reset_v2', 'true');
+      if (savedCodec === 'h264') {
+        localStorage.setItem('lunaris_stream_codec', 'auto');
+        return 'auto';
+      }
+    }
+
+    return savedCodec;
   });
   const [mouseQueueLimit, setMouseQueueLimit] = useState<number>(() => {
     const val = localStorage.getItem('lunaris_mouse_queue_limit');
@@ -397,14 +410,40 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
 
   // Resolve 'auto' to the best available codec: AV1 > H265 > H264
   // Called every time we need the actual codec string to send to the agent.
-  const resolveAutoCodec = (): string => {
+  const resolveAutoCodec = (): CodecName => {
     if (supportedCodecs.av1) return 'av1';
     if (supportedCodecs.h265) return 'h265';
     return 'h264';
   };
 
+  const codecSupportSummary = (): string => (
+    `browser H264=${browserCodecs.h264}, H265=${browserCodecs.h265}, AV1=${browserCodecs.av1}; ` +
+    `hostBits=${serverCodecModeSupport ?? 'unknown'}, host H264=${hostH264Supported}, H265=${hostH265Supported}, AV1=${hostAv1Supported}`
+  );
+
+  const normalizeCodecChoice = (codec: string): CodecChoice => {
+    if (codec === 'h264' || codec === 'h265' || codec === 'av1') return codec;
+    return 'auto';
+  };
+
+  const getCodecDecision = (requestedCodec: string = activeCodec): { requested: CodecChoice; resolved: CodecName; fellBack: boolean; reason?: string } => {
+    const requested = normalizeCodecChoice(requestedCodec);
+    const resolved = requested === 'auto' ? resolveAutoCodec() : requested;
+
+    if (requested !== 'auto' && !supportedCodecs[resolved]) {
+      return {
+        requested,
+        resolved: resolveAutoCodec(),
+        fellBack: true,
+        reason: `${requested.toUpperCase()} is not available for this browser/host pair`,
+      };
+    }
+
+    return { requested, resolved, fellBack: false };
+  };
+
   // For display: when auto, show the resolved codec in parentheses
-  const resolvedActiveCodec = activeCodec === 'auto' ? resolveAutoCodec() : activeCodec;
+  const resolvedActiveCodec = getCodecDecision(activeCodec).resolved;
 
   // Sync activeCodec if a manually-selected codec is no longer supported
   useEffect(() => {
@@ -859,7 +898,11 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
 
     const tauri = (window as any).__TAURI__;
     if (tauri && useNativeClient && selectedAppId !== null) {
-      const resolvedCodec = activeCodec === 'auto' ? resolveAutoCodec() : (activeCodec === 'h265' ? 'h265' : activeCodec === 'av1' ? 'av1' : 'h264');
+      const codecDecision = getCodecDecision(activeCodec);
+      const resolvedCodec = codecDecision.resolved;
+      if (codecDecision.fellBack) {
+        console.warn(`Native client codec fallback: requested=${codecDecision.requested}, resolved=${resolvedCodec}. ${codecDecision.reason}. ${codecSupportSummary()}`);
+      }
       const resStr = activeResolution === '720p' ? '1280x720' : activeResolution === '540p' ? '960x540' : '1920x1080';
       const backendHost = getBackendHost();
       const serverUrl = `${window.location.protocol === 'https:' ? 'https:' : 'http:'}//${backendHost}`;
@@ -884,14 +927,14 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       return;
     }
 
-    // Resolve 'auto' to the best supported codec before sending to agent
-    let resolvedCodec = activeCodec === 'auto' ? resolveAutoCodec() : activeCodec;
-    if (activeCodec === 'auto') {
-      addLog(`Auto codec resolved to: ${resolvedCodec.toUpperCase()} (browser support: H264=${browserCodecs.h264}, H265=${browserCodecs.h265}, AV1=${browserCodecs.av1})`);
-    } else if (activeCodec === 'h265' && !supportedCodecs.h265) {
-      addLog("Warning: H.265 (HEVC) might not be supported by your browser. Proceeding anyway.");
-    } else if (activeCodec === 'av1' && !supportedCodecs.av1) {
-      addLog("Warning: AV1 might not be supported by your browser. Proceeding anyway.");
+    // Resolve the requested codec once before creating SDP and RequestSession.
+    const codecDecision = getCodecDecision(activeCodec);
+    const resolvedCodec = codecDecision.resolved;
+    addLog(`Codec decision: requested=${codecDecision.requested.toUpperCase()}, resolved=${resolvedCodec.toUpperCase()} (${codecSupportSummary()})`);
+    if (codecDecision.fellBack) {
+      addLog(`Codec fallback: ${codecDecision.reason}; using ${resolvedCodec.toUpperCase()}.`);
+    } else if (codecDecision.requested === 'auto') {
+      addLog(`Auto codec resolved to: ${resolvedCodec.toUpperCase()}.`);
     }
 
     addLog(`Initiating session with host: ${hostName} (${hostId}) using codec ${resolvedCodec}`);
@@ -1759,7 +1802,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     // Apply codec preference filter using setCodecPreferences.
     // This ensures Chrome's SDP answer only includes the negotiated codec,
     // preventing profile-level-id mismatches when multiple H264 variants exist.
-    const codecForSession = activeCodec === 'auto' ? resolveAutoCodec() : activeCodec;
+    const codecForSession = getCodecDecision(activeCodec).resolved;
     try {
       const transceivers = pc.getTransceivers();
       const videoTransceiver = transceivers.find(t => t.receiver.track.kind === 'video');

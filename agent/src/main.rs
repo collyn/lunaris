@@ -304,7 +304,10 @@ pub async fn run_agent_loop(
                             virtual_display,
                             ice_servers,
                         } => {
-                            info!("Incoming session request from client: {}", client_id);
+                            info!(
+                                "Incoming session request from client: {} codec={:?} encoder={:?} res={:?}x{:?} fps={:?} bitrate={:?} display={:?} virtual_display={:?}",
+                                client_id, codec, encoder, width, height, fps, bitrate, display_id, virtual_display
+                            );
 
                             // Clean up previous active session
                             {
