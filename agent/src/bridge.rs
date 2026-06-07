@@ -113,6 +113,72 @@ pub enum VideoPayloader {
     Av1(Av1Payloader),
 }
 
+fn av1_annexb_to_low_overhead(data: &bytes::Bytes) -> Option<bytes::Bytes> {
+    let input = data.as_ref();
+    parse_av1_annexb_temporal_units(input)
+        .or_else(|| parse_av1_size_prefixed_obus(input))
+        .map(bytes::Bytes::from)
+}
+
+fn parse_av1_annexb_temporal_units(input: &[u8]) -> Option<Vec<u8>> {
+    let mut pos = 0usize;
+    let mut out = Vec::with_capacity(input.len());
+    while pos < input.len() {
+        let (temporal_unit_size, next) = read_av1_leb128(input, pos)?;
+        pos = next;
+        if temporal_unit_size == 0 || pos + temporal_unit_size > input.len() {
+            return None;
+        }
+        let temporal_unit_end = pos + temporal_unit_size;
+        while pos < temporal_unit_end {
+            let (frame_unit_size, next) = read_av1_leb128(input, pos)?;
+            pos = next;
+            if frame_unit_size == 0 || pos + frame_unit_size > temporal_unit_end {
+                return None;
+            }
+            let frame_unit_end = pos + frame_unit_size;
+            while pos < frame_unit_end {
+                let (obu_size, next) = read_av1_leb128(input, pos)?;
+                pos = next;
+                if obu_size == 0 || pos + obu_size > frame_unit_end {
+                    return None;
+                }
+                out.extend_from_slice(&input[pos..pos + obu_size]);
+                pos += obu_size;
+            }
+        }
+    }
+    if out.is_empty() { None } else { Some(out) }
+}
+
+fn parse_av1_size_prefixed_obus(input: &[u8]) -> Option<Vec<u8>> {
+    let mut pos = 0usize;
+    let mut out = Vec::with_capacity(input.len());
+    while pos < input.len() {
+        let (obu_size, next) = read_av1_leb128(input, pos)?;
+        pos = next;
+        if obu_size == 0 || pos + obu_size > input.len() {
+            return None;
+        }
+        out.extend_from_slice(&input[pos..pos + obu_size]);
+        pos += obu_size;
+    }
+    if out.is_empty() { None } else { Some(out) }
+}
+
+fn read_av1_leb128(input: &[u8], mut pos: usize) -> Option<(usize, usize)> {
+    let mut value: usize = 0;
+    for shift in (0..8).map(|i| i * 7) {
+        let byte = *input.get(pos)?;
+        pos += 1;
+        value |= ((byte & 0x7f) as usize) << shift;
+        if byte & 0x80 == 0 {
+            return Some((value, pos));
+        }
+    }
+    None
+}
+
 pub async fn setup_bridge_session(
     agent_config: AgentConfig,
     client_id: String,
@@ -1061,7 +1127,24 @@ pub async fn setup_bridge_session(
                 let payloads = match &mut payloader {
                     VideoPayloader::H264(p) => p.payload(1200 - 12, &sample.freeze()),
                     VideoPayloader::H265(p) => p.payload(1200 - 12, &sample.freeze()),
-                    VideoPayloader::Av1(p) => p.payload(1200 - 12, &sample.freeze()),
+                    VideoPayloader::Av1(p) => {
+                        let frame = sample.freeze();
+                        match p.payload(1200 - 12, &frame) {
+                            Ok(payloads) => Ok(payloads),
+                            Err(err) => {
+                                if let Some(normalized) = av1_annexb_to_low_overhead(&frame) {
+                                    debug!(
+                                        "Retrying AV1 packetization after Annex-B unwrap ({} -> {} bytes)",
+                                        frame.len(),
+                                        normalized.len()
+                                    );
+                                    p.payload(1200 - 12, &normalized).map_err(|_| err)
+                                } else {
+                                    Err(err)
+                                }
+                            }
+                        }
+                    }
                 };
 
                 let payloads = match payloads {
