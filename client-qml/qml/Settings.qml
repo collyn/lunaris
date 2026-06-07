@@ -4,7 +4,7 @@ import QtQuick.Controls
 Rectangle {
     id: settingsRoot
     width: 480
-    height: 630
+    height: 760
     radius: 16
     color: Qt.rgba(11/255, 17/255, 32/255, 0.96)
     border.color: Qt.rgba(0, 240/255, 255/255, 0.35)
@@ -76,7 +76,7 @@ Rectangle {
     }
 
     // Signals
-    signal applySettings(string res, int fps, string codec, int bitrate, int queueLimit, bool disableCuda, string inputProtocol)
+    signal applySettings(string res, int fps, string codec, int bitrate, int queueLimit, bool disableCuda, string inputProtocol, string encoder, string displayId, bool virtualDisplay)
 
     function open() {
         settingsRoot.visible = true;
@@ -86,7 +86,7 @@ Rectangle {
         settingsRoot.visible = false;
     }
 
-    function setCurrentSettings(res, fps, codec, bitrate, queueLimit, disableCuda, inputProtocol) {
+    function setCurrentSettings(res, fps, codec, bitrate, queueLimit, disableCuda, inputProtocol, encoder, displayId, virtualDisplay) {
         if (res.indexOf("1920") !== -1 || res.indexOf("1080") !== -1) {
             resCombo.currentIndex = 0;
         } else if (res.indexOf("1280") !== -1 || res.indexOf("720") !== -1) {
@@ -134,6 +134,13 @@ Rectangle {
         } else {
             protocolCombo.currentIndex = 0;
         }
+
+        var encoderLower = (encoder || "auto").toLowerCase();
+        var encoderOptions = ["auto", "native", "ffmpeg", "nvenc", "amf", "qsv", "vaapi", "software"];
+        var encoderIdx = encoderOptions.indexOf(encoderLower);
+        encoderCombo.currentIndex = encoderIdx >= 0 ? encoderIdx : 0;
+        displayInput.text = displayId || "default";
+        virtualDisplayCheck.checked = virtualDisplay === true;
     }
 
     // Modal overlay blocker
@@ -410,6 +417,53 @@ Rectangle {
                     radius: 8
                 }
             }
+        }
+
+        // Encoder Backend
+        Text { text: "Encoder Backend:"; color: "#cbd5e1"; font.pixelSize: 13; font.bold: true; width: 120 }
+        ComboBox {
+            id: encoderCombo
+            width: 260
+            model: ["Auto", "Native", "FFmpeg", "NVENC", "AMF", "QSV", "VAAPI", "Software"]
+            currentIndex: 0
+            delegate: ItemDelegate {
+                width: encoderCombo.width
+                contentItem: Text { text: modelData; color: encoderCombo.highlightedIndex === index ? "#ffffff" : "#cbd5e1"; font.pixelSize: 13; verticalAlignment: Text.AlignVCenter }
+                background: Rectangle { color: encoderCombo.highlightedIndex === index ? "#4f46e5" : "transparent" }
+                highlighted: encoderCombo.highlightedIndex === index
+            }
+            contentItem: Text { leftPadding: 12; text: encoderCombo.displayText; font.pixelSize: 13; color: "#ffffff"; verticalAlignment: Text.AlignVCenter }
+            background: Rectangle { implicitHeight: 38; color: "#0f1626"; border.color: encoderCombo.activeFocus ? "#00f0ff" : Qt.rgba(1, 1, 1, 0.08); border.width: 1; radius: 8 }
+            popup: Popup {
+                y: encoderCombo.height + 4; width: encoderCombo.width; implicitHeight: contentItem.implicitHeight; padding: 1
+                contentItem: ListView { clip: true; implicitHeight: contentHeight; model: encoderCombo.popup.visible ? encoderCombo.delegateModel : null; currentIndex: encoderCombo.highlightedIndex }
+                background: Rectangle { color: "#0f1626"; border.color: Qt.rgba(1, 1, 1, 0.15); border.width: 1; radius: 8 }
+            }
+        }
+
+        // Display ID
+        Text { text: "Display:"; color: "#cbd5e1"; font.pixelSize: 13; font.bold: true; width: 120 }
+        TextField {
+            id: displayInput
+            width: 260
+            height: 38
+            text: "default"
+            placeholderText: "default, 0, HDMI-1, DP-1..."
+            color: "#ffffff"
+            placeholderTextColor: "#64748b"
+            font.pixelSize: 13
+            leftPadding: 12
+            background: Rectangle { color: "#0f1626"; border.color: displayInput.activeFocus ? "#00f0ff" : Qt.rgba(1, 1, 1, 0.08); border.width: 1; radius: 8 }
+        }
+
+        // Virtual Display
+        Text { text: "Virtual Display:"; color: "#cbd5e1"; font.pixelSize: 13; font.bold: true; width: 120 }
+        CheckBox {
+            id: virtualDisplayCheck
+            width: 260
+            text: "Create virtual display"
+            checked: false
+            contentItem: Text { text: virtualDisplayCheck.text; color: "#cbd5e1"; font.pixelSize: 13; verticalAlignment: Text.AlignVCenter; leftPadding: virtualDisplayCheck.indicator.width + 8 }
         }
 
         // Decoder Type
@@ -732,8 +786,12 @@ Rectangle {
 
                 var disableCuda = (decoderCombo.currentIndex === 1);
                 var inputProtocol = (protocolCombo.currentIndex === 1) ? "webtransport" : "webrtc"
+                var encoderOptions = ["auto", "native", "ffmpeg", "nvenc", "amf", "qsv", "vaapi", "software"]
+                var encoder = encoderOptions[encoderCombo.currentIndex] || "auto"
+                var displayId = displayInput.text.trim().length > 0 ? displayInput.text.trim() : "default"
+                var virtualDisplay = virtualDisplayCheck.checked
 
-                settingsRoot.applySettings(selectedRes, fps, codec, bitrate, queueLimit, disableCuda, inputProtocol);
+                settingsRoot.applySettings(selectedRes, fps, codec, bitrate, queueLimit, disableCuda, inputProtocol, encoder, displayId, virtualDisplay);
                 settingsRoot.close();
             }
             background: Rectangle {

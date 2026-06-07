@@ -36,6 +36,9 @@ pub fn parse_deeplink_url(url_str: &str) -> Option<AppArgs> {
         #[cfg(not(target_os = "linux"))]
         let mut disable_cuda = false;
         let mut input_protocol = "webrtc".to_string();
+        let mut encoder: Option<String> = None;
+        let mut display_id: Option<String> = None;
+        let mut virtual_display = false;
 
         for (k, v) in parsed_url.query_pairs() {
             match k.as_ref() {
@@ -44,6 +47,21 @@ pub fn parse_deeplink_url(url_str: &str) -> Option<AppArgs> {
                 "token" => token = v.into_owned(),
                 "host_name" => host_name = v.into_owned(),
                 "input_protocol" => input_protocol = v.into_owned().to_lowercase(),
+                "encoder" => {
+                    let value = v.into_owned().to_lowercase();
+                    if !value.is_empty() && value != "auto" {
+                        encoder = Some(value);
+                    }
+                }
+                "display" | "display_id" => {
+                    let value = v.into_owned();
+                    if !value.is_empty() && value != "default" {
+                        display_id = Some(value);
+                    }
+                }
+                "virtual_display" => {
+                    virtual_display = v.as_ref() == "1" || v.as_ref().eq_ignore_ascii_case("true");
+                }
                 "app_id" => {
                     if let Ok(id) = v.parse::<u32>() {
                         app_id = Some(id);
@@ -102,6 +120,9 @@ pub fn parse_deeplink_url(url_str: &str) -> Option<AppArgs> {
                 host_name,
                 disable_cuda,
                 input_protocol,
+                encoder,
+                display_id,
+                virtual_display,
             });
         }
     }
@@ -208,11 +229,19 @@ fn parse_args() -> Option<AppArgs> {
     #[cfg(not(target_os = "linux"))]
     let mut disable_cuda = false;
     let mut input_protocol = "webrtc".to_string();
+    let mut encoder: Option<String> = None;
+    let mut display_id: Option<String> = None;
+    let mut virtual_display = false;
 
     let mut i = 1;
     while i < args.len() {
         if args[i] == "--disable-cuda" {
             disable_cuda = true;
+            i += 1;
+            continue;
+        }
+        if args[i] == "--virtual-display" {
+            virtual_display = true;
             i += 1;
             continue;
         }
@@ -242,6 +271,16 @@ fn parse_args() -> Option<AppArgs> {
             }
             "--input-protocol" => {
                 input_protocol = args[i + 1].clone().to_lowercase();
+                i += 2;
+            }
+            "--encoder" => {
+                let value = args[i + 1].clone().to_lowercase();
+                encoder = if value.is_empty() || value == "auto" { None } else { Some(value) };
+                i += 2;
+            }
+            "--display" | "--display-id" => {
+                let value = args[i + 1].clone();
+                display_id = if value.is_empty() || value == "default" { None } else { Some(value) };
                 i += 2;
             }
             "--app-id" => {
@@ -303,6 +342,9 @@ fn parse_args() -> Option<AppArgs> {
             host_name,
             disable_cuda,
             input_protocol,
+            encoder,
+            display_id,
+            virtual_display,
         })
     } else {
         None

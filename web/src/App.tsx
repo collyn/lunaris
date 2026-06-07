@@ -691,6 +691,10 @@ function App() {
                                         const bitrate = localStorage.getItem('lunaris_stream_bitrate') || '8000';
                                         const codec = localStorage.getItem('lunaris_stream_codec') || 'auto';
                                         const mouseQueueLimit = localStorage.getItem('lunaris_mouse_queue_limit') || '256';
+                                        const encoder = localStorage.getItem('lunaris_stream_encoder') || 'auto';
+                                        const display = localStorage.getItem('lunaris_stream_display') || 'default';
+                                        const virtualDisplay = localStorage.getItem('lunaris_stream_virtual_display') === 'true';
+                                        const inputProtocol = localStorage.getItem('lunaris_input_protocol') || 'webrtc';
                                         const hostToUse = currentViewingHost || viewingHost;
 
                                         if (!hostToUse) return;
@@ -707,7 +711,11 @@ function App() {
                                             codec,
                                             appId: app.id,
                                             mouseQueueLimit: String(mouseQueueLimit),
-                                            hostName: hostToUse.name
+                                            hostName: hostToUse.name,
+                                            encoder,
+                                            displayId: display,
+                                            virtualDisplay,
+                                            inputProtocol
                                           }).catch((err: any) => {
                                             console.error("Failed to launch native client:", err);
                                             alert("Failed to launch native client: " + err);
@@ -715,7 +723,7 @@ function App() {
                                         } else {
                                           const wsProtocol = getBackendProtocol().ws;
                                           const wsServerUrl = `${wsProtocol}//${serverHost}`;
-                                          window.location.href = `lunaris://connect?host_id=${hostToUse.id}&server=${wsServerUrl}&token=${token}&res=${resStr}&fps=${fps}&bitrate=${bitrate}&codec=${codec}&mouse_queue_limit=${mouseQueueLimit}&host_name=${encodeURIComponent(hostToUse.name)}&app_id=${app.id}`;
+                                          window.location.href = `lunaris://connect?host_id=${hostToUse.id}&server=${wsServerUrl}&token=${token}&res=${resStr}&fps=${fps}&bitrate=${bitrate}&codec=${codec}&mouse_queue_limit=${mouseQueueLimit}&host_name=${encodeURIComponent(hostToUse.name)}&app_id=${app.id}&encoder=${encodeURIComponent(encoder)}&display=${encodeURIComponent(display)}&virtual_display=${virtualDisplay}&input_protocol=${encodeURIComponent(inputProtocol)}`;
                                         }
                                       }}
                                       className="overlay-btn btn-launch-app"

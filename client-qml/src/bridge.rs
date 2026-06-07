@@ -63,6 +63,9 @@ pub struct AppArgs {
     pub host_name: String,
     pub disable_cuda: bool,
     pub input_protocol: String,
+    pub encoder: Option<String>,
+    pub display_id: Option<String>,
+    pub virtual_display: bool,
 }
 
 pub static APP_ARGS: std::sync::OnceLock<AppArgs> = std::sync::OnceLock::new();
@@ -584,6 +587,9 @@ pub mod qobject {
             mouse_queue_limit: i32,
             disable_cuda: bool,
             input_protocol: QString,
+            encoder: QString,
+            display_id: QString,
+            virtual_display: bool,
         );
 
         #[qinvokable]
@@ -693,6 +699,9 @@ impl qobject::StreamBridge {
         let app_id = args.app_id;
         let mouse_queue_limit = args.mouse_queue_limit;
         let input_protocol = args.input_protocol.clone();
+        let encoder = args.encoder.clone();
+        let display_id = args.display_id.clone();
+        let virtual_display = args.virtual_display;
 
         let sink_wrapper = self.as_ref().rust().sink_wrapper.clone();
         let input_senders = self.as_ref().rust().input_senders.clone();
@@ -712,6 +721,9 @@ impl qobject::StreamBridge {
                 app_id,
                 mouse_queue_limit,
                 input_protocol,
+                encoder,
+                display_id,
+                virtual_display,
                 sink_wrapper,
                 input_senders,
                 active_decoder,
@@ -1280,6 +1292,9 @@ impl qobject::StreamBridge {
         mouse_queue_limit: i32,
         disable_cuda: bool,
         input_protocol: QString,
+        encoder: QString,
+        display_id: QString,
+        virtual_display: bool,
     ) {
         let server_str = server.to_string();
         let token_str = token.to_string();
@@ -1288,6 +1303,8 @@ impl qobject::StreamBridge {
         let res_str = res.to_string();
         let codec_str = codec.to_string().to_lowercase();
         let input_proto_str = input_protocol.to_string().to_lowercase();
+        let encoder_str = encoder.to_string().to_lowercase();
+        let display_str = display_id.to_string();
 
         let mut width = 1280;
         let mut height = 720;
@@ -1321,6 +1338,9 @@ impl qobject::StreamBridge {
             host_name: host_name_str,
             disable_cuda,
             input_protocol: input_proto_str,
+            encoder: if encoder_str.is_empty() || encoder_str == "auto" { None } else { Some(encoder_str) },
+            display_id: if display_str.is_empty() || display_str == "default" { None } else { Some(display_str) },
+            virtual_display,
         };
 
         {
@@ -2512,6 +2532,9 @@ async fn run_webrtc_client_task(
     app_id: Option<u32>,
     mouse_queue_limit: u32,
     input_protocol: String,
+    encoder: Option<String>,
+    display_id: Option<String>,
+    virtual_display: bool,
     sink_wrapper: VideoSinkWrapper,
     input_senders: Arc<Mutex<Option<super::input::InputSenders>>>,
     active_decoder: Arc<Mutex<Option<std::thread::JoinHandle<()>>>>,
@@ -2732,9 +2755,9 @@ async fn run_webrtc_client_task(
         bitrate: Some(bitrate),
         codec: Some(codec_str.clone()),
         app_id,
-        encoder: None,
-        display_id: None,
-        virtual_display: None,
+        encoder,
+        display_id,
+        virtual_display: if virtual_display { Some(true) } else { None },
     });
     outbox_tx.send(req_msg)?;
 

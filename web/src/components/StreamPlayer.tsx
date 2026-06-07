@@ -917,7 +917,11 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
         codec: resolvedCodec,
         appId: selectedAppId,
         mouseQueueLimit: String(mouseQueueLimit),
-        hostName
+        hostName,
+        encoder: activeEncoder,
+        displayId: activeDisplay,
+        virtualDisplay: activeVirtualDisplay,
+        inputProtocol: activeInputProtocol
       }).then(() => {
         onBack();
       }).catch((err: any) => {

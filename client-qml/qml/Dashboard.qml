@@ -13,7 +13,7 @@ Rectangle {
     property string username: ""
     property string serverUrl: ""
 
-    signal startSessionRequested(string server, string token, string hostId, string hostName, int appId, string res, int fps, string codec, int bitrate, int queueLimit, bool disableCuda, string inputProtocol)
+    signal startSessionRequested(string server, string token, string hostId, string hostName, int appId, string res, int fps, string codec, int bitrate, int queueLimit, bool disableCuda, string inputProtocol, string encoder, string displayId, bool virtualDisplay)
 
     // Internal UI state properties
     property bool isLoggedIn: false
@@ -39,6 +39,9 @@ Rectangle {
     property int configQueueLimit: 256
     property bool configDisableCuda: Qt.platform.os === "linux"
     property string configInputProtocol: "webrtc"
+    property string configEncoder: "auto"
+    property string configDisplay: "default"
+    property bool configVirtualDisplay: false
 
 
 
@@ -736,9 +739,12 @@ Rectangle {
                                                 dashboardRoot.configQueueLimit = 256;
                                                 dashboardRoot.configDisableCuda = (Qt.platform.os === "linux");
                                                 dashboardRoot.configInputProtocol = "webrtc";
+                                                dashboardRoot.configEncoder = "auto";
+                                                dashboardRoot.configDisplay = "default";
+                                                dashboardRoot.configVirtualDisplay = false;
                                             }
                                             dashboardRoot.activeConfigHost = modelData;
-                                            settingsModal.setCurrentSettings(dashboardRoot.configRes, dashboardRoot.configFps, dashboardRoot.configCodec, dashboardRoot.configBitrate, dashboardRoot.configQueueLimit, dashboardRoot.configDisableCuda, dashboardRoot.configInputProtocol);
+                                            settingsModal.setCurrentSettings(dashboardRoot.configRes, dashboardRoot.configFps, dashboardRoot.configCodec, dashboardRoot.configBitrate, dashboardRoot.configQueueLimit, dashboardRoot.configDisableCuda, dashboardRoot.configInputProtocol, dashboardRoot.configEncoder, dashboardRoot.configDisplay, dashboardRoot.configVirtualDisplay);
                                             settingsModal.open();
                                         }
                                         background: Rectangle {
@@ -919,7 +925,10 @@ Rectangle {
                                     dashboardRoot.configBitrate,
                                     dashboardRoot.configQueueLimit,
                                     dashboardRoot.configDisableCuda,
-                                    dashboardRoot.configInputProtocol
+                                    dashboardRoot.configInputProtocol,
+                                    dashboardRoot.configEncoder,
+                                    dashboardRoot.configDisplay,
+                                    dashboardRoot.configVirtualDisplay
                                 );
                             }
                         }
@@ -1088,7 +1097,10 @@ Rectangle {
                                             dashboardRoot.configBitrate,
                                             dashboardRoot.configQueueLimit,
                                             dashboardRoot.configDisableCuda,
-                                            dashboardRoot.configInputProtocol
+                                            dashboardRoot.configInputProtocol,
+                                            dashboardRoot.configEncoder,
+                                            dashboardRoot.configDisplay,
+                                            dashboardRoot.configVirtualDisplay
                                         );
                                     }
                                 }
@@ -1114,7 +1126,7 @@ Rectangle {
         anchors.centerIn: parent
         z: 1000
 
-        onApplySettings: (res, fps, codec, bitrate, queueLimit, disableCuda, inputProtocol) => {
+        onApplySettings: (res, fps, codec, bitrate, queueLimit, disableCuda, inputProtocol, encoder, displayId, virtualDisplay) => {
             dashboardRoot.configRes = res;
             dashboardRoot.configFps = fps;
             dashboardRoot.configCodec = codec;
@@ -1122,6 +1134,9 @@ Rectangle {
             dashboardRoot.configQueueLimit = queueLimit;
             dashboardRoot.configDisableCuda = disableCuda;
             dashboardRoot.configInputProtocol = inputProtocol;
+            dashboardRoot.configEncoder = encoder;
+            dashboardRoot.configDisplay = displayId;
+            dashboardRoot.configVirtualDisplay = virtualDisplay;
         }
     }
 }

@@ -797,7 +797,7 @@ ApplicationWindow {
         visible: !window.isStreamMode
         focus: !window.isStreamMode
 
-        onStartSessionRequested: (server, token, hostId, hostName, appId, res, fps, codec, bitrate, queueLimit, disableCuda, inputProtocol) => {
+        onStartSessionRequested: (server, token, hostId, hostName, appId, res, fps, codec, bitrate, queueLimit, disableCuda, inputProtocol, encoder, displayId, virtualDisplay) => {
             window.useCuda = !disableCuda;
             window.isStreamMode = true;
             var parts = res.split("x");
@@ -805,7 +805,7 @@ ApplicationWindow {
                 window.streamWidth = parseInt(parts[0]);
                 window.streamHeight = parseInt(parts[1]);
             }
-            bridge.startGameSession(server, token, hostId, hostName, appId, res, fps, codec, bitrate, queueLimit, disableCuda, inputProtocol);
+            bridge.startGameSession(server, token, hostId, hostName, appId, res, fps, codec, bitrate, queueLimit, disableCuda, inputProtocol, encoder, displayId, virtualDisplay);
             bridge.setVideoSink(videoOutput.videoSink);
             bridge.requestSettings();
             rootContainer.forceActiveFocus();

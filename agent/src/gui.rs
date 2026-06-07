@@ -335,6 +335,57 @@ fn open_url(url: String) -> Result<(), String> {
     Ok(())
 }
 
+
+#[tauri::command]
+fn launch_native_client(
+    host_id: String,
+    server_url: String,
+    token: String,
+    res: String,
+    fps: String,
+    bitrate: String,
+    codec: String,
+    app_id: i32,
+    mouse_queue_limit: String,
+    host_name: String,
+    encoder: Option<String>,
+    display_id: Option<String>,
+    virtual_display: Option<bool>,
+    input_protocol: Option<String>,
+) -> Result<(), String> {
+    let ws_server = if server_url.starts_with("https://") {
+        server_url.replacen("https://", "wss://", 1)
+    } else if server_url.starts_with("http://") {
+        server_url.replacen("http://", "ws://", 1)
+    } else {
+        server_url.clone()
+    };
+
+    let encoder = encoder.unwrap_or_else(|| "auto".to_string());
+    let display_id = display_id.unwrap_or_else(|| "default".to_string());
+    let virtual_display = virtual_display.unwrap_or(false);
+    let input_protocol = input_protocol.unwrap_or_else(|| "webrtc".to_string());
+
+    let url = format!(
+        "lunaris://connect?host_id={}&server={}&token={}&res={}&fps={}&bitrate={}&codec={}&mouse_queue_limit={}&host_name={}&app_id={}&encoder={}&display={}&virtual_display={}&input_protocol={}",
+        urlencoding::encode(&host_id),
+        urlencoding::encode(&ws_server),
+        urlencoding::encode(&token),
+        urlencoding::encode(&res),
+        urlencoding::encode(&fps),
+        urlencoding::encode(&bitrate),
+        urlencoding::encode(&codec),
+        urlencoding::encode(&mouse_queue_limit),
+        urlencoding::encode(&host_name),
+        app_id,
+        urlencoding::encode(&encoder),
+        urlencoding::encode(&display_id),
+        virtual_display,
+        urlencoding::encode(&input_protocol),
+    );
+    open_url(url)
+}
+
 // -------------------------------------------------------------------------
 // GUI Entrypoint
 // -------------------------------------------------------------------------
@@ -446,7 +497,8 @@ pub fn run_gui(minimized: bool) {
             get_status,
             clear_last_error,
             check_for_updates,
-            open_url
+            open_url,
+            launch_native_client
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
