@@ -536,6 +536,7 @@ pub async fn setup_bridge_session(
 
     // Create Data Channels
     let general_channel = peer_connection.create_data_channel("general", None).await?;
+    let general_channel_for_cursor = general_channel.clone();
 
     let cursor_channel_init = RTCDataChannelInit {
         ordered: Some(false),
@@ -744,6 +745,7 @@ pub async fn setup_bridge_session(
     let ws_tx_for_media = ws_tx.clone();
     let client_id_for_media = client_id.clone();
     let cursor_channel_for_media = cursor_channel_for_cursor.clone();
+    let general_channel_for_media = general_channel_for_cursor.clone();
     let latest_host_cursor_for_media = latest_host_cursor_payload.clone();
     let media_event_task = tokio::spawn(async move {
         let mut metrics_started = Instant::now();
@@ -872,7 +874,19 @@ pub async fn setup_bridge_session(
                         "image": latest_cursor_image.clone(),
                     })
                     .to_string();
-                    *latest_host_cursor_for_media.lock().await = Some(cached_payload);
+                    *latest_host_cursor_for_media.lock().await = Some(cached_payload.clone());
+
+                    if image.is_some()
+                        && general_channel_for_media.ready_state() == RTCDataChannelState::Open
+                    {
+                        if let Err(err) = general_channel_for_media.send_text(cached_payload).await
+                        {
+                            trace!(
+                                "Failed to send reliable host cursor image update: {:?}",
+                                err
+                            );
+                        }
+                    }
 
                     if cursor_channel_for_media.ready_state() == RTCDataChannelState::Open {
                         if let Err(err) = cursor_channel_for_media.send_text(realtime_payload).await
