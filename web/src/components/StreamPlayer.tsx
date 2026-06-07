@@ -732,7 +732,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
               if (touchModeRef.current === 'trackpad') {
                 updateVirtualCursorDOMRef.current();
               }
-              if (!(hostCursorMouseDownRef.current && agentHostOs !== "linux")) {
+              if (!(hostCursorMouseDownRef.current && agentHostOs === "windows")) {
                 const hostCursor = hostCursorPosRef.current;
                 lastHostCursorLocalPredictionAtRef.current = performance.now();
                 updateHostCursorDOM(predictedX, predictedY, true, hostCursor.kind, null);
@@ -2187,7 +2187,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     const cursorKind = normalizeHostCursorKind(kind);
     hostCursorPosRef.current = { x, y, visible, kind: cursorKind };
 
-    if (!cursorEl || !video || !wrapper || !visible || (hostCursorMouseDownRef.current && agentHostOs !== "linux")) {
+    if (!cursorEl || !video || !wrapper || !visible || (hostCursorMouseDownRef.current && agentHostOs === "windows")) {
       if (cursorEl) cursorEl.style.display = 'none';
       return;
     }
@@ -2219,7 +2219,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       }
     }
 
-    if (cursorMetrics?.native && cursorMetrics.kind !== cursorKind) {
+    if (cursorMetrics?.native && cursorMetrics.kind !== cursorKind && image) {
       cursorMetrics = null;
       hostCursorImageMetricsRef.current = null;
     }
