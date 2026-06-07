@@ -53,6 +53,7 @@ type HostCursorImageMetrics = {
   hotspotX: number;
   hotspotY: number;
   native: boolean;
+  kind: HostCursorKind;
 };
 
 const HOST_CURSOR_ASSETS: Record<HostCursorKind, { src: string; hotspotX: number; hotspotY: number }> = {
@@ -2209,13 +2210,18 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
             imageEl.src = canvas.toDataURL('image/png');
             imageEl.style.width = `${image.width}px`;
             imageEl.style.height = `${image.height}px`;
-            cursorMetrics = { hotspotX: image.hotspotX, hotspotY: image.hotspotY, native: true };
+            cursorMetrics = { hotspotX: image.hotspotX, hotspotY: image.hotspotY, native: true, kind: cursorKind };
             hostCursorImageMetricsRef.current = cursorMetrics;
           }
         }
       } catch {
         // Keep the previous cursor image if decoding fails.
       }
+    }
+
+    if (cursorMetrics?.native && cursorMetrics.kind !== cursorKind) {
+      cursorMetrics = null;
+      hostCursorImageMetricsRef.current = null;
     }
 
     if (!cursorMetrics || !cursorMetrics.native) {
@@ -2229,6 +2235,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
         hotspotX: cursorAsset.hotspotX,
         hotspotY: cursorAsset.hotspotY,
         native: false,
+        kind: cursorKind,
       };
       hostCursorImageMetricsRef.current = cursorMetrics;
     }
