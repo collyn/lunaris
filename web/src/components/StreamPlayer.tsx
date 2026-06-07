@@ -471,7 +471,6 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     }
   }, [showSettingsModal, activeResolution, activeFps, activeBitrate, activeCodec, mouseQueueLimit, useNativeClient, activeInputProtocol, useCanvasRenderer, activeEncoder, activeDisplay, activeVirtualDisplay]);
   const [hideLocalCursor, setHideLocalCursor] = useState<boolean>(() => localStorage.getItem('lunaris_stream_hide_cursor') !== 'false');
-  const [isMouseButtonDown, setIsMouseButtonDown] = useState<boolean>(false);
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
   const [isHeaderVisible, setIsHeaderVisible] = useState<boolean>(true);
   const [isHeaderPinned, setIsHeaderPinned] = useState<boolean>(() => localStorage.getItem('lunaris_header_pinned') === 'true');
@@ -732,7 +731,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
               if (touchModeRef.current === 'trackpad') {
                 updateVirtualCursorDOMRef.current();
               }
-              if (!hostCursorMouseDownRef.current) {
+              if (!(hostCursorMouseDownRef.current && agentHostOs !== "linux")) {
                 const hostCursor = hostCursorPosRef.current;
                 lastHostCursorLocalPredictionAtRef.current = performance.now();
                 updateHostCursorDOM(predictedX, predictedY, true, hostCursor.kind, null);
@@ -2187,7 +2186,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     const cursorKind = normalizeHostCursorKind(kind);
     hostCursorPosRef.current = { x, y, visible, kind: cursorKind };
 
-    if (!cursorEl || !video || !wrapper || !visible || hostCursorMouseDownRef.current) {
+    if (!cursorEl || !video || !wrapper || !visible || (hostCursorMouseDownRef.current && agentHostOs !== "linux")) {
       if (cursorEl) cursorEl.style.display = 'none';
       return;
     }
@@ -2277,7 +2276,6 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     const releaseHostCursorSuppression = () => {
       if (!hostCursorMouseDownRef.current) return;
       hostCursorMouseDownRef.current = false;
-      setIsMouseButtonDown(false);
       const hostCursor = hostCursorPosRef.current;
       updateHostCursorDOM(hostCursor.x, hostCursor.y, hostCursor.visible, hostCursor.kind);
     };
@@ -3154,7 +3152,6 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     e.preventDefault();
 
     hostCursorMouseDownRef.current = isDown ? true : e.buttons !== 0;
-    setIsMouseButtonDown(hostCursorMouseDownRef.current);
     const hostCursor = hostCursorPosRef.current;
     updateHostCursorDOM(hostCursor.x, hostCursor.y, hostCursor.visible, hostCursor.kind);
     
@@ -3244,9 +3241,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   };
 
   const isStreaming = status === "Streaming";
-  const isLinuxHost = agentHostOs === "linux";
-  const showBrowserCursorDuringLinuxDrag = isLinuxHost && isMouseButtonDown && !isPointerLocked;
-  const streamCursorStyle = isStreaming && hideLocalCursor && !showBrowserCursorDuringLinuxDrag ? "none" : "default";
+  const streamCursorStyle = isStreaming && hideLocalCursor ? "none" : "default";
 
   if (selectedAppId === null) {
     return (
