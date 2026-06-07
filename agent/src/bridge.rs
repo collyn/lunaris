@@ -546,6 +546,20 @@ pub async fn setup_bridge_session(
         .create_data_channel("cursor", Some(cursor_channel_init))
         .await?;
     let cursor_channel_for_cursor = cursor_channel.clone();
+    let latest_host_cursor_payload = Arc::new(tokio::sync::Mutex::new(None::<String>));
+    let latest_host_cursor_on_open = latest_host_cursor_payload.clone();
+    let cursor_channel_on_open = cursor_channel.clone();
+    cursor_channel.on_open(Box::new(move || {
+        let latest_host_cursor_on_open = latest_host_cursor_on_open.clone();
+        let cursor_channel_on_open = cursor_channel_on_open.clone();
+        Box::pin(async move {
+            if let Some(payload) = latest_host_cursor_on_open.lock().await.clone() {
+                if let Err(err) = cursor_channel_on_open.send_text(payload).await {
+                    trace!("Failed to replay cached host cursor update: {:?}", err);
+                }
+            }
+        })
+    }));
 
     let mouse_reliable_channel = peer_connection
         .create_data_channel("mouse_reliable", None)
@@ -730,11 +744,13 @@ pub async fn setup_bridge_session(
     let ws_tx_for_media = ws_tx.clone();
     let client_id_for_media = client_id.clone();
     let cursor_channel_for_media = cursor_channel_for_cursor.clone();
+    let latest_host_cursor_for_media = latest_host_cursor_payload.clone();
     let media_event_task = tokio::spawn(async move {
         let mut metrics_started = Instant::now();
         let mut forwarded_frames: u64 = 0;
         let mut dropped_frames: u64 = 0;
         let mut forwarded_bytes: u64 = 0;
+        let mut latest_cursor_image: Option<serde_json::Value> = None;
         while let Some(event) = media_event_rx.recv().await {
             match event {
                 lunaris_media::pipeline::MediaEvent::EncoderStarted {
@@ -817,26 +833,42 @@ pub async fn setup_bridge_session(
                         cursor.visible,
                         cursor.kind.as_str()
                     );
-                    if cursor_channel_for_media.ready_state() == RTCDataChannelState::Open {
-                        let image = cursor.image.as_ref().map(|image| {
-                            serde_json::json!({
-                                "width": image.width,
-                                "height": image.height,
-                                "hotspot_x": image.hotspot_x,
-                                "hotspot_y": image.hotspot_y,
-                                "rgba": base64::engine::general_purpose::STANDARD.encode(&image.rgba_data),
-                            })
-                        });
-                        let payload = serde_json::json!({
-                            "type": "host_cursor",
-                            "x": cursor.x,
-                            "y": cursor.y,
-                            "visible": cursor.visible,
-                            "kind": cursor.kind.as_str(),
-                            "image": image,
+                    let image = cursor.image.as_ref().map(|image| {
+                        serde_json::json!({
+                            "width": image.width,
+                            "height": image.height,
+                            "hotspot_x": image.hotspot_x,
+                            "hotspot_y": image.hotspot_y,
+                            "rgba": base64::engine::general_purpose::STANDARD.encode(&image.rgba_data),
                         })
-                        .to_string();
-                        if let Err(err) = cursor_channel_for_media.send_text(payload).await {
+                    });
+                    if let Some(image) = image.as_ref() {
+                        latest_cursor_image = Some(image.clone());
+                    }
+
+                    let realtime_payload = serde_json::json!({
+                        "type": "host_cursor",
+                        "x": cursor.x,
+                        "y": cursor.y,
+                        "visible": cursor.visible,
+                        "kind": cursor.kind.as_str(),
+                        "image": image,
+                    })
+                    .to_string();
+                    let cached_payload = serde_json::json!({
+                        "type": "host_cursor",
+                        "x": cursor.x,
+                        "y": cursor.y,
+                        "visible": cursor.visible,
+                        "kind": cursor.kind.as_str(),
+                        "image": latest_cursor_image.clone(),
+                    })
+                    .to_string();
+                    *latest_host_cursor_for_media.lock().await = Some(cached_payload);
+
+                    if cursor_channel_for_media.ready_state() == RTCDataChannelState::Open {
+                        if let Err(err) = cursor_channel_for_media.send_text(realtime_payload).await
+                        {
                             trace!("Failed to send host cursor update: {:?}", err);
                         }
                     }
