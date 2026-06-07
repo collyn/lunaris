@@ -196,16 +196,34 @@ pub async fn run_agent_loop(
     // Reset status
     CONNECTED_TO_SERVER.store(false, std::sync::atomic::Ordering::SeqCst);
 
-    // Query codec support from lunaris-media encoders
+    // Query codec support from lunaris-media encoders. H.264 software is a
+    // practical fallback; H.265/AV1 software is too slow for interactive remote
+    // desktop, so only advertise those when a hardware encoder exists.
     let codec_support = {
         let encoders = lunaris_media::encode::list_available_encoders();
-        let h264 = encoders.iter().any(|e| e.supported_codecs.contains(&lunaris_media::VideoCodec::H264));
-        let h265 = encoders.iter().any(|e| e.supported_codecs.contains(&lunaris_media::VideoCodec::H265));
-        let av1 = encoders.iter().any(|e| e.supported_codecs.contains(&lunaris_media::VideoCodec::AV1));
+        let h264 = encoders.iter().any(|e| {
+            e.supported_codecs
+                .contains(&lunaris_media::VideoCodec::H264)
+        });
+        let h265 = encoders.iter().any(|e| {
+            e.hw_type != lunaris_media::HwAccelType::Software
+                && e.supported_codecs
+                    .contains(&lunaris_media::VideoCodec::H265)
+        });
+        let av1 = encoders.iter().any(|e| {
+            e.hw_type != lunaris_media::HwAccelType::Software
+                && e.supported_codecs.contains(&lunaris_media::VideoCodec::AV1)
+        });
         let mut bits: u32 = 0;
-        if h264 { bits |= 262145; }
-        if h265 { bits |= 1573632; }
-        if av1 { bits |= 6488064; }
+        if h264 {
+            bits |= 262145;
+        }
+        if h265 {
+            bits |= 1573632;
+        }
+        if av1 {
+            bits |= 6488064;
+        }
         Some(bits)
     };
 
