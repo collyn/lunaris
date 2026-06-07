@@ -1036,14 +1036,11 @@ pub async fn setup_bridge_session(
                     }
                 }
                 VideoPayloader::Av1(_) => {
-                    let mut reader =
-                        crate::video::annexb::AnnexBSplitter::new(Cursor::new(full_frame), 0);
-                    while let Ok(Some(obu)) = reader.next() {
-                        let data = trim_bytes_to_range(
-                            obu.full,
-                            obu.payload_range.start..obu.payload_range.end,
-                        );
-                        samples.push(data);
+                    // AV1 from lunaris-media/FFmpeg is a raw OBU temporal unit, not an
+                    // Annex-B NAL stream. The WebRTC AV1 payloader parses the OBU
+                    // sequence itself, so pass the complete encoded frame through.
+                    if !full_frame.is_empty() {
+                        samples.push(bytes::BytesMut::from(full_frame.as_slice()));
                     }
                 }
             }

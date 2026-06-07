@@ -201,9 +201,11 @@ pub async fn run_agent_loop(
         let encoders = lunaris_media::encode::list_available_encoders();
         let h264 = encoders.iter().any(|e| e.supported_codecs.contains(&lunaris_media::VideoCodec::H264));
         let h265 = encoders.iter().any(|e| e.supported_codecs.contains(&lunaris_media::VideoCodec::H265));
+        let av1 = encoders.iter().any(|e| e.supported_codecs.contains(&lunaris_media::VideoCodec::AV1));
         let mut bits: u32 = 0;
         if h264 { bits |= 262145; }
         if h265 { bits |= 1573632; }
+        if av1 { bits |= 6488064; }
         Some(bits)
     };
 
