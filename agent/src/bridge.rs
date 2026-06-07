@@ -751,6 +751,7 @@ pub async fn setup_bridge_session(
         let mut dropped_frames: u64 = 0;
         let mut forwarded_bytes: u64 = 0;
         let mut latest_cursor_image: Option<serde_json::Value> = None;
+        let mut latest_cursor_log_shape: Option<String> = None;
         while let Some(event) = media_event_rx.recv().await {
             match event {
                 lunaris_media::pipeline::MediaEvent::EncoderStarted {
@@ -826,13 +827,7 @@ pub async fn setup_bridge_session(
                     let _ = audio_tx_clone.try_send(sample);
                 }
                 lunaris_media::pipeline::MediaEvent::CursorUpdate(cursor) => {
-                    trace!(
-                        "Cursor position update: {}, {} visible={} kind={}",
-                        cursor.x,
-                        cursor.y,
-                        cursor.visible,
-                        cursor.kind.as_str()
-                    );
+                    let cursor_kind = cursor.kind.as_str();
                     let image = cursor.image.as_ref().map(|image| {
                         serde_json::json!({
                             "width": image.width,
@@ -845,13 +840,26 @@ pub async fn setup_bridge_session(
                     if let Some(image) = image.as_ref() {
                         latest_cursor_image = Some(image.clone());
                     }
+                    let cursor_kind_changed =
+                        latest_cursor_log_shape.as_deref() != Some(cursor_kind);
+                    if cursor_kind_changed || image.is_some() {
+                        debug!(
+                            "Host cursor shape update: kind={} native_image={} visible={} pos={},{}",
+                            cursor_kind,
+                            image.is_some(),
+                            cursor.visible,
+                            cursor.x,
+                            cursor.y
+                        );
+                        latest_cursor_log_shape = Some(cursor_kind.to_string());
+                    }
 
                     let realtime_payload = serde_json::json!({
                         "type": "host_cursor",
                         "x": cursor.x,
                         "y": cursor.y,
                         "visible": cursor.visible,
-                        "kind": cursor.kind.as_str(),
+                        "kind": cursor_kind,
                         "image": image,
                     })
                     .to_string();
@@ -860,7 +868,7 @@ pub async fn setup_bridge_session(
                         "x": cursor.x,
                         "y": cursor.y,
                         "visible": cursor.visible,
-                        "kind": cursor.kind.as_str(),
+                        "kind": cursor_kind,
                         "image": latest_cursor_image.clone(),
                     })
                     .to_string();
