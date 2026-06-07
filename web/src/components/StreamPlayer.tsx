@@ -972,14 +972,6 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
         addLog("Sent GetCapabilities command.");
       } else {
         setStatus("Signaling...");
-        // Also request host capabilities
-        ws.send(JSON.stringify({
-          event: "Signaling",
-          data: {
-            type: "GetCapabilities",
-            payload: { target_id: hostId }
-          }
-        }));
         let width = 1920;
         let height = 1080;
         if (activeResolution === '720p') {
