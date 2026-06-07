@@ -645,13 +645,12 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     };
   }, [status]);
 
-  // Batch mouse movements at display refresh rate using requestAnimationFrame.
-  // This aggregates high-frequency inputs (gaming mouse raw updates at 500-1000Hz)
-  // and sends a single consolidated packet per display frame, eliminating SCTP flooding.
+  // Flush mouse movements at a low-latency cadence.
+  // A 4ms interval keeps packets around 250Hz while retaining queue backpressure.
   useEffect(() => {
     if (status !== "Streaming") return;
 
-    let animFrameId: number;
+    let flushTimerId: number;
 
     const sendTick = () => {
       const qLimit = mouseQueueLimitRef.current;
@@ -753,12 +752,12 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
         }
       }
 
-      animFrameId = requestAnimationFrame(sendTick);
     };
 
-    animFrameId = requestAnimationFrame(sendTick);
+    flushTimerId = window.setInterval(sendTick, 4);
+    sendTick();
     return () => {
-      cancelAnimationFrame(animFrameId);
+      window.clearInterval(flushTimerId);
     };
   }, [status]);
 

@@ -562,8 +562,12 @@ pub async fn setup_bridge_session(
         })
     }));
 
+    let mouse_reliable_init = RTCDataChannelInit {
+        ordered: Some(false),
+        ..Default::default()
+    };
     let mouse_reliable_channel = peer_connection
-        .create_data_channel("mouse_reliable", None)
+        .create_data_channel("mouse_reliable", Some(mouse_reliable_init))
         .await?;
 
     let mouse_absolute_init = RTCDataChannelInit {
@@ -716,11 +720,8 @@ pub async fn setup_bridge_session(
         // Spawn separate task for mouse inputs
         let input_task = tokio::spawn(async move {
             info!("InputInjector: started mouse input processing task");
-            while let Some((packet, last_timestamp)) = input_rx.recv().await {
-                handle_inbound_packet(packet, &injector, &last_timestamp);
-                while let Ok((packet, last_timestamp)) = input_rx.try_recv() {
-                    handle_inbound_packet(packet, &injector, &last_timestamp);
-                }
+            while let Some(first_packet) = input_rx.recv().await {
+                process_mouse_input_batch(first_packet, &mut input_rx, &injector);
                 injector.flush();
             }
             info!("InputInjector: stopped mouse input processing task");
@@ -753,7 +754,6 @@ pub async fn setup_bridge_session(
         let mut dropped_frames: u64 = 0;
         let mut forwarded_bytes: u64 = 0;
         let mut latest_cursor_image: Option<serde_json::Value> = None;
-        let mut latest_cursor_log_shape: Option<String> = None;
         while let Some(event) = media_event_rx.recv().await {
             match event {
                 lunaris_media::pipeline::MediaEvent::EncoderStarted {
@@ -842,20 +842,6 @@ pub async fn setup_bridge_session(
                     if let Some(image) = image.as_ref() {
                         latest_cursor_image = Some(image.clone());
                     }
-                    let cursor_kind_changed =
-                        latest_cursor_log_shape.as_deref() != Some(cursor_kind);
-                    if cursor_kind_changed || image.is_some() {
-                        debug!(
-                            "Host cursor shape update: kind={} native_image={} visible={} pos={},{}",
-                            cursor_kind,
-                            image.is_some(),
-                            cursor.visible,
-                            cursor.x,
-                            cursor.y
-                        );
-                        latest_cursor_log_shape = Some(cursor_kind.to_string());
-                    }
-
                     let realtime_payload = serde_json::json!({
                         "type": "host_cursor",
                         "x": cursor.x,
@@ -1281,15 +1267,8 @@ fn setup_data_channel_handler(
         let input_tx = input_tx.clone();
         let channel = channel;
         let last_timestamp = last_timestamp.clone();
-        let label = label.clone();
         let pipeline_cmd_tx = pipeline_cmd_tx.clone();
         Box::pin(async move {
-            trace!(
-                "Received data channel msg on '{}' (id={}), len={}",
-                label,
-                channel.0,
-                msg.data.len()
-            );
             let Some(packet) = InboundPacket::deserialize(channel, &msg.data) else {
                 // Only warn for non-general channels (general may have unrecognized JSON commands)
                 if channel.0 != 0 {
@@ -1332,6 +1311,93 @@ fn setup_data_channel_handler(
     }));
 }
 
+type InputQueueItem = (InboundPacket, Arc<std::sync::atomic::AtomicU32>);
+
+fn process_mouse_input_batch(
+    first: InputQueueItem,
+    input_rx: &mut mpsc::UnboundedReceiver<InputQueueItem>,
+    injector: &lunaris_media::input::InputInjector,
+) {
+    let mut pending = Some(first);
+    while let Ok(next) = input_rx.try_recv() {
+        if let Some(current) = pending.take() {
+            match coalesce_mouse_input(current, next) {
+                Ok(coalesced) => pending = Some(coalesced),
+                Err((current, next)) => {
+                    handle_inbound_packet(current.0, injector, &current.1);
+                    pending = Some(next);
+                }
+            }
+        } else {
+            pending = Some(next);
+        }
+    }
+
+    if let Some((packet, last_timestamp)) = pending {
+        handle_inbound_packet(packet, injector, &last_timestamp);
+    }
+}
+
+fn coalesce_mouse_input(
+    current: InputQueueItem,
+    next: InputQueueItem,
+) -> Result<InputQueueItem, (InputQueueItem, InputQueueItem)> {
+    let (current_packet, current_timestamp) = current;
+    let (next_packet, next_timestamp) = next;
+    let same_channel = Arc::ptr_eq(&current_timestamp, &next_timestamp);
+
+    match (current_packet, next_packet) {
+        (
+            InboundPacket::MousePosition { .. },
+            InboundPacket::MousePosition {
+                x,
+                y,
+                reference_width,
+                reference_height,
+                timestamp,
+            },
+        ) if same_channel => Ok((
+            InboundPacket::MousePosition {
+                x,
+                y,
+                reference_width,
+                reference_height,
+                timestamp,
+            },
+            next_timestamp,
+        )),
+        (
+            InboundPacket::MouseMove {
+                delta_x: ax,
+                delta_y: ay,
+                timestamp: at,
+            },
+            InboundPacket::MouseMove {
+                delta_x: bx,
+                delta_y: by,
+                timestamp: bt,
+            },
+        ) if same_channel => {
+            let delta_x =
+                ((ax as i32) + (bx as i32)).clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+            let delta_y =
+                ((ay as i32) + (by as i32)).clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+            Ok((
+                InboundPacket::MouseMove {
+                    delta_x,
+                    delta_y,
+                    timestamp: if bt != 0 { bt } else { at },
+                },
+                next_timestamp,
+            ))
+        }
+        (current_packet, next_packet) => Err((
+            (current_packet, current_timestamp),
+            (next_packet, next_timestamp),
+        )),
+    }
+}
+
 fn handle_inbound_packet(
     packet: InboundPacket,
     injector: &lunaris_media::input::InputInjector,
@@ -1346,7 +1412,6 @@ fn handle_inbound_packet(
             timestamp,
         } => {
             let last_ts = last_timestamp.load(std::sync::atomic::Ordering::SeqCst);
-            trace!("handle_inbound_packet_direct: MousePosition x={}, y={}, ref_w={}, ref_h={}, ts={}, last_ts={}", x, y, reference_width, reference_height, timestamp, last_ts);
             if last_ts == 0 || (timestamp.wrapping_sub(last_ts) as i32) >= 0 {
                 last_timestamp.store(timestamp, std::sync::atomic::Ordering::SeqCst);
                 injector.move_mouse_absolute(
@@ -1360,19 +1425,9 @@ fn handle_inbound_packet(
         InboundPacket::MouseMove {
             delta_x, delta_y, ..
         } => {
-            trace!(
-                "handle_inbound_packet_direct: MouseMove dx={}, dy={}",
-                delta_x,
-                delta_y
-            );
             injector.move_mouse_relative(delta_x as i32, delta_y as i32);
         }
         InboundPacket::MouseButton { action, button } => {
-            trace!(
-                "handle_inbound_packet_direct: MouseButton action={:?}, button={:?}",
-                action,
-                button
-            );
             let is_press = match action {
                 MouseButtonAction::Press => true,
                 MouseButtonAction::Release => false,
@@ -1387,11 +1442,6 @@ fn handle_inbound_packet(
             injector.mouse_button(x11_btn, is_press);
         }
         InboundPacket::Scroll { delta_y, delta_x } => {
-            trace!(
-                "handle_inbound_packet_direct: Scroll delta_y={}, delta_x={}",
-                delta_y,
-                delta_x
-            );
             if delta_y > 0 {
                 for _ in 0..delta_y {
                     injector.mouse_button(4, true);
@@ -1416,11 +1466,6 @@ fn handle_inbound_packet(
             }
         }
         InboundPacket::HighResScroll { delta_y, delta_x } => {
-            trace!(
-                "handle_inbound_packet_direct: HighResScroll delta_y={}, delta_x={}",
-                delta_y,
-                delta_x
-            );
             let click_y = if delta_y > 0 {
                 (delta_y + 119) / 120
             } else {
@@ -1461,12 +1506,6 @@ fn handle_inbound_packet(
             modifiers,
             ..
         } => {
-            trace!(
-                "handle_inbound_packet_direct: Key action={:?}, key={}, modifiers={:?}",
-                action,
-                key,
-                modifiers
-            );
             let is_press = match action {
                 KeyAction::Down => true,
                 KeyAction::Up => false,
