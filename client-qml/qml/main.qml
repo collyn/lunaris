@@ -119,6 +119,11 @@ ApplicationWindow {
     property string hostCursorKind: "arrow"
     property bool hostCursorMouseDown: false
     property bool hostCursorInWindowMoveSize: false
+    property string agentHostOs: "unknown"
+    property int localCursorX: streamWidth / 2
+    property int localCursorY: streamHeight / 2
+    property bool localCursorVisible: false
+    property bool localCursorInitialized: false
 
     function normalizeCursorKind(kind) {
         var allowed = {
@@ -165,13 +170,20 @@ ApplicationWindow {
         return 16;
     }
 
-    function updatePredictedHostCursor(localX, localY) {
+    function updateLocalCursorPrediction(localX, localY) {
         if (!window.isStreamMode || videoContainer.width <= 0 || videoContainer.height <= 0) return;
         var clampedX = Math.max(0, Math.min(videoContainer.width, localX));
         var clampedY = Math.max(0, Math.min(videoContainer.height, localY));
-        window.hostCursorX = Math.round((clampedX / videoContainer.width) * window.streamWidth);
-        window.hostCursorY = Math.round((clampedY / videoContainer.height) * window.streamHeight);
-        window.hostCursorVisible = true;
+        window.localCursorX = Math.round((clampedX / videoContainer.width) * window.streamWidth);
+        window.localCursorY = Math.round((clampedY / videoContainer.height) * window.streamHeight);
+        window.localCursorVisible = true;
+        window.localCursorInitialized = true;
+    }
+
+    function shouldHidePredictedCursor() {
+        return window.agentHostOs === "windows"
+            && window.hostCursorMouseDown
+            && window.hostCursorInWindowMoveSize;
     }
 
     // Hold ESC to unlock cursor properties
@@ -272,6 +284,18 @@ ApplicationWindow {
             window.hostCursorVisible = visible
             window.hostCursorKind = window.normalizeCursorKind(kind)
             window.hostCursorInWindowMoveSize = inWindowMoveSize
+            if (!visible) {
+                window.localCursorVisible = false
+            } else if (!window.localCursorInitialized) {
+                window.localCursorX = x
+                window.localCursorY = y
+                window.localCursorVisible = true
+                window.localCursorInitialized = true
+            }
+        }
+
+        onHostOsUpdated: (hostOs) => {
+            window.agentHostOs = String(hostOs).toLowerCase()
         }
 
         onNewVersionAvailable: (version, url) => {
@@ -456,7 +480,7 @@ ApplicationWindow {
                     // Map window coordinates to videoContainer-local coordinates
                     var mapped = streamView.mapToItem(videoContainer, mouse.x, mouse.y);
                     bridge.sendMouseMove(mapped.x, mapped.y, videoContainer.width, videoContainer.height, 0, 0, false);
-                    window.updatePredictedHostCursor(mapped.x, mapped.y);
+                    window.updateLocalCursorPrediction(mapped.x, mapped.y);
                 }
             }
 
@@ -465,7 +489,7 @@ ApplicationWindow {
                 window.hostCursorMouseDown = true;
                 if (!window.isPointerLocked) {
                     var mapped = streamView.mapToItem(videoContainer, mouse.x, mouse.y);
-                    window.updatePredictedHostCursor(mapped.x, mapped.y);
+                    window.updateLocalCursorPrediction(mapped.x, mapped.y);
                     bridge.sendMouseClick(getButtonCode(mouse.button), true);
                 }
             }
@@ -474,7 +498,7 @@ ApplicationWindow {
                 window.hostCursorMouseDown = mouse.buttons !== 0;
                 if (!window.isPointerLocked) {
                     var mapped = streamView.mapToItem(videoContainer, mouse.x, mouse.y);
-                    window.updatePredictedHostCursor(mapped.x, mapped.y);
+                    window.updateLocalCursorPrediction(mapped.x, mapped.y);
                     bridge.sendMouseClick(getButtonCode(mouse.button), false);
                 }
             }
@@ -504,10 +528,10 @@ ApplicationWindow {
             cache: true
             visible: window.isStreamMode
                 && window.hideLocalCursor
-                && window.hostCursorVisible
-                && !(window.hostCursorMouseDown && window.hostCursorInWindowMoveSize)
-            x: videoContainer.x + (Math.max(0, Math.min(window.streamWidth, window.hostCursorX)) / Math.max(1, window.streamWidth)) * videoContainer.width - window.cursorHotspotX(window.hostCursorKind)
-            y: videoContainer.y + (Math.max(0, Math.min(window.streamHeight, window.hostCursorY)) / Math.max(1, window.streamHeight)) * videoContainer.height - window.cursorHotspotY(window.hostCursorKind)
+                && window.localCursorVisible
+                && !window.shouldHidePredictedCursor()
+            x: videoContainer.x + (Math.max(0, Math.min(window.streamWidth, window.localCursorX)) / Math.max(1, window.streamWidth)) * videoContainer.width - window.cursorHotspotX(window.hostCursorKind)
+            y: videoContainer.y + (Math.max(0, Math.min(window.streamHeight, window.localCursorY)) / Math.max(1, window.streamHeight)) * videoContainer.height - window.cursorHotspotY(window.hostCursorKind)
             z: 200
         }
 

@@ -95,6 +95,8 @@ pub struct PendingHostCursor {
 pub static PENDING_HOST_CURSOR: std::sync::Mutex<Option<PendingHostCursor>> =
     std::sync::Mutex::new(None);
 
+pub static PENDING_HOST_OS: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
 #[derive(Clone)]
 pub struct VideoSinkWrapper {
     pub sink: Arc<Mutex<Option<usize>>>,
@@ -442,6 +444,9 @@ pub mod qobject {
             kind: QString,
             in_window_move_size: bool,
         );
+
+        #[qsignal]
+        fn host_os_updated(self: Pin<&mut StreamBridge>, host_os: QString);
 
         #[qsignal]
         fn new_version_available(
@@ -939,6 +944,12 @@ impl qobject::StreamBridge {
                 kind_qstring,
                 cursor.in_window_move_size,
             );
+        }
+
+        let host_os = { PENDING_HOST_OS.lock().unwrap().take() };
+        if let Some(host_os) = host_os {
+            self.as_mut()
+                .host_os_updated(cxx_qt_lib::QString::from(&host_os));
         }
     }
 
@@ -3154,6 +3165,12 @@ async fn run_webrtc_client_task(
 
             match server_msg {
                 ServerToClientMessage::Signaling(sig) => match sig {
+                    SignalingMessage::CapabilitiesResponse { host_os, .. }
+                    | SignalingMessage::EncoderStatus { host_os, .. } => {
+                        if let Some(host_os) = host_os {
+                            *PENDING_HOST_OS.lock().unwrap() = Some(host_os.to_ascii_lowercase());
+                        }
+                    }
                     SignalingMessage::Sdp {
                         sdp, ice_servers, webtransport_port, ..
                     } => {

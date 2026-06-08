@@ -362,12 +362,17 @@ pub fn run() {
         "pipewiredeviceprovider:NONE,pulsedeviceprovider:NONE,v4l2deviceprovider:NONE,alsadeviceprovider:NONE,jackdeviceprovider:NONE"
     );
 
-    // Init standard tracing logger
+    // Init standard tracing logger. Keep SRTP duplicate-packet notices out of the
+    // default INFO stream; AV1 packet loss/retransmit can otherwise flood stdout.
+    let rust_log = std::env::var("RUST_LOG")
+        .unwrap_or_else(|_| "info,client_qml=debug,bridge=debug".into());
+    let rust_log = if rust_log.contains("webrtc_srtp") {
+        rust_log
+    } else {
+        format!("{},webrtc_srtp=warn", rust_log)
+    };
     let _ = tracing_subscriber::registry()
-        .with(tracing_subscriber::EnvFilter::new(
-            std::env::var("RUST_LOG")
-                .unwrap_or_else(|_| "info,client_qml=debug,bridge=debug".into()),
-        ))
+        .with(tracing_subscriber::EnvFilter::new(rust_log))
         .with(tracing_subscriber::fmt::layer())
         .try_init();
 
