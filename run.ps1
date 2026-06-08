@@ -338,55 +338,64 @@ function Load-Environment {
     if ($env:Path -notlike "*$llvmBin*") { $env:Path = "$llvmBin;$env:Path" }
 
     # Configure Clang include paths dynamically for bindgen (fixes errno.h/stddef.h not found)
-    if (-not $env:BINDGEN_EXTRA_CLANG_ARGS) {
-        $includePaths = @()
-        
-        # 1. Try using the existing INCLUDE environment variable (if running in Developer PowerShell)
-        if ($env:INCLUDE) {
-            foreach ($path in $env:INCLUDE -split ';') {
-                if ($path.Trim() -and (Test-Path $path)) {
-                    $includePaths += $path.Trim()
+    $includePaths = @()
+
+    # 1. Keep any include paths already present in the session (Developer PowerShell, vcpkg, etc.).
+    if ($env:INCLUDE) {
+        foreach ($path in $env:INCLUDE -split ';') {
+            $trimmed = $path.Trim()
+            if ($trimmed -and (Test-Path $trimmed)) {
+                $includePaths += $trimmed
+            }
+        }
+    }
+
+    # 2. Always add Visual Studio/MSVC and Windows SDK paths. vcpkg headers alone do not contain
+    # standard C runtime headers such as errno.h, which bindgen needs while parsing FFmpeg headers.
+    $vsWhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+    if (Test-Path $vsWhere) {
+        $vsPath = & $vsWhere -latest -property installationPath
+        if ($vsPath) {
+            $msvcBase = Join-Path $vsPath "VC\Tools\MSVC"
+            if (Test-Path $msvcBase) {
+                $msvcVersion = Get-ChildItem -Path $msvcBase -Directory | Sort-Object Name -Descending | Select-Object -First 1
+                if ($msvcVersion) {
+                    $msvcInclude = Join-Path $msvcVersion.FullName "include"
+                    if (Test-Path $msvcInclude) { $includePaths += $msvcInclude }
                 }
             }
         }
-        
-        # 2. If INCLUDE is empty (standard PowerShell), dynamically discover Visual Studio and Windows SDK paths
-        if ($includePaths.Count -eq 0) {
-            $vsWhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-            if (Test-Path $vsWhere) {
-                $vsPath = & $vsWhere -latest -property installationPath
-                if ($vsPath) {
-                    $msvcBase = Join-Path $vsPath "VC\Tools\MSVC"
-                    if (Test-Path $msvcBase) {
-                        $msvcVersion = Get-ChildItem -Path $msvcBase -Directory | Sort-Object Name -Descending | Select-Object -First 1
-                        if ($msvcVersion) {
-                            $msvcInclude = Join-Path $msvcVersion.FullName "include"
-                            if (Test-Path $msvcInclude) { $includePaths += $msvcInclude }
-                        }
-                    }
-                }
-            }
-            
-            $sdkBase = "C:\Program Files (x86)\Windows Kits\10\Include"
-            if (Test-Path $sdkBase) {
-                $sdkVersion = Get-ChildItem -Path $sdkBase -Directory | Sort-Object Name -Descending | Select-Object -First 1
-                if ($sdkVersion) {
-                    $subfolders = @("ucrt", "shared", "um", "winrt")
-                    foreach ($sub in $subfolders) {
-                        $p = Join-Path $sdkVersion.FullName $sub
-                        if (Test-Path $p) { $includePaths += $p }
-                    }
-                }
+    }
+
+    $sdkBase = "C:\Program Files (x86)\Windows Kits\10\Include"
+    if (Test-Path $sdkBase) {
+        $sdkVersion = Get-ChildItem -Path $sdkBase -Directory | Sort-Object Name -Descending | Select-Object -First 1
+        if ($sdkVersion) {
+            $subfolders = @("ucrt", "shared", "um", "winrt")
+            foreach ($sub in $subfolders) {
+                $sdkInclude = Join-Path $sdkVersion.FullName $sub
+                if (Test-Path $sdkInclude) { $includePaths += $sdkInclude }
             }
         }
-        
-        # 3. Export to BINDGEN_EXTRA_CLANG_ARGS
-        if ($includePaths.Count -gt 0) {
-            $clangArgs = @()
-            foreach ($path in ($includePaths | Select-Object -Unique)) {
-                $clangArgs += "-I`"$path`""
-            }
-            $env:BINDGEN_EXTRA_CLANG_ARGS = $clangArgs -join ' '
+    }
+
+    # 3. Export to BINDGEN_EXTRA_CLANG_ARGS, preserving any caller-provided bindgen flags.
+    if ($includePaths.Count -gt 0) {
+        $clangArgs = @()
+        foreach ($path in ($includePaths | Select-Object -Unique)) {
+            $clangArgs += "-I`\"$path`\""
+        }
+
+        $generatedBindgenArgs = $clangArgs -join ' '
+        $env:BINDGEN_EXTRA_CLANG_ARGS = if ($env:BINDGEN_EXTRA_CLANG_ARGS) {
+            "$env:BINDGEN_EXTRA_CLANG_ARGS $generatedBindgenArgs"
+        } else {
+            $generatedBindgenArgs
+        }
+
+        $hasUcrt = $includePaths | Where-Object { $_ -like "*Windows Kits*Include*ucrt*" }
+        if (-not $hasUcrt) {
+            Write-Warning "Windows SDK UCRT include path was not found; bindgen may fail to resolve errno.h."
         }
     }
 
