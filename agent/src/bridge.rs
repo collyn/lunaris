@@ -996,7 +996,7 @@ pub async fn setup_bridge_session(
                     });
                     if let Some(image_json) = image.as_ref() {
                         if let Some(media_image) = cursor.image.as_ref() {
-                            info!(
+                            debug!(
                                 "Host cursor native image update: kind={} size={}x{} hotspot={},{} bytes={}",
                                 cursor_kind,
                                 media_image.width,

@@ -175,6 +175,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   const hostCursorRef = useRef<HTMLDivElement>(null);
   const hostCursorImageRef = useRef<HTMLImageElement>(null);
   const hostCursorImageMetricsRef = useRef<HostCursorImageMetrics | null>(null);
+  const hasNativeCursorImageRef = useRef<boolean>(false);
   const hostCursorMouseDownRef = useRef<boolean>(false);
   const lastHostCursorLocalPredictionAtRef = useRef<number>(0);
   const hostCursorPosRef = useRef<{ x: number, y: number, visible: boolean, kind: HostCursorKind }>({ x: 0, y: 0, visible: false, kind: 'arrow' });
@@ -1647,6 +1648,9 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       imageEl.src = canvas.toDataURL('image/png');
       imageEl.style.width = `${image.width}px`;
       imageEl.style.height = `${image.height}px`;
+      imageEl.style.filter = 'none';
+      imageEl.style.imageRendering = 'auto';
+      hasNativeCursorImageRef.current = true;
       metricsRef.current = {
         hotspotX: image.hotspotX,
         hotspotY: image.hotspotY,
@@ -1765,10 +1769,17 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
         addLog(`Data Channel ${channel.label} closed.`);
         if (label === 'general' || label === 'cursor') {
           hostCursorImageMetricsRef.current = null;
+          localCursorImageMetricsRef.current = null;
+          hasNativeCursorImageRef.current = false;
           if (hostCursorImageRef.current) {
-            hostCursorImageRef.current.src = '/cursors/windows-aero-arrow.png';
+            hostCursorImageRef.current.removeAttribute('src');
             hostCursorImageRef.current.style.width = '32px';
             hostCursorImageRef.current.style.height = '32px';
+          }
+          if (localCursorImageRef.current) {
+            localCursorImageRef.current.removeAttribute('src');
+            localCursorImageRef.current.style.width = '32px';
+            localCursorImageRef.current.style.height = '32px';
           }
           updateHostCursorDOM(0, 0, false, 'arrow', null);
         }
@@ -2316,11 +2327,18 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     }
 
     if (!cursorMetrics || !cursorMetrics.native) {
+      const allowAssetFallback = agentHostOs !== 'windows' && !hasNativeCursorImageRef.current;
+      if (!allowAssetFallback) {
+        cursorEl.style.display = 'none';
+        return;
+      }
+
       const cursorAsset = HOST_CURSOR_ASSETS[cursorKind];
       if (imageEl && !imageEl.src.endsWith(cursorAsset.src)) {
         imageEl.src = cursorAsset.src;
         imageEl.style.width = '32px';
         imageEl.style.height = '32px';
+        imageEl.style.filter = 'drop-shadow(0 0 1px rgba(0,0,0,0.95)) drop-shadow(0 0 2px rgba(255,255,255,0.85))';
       }
       cursorMetrics = {
         hotspotX: cursorAsset.hotspotX,
@@ -2446,17 +2464,24 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
 
     const hostCursor = hostCursorPosRef.current;
     const cursorKind = normalizeHostCursorKind(hostCursor.kind);
-    const cursorAsset = HOST_CURSOR_ASSETS[cursorKind];
     let cursorMetrics = localCursorImageMetricsRef.current;
     if (cursorMetrics?.native && cursorMetrics.kind !== cursorKind) {
-      cursorMetrics = null;
-      localCursorImageMetricsRef.current = null;
+      // Keep the previous native image briefly instead of flashing back to a PNG asset.
+      // The next host_cursor image update will replace it with the exact new native shape.
     }
     if (!cursorMetrics || !cursorMetrics.native) {
+      const allowAssetFallback = agentHostOs !== 'windows' && !hasNativeCursorImageRef.current;
+      if (!allowAssetFallback) {
+        cursorEl.style.display = 'none';
+        return;
+      }
+
+      const cursorAsset = HOST_CURSOR_ASSETS[cursorKind];
       if (imageEl && !imageEl.src.endsWith(cursorAsset.src)) {
         imageEl.src = cursorAsset.src;
         imageEl.style.width = '32px';
         imageEl.style.height = '32px';
+        imageEl.style.filter = 'drop-shadow(0 0 1px rgba(0,0,0,0.95)) drop-shadow(0 0 2px rgba(255,255,255,0.85))';
       }
       cursorMetrics = {
         hotspotX: cursorAsset.hotspotX,
@@ -4418,10 +4443,9 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
         >
           <img
             ref={hostCursorImageRef}
-            src="/cursors/windows-aero-arrow.png"
             alt=""
             draggable={false}
-            style={{ width: '32px', height: '32px', display: 'block', maxWidth: 'none', filter: 'drop-shadow(0 0 1px rgba(0,0,0,0.95)) drop-shadow(0 0 2px rgba(255,255,255,0.85))' }}
+            style={{ width: '32px', height: '32px', display: 'block', maxWidth: 'none' }}
           />
         </div>
 
@@ -4446,10 +4470,9 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
         >
           <img
             ref={localCursorImageRef}
-            src="/cursors/windows-aero-arrow.png"
             alt=""
             draggable={false}
-            style={{ width: '32px', height: '32px', display: 'block', maxWidth: 'none', filter: 'drop-shadow(0 0 1px rgba(0,0,0,0.95)) drop-shadow(0 0 2px rgba(255,255,255,0.85))' }}
+            style={{ width: '32px', height: '32px', display: 'block', maxWidth: 'none' }}
           />
         </div>
 
