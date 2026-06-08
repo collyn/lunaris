@@ -397,13 +397,39 @@ pub fn run() {
         info!("No stream configurations provided on command-line. Starting in Launcher Dashboard mode.");
     }
 
-    // Select Qt Quick RHI backend:
-    // - If CUDA-GL interop is needed → force OpenGL
-    // - If user already set QSG_RHI_BACKEND → respect their choice
-    // - Otherwise → prefer Vulkan (OpenGL/GLX can fail on some NVIDIA setups)
-    let cuda_enabled = APP_ARGS.get().map_or(false, |a| !a.disable_cuda);
-    if cuda_enabled {
-        std::env::set_var("QSG_RHI_BACKEND", "opengl");
+    // Select Qt Quick RHI backend before QGuiApplication is created.
+    // CUDA-GL direct presentation needs an OpenGL scene graph; otherwise CUDA decode
+    // falls back to a GPU-to-CPU transfer through QVideoSink. Dashboard mode can start
+    // streams later, so default to CUDA-GL unless explicitly disabled by environment.
+    let cuda_capable_mode = APP_ARGS.get().map_or(true, |a| !a.disable_cuda);
+    let force_cpu_present = std::env::var("LUNARIS_CLIENT_CPU_PRESENT")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    let cuda_gl_explicitly_disabled = std::env::var("LUNARIS_CLIENT_CUDA_GL")
+        .map(|v| v == "0" || v.eq_ignore_ascii_case("false"))
+        .unwrap_or(false);
+
+    if cuda_capable_mode && !force_cpu_present && !cuda_gl_explicitly_disabled {
+        if std::env::var("QSG_RHI_BACKEND").is_err() {
+            std::env::set_var("QSG_RHI_BACKEND", "opengl");
+        }
+        if std::env::var("QT_QUICK_BACKEND").is_err() {
+            std::env::set_var("QT_QUICK_BACKEND", "opengl");
+        }
+
+        let qsg_backend = std::env::var("QSG_RHI_BACKEND").unwrap_or_default();
+        let qt_backend = std::env::var("QT_QUICK_BACKEND").unwrap_or_default();
+        let can_use_cuda_gl =
+            qsg_backend.eq_ignore_ascii_case("opengl") && qt_backend.eq_ignore_ascii_case("opengl");
+        if can_use_cuda_gl {
+            std::env::set_var("LUNARIS_CLIENT_CUDA_GL", "1");
+            info!("Client GPU presentation: CUDA decode + CUDA/OpenGL render enabled");
+        } else {
+            warn!(
+                "Client GPU presentation disabled because Qt backend is not OpenGL: QSG_RHI_BACKEND={}, QT_QUICK_BACKEND={}",
+                qsg_backend, qt_backend
+            );
+        }
     } else if std::env::var("QSG_RHI_BACKEND").is_err() {
         std::env::set_var("QSG_RHI_BACKEND", "vulkan");
     }
