@@ -4421,7 +4421,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
             src="/cursors/windows-aero-arrow.png"
             alt=""
             draggable={false}
-            style={{ width: '32px', height: '32px', display: 'block', maxWidth: 'none' }}
+            style={{ width: '32px', height: '32px', display: 'block', maxWidth: 'none', filter: 'drop-shadow(0 0 1px rgba(0,0,0,0.95)) drop-shadow(0 0 2px rgba(255,255,255,0.85))' }}
           />
         </div>
 
@@ -4449,7 +4449,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
             src="/cursors/windows-aero-arrow.png"
             alt=""
             draggable={false}
-            style={{ width: '32px', height: '32px', display: 'block', maxWidth: 'none' }}
+            style={{ width: '32px', height: '32px', display: 'block', maxWidth: 'none', filter: 'drop-shadow(0 0 1px rgba(0,0,0,0.95)) drop-shadow(0 0 2px rgba(255,255,255,0.85))' }}
           />
         </div>
 
