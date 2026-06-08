@@ -14,6 +14,19 @@ interface Host {
   agent_connected?: boolean;
 }
 
+const getCurrentBrowserServerUrl = () => {
+  if (window.location.hostname === 'tauri.localhost' || window.location.protocol.startsWith('tauri')) {
+    return 'http://localhost:8080';
+  }
+
+  if (window.location.origin && window.location.origin !== 'null') {
+    return window.location.origin;
+  }
+
+  const protocol = window.location.protocol === 'https:' ? 'https:' : 'http:';
+  return `${protocol}//${window.location.host || 'localhost:8080'}`;
+};
+
 const getBackendHost = () => {
   const savedHost = localStorage.getItem('lunaris_server_host');
   if (savedHost) {
@@ -94,7 +107,7 @@ function App() {
   // Auth Form State
   const [authUsername, setAuthUsername] = useState<string>('');
   const [authPassword, setAuthPassword] = useState<string>('');
-  const [authServerHost, setAuthServerHost] = useState<string>(() => localStorage.getItem('lunaris_server_host') || 'http://localhost:8080');
+  const [authServerHost, setAuthServerHost] = useState<string>(() => getCurrentBrowserServerUrl());
   const [authError, setAuthError] = useState<string | null>(null);
   const [authLoading, setAuthLoading] = useState<boolean>(false);
 
@@ -428,7 +441,7 @@ function App() {
               <div className="user-info" style={{ alignItems: 'flex-end' }}>
                 <span className="user-label">SERVER:</span>
                 <span className="username" style={{ fontSize: '0.85rem', color: 'var(--accent-cyan)' }}>
-                  {localStorage.getItem('lunaris_server_host') || 'http://localhost:8080'}
+                  {localStorage.getItem('lunaris_server_host') || getCurrentBrowserServerUrl()}
                 </span>
               </div>
               <div className="user-info">
