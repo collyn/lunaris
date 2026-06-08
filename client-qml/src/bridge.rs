@@ -449,6 +449,9 @@ pub mod qobject {
         fn host_os_updated(self: Pin<&mut StreamBridge>, host_os: QString);
 
         #[qsignal]
+        fn local_cursor_delta(self: Pin<&mut StreamBridge>, rx: i32, ry: i32);
+
+        #[qsignal]
         fn new_version_available(
             self: Pin<&mut StreamBridge>,
             latest_version: QString,
@@ -804,7 +807,7 @@ impl qobject::StreamBridge {
     }
 
     pub fn send_mouse_move(
-        self: Pin<&mut Self>,
+        mut self: Pin<&mut Self>,
         x: i32,
         y: i32,
         width: i32,
@@ -813,6 +816,10 @@ impl qobject::StreamBridge {
         ry: i32,
         pointer_locked: bool,
     ) {
+        if pointer_locked && (rx != 0 || ry != 0) {
+            self.as_mut().local_cursor_delta(rx, ry);
+        }
+
         let binding = self.as_ref();
         let senders = binding.rust().input_senders.lock().unwrap();
         if let Some(ref s) = *senders {

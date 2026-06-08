@@ -366,11 +366,14 @@ pub fn run() {
     // default INFO stream; AV1 packet loss/retransmit can otherwise flood stdout.
     let rust_log = std::env::var("RUST_LOG")
         .unwrap_or_else(|_| "info,client_qml=debug,bridge=debug".into());
-    let rust_log = if rust_log.contains("webrtc_srtp") {
+    let mut rust_log = if rust_log.contains("webrtc_srtp") {
         rust_log
     } else {
         format!("{},webrtc_srtp=warn", rust_log)
     };
+    if !rust_log.contains("interceptor::nack") {
+        rust_log = format!("{},interceptor::nack=error", rust_log);
+    }
     let _ = tracing_subscriber::registry()
         .with(tracing_subscriber::EnvFilter::new(rust_log))
         .with(tracing_subscriber::fmt::layer())

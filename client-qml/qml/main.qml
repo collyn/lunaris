@@ -180,6 +180,21 @@ ApplicationWindow {
         window.localCursorInitialized = true;
     }
 
+    function updateLocalCursorDelta(dx, dy) {
+        if (!window.isStreamMode || videoContainer.width <= 0 || videoContainer.height <= 0) return;
+        if (!window.localCursorInitialized) {
+            window.localCursorX = window.hostCursorVisible ? window.hostCursorX : Math.round(window.streamWidth / 2);
+            window.localCursorY = window.hostCursorVisible ? window.hostCursorY : Math.round(window.streamHeight / 2);
+            window.localCursorInitialized = true;
+        }
+
+        var scaledDx = (dx / Math.max(1, videoContainer.width)) * window.streamWidth;
+        var scaledDy = (dy / Math.max(1, videoContainer.height)) * window.streamHeight;
+        window.localCursorX = Math.round(Math.max(0, Math.min(window.streamWidth, window.localCursorX + scaledDx)));
+        window.localCursorY = Math.round(Math.max(0, Math.min(window.streamHeight, window.localCursorY + scaledDy)));
+        window.localCursorVisible = true;
+    }
+
     function shouldHidePredictedCursor() {
         return window.agentHostOs === "windows"
             && window.hostCursorMouseDown
@@ -296,6 +311,10 @@ ApplicationWindow {
 
         onHostOsUpdated: (hostOs) => {
             window.agentHostOs = String(hostOs).toLowerCase()
+        }
+
+        onLocalCursorDelta: (rx, ry) => {
+            window.updateLocalCursorDelta(rx, ry)
         }
 
         onNewVersionAvailable: (version, url) => {
