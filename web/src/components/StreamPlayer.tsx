@@ -799,7 +799,8 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
               const predictedX = Math.round(xNorm * vidWidth);
               const predictedY = Math.round(yNorm * vidHeight);
               localCursorPosRef.current = { x: predictedX, y: predictedY };
-              if (touchModeRef.current === 'trackpad' || hideLocalCursor) {
+              const shouldUseWindowsPrediction = agentHostOs === "windows" && hasNativeCursorImageRef.current;
+              if (touchModeRef.current === 'trackpad' || hideLocalCursor || shouldUseWindowsPrediction) {
                 updateVirtualCursorDOMRef.current();
               }
               if (!(hostCursorMouseDownRef.current && agentHostOs === "windows")) {
@@ -830,7 +831,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     return () => {
       window.clearInterval(flushTimerId);
     };
-  }, [status, hideLocalCursor]);
+  }, [status, hideLocalCursor, agentHostOs]);
 
 
 
@@ -2394,6 +2395,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       hostCursorMouseDownRef.current = false;
       const hostCursor = hostCursorPosRef.current;
       updateHostCursorDOM(hostCursor.x, hostCursor.y, hostCursor.visible, hostCursor.kind);
+      updateVirtualCursorDOMRef.current();
     };
 
     window.addEventListener('mouseup', releaseHostCursorSuppression);
@@ -2417,12 +2419,18 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     const wrapper = viewportWrapperRef.current;
     if (!cursorEl || !video || !wrapper) return;
 
+    if (agentHostOs === "windows" && hostCursorMouseDownRef.current) {
+      cursorEl.style.display = 'none';
+      return;
+    }
+
+    const shouldUseWindowsPrediction = agentHostOs === "windows" && hasNativeCursorImageRef.current;
     const shouldShowTrackpad = touchModeRef.current === 'trackpad'
       && status === 'Streaming'
       && !isHardwareMouseActiveRef.current;
     const shouldShowHardwarePrediction = status === 'Streaming'
-      && hideLocalCursor
-      && isHardwareMouseActiveRef.current;
+      && isHardwareMouseActiveRef.current
+      && (hideLocalCursor || shouldUseWindowsPrediction);
 
     if (!shouldShowTrackpad && !shouldShowHardwarePrediction) {
       cursorEl.style.display = 'none';
@@ -3294,7 +3302,8 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     // Absolute mouse mode (no pointer lock): update latest position ref
     latestAbsoluteMousePosRef.current = { clientX: e.clientX, clientY: e.clientY };
 
-    if (hideLocalCursor && videoRef.current) {
+    const shouldUseWindowsPrediction = agentHostOs === "windows" && hasNativeCursorImageRef.current;
+    if ((hideLocalCursor || shouldUseWindowsPrediction) && videoRef.current) {
       const video = videoRef.current;
       const activeVideo = getActiveVideoElement();
       const rect = cachedVideoRectRef.current;
@@ -3425,7 +3434,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   };
 
   const isStreaming = status === "Streaming";
-  const streamCursorStyle = isStreaming && hideLocalCursor ? "none" : "default";
+  const streamCursorStyle = isStreaming && (hideLocalCursor || agentHostOs === "windows") ? "none" : "default";
 
   if (selectedAppId === null) {
     return (
