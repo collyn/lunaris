@@ -171,6 +171,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   const isTwoFingerTapPendingRef = useRef<boolean>(false);
   const localCursorRef = useRef<HTMLDivElement>(null);
   const localCursorImageRef = useRef<HTMLImageElement>(null);
+  const localCursorImageMetricsRef = useRef<HostCursorImageMetrics | null>(null);
   const hostCursorRef = useRef<HTMLDivElement>(null);
   const hostCursorImageRef = useRef<HTMLImageElement>(null);
   const hostCursorImageMetricsRef = useRef<HostCursorImageMetrics | null>(null);
@@ -711,11 +712,30 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
             mouseRelativeChannel.send(buffer);
 
             const activeVideo = getActiveVideoElement();
-            const vidWidth = activeVideo?.videoWidth && activeVideo.videoWidth > 0 ? activeVideo.videoWidth : 1920;
-            const vidHeight = activeVideo?.videoHeight && activeVideo.videoHeight > 0 ? activeVideo.videoHeight : 1080;
+            const video = videoRef.current;
+            const rect = cachedVideoRectRef.current;
+            const vidWidth = activeVideo?.videoWidth && activeVideo.videoWidth > 0 ? activeVideo.videoWidth : (video as any)?.width || 1920;
+            const vidHeight = activeVideo?.videoHeight && activeVideo.videoHeight > 0 ? activeVideo.videoHeight : (video as any)?.height || 1080;
+            let scaledDx = dx;
+            let scaledDy = dy;
+            if (rect.width > 0 && rect.height > 0) {
+              const elAspectRatio = rect.width / rect.height;
+              const vidAspectRatio = vidWidth / vidHeight;
+              let actualVidWidth = rect.width;
+              let actualVidHeight = rect.height;
+              if (elAspectRatio > vidAspectRatio) {
+                actualVidHeight = rect.height;
+                actualVidWidth = rect.height * vidAspectRatio;
+              } else {
+                actualVidWidth = rect.width;
+                actualVidHeight = rect.width / vidAspectRatio;
+              }
+              scaledDx = (dx / Math.max(1, actualVidWidth)) * vidWidth;
+              scaledDy = (dy / Math.max(1, actualVidHeight)) * vidHeight;
+            }
             localCursorPosRef.current = {
-              x: Math.max(0, Math.min(vidWidth, localCursorPosRef.current.x + dx)),
-              y: Math.max(0, Math.min(vidHeight, localCursorPosRef.current.y + dy)),
+              x: Math.max(0, Math.min(vidWidth, localCursorPosRef.current.x + scaledDx)),
+              y: Math.max(0, Math.min(vidHeight, localCursorPosRef.current.y + scaledDy)),
             };
             lastHostCursorLocalPredictionAtRef.current = performance.now();
             updateVirtualCursorDOMRef.current();
@@ -1602,6 +1622,42 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     return null;
   };
 
+  const applyNativeCursorImage = (
+    imageEl: HTMLImageElement | null,
+    metricsRef: React.MutableRefObject<HostCursorImageMetrics | null>,
+    kind: HostCursorKind,
+    image: HostCursorImagePayload | null,
+  ) => {
+    if (!image || !imageEl) return;
+    try {
+      const binary = atob(image.rgba);
+      const bytes = new Uint8ClampedArray(binary.length);
+      for (let i = 0; i < binary.length; i += 1) {
+        bytes[i] = binary.charCodeAt(i);
+      }
+      if (bytes.length !== image.width * image.height * 4) return;
+
+      const canvas = document.createElement('canvas');
+      canvas.width = image.width;
+      canvas.height = image.height;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+
+      ctx.putImageData(new ImageData(bytes, image.width, image.height), 0, 0);
+      imageEl.src = canvas.toDataURL('image/png');
+      imageEl.style.width = `${image.width}px`;
+      imageEl.style.height = `${image.height}px`;
+      metricsRef.current = {
+        hotspotX: image.hotspotX,
+        hotspotY: image.hotspotY,
+        native: true,
+        kind,
+      };
+    } catch {
+      // Keep the previous cursor image if native cursor decoding fails.
+    }
+  };
+
   const handleGeneralDataChannelMessage = async (data: any) => {
     const text = await decodeDataChannelText(data);
     if (!text) return;
@@ -1616,6 +1672,8 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       const kind = normalizeHostCursorKind(message.kind);
       const image = parseHostCursorImage(message.image);
       if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+
+      applyNativeCursorImage(localCursorImageRef.current, localCursorImageMetricsRef, kind, image);
 
       const hostCursor = hostCursorPosRef.current;
       const localPredictionFresh = performance.now() - lastHostCursorLocalPredictionAtRef.current < 140;
@@ -2249,32 +2307,8 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       return;
     }
 
+    applyNativeCursorImage(imageEl, hostCursorImageMetricsRef, cursorKind, image);
     let cursorMetrics = hostCursorImageMetricsRef.current;
-    if (image && imageEl) {
-      try {
-        const binary = atob(image.rgba);
-        const bytes = new Uint8ClampedArray(binary.length);
-        for (let i = 0; i < binary.length; i += 1) {
-          bytes[i] = binary.charCodeAt(i);
-        }
-        if (bytes.length === image.width * image.height * 4) {
-          const canvas = document.createElement('canvas');
-          canvas.width = image.width;
-          canvas.height = image.height;
-          const ctx = canvas.getContext('2d');
-          if (ctx) {
-            ctx.putImageData(new ImageData(bytes, image.width, image.height), 0, 0);
-            imageEl.src = canvas.toDataURL('image/png');
-            imageEl.style.width = `${image.width}px`;
-            imageEl.style.height = `${image.height}px`;
-            cursorMetrics = { hotspotX: image.hotspotX, hotspotY: image.hotspotY, native: true, kind: cursorKind };
-            hostCursorImageMetricsRef.current = cursorMetrics;
-          }
-        }
-      } catch {
-        // Keep the previous cursor image if decoding fails.
-      }
-    }
 
     if (cursorMetrics?.native && cursorMetrics.kind !== cursorKind && image) {
       cursorMetrics = null;
@@ -2413,8 +2447,24 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     const hostCursor = hostCursorPosRef.current;
     const cursorKind = normalizeHostCursorKind(hostCursor.kind);
     const cursorAsset = HOST_CURSOR_ASSETS[cursorKind];
-    if (imageEl && !imageEl.src.endsWith(cursorAsset.src)) {
-      imageEl.src = cursorAsset.src;
+    let cursorMetrics = localCursorImageMetricsRef.current;
+    if (cursorMetrics?.native && cursorMetrics.kind !== cursorKind) {
+      cursorMetrics = null;
+      localCursorImageMetricsRef.current = null;
+    }
+    if (!cursorMetrics || !cursorMetrics.native) {
+      if (imageEl && !imageEl.src.endsWith(cursorAsset.src)) {
+        imageEl.src = cursorAsset.src;
+        imageEl.style.width = '32px';
+        imageEl.style.height = '32px';
+      }
+      cursorMetrics = {
+        hotspotX: cursorAsset.hotspotX,
+        hotspotY: cursorAsset.hotspotY,
+        native: false,
+        kind: cursorKind,
+      };
+      localCursorImageMetricsRef.current = cursorMetrics;
     }
 
     const xNorm = Math.max(0, Math.min(1, localCursorPosRef.current.x / vidWidth));
@@ -2423,8 +2473,8 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     const clientX = xNorm * actualVidWidth + offsetX + rect.left;
     const clientY = yNorm * actualVidHeight + offsetY + rect.top;
 
-    const leftWrapper = clientX - wrapperRect.left - cursorAsset.hotspotX;
-    const topWrapper = clientY - wrapperRect.top - cursorAsset.hotspotY;
+    const leftWrapper = clientX - wrapperRect.left - cursorMetrics.hotspotX;
+    const topWrapper = clientY - wrapperRect.top - cursorMetrics.hotspotY;
 
     cursorEl.style.transform = `translate3d(${leftWrapper}px, ${topWrapper}px, 0)`;
     cursorEl.style.display = 'block';
@@ -4385,6 +4435,8 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
             height: '32px',
             pointerEvents: 'none',
             zIndex: 150,
+            left: 0,
+            top: 0,
             transform: 'translate3d(0, 0, 0)',
             transition: 'none',
             display: "none",
