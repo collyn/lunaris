@@ -53,6 +53,11 @@ pub struct YUVFrame {
     pub v_stride: i32,
 }
 
+pub enum DecodedFrame {
+    CpuYuv(YUVFrame),
+    NativePresented,
+}
+
 pub struct HardwareDecoder {
     codec_ctx: *mut ffi::AVCodecContext,
     hw_device_ctx: *mut ffi::AVBufferRef,
@@ -220,7 +225,7 @@ impl HardwareDecoder {
         )
     }
 
-    pub fn decode(&mut self, data: &[u8]) -> Result<Vec<YUVFrame>, anyhow::Error> {
+    pub fn decode(&mut self, data: &[u8]) -> Result<Vec<DecodedFrame>, anyhow::Error> {
         let packet = unsafe { ffi::av_packet_alloc() };
         if packet.is_null() {
             return Err(anyhow::anyhow!("Failed to allocate FFmpeg packet"));
@@ -284,7 +289,7 @@ impl HardwareDecoder {
         Ok(decoded_frames)
     }
 
-    fn process_frame(&mut self, gpu_frame: *mut ffi::AVFrame) -> Result<YUVFrame, anyhow::Error> {
+    fn process_frame(&mut self, gpu_frame: *mut ffi::AVFrame) -> Result<DecodedFrame, anyhow::Error> {
         let format = unsafe { (*gpu_frame).format };
         let is_cuda = format == ffi::AVPixelFormat::AV_PIX_FMT_CUDA as i32;
         let use_direct_cuda_gl = is_cuda
@@ -330,16 +335,7 @@ impl HardwareDecoder {
                 );
             }
 
-            return Ok(YUVFrame {
-                width: 0,
-                height: 0,
-                y: Vec::new(),
-                u: Vec::new(),
-                v: Vec::new(),
-                y_stride: 0,
-                u_stride: 0,
-                v_stride: 0,
-            });
+            return Ok(DecodedFrame::NativePresented);
         }
 
         let mut cpu_frame = gpu_frame;
@@ -572,7 +568,7 @@ impl HardwareDecoder {
             ffi::av_frame_free(&mut (gpu_frame as *mut _));
         }
 
-        Ok(YUVFrame {
+        Ok(DecodedFrame::CpuYuv(YUVFrame {
             width,
             height,
             y: y_vec,
@@ -581,7 +577,7 @@ impl HardwareDecoder {
             y_stride: width,
             u_stride: width / 2,
             v_stride: width / 2,
-        })
+        }))
     }
 }
 

@@ -55,7 +55,7 @@ Item {
     signal lockToggled()
     signal statsToggled()
     signal cursorHideToggled()
-    signal settingsChanged(string res, int fps, string codec, int bitrate, int queueLimit, bool disableCuda, string inputProtocol)
+    signal settingsChanged(string res, int fps, string codec, int bitrate, int queueLimit, bool disableCuda, string renderBackend, string inputProtocol)
     signal exitTriggered()
     signal collapsed()
     signal minimizeTriggered()
@@ -138,7 +138,28 @@ Item {
     // To prevent onActivated from firing when programmatically updating the values
     property bool isInitializing: false
 
-    function initializeSettings(res, fps, codec, bitrate, queueLimit, host, disableCuda, inputProtocol) {
+    function normalizeRenderBackend(renderBackend, disableCuda) {
+        var value = String(renderBackend || "").toLowerCase().replace(/[- ]/g, "_");
+        if (value === "software" || value === "cpu" || value === "ffmpeg" || value === "qvideosink") return "software";
+        if (value === "native" || value === "native_gpu" || value === "native_render") return "native_gpu";
+        if (value === "auto" || value === "auto_gpu" || value === "gpu" || value === "hardware") return "auto_gpu";
+        return disableCuda ? "software" : "auto_gpu";
+    }
+
+    function renderBackendIndex(renderBackend, disableCuda) {
+        var backend = normalizeRenderBackend(renderBackend, disableCuda);
+        if (backend === "native_gpu") return 1;
+        if (backend === "software") return 2;
+        return 0;
+    }
+
+    function currentRenderBackend() {
+        if (decoderComboBox.currentIndex === 1) return "native_gpu";
+        if (decoderComboBox.currentIndex === 2) return "software";
+        return "auto_gpu";
+    }
+
+    function initializeSettings(res, fps, codec, bitrate, queueLimit, host, disableCuda, inputProtocol, renderBackend) {
         isInitializing = true;
         
         hostName = host;
@@ -193,7 +214,7 @@ Item {
             queueComboBox.currentIndex = 3;
         }
 
-        decoderComboBox.currentIndex = (disableCuda === true) ? 2 : 0;
+        decoderComboBox.currentIndex = renderBackendIndex(renderBackend, disableCuda);
 
         if (inputProtocol === "webtransport") {
             protocolComboBox.currentIndex = 1;
@@ -221,13 +242,14 @@ Item {
         var queueMap = [128, 256, 512, 1024];
         var selectedQueue = queueMap[queueComboBox.currentIndex];
 
-        var selectedDisableCuda = (decoderComboBox.currentIndex === 2);
+        var selectedRenderBackend = currentRenderBackend();
+        var selectedDisableCuda = (selectedRenderBackend === "software");
 
         var protocolMap = ["webrtc", "webtransport"];
         var selectedProtocol = protocolMap[protocolComboBox.currentIndex];
 
-        console.log("Applying menu settings: " + selectedRes + ", " + selectedFps + ", " + selectedCodec + ", " + selectedBitrate + ", " + selectedQueue + ", disableCuda=" + selectedDisableCuda + ", protocol=" + selectedProtocol);
-        menuContainer.settingsChanged(selectedRes, selectedFps, selectedCodec, selectedBitrate, selectedQueue, selectedDisableCuda, selectedProtocol);
+        console.log("Applying menu settings: " + selectedRes + ", " + selectedFps + ", " + selectedCodec + ", " + selectedBitrate + ", " + selectedQueue + ", renderBackend=" + selectedRenderBackend + ", disableCuda=" + selectedDisableCuda + ", protocol=" + selectedProtocol);
+        menuContainer.settingsChanged(selectedRes, selectedFps, selectedCodec, selectedBitrate, selectedQueue, selectedDisableCuda, selectedRenderBackend, selectedProtocol);
     }
 
     // Pill background

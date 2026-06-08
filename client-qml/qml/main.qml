@@ -117,6 +117,7 @@ ApplicationWindow {
     property string requestedEncoder: "auto"
     property string activeInputProtocol: "webrtc"
     property bool useCuda: true
+    property string renderBackend: "auto_gpu"
     property string latestVersion: ""
     property string releaseUrl: ""
     property bool showUpdateBanner: false
@@ -392,9 +393,10 @@ ApplicationWindow {
             window.showUpdateBanner = true
         }
 
-        onSettingsLoaded: (res, fps, codec, bitrate, queueLimit, hostName, disableCuda, inputProtocol) => {
-            menuBar.initializeSettings(res, fps, codec, bitrate, queueLimit, hostName, disableCuda, inputProtocol);
-            window.useCuda = !disableCuda;
+        onSettingsLoaded: (res, fps, codec, bitrate, queueLimit, hostName, disableCuda, inputProtocol, renderBackend) => {
+            menuBar.initializeSettings(res, fps, codec, bitrate, queueLimit, hostName, disableCuda, inputProtocol, renderBackend);
+            window.renderBackend = String(renderBackend || (disableCuda ? "software" : "auto_gpu")).toLowerCase();
+            window.useCuda = window.renderBackend !== "software";
             window.activeInputProtocol = String(inputProtocol).toLowerCase();
             var parts = res.split("x");
             if (parts.length === 2) {
@@ -870,10 +872,11 @@ ApplicationWindow {
             window.hideLocalCursor = !window.hideLocalCursor;
         }
 
-        onSettingsChanged: (res, fps, codec, bitrate, queueLimit, disableCuda, inputProtocol) => {
-            window.useCuda = !disableCuda;
+        onSettingsChanged: (res, fps, codec, bitrate, queueLimit, disableCuda, renderBackend, inputProtocol) => {
+            window.renderBackend = String(renderBackend || (disableCuda ? "software" : "auto_gpu")).toLowerCase();
+            window.useCuda = window.renderBackend !== "software";
             window.activeInputProtocol = String(inputProtocol).toLowerCase();
-            bridge.updateStreamConfig(res, fps, codec, bitrate, queueLimit, disableCuda, inputProtocol);
+            bridge.updateStreamConfigWithBackend(res, fps, codec, bitrate, queueLimit, disableCuda, window.renderBackend, inputProtocol);
             var parts = res.split("x");
             if (parts.length === 2) {
                 window.streamWidth = parseInt(parts[0]);
@@ -1070,15 +1073,16 @@ ApplicationWindow {
         visible: !window.isStreamMode
         focus: !window.isStreamMode
 
-        onStartSessionRequested: (server, token, hostId, hostName, appId, res, fps, codec, bitrate, queueLimit, disableCuda, inputProtocol, encoder, displayId, virtualDisplay) => {
-            window.useCuda = !disableCuda;
+        onStartSessionRequested: (server, token, hostId, hostName, appId, res, fps, codec, bitrate, queueLimit, disableCuda, renderBackend, inputProtocol, encoder, displayId, virtualDisplay) => {
+            window.renderBackend = String(renderBackend || (disableCuda ? "software" : "auto_gpu")).toLowerCase();
+            window.useCuda = window.renderBackend !== "software";
             window.isStreamMode = true;
             var parts = res.split("x");
             if (parts.length === 2) {
                 window.streamWidth = parseInt(parts[0]);
                 window.streamHeight = parseInt(parts[1]);
             }
-            bridge.startGameSession(server, token, hostId, hostName, appId, res, fps, codec, bitrate, queueLimit, disableCuda, inputProtocol, encoder, displayId, virtualDisplay);
+            bridge.startGameSessionWithBackend(server, token, hostId, hostName, appId, res, fps, codec, bitrate, queueLimit, disableCuda, window.renderBackend, inputProtocol, encoder, displayId, virtualDisplay);
             bridge.setVideoSink(videoOutput.videoSink);
             bridge.requestSettings();
             rootContainer.forceActiveFocus();

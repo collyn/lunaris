@@ -39,6 +39,7 @@ pub fn parse_deeplink_url(url_str: &str) -> Option<AppArgs> {
         let mut encoder: Option<String> = None;
         let mut display_id: Option<String> = None;
         let mut virtual_display = false;
+        let mut render_backend: Option<String> = None;
 
         for (k, v) in parsed_url.query_pairs() {
             match k.as_ref() {
@@ -61,6 +62,9 @@ pub fn parse_deeplink_url(url_str: &str) -> Option<AppArgs> {
                 }
                 "virtual_display" => {
                     virtual_display = v.as_ref() == "1" || v.as_ref().eq_ignore_ascii_case("true");
+                }
+                "render_backend" | "gpu_backend" | "decode_backend" => {
+                    render_backend = Some(v.into_owned());
                 }
                 "app_id" => {
                     if let Ok(id) = v.parse::<u32>() {
@@ -105,6 +109,11 @@ pub fn parse_deeplink_url(url_str: &str) -> Option<AppArgs> {
             }
         }
 
+        let render_backend = render_backend
+            .map(|value| bridge::normalize_render_backend(&value, disable_cuda))
+            .unwrap_or_else(|| bridge::render_backend_from_disable_cuda(disable_cuda));
+        disable_cuda = bridge::render_backend_disables_cuda(&render_backend);
+
         if !host_id.is_empty() && !server_url.is_empty() && !token.is_empty() {
             return Some(AppArgs {
                 host_id,
@@ -119,6 +128,7 @@ pub fn parse_deeplink_url(url_str: &str) -> Option<AppArgs> {
                 mouse_queue_limit,
                 host_name,
                 disable_cuda,
+                render_backend,
                 input_protocol,
                 encoder,
                 display_id,
@@ -232,11 +242,15 @@ fn parse_args() -> Option<AppArgs> {
     let mut encoder: Option<String> = None;
     let mut display_id: Option<String> = None;
     let mut virtual_display = false;
+    let mut render_backend: Option<String> = None;
 
     let mut i = 1;
     while i < args.len() {
         if args[i] == "--disable-cuda" {
             disable_cuda = true;
+            if render_backend.is_none() {
+                render_backend = Some(bridge::RENDER_BACKEND_SOFTWARE.to_string());
+            }
             i += 1;
             continue;
         }
@@ -271,6 +285,10 @@ fn parse_args() -> Option<AppArgs> {
             }
             "--input-protocol" => {
                 input_protocol = args[i + 1].clone().to_lowercase();
+                i += 2;
+            }
+            "--render-backend" | "--gpu-backend" | "--decode-backend" => {
+                render_backend = Some(args[i + 1].clone());
                 i += 2;
             }
             "--encoder" => {
@@ -327,6 +345,11 @@ fn parse_args() -> Option<AppArgs> {
         }
     }
 
+    let render_backend = render_backend
+        .map(|value| bridge::normalize_render_backend(&value, disable_cuda))
+        .unwrap_or_else(|| bridge::render_backend_from_disable_cuda(disable_cuda));
+    disable_cuda = bridge::render_backend_disables_cuda(&render_backend);
+
     if !host_id.is_empty() && !server_url.is_empty() && !token.is_empty() {
         Some(AppArgs {
             host_id,
@@ -341,6 +364,7 @@ fn parse_args() -> Option<AppArgs> {
             mouse_queue_limit,
             host_name,
             disable_cuda,
+            render_backend,
             input_protocol,
             encoder,
             display_id,
@@ -400,7 +424,7 @@ pub fn run() {
     // Select Qt Quick RHI backend before QGuiApplication is created.
     // CUDA-GL needs OpenGL, but Windows AMD/Intel native rendering should use D3D11.
     // Keep CPU-present as an explicit escape hatch for compatibility/debugging.
-    let gpu_mode_enabled = APP_ARGS.get().map_or(true, |a| !a.disable_cuda);
+    let gpu_mode_enabled = APP_ARGS.get().map_or(true, |a| a.gpu_mode_enabled());
     let force_cpu_present = std::env::var("LUNARIS_CLIENT_CPU_PRESENT")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false);

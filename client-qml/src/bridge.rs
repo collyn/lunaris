@@ -62,6 +62,7 @@ pub struct AppArgs {
     pub mouse_queue_limit: u32,
     pub host_name: String,
     pub disable_cuda: bool,
+    pub render_backend: String,
     pub input_protocol: String,
     pub encoder: Option<String>,
     pub display_id: Option<String>,
@@ -70,6 +71,47 @@ pub struct AppArgs {
 
 pub static APP_ARGS: std::sync::OnceLock<AppArgs> = std::sync::OnceLock::new();
 pub static ACTIVE_CONFIG: std::sync::Mutex<Option<AppArgs>> = std::sync::Mutex::new(None);
+
+pub const RENDER_BACKEND_AUTO_GPU: &str = "auto_gpu";
+pub const RENDER_BACKEND_NATIVE_GPU: &str = "native_gpu";
+pub const RENDER_BACKEND_SOFTWARE: &str = "software";
+
+pub fn normalize_render_backend(value: &str, disable_cuda_fallback: bool) -> String {
+    let normalized = value.trim().to_ascii_lowercase().replace('-', "_").replace(' ', "_");
+    match normalized.as_str() {
+        "auto" | "auto_gpu" | "gpu" | "hardware" | "hw" => RENDER_BACKEND_AUTO_GPU.to_string(),
+        "native" | "native_gpu" | "native_render" | "gpu_native" => RENDER_BACKEND_NATIVE_GPU.to_string(),
+        "software" | "cpu" | "ffmpeg" | "qvideosink" | "cpu_present" => RENDER_BACKEND_SOFTWARE.to_string(),
+        "" => render_backend_from_disable_cuda(disable_cuda_fallback),
+        _ => render_backend_from_disable_cuda(disable_cuda_fallback),
+    }
+}
+
+pub fn render_backend_from_disable_cuda(disable_cuda: bool) -> String {
+    if disable_cuda {
+        RENDER_BACKEND_SOFTWARE.to_string()
+    } else {
+        RENDER_BACKEND_AUTO_GPU.to_string()
+    }
+}
+
+pub fn render_backend_disables_cuda(render_backend: &str) -> bool {
+    normalize_render_backend(render_backend, false) == RENDER_BACKEND_SOFTWARE
+}
+
+impl AppArgs {
+    pub fn effective_render_backend(&self) -> String {
+        normalize_render_backend(&self.render_backend, self.disable_cuda)
+    }
+
+    pub fn effective_disable_cuda(&self) -> bool {
+        self.effective_render_backend() == RENDER_BACKEND_SOFTWARE
+    }
+
+    pub fn gpu_mode_enabled(&self) -> bool {
+        !self.effective_disable_cuda()
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct StreamStats {
@@ -526,6 +568,7 @@ pub mod qobject {
             host_name: QString,
             disable_cuda: bool,
             input_protocol: QString,
+            render_backend: QString,
         );
 
         #[qsignal]
@@ -629,6 +672,19 @@ pub mod qobject {
         );
 
         #[qinvokable]
+        fn update_stream_config_with_backend(
+            self: Pin<&mut StreamBridge>,
+            res: QString,
+            fps: i32,
+            codec: QString,
+            bitrate: i32,
+            mouse_queue_limit: i32,
+            disable_cuda: bool,
+            render_backend: QString,
+            input_protocol: QString,
+        );
+
+        #[qinvokable]
         fn request_settings(self: Pin<&mut StreamBridge>);
 
         #[qinvokable]
@@ -677,6 +733,27 @@ pub mod qobject {
             bitrate: i32,
             mouse_queue_limit: i32,
             disable_cuda: bool,
+            input_protocol: QString,
+            encoder: QString,
+            display_id: QString,
+            virtual_display: bool,
+        );
+
+        #[qinvokable]
+        fn start_game_session_with_backend(
+            self: Pin<&mut StreamBridge>,
+            server: QString,
+            token: QString,
+            host_id: QString,
+            host_name: QString,
+            app_id: i32,
+            res: QString,
+            fps: i32,
+            codec: QString,
+            bitrate: i32,
+            mouse_queue_limit: i32,
+            disable_cuda: bool,
+            render_backend: QString,
             input_protocol: QString,
             encoder: QString,
             display_id: QString,
@@ -923,7 +1000,7 @@ impl qobject::StreamBridge {
     }
 
     pub fn update_stream_config(
-        mut self: Pin<&mut Self>,
+        self: Pin<&mut Self>,
         res: QString,
         fps: i32,
         codec: QString,
@@ -932,10 +1009,36 @@ impl qobject::StreamBridge {
         disable_cuda: bool,
         input_protocol: QString,
     ) {
+        let render_backend = cxx_qt_lib::QString::from(&render_backend_from_disable_cuda(disable_cuda));
+        self.update_stream_config_with_backend(
+            res,
+            fps,
+            codec,
+            bitrate,
+            mouse_queue_limit,
+            disable_cuda,
+            render_backend,
+            input_protocol,
+        );
+    }
+
+    pub fn update_stream_config_with_backend(
+        mut self: Pin<&mut Self>,
+        res: QString,
+        fps: i32,
+        codec: QString,
+        bitrate: i32,
+        mouse_queue_limit: i32,
+        disable_cuda: bool,
+        render_backend: QString,
+        input_protocol: QString,
+    ) {
         let res_str = res.to_string();
         let codec_str = codec.to_string().to_lowercase();
         let input_proto_str = input_protocol.to_string().to_lowercase();
-        println!("Updating stream configuration: res={}, fps={}, codec={}, bitrate={}, mouse_queue_limit={}, disable_cuda={}, input_protocol={}", res_str, fps, codec_str, bitrate, mouse_queue_limit, disable_cuda, input_proto_str);
+        let render_backend_str = normalize_render_backend(&render_backend.to_string(), disable_cuda);
+        let effective_disable_cuda = render_backend_disables_cuda(&render_backend_str);
+        println!("Updating stream configuration: res={}, fps={}, codec={}, bitrate={}, mouse_queue_limit={}, render_backend={}, disable_cuda={}, input_protocol={}", res_str, fps, codec_str, bitrate, mouse_queue_limit, render_backend_str, effective_disable_cuda, input_proto_str);
 
         // Parse resolution (e.g. "1920x1080" or "720p")
         let mut width = 1280;
@@ -968,7 +1071,8 @@ impl qobject::StreamBridge {
                 config.codec = codec_str;
                 config.bitrate = bitrate as u32;
                 config.mouse_queue_limit = mouse_queue_limit as u32;
-                config.disable_cuda = disable_cuda;
+                config.disable_cuda = effective_disable_cuda;
+                config.render_backend = render_backend_str.clone();
                 config.input_protocol = input_proto_str;
             } else if let Some(args) = APP_ARGS.get() {
                 let mut new_config = args.clone();
@@ -978,7 +1082,8 @@ impl qobject::StreamBridge {
                 new_config.codec = codec_str;
                 new_config.bitrate = bitrate as u32;
                 new_config.mouse_queue_limit = mouse_queue_limit as u32;
-                new_config.disable_cuda = disable_cuda;
+                new_config.disable_cuda = effective_disable_cuda;
+                new_config.render_backend = render_backend_str.clone();
                 new_config.input_protocol = input_proto_str;
                 *active_config_lock = Some(new_config);
             }
@@ -1071,6 +1176,7 @@ impl qobject::StreamBridge {
             let codec_qstring = cxx_qt_lib::QString::from(&config.codec);
             let host_name_qstring = cxx_qt_lib::QString::from(&config.host_name);
             let input_proto_qstring = cxx_qt_lib::QString::from(&config.input_protocol);
+            let render_backend_qstring = cxx_qt_lib::QString::from(&config.effective_render_backend());
             self.as_mut().settings_loaded(
                 res_qstring,
                 config.fps as i32,
@@ -1078,8 +1184,9 @@ impl qobject::StreamBridge {
                 config.bitrate as i32,
                 config.mouse_queue_limit as i32,
                 host_name_qstring,
-                config.disable_cuda,
+                config.effective_disable_cuda(),
                 input_proto_qstring,
+                render_backend_qstring,
             );
         }
     }
@@ -1562,7 +1669,7 @@ impl qobject::StreamBridge {
     }
 
     pub fn start_game_session(
-        mut self: Pin<&mut Self>,
+        self: Pin<&mut Self>,
         server: QString,
         token: QString,
         host_id: QString,
@@ -1579,6 +1686,32 @@ impl qobject::StreamBridge {
         display_id: QString,
         virtual_display: bool,
     ) {
+        let render_backend = cxx_qt_lib::QString::from(&render_backend_from_disable_cuda(disable_cuda));
+        self.start_game_session_with_backend(
+            server, token, host_id, host_name, app_id, res, fps, codec, bitrate, mouse_queue_limit,
+            disable_cuda, render_backend, input_protocol, encoder, display_id, virtual_display,
+        );
+    }
+
+    pub fn start_game_session_with_backend(
+        mut self: Pin<&mut Self>,
+        server: QString,
+        token: QString,
+        host_id: QString,
+        host_name: QString,
+        app_id: i32,
+        res: QString,
+        fps: i32,
+        codec: QString,
+        bitrate: i32,
+        mouse_queue_limit: i32,
+        disable_cuda: bool,
+        render_backend: QString,
+        input_protocol: QString,
+        encoder: QString,
+        display_id: QString,
+        virtual_display: bool,
+    ) {
         let server_str = server.to_string();
         let token_str = token.to_string();
         let host_id_str = host_id.to_string();
@@ -1586,6 +1719,8 @@ impl qobject::StreamBridge {
         let res_str = res.to_string();
         let codec_str = codec.to_string().to_lowercase();
         let input_proto_str = input_protocol.to_string().to_lowercase();
+        let render_backend_str = normalize_render_backend(&render_backend.to_string(), disable_cuda);
+        let effective_disable_cuda = render_backend_disables_cuda(&render_backend_str);
         let encoder_str = encoder.to_string().to_lowercase();
         let display_str = display_id.to_string();
 
@@ -1619,7 +1754,8 @@ impl qobject::StreamBridge {
             app_id: app_id_opt,
             mouse_queue_limit: mouse_queue_limit as u32,
             host_name: host_name_str,
-            disable_cuda,
+            disable_cuda: effective_disable_cuda,
+            render_backend: render_backend_str,
             input_protocol: input_proto_str,
             encoder: if encoder_str.is_empty() || encoder_str == "auto" { None } else { Some(encoder_str) },
             display_id: if display_str.is_empty() || display_str == "default" { None } else { Some(display_str) },
@@ -2294,7 +2430,7 @@ async fn setup_peer_connection(
                 };
                 
                 let disable_cuda = if let Some(ref config) = *ACTIVE_CONFIG.lock().unwrap() {
-                    config.disable_cuda
+                    config.effective_disable_cuda()
                 } else {
                     false
                 };
@@ -2497,28 +2633,37 @@ async fn setup_peer_connection(
                                 }
                                 
                                 for frame in decoded_frames {
-                                    if frame.width == 0 {
-                                        continue;
-                                    }
-                                    let sink_lock = sink_ref.sink.lock().unwrap();
-                                    if *frame_count_ref == 1 {
-                                        println!(
-                                            "Decoded frame via {}: {}x{}, sink={:?}",
-                                            decoder_ref.presentation_mode_label(),
-                                            frame.width,
-                                            frame.height,
-                                            *sink_lock
-                                        );
-                                    }
-                                    if let Some(sink_ptr_val) = *sink_lock {
-                                        unsafe {
-                                            deliver_yuv_frame(
-                                                sink_ptr_val as *mut qobject::QVideoSink,
-                                                frame.y.as_ptr(), frame.y_stride,
-                                                frame.u.as_ptr(), frame.u_stride,
-                                                frame.v.as_ptr(), frame.v_stride,
-                                                frame.width, frame.height,
-                                            );
+                                    match frame {
+                                        super::decoder::DecodedFrame::NativePresented => {
+                                            if *frame_count_ref == 1 {
+                                                println!(
+                                                    "Decoded frame via {}",
+                                                    decoder_ref.presentation_mode_label()
+                                                );
+                                            }
+                                        }
+                                        super::decoder::DecodedFrame::CpuYuv(frame) => {
+                                            let sink_lock = sink_ref.sink.lock().unwrap();
+                                            if *frame_count_ref == 1 {
+                                                println!(
+                                                    "Decoded frame via {}: {}x{}, sink={:?}",
+                                                    decoder_ref.presentation_mode_label(),
+                                                    frame.width,
+                                                    frame.height,
+                                                    *sink_lock
+                                                );
+                                            }
+                                            if let Some(sink_ptr_val) = *sink_lock {
+                                                unsafe {
+                                                    deliver_yuv_frame(
+                                                        sink_ptr_val as *mut qobject::QVideoSink,
+                                                        frame.y.as_ptr(), frame.y_stride,
+                                                        frame.u.as_ptr(), frame.u_stride,
+                                                        frame.v.as_ptr(), frame.v_stride,
+                                                        frame.width, frame.height,
+                                                    );
+                                                }
+                                            }
                                         }
                                     }
                                 }

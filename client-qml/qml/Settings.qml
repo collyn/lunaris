@@ -76,7 +76,7 @@ Rectangle {
     }
 
     // Signals
-    signal applySettings(string res, int fps, string codec, int bitrate, int queueLimit, bool disableCuda, string inputProtocol, string encoder, string displayId, bool virtualDisplay)
+    signal applySettings(string res, int fps, string codec, int bitrate, int queueLimit, bool disableCuda, string renderBackend, string inputProtocol, string encoder, string displayId, bool virtualDisplay)
 
     function open() {
         settingsRoot.visible = true;
@@ -86,7 +86,28 @@ Rectangle {
         settingsRoot.visible = false;
     }
 
-    function setCurrentSettings(res, fps, codec, bitrate, queueLimit, disableCuda, inputProtocol, encoder, displayId, virtualDisplay) {
+    function normalizeRenderBackend(renderBackend, disableCuda) {
+        var value = String(renderBackend || "").toLowerCase().replace(/[- ]/g, "_");
+        if (value === "software" || value === "cpu" || value === "ffmpeg" || value === "qvideosink") return "software";
+        if (value === "native" || value === "native_gpu" || value === "native_render") return "native_gpu";
+        if (value === "auto" || value === "auto_gpu" || value === "gpu" || value === "hardware") return "auto_gpu";
+        return disableCuda ? "software" : "auto_gpu";
+    }
+
+    function backendIndex(renderBackend, disableCuda) {
+        var backend = normalizeRenderBackend(renderBackend, disableCuda);
+        if (backend === "native_gpu") return 1;
+        if (backend === "software") return 2;
+        return 0;
+    }
+
+    function currentRenderBackend() {
+        if (decoderCombo.currentIndex === 1) return "native_gpu";
+        if (decoderCombo.currentIndex === 2) return "software";
+        return "auto_gpu";
+    }
+
+    function setCurrentSettings(res, fps, codec, bitrate, queueLimit, disableCuda, inputProtocol, encoder, displayId, virtualDisplay, renderBackend) {
         if (res.indexOf("1920") !== -1 || res.indexOf("1080") !== -1) {
             resCombo.currentIndex = 0;
         } else if (res.indexOf("1280") !== -1 || res.indexOf("720") !== -1) {
@@ -116,7 +137,7 @@ Rectangle {
             codecCombo.currentIndex = 2;
         }
 
-        decoderCombo.currentIndex = (disableCuda === true) ? 2 : 0;
+        decoderCombo.currentIndex = backendIndex(renderBackend, disableCuda);
 
         bitrateSlider.value = bitrate;
 
@@ -784,14 +805,15 @@ Rectangle {
                 else if (queueCombo.currentIndex === 4) queueLimit = 4096
                 else if (queueCombo.currentIndex === 5) queueLimit = 16384
 
-                var disableCuda = (decoderCombo.currentIndex === 2);
+                var renderBackend = settingsRoot.currentRenderBackend();
+                var disableCuda = (renderBackend === "software");
                 var inputProtocol = (protocolCombo.currentIndex === 1) ? "webtransport" : "webrtc"
                 var encoderOptions = ["auto", "native", "ffmpeg", "nvenc", "amf", "qsv", "vaapi", "software"]
                 var encoder = encoderOptions[encoderCombo.currentIndex] || "auto"
                 var displayId = displayInput.text.trim().length > 0 ? displayInput.text.trim() : "default"
                 var virtualDisplay = virtualDisplayCheck.checked
 
-                settingsRoot.applySettings(selectedRes, fps, codec, bitrate, queueLimit, disableCuda, inputProtocol, encoder, displayId, virtualDisplay);
+                settingsRoot.applySettings(selectedRes, fps, codec, bitrate, queueLimit, disableCuda, renderBackend, inputProtocol, encoder, displayId, virtualDisplay);
                 settingsRoot.close();
             }
             background: Rectangle {
