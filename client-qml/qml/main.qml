@@ -502,7 +502,7 @@ ApplicationWindow {
             anchors.fill: parent
             hoverEnabled: true
             acceptedButtons: Qt.LeftButton | Qt.MiddleButton | Qt.RightButton
-            cursorShape: (window.isPointerLocked || window.shouldHidePredictedCursor()) ? Qt.BlankCursor : window.qtCursorShape(window.hostCursorKind)
+            cursorShape: (window.isPointerLocked || window.hideLocalCursor || window.shouldHidePredictedCursor()) ? Qt.BlankCursor : window.qtCursorShape(window.hostCursorKind)
 
             onPositionChanged: (mouse) => {
                 if (mouse.y >= 50 && window.ignoreMenuHover) {
@@ -560,7 +560,6 @@ ApplicationWindow {
             mipmap: false
             cache: true
             visible: window.isStreamMode
-                && window.isPointerLocked
                 && window.hideLocalCursor
                 && window.localCursorVisible
                 && !window.shouldHidePredictedCursor()
