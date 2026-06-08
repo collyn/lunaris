@@ -178,7 +178,13 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   const hasNativeCursorImageRef = useRef<boolean>(false);
   const hostCursorMouseDownRef = useRef<boolean>(false);
   const lastHostCursorLocalPredictionAtRef = useRef<number>(0);
-  const hostCursorPosRef = useRef<{ x: number, y: number, visible: boolean, kind: HostCursorKind }>({ x: 0, y: 0, visible: false, kind: 'arrow' });
+  const hostCursorPosRef = useRef<{ x: number, y: number, visible: boolean, kind: HostCursorKind, inWindowMoveSize: boolean }>({
+    x: 0,
+    y: 0,
+    visible: false,
+    kind: 'arrow',
+    inWindowMoveSize: false,
+  });
   const isHardwareMouseActiveRef = useRef<boolean>(false);
   const localCursorPosRef = useRef<{ x: number, y: number }>({ x: 960, y: 540 });
   const initialLocalCursorPosRef = useRef<{ x: number, y: number }>({ x: 960, y: 540 });
@@ -803,7 +809,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
               if (touchModeRef.current === 'trackpad' || hideLocalCursor || shouldUseWindowsPrediction) {
                 updateVirtualCursorDOMRef.current();
               }
-              if (!(hostCursorMouseDownRef.current && agentHostOs === "windows")) {
+              if (!(hostCursorMouseDownRef.current && agentHostOs === "windows" && hostCursorPosRef.current.inWindowMoveSize)) {
                 const hostCursor = hostCursorPosRef.current;
                 lastHostCursorLocalPredictionAtRef.current = performance.now();
                 updateHostCursorDOM(predictedX, predictedY, true, hostCursor.kind, null);
@@ -1676,6 +1682,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       const visible = Boolean(message.visible);
       const kind = normalizeHostCursorKind(message.kind);
       const image = parseHostCursorImage(message.image);
+      const inWindowMoveSize = Boolean(message.in_window_move_size);
       if (!Number.isFinite(x) || !Number.isFinite(y)) return;
 
       applyNativeCursorImage(localCursorImageRef.current, localCursorImageMetricsRef, kind, image);
@@ -1683,9 +1690,9 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       const hostCursor = hostCursorPosRef.current;
       const localPredictionFresh = performance.now() - lastHostCursorLocalPredictionAtRef.current < 140;
       if (localPredictionFresh && visible) {
-        updateHostCursorDOM(hostCursor.x, hostCursor.y, visible, kind, image);
+        updateHostCursorDOM(hostCursor.x, hostCursor.y, visible, kind, image, inWindowMoveSize);
       } else {
-        updateHostCursorDOM(x, y, visible, kind, image);
+        updateHostCursorDOM(x, y, visible, kind, image, inWindowMoveSize);
       }
       updateVirtualCursorDOMRef.current();
     } catch {
@@ -2299,13 +2306,14 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     visible: boolean,
     kind: HostCursorKind = 'arrow',
     image: HostCursorImagePayload | null = null,
+    inWindowMoveSize: boolean = hostCursorPosRef.current.inWindowMoveSize,
   ) => {
     const cursorEl = hostCursorRef.current;
     const imageEl = hostCursorImageRef.current;
     const video = videoRef.current;
     const wrapper = viewportWrapperRef.current;
     const cursorKind = normalizeHostCursorKind(kind);
-    hostCursorPosRef.current = { x, y, visible, kind: cursorKind };
+    hostCursorPosRef.current = { x, y, visible, kind: cursorKind, inWindowMoveSize };
 
     if (
       !cursorEl
@@ -2313,7 +2321,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       || !wrapper
       || !visible
       || isHardwareMouseActiveRef.current
-      || (hostCursorMouseDownRef.current && agentHostOs === "windows")
+      || (hostCursorMouseDownRef.current && agentHostOs === "windows" && inWindowMoveSize)
     ) {
       if (cursorEl) cursorEl.style.display = 'none';
       return;
@@ -2419,7 +2427,8 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     const wrapper = viewportWrapperRef.current;
     if (!cursorEl || !video || !wrapper) return;
 
-    if (agentHostOs === "windows" && hostCursorMouseDownRef.current) {
+    const hostCursor = hostCursorPosRef.current;
+    if (agentHostOs === "windows" && hostCursorMouseDownRef.current && hostCursor.inWindowMoveSize) {
       cursorEl.style.display = 'none';
       return;
     }
@@ -2470,7 +2479,6 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       offsetY = (elHeight - actualVidHeight) / 2;
     }
 
-    const hostCursor = hostCursorPosRef.current;
     const cursorKind = normalizeHostCursorKind(hostCursor.kind);
     let cursorMetrics = localCursorImageMetricsRef.current;
     if (cursorMetrics?.native && cursorMetrics.kind !== cursorKind) {
