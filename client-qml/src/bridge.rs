@@ -1949,96 +1949,8 @@ fn normalize_host_cursor_kind(kind: &str) -> &str {
     }
 }
 
-fn codec_payload_names(codec: &str) -> &'static [&'static str] {
-    match codec {
-        "h265" | "hevc" => &["H265", "HEVC"],
-        "av1" => &["AV1"],
-        _ => &["H264"],
-    }
-}
 
-fn prefer_video_codec_in_sdp(sdp: &str, codec: &str) -> String {
-    let targets = codec_payload_names(codec);
-    let lines: Vec<&str> = sdp.lines().collect();
-    let mut in_target_video = false;
-    let mut selected_pts = std::collections::BTreeSet::<String>::new();
 
-    for line in &lines {
-        if line.starts_with("m=") {
-            in_target_video = line.starts_with("m=video ");
-            continue;
-        }
-
-        if in_target_video && line.starts_with("a=rtpmap:") {
-            let rest = line.trim_start_matches("a=rtpmap:");
-            let mut parts = rest.split_whitespace();
-            if let (Some(pt), Some(codec_name)) = (parts.next(), parts.next()) {
-                let upper = codec_name
-                    .split('/')
-                    .next()
-                    .unwrap_or(codec_name)
-                    .to_ascii_uppercase();
-                if targets.iter().any(|target| *target == upper) {
-                    selected_pts.insert(pt.to_string());
-                }
-            }
-        }
-    }
-
-    if selected_pts.is_empty() {
-        eprintln!(
-            "Requested codec '{}' was not present in SDP answer; keeping generated SDP unchanged",
-            codec
-        );
-        return sdp.to_string();
-    }
-
-    let mut output = Vec::<String>::new();
-    let mut in_video = false;
-    for line in lines {
-        if line.starts_with("m=") {
-            in_video = line.starts_with("m=video ");
-            if in_video {
-                let parts: Vec<&str> = line.split_whitespace().collect();
-                if parts.len() > 3 {
-                    let mut rewritten = parts[..3].join(" ");
-                    for pt in &selected_pts {
-                        rewritten.push(' ');
-                        rewritten.push_str(pt);
-                    }
-                    output.push(rewritten);
-                    continue;
-                }
-            }
-            output.push(line.to_string());
-            continue;
-        }
-
-        if in_video {
-            let payload_attr = ["a=rtpmap:", "a=fmtp:", "a=rtcp-fb:"]
-                .iter()
-                .find_map(|prefix| line.strip_prefix(prefix));
-            if let Some(rest) = payload_attr {
-                let pt = rest
-                    .split(|c: char| c.is_ascii_whitespace() || c == ':')
-                    .next()
-                    .unwrap_or_default();
-                if !selected_pts.contains(pt) {
-                    continue;
-                }
-            }
-        }
-
-        output.push(line.to_string());
-    }
-
-    let line_end = if sdp.contains("\r\n") { "\r\n" } else { "\n" };
-    let mut result = output.join(line_end);
-    if sdp.ends_with("\r\n") || sdp.ends_with('\n') {
-        result.push_str(line_end);
-    }
-    result
-}
 
 fn handle_host_cursor_message(data: &[u8]) {
     let Ok(text) = std::str::from_utf8(data) else {
@@ -2090,6 +2002,7 @@ async fn setup_peer_connection(
     ma_chan_ref: Arc<Mutex<Option<Arc<RTCDataChannel>>>>,
     mr_chan_ref: Arc<Mutex<Option<Arc<RTCDataChannel>>>>,
     active_decoder: Arc<Mutex<Option<std::thread::JoinHandle<()>>>>,
+    codec: &str,
 ) -> Result<Arc<RTCPeerConnection>, anyhow::Error> {
     // WebRTC connection setup
     let mut media_engine = MediaEngine::default();
@@ -2110,92 +2023,73 @@ async fn setup_peer_connection(
         RTPCodecType::Audio,
     )?;
 
-    // Register H264
-    media_engine.register_codec(
-        RTCRtpCodecParameters {
-            capability: RTCRtpCodecCapability {
-                mime_type: webrtc::api::media_engine::MIME_TYPE_H264.to_string(),
-                clock_rate: 90000,
-                channels: 0,
-                sdp_fmtp_line: "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42002a".to_string(),
-                rtcp_feedback: vec![
-                    RTCPFeedback {
-                        typ: "nack".to_string(),
-                        parameter: "".to_string(),
-                    },
-                    RTCPFeedback {
-                        typ: "nack".to_string(),
-                        parameter: "pli".to_string(),
-                    },
-                    RTCPFeedback {
-                        typ: "goog-remb".to_string(),
-                        parameter: "".to_string(),
-                    },
-                ],
-            },
-            payload_type: 96,
-            ..Default::default()
+    // Register only the requested video codec to avoid SDP answer mismatch
+    let video_rtcp_feedback = vec![
+        RTCPFeedback {
+            typ: "nack".to_string(),
+            parameter: "".to_string(),
         },
-        RTPCodecType::Video,
-    )?;
+        RTCPFeedback {
+            typ: "nack".to_string(),
+            parameter: "pli".to_string(),
+        },
+        RTCPFeedback {
+            typ: "goog-remb".to_string(),
+            parameter: "".to_string(),
+        },
+    ];
 
-    // Register HEVC (H265)
-    media_engine.register_codec(
-        RTCRtpCodecParameters {
-            capability: RTCRtpCodecCapability {
-                mime_type: webrtc::api::media_engine::MIME_TYPE_HEVC.to_string(),
-                clock_rate: 90000,
-                channels: 0,
-                sdp_fmtp_line: "profile-id=1;tier-flag=0;level-id=120;tx-mode=SRST".to_string(),
-                rtcp_feedback: vec![
-                    RTCPFeedback {
-                        typ: "nack".to_string(),
-                        parameter: "".to_string(),
+    match codec {
+        "h265" | "hevc" => {
+            media_engine.register_codec(
+                RTCRtpCodecParameters {
+                    capability: RTCRtpCodecCapability {
+                        mime_type: webrtc::api::media_engine::MIME_TYPE_HEVC.to_string(),
+                        clock_rate: 90000,
+                        channels: 0,
+                        sdp_fmtp_line: "profile-id=1;tier-flag=0;level-id=120;tx-mode=SRST".to_string(),
+                        rtcp_feedback: video_rtcp_feedback,
                     },
-                    RTCPFeedback {
-                        typ: "nack".to_string(),
-                        parameter: "pli".to_string(),
+                    payload_type: 98,
+                    ..Default::default()
+                },
+                RTPCodecType::Video,
+            )?;
+        }
+        "av1" => {
+            media_engine.register_codec(
+                RTCRtpCodecParameters {
+                    capability: RTCRtpCodecCapability {
+                        mime_type: webrtc::api::media_engine::MIME_TYPE_AV1.to_string(),
+                        clock_rate: 90000,
+                        channels: 0,
+                        sdp_fmtp_line: "profile=0".to_string(),
+                        rtcp_feedback: video_rtcp_feedback,
                     },
-                    RTCPFeedback {
-                        typ: "goog-remb".to_string(),
-                        parameter: "".to_string(),
+                    payload_type: 102,
+                    ..Default::default()
+                },
+                RTPCodecType::Video,
+            )?;
+        }
+        _ => {
+            // Default to H264
+            media_engine.register_codec(
+                RTCRtpCodecParameters {
+                    capability: RTCRtpCodecCapability {
+                        mime_type: webrtc::api::media_engine::MIME_TYPE_H264.to_string(),
+                        clock_rate: 90000,
+                        channels: 0,
+                        sdp_fmtp_line: "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42002a".to_string(),
+                        rtcp_feedback: video_rtcp_feedback,
                     },
-                ],
-            },
-            payload_type: 98,
-            ..Default::default()
-        },
-        RTPCodecType::Video,
-    )?;
-
-    // Register AV1
-    media_engine.register_codec(
-        RTCRtpCodecParameters {
-            capability: RTCRtpCodecCapability {
-                mime_type: webrtc::api::media_engine::MIME_TYPE_AV1.to_string(),
-                clock_rate: 90000,
-                channels: 0,
-                sdp_fmtp_line: "profile=0".to_string(),
-                rtcp_feedback: vec![
-                    RTCPFeedback {
-                        typ: "nack".to_string(),
-                        parameter: "".to_string(),
-                    },
-                    RTCPFeedback {
-                        typ: "nack".to_string(),
-                        parameter: "pli".to_string(),
-                    },
-                    RTCPFeedback {
-                        typ: "goog-remb".to_string(),
-                        parameter: "".to_string(),
-                    },
-                ],
-            },
-            payload_type: 102,
-            ..Default::default()
-        },
-        RTPCodecType::Video,
-    )?;
+                    payload_type: 96,
+                    ..Default::default()
+                },
+                RTPCodecType::Video,
+            )?;
+        }
+    }
 
     // Register RTP header extensions — critical for low-latency video and codec matching
     const PLAYOUT_DELAY_URI: &str = "http://www.webrtc.org/experiments/rtp-hdrext/playout-delay";
@@ -3412,6 +3306,7 @@ async fn run_webrtc_client_task(
                                 ma_chan_ref.clone(),
                                 mr_chan_ref.clone(),
                                 active_decoder.clone(),
+                                &codec_str,
                             )
                             .await
                             {
@@ -3443,15 +3338,7 @@ async fn run_webrtc_client_task(
                                     }
 
                                     match pc.create_answer(None).await {
-                                        Ok(mut answer) => {
-                                            let preferred_sdp = prefer_video_codec_in_sdp(&answer.sdp, &codec_str);
-                                            if preferred_sdp != answer.sdp {
-                                                println!(
-                                                    "Applied SDP answer codec preference: requested={} ",
-                                                    codec_str
-                                                );
-                                                answer.sdp = preferred_sdp;
-                                            }
+                                        Ok(answer) => {
                                             println!("SDP Answer created:\n{}", answer.sdp);
                                             if let Err(e) = pc.set_local_description(answer.clone()).await {
                                                 eprintln!("Failed to set local description: {:?}", e);
