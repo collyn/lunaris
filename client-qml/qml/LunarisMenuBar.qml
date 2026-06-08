@@ -193,7 +193,7 @@ Item {
             queueComboBox.currentIndex = 3;
         }
 
-        decoderComboBox.currentIndex = (disableCuda === true) ? 1 : 0;
+        decoderComboBox.currentIndex = (disableCuda === true) ? 2 : 0;
 
         if (inputProtocol === "webtransport") {
             protocolComboBox.currentIndex = 1;
@@ -221,7 +221,7 @@ Item {
         var queueMap = [128, 256, 512, 1024];
         var selectedQueue = queueMap[queueComboBox.currentIndex];
 
-        var selectedDisableCuda = (decoderComboBox.currentIndex === 1);
+        var selectedDisableCuda = (decoderComboBox.currentIndex === 2);
 
         var protocolMap = ["webrtc", "webtransport"];
         var selectedProtocol = protocolMap[protocolComboBox.currentIndex];
@@ -345,10 +345,10 @@ Item {
             // Decoder Dropdown
             LunarisComboBox {
                 id: decoderComboBox
-                customWidth: 105
-                model: ["GPU (CUDA)", "Software"]
+                customWidth: 110
+                model: ["Auto GPU", "Native GPU", "Software"]
                 anchors.verticalCenter: parent.verticalCenter
-                LunarisToolTip { text: "Decoding Backend" }
+                LunarisToolTip { text: "Decode and presentation backend" }
                 onActivated: menuContainer.applyCurrentSettings()
             }
 

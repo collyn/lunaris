@@ -173,21 +173,43 @@ impl HardwareDecoder {
         })
     }
 
-    pub fn presentation_mode_label(&self) -> &'static str {
+    pub fn decode_backend_label(&self) -> &'static str {
+        match self.hw_device_type {
+            ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_CUDA => "CUDA",
+            ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_D3D11VA => "D3D11VA",
+            ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_DXVA2 => "DXVA2",
+            ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_VAAPI => "VAAPI",
+            ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_VDPAU => "VDPAU",
+            ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_VIDEOTOOLBOX => "VideoToolbox",
+            ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_NONE => "Software",
+            _ => "GPU",
+        }
+    }
+
+    pub fn present_backend_label(&self) -> &'static str {
         if self.hw_device_type == ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_NONE {
-            return "software decode";
+            return "CPU/QVideoSink";
         }
 
         let direct_cuda_gl = self.hw_device_type == ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_CUDA
             && std::env::var("LUNARIS_CLIENT_CUDA_GL")
                 .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-                .unwrap_or(false);
+                .unwrap_or(false)
+            && !crate::bridge::qobject::cuda_gl_render_failed();
 
         if direct_cuda_gl {
-            "CUDA decode + CUDA-GL present"
+            "CUDA-GL"
         } else {
-            "GPU decode + CPU present"
+            "CPU/QVideoSink"
         }
+    }
+
+    pub fn presentation_mode_label(&self) -> String {
+        format!(
+            "{} decode + {} present",
+            self.decode_backend_label(),
+            self.present_backend_label()
+        )
     }
 
     pub fn decode(&mut self, data: &[u8]) -> Result<Vec<YUVFrame>, anyhow::Error> {
@@ -260,7 +282,8 @@ impl HardwareDecoder {
         let use_direct_cuda_gl = is_cuda
             && std::env::var("LUNARIS_CLIENT_CUDA_GL")
                 .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-                .unwrap_or(false);
+                .unwrap_or(false)
+            && !crate::bridge::qobject::cuda_gl_render_failed();
 
         if use_direct_cuda_gl {
             unsafe {

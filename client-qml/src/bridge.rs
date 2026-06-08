@@ -78,6 +78,8 @@ pub struct StreamStats {
     pub fps: f64,
     pub bitrate: f64,
     pub codec: String,
+    pub decode_backend: String,
+    pub present_backend: String,
     pub connection_type: String,
 }
 
@@ -438,6 +440,9 @@ pub mod qobject {
 
         #[rust_name = "set_cuda_stream_active"]
         fn set_cuda_stream_active(active: bool);
+
+        #[rust_name = "cuda_gl_render_failed"]
+        fn cuda_gl_render_failed() -> bool;
     }
 
     unsafe extern "C++" {
@@ -458,6 +463,8 @@ pub mod qobject {
             fps: f64,
             bitrate: f64,
             codec: QString,
+            decode_backend: QString,
+            present_backend: QString,
             connection_type: QString,
         );
 
@@ -742,6 +749,8 @@ impl qobject::StreamBridge {
             fps: 0.0,
             bitrate: 0.0,
             codec: String::new(),
+            decode_backend: "Unknown".to_string(),
+            present_backend: "Unknown".to_string(),
             connection_type: "P2P (Direct)".to_string(),
         });
         qobject::set_cuda_stream_active(true);
@@ -984,9 +993,19 @@ impl qobject::StreamBridge {
         let stats = { STREAM_STATS.lock().unwrap().clone() };
         if let Some(s) = stats {
             let codec_qstring = cxx_qt_lib::QString::from(&s.codec);
+            let decode_backend_qstring = cxx_qt_lib::QString::from(&s.decode_backend);
+            let present_backend_qstring = cxx_qt_lib::QString::from(&s.present_backend);
             let conn_type_qstring = cxx_qt_lib::QString::from(&s.connection_type);
-            self.as_mut()
-                .stats_updated(s.ping, s.decode, s.fps, s.bitrate, codec_qstring, conn_type_qstring);
+            self.as_mut().stats_updated(
+                s.ping,
+                s.decode,
+                s.fps,
+                s.bitrate,
+                codec_qstring,
+                decode_backend_qstring,
+                present_backend_qstring,
+                conn_type_qstring,
+            );
         }
     }
 
@@ -2999,12 +3018,16 @@ async fn setup_peer_connection(
                                 super::decoder::CodecType::AV1 => "AV1",
                             }.to_string();
                             
+                            let decode_backend = decoder.decode_backend_label().to_string();
+                            let present_backend = decoder.present_backend_label().to_string();
                             let mut stats_lock = STREAM_STATS.lock().unwrap();
                             if let Some(ref mut s) = *stats_lock {
                                 s.decode = avg_decode_ms;
                                 s.fps = fps;
                                 s.bitrate = bitrate_kbps;
                                 s.codec = codec_name;
+                                s.decode_backend = decode_backend;
+                                s.present_backend = present_backend;
                             } else {
                                 *stats_lock = Some(StreamStats {
                                     ping: 0.0,
@@ -3012,6 +3035,8 @@ async fn setup_peer_connection(
                                     fps,
                                     bitrate: bitrate_kbps,
                                     codec: codec_name,
+                                    decode_backend,
+                                    present_backend,
                                     connection_type: "P2P (Direct)".to_string(),
                                 });
                             }

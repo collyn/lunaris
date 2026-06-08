@@ -128,6 +128,7 @@ struct CudaApi {
 static CudaApi g_cudaApi;
 static bool g_cudaSupported = false;
 static bool g_streamActive = false;
+static bool g_cudaRenderFailed = false;
 
 struct PendingCudaFrame {
     uint64_t cuda_ctx = 0;
@@ -151,6 +152,14 @@ static void checkGlError(const char* op) {
     if (!gl) return;
     for (GLenum error = gl->glGetError(); error; error = gl->glGetError()) {
         std::cerr << "Lunaris: After " << op << " glError: 0x" << std::hex << error << std::dec << std::endl;
+    }
+}
+
+static void markCudaGlFailed(const char* reason) {
+    g_cudaRenderFailed = true;
+    std::cerr << "Lunaris: CUDA-GL renderer disabled: " << reason << std::endl;
+    if (g_activeItem) {
+        QMetaObject::invokeMethod(g_activeItem, "setCudaActive", Qt::QueuedConnection, Q_ARG(bool, false));
     }
 }
 
@@ -233,16 +242,14 @@ static GLuint compileShader(GLenum type, const char* source) {
 void GpuVideoItem::initCudaGL() {
     QOpenGLContext* currentContext = QOpenGLContext::currentContext();
     if (!currentContext) {
-        std::cerr << "Lunaris: CUDA-GL renderer unavailable: no current OpenGL context." << std::endl;
-        setCudaActive(false);
+        markCudaGlFailed("no current OpenGL context");
         return;
     }
 
     if (!gl) {
         gl = currentContext->functions();
         if (!gl) {
-            std::cerr << "Lunaris: CUDA-GL renderer unavailable: no OpenGL functions." << std::endl;
-            setCudaActive(false);
+            markCudaGlFailed("no OpenGL functions");
             return;
         }
         gl->initializeOpenGLFunctions();
@@ -350,7 +357,7 @@ void GpuVideoItem::initCudaGL() {
     }
 
     if (!vs || !fs) {
-        std::cerr << "Lunaris: Failed to compile shaders." << std::endl;
+        markCudaGlFailed("shader compile failed");
         return;
     }
 
@@ -512,16 +519,18 @@ void GpuVideoItem::renderNative() {
     }
 
     if (!m_program) {
-        // Shaders failed to compile/link, cannot render
+        markCudaGlFailed("shader program unavailable");
         return;
     }
 
     if (!m_cudaContext) {
+        markCudaGlFailed("missing CUDA context");
         return;
     }
     int ctx_ret = g_cudaApi.cuCtxSetCurrent(m_cudaContext);
     if (ctx_ret != 0) {
-        std::cerr << "Lunaris: cuCtxSetCurrent failed: " << ctx_ret << " context: " << m_cudaContext << std::endl;
+        markCudaGlFailed("cuCtxSetCurrent failed");
+        return;
     }
 
     int width = g_pendingFrame.width;
@@ -558,11 +567,13 @@ void GpuVideoItem::renderNative() {
         int ret = g_cudaApi.cuGraphicsGLRegisterImage((CUgraphicsResource*)&m_cudaYRes, m_yTexture, GL_TEXTURE_2D, 2 /* CU_GRAPHICS_REGISTER_FLAGS_WRITE_DISCARD */);
         std::cerr << "Lunaris: Registered Y texture: ID=" << m_yTexture << " Resource=" << m_cudaYRes << " ret=" << ret << std::endl;
         if (ret != 0) {
+            markCudaGlFailed("register Y texture failed");
             return;
         }
         ret = g_cudaApi.cuGraphicsGLRegisterImage((CUgraphicsResource*)&m_cudaUvRes, m_uvTexture, GL_TEXTURE_2D, 2 /* CU_GRAPHICS_REGISTER_FLAGS_WRITE_DISCARD */);
         std::cerr << "Lunaris: Registered UV texture: ID=" << m_uvTexture << " Resource=" << m_cudaUvRes << " ret=" << ret << std::endl;
         if (ret != 0) {
+            markCudaGlFailed("register UV texture failed");
             return;
         }
 
@@ -580,7 +591,9 @@ void GpuVideoItem::renderNative() {
             int r1 = g_cudaApi.cuGraphicsSubResourceGetMappedArray(&yArray, resources[0], 0, 0);
             int r2 = g_cudaApi.cuGraphicsSubResourceGetMappedArray(&uvArray, resources[1], 0, 0);
             if (r1 != 0 || r2 != 0) {
-                std::cerr << "Lunaris: cuGraphicsSubResourceGetMappedArray failed: Y=" << r1 << " UV=" << r2 << std::endl;
+                g_cudaApi.cuGraphicsUnmapResources(2, resources, nullptr);
+                markCudaGlFailed("mapped CUDA array lookup failed");
+                return;
             }
 
             CUDA_MEMCPY2D copyY;
@@ -606,12 +619,15 @@ void GpuVideoItem::renderNative() {
             int r4 = g_cudaApi.cuMemcpy2D(&copyUv);
 
             if (r3 != 0 || r4 != 0) {
-                std::cerr << "Lunaris: cuMemcpy2D failed: Y=" << r3 << " UV=" << r4 << std::endl;
+                g_cudaApi.cuGraphicsUnmapResources(2, resources, nullptr);
+                markCudaGlFailed("CUDA to GL texture copy failed");
+                return;
             }
 
             g_cudaApi.cuGraphicsUnmapResources(2, resources, nullptr);
         } else {
-            std::cerr << "Lunaris: cuGraphicsMapResources failed: " << ret << std::endl;
+            markCudaGlFailed("cuGraphicsMapResources failed");
+            return;
         }
         g_pendingFrame.new_frame = false;
     }
@@ -701,9 +717,14 @@ extern "C" void register_gpu_video_item_type() {
     GpuVideoItem::registerTypes();
 }
 
+extern "C" bool cuda_gl_render_failed() {
+    return g_cudaRenderFailed;
+}
+
 extern "C" void set_cuda_stream_active(bool active) {
     g_streamActive = active;
     if (active) {
+        g_cudaRenderFailed = false;
         if (g_activeItem) {
             QMetaObject::invokeMethod(g_activeItem, "setCudaActive", Qt::QueuedConnection, Q_ARG(bool, false));
         }

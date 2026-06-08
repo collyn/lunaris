@@ -57,5 +57,6 @@ extern "C" {
 void deliver_cuda_frame(uint64_t cuda_ctx, uint64_t y_ptr, int y_stride, uint64_t uv_ptr, int uv_stride, int width, int height);
 void register_gpu_video_item_type();
 void set_cuda_stream_active(bool active);
+bool cuda_gl_render_failed();
 }
 

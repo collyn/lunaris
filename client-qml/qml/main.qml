@@ -108,6 +108,8 @@ ApplicationWindow {
     property real fps: 0.0
     property real bitrateKbps: 0.0
     property string activeCodec: "H264"
+    property string activeDecodeBackend: "Unknown"
+    property string activePresentBackend: "Unknown"
     property string connectionType: "P2P (Direct)"
     property string activeEncoderName: "Unknown"
     property string activeEncoderHw: "Unknown"
@@ -324,12 +326,14 @@ ApplicationWindow {
         id: bridge
 
         // Handle diagnostic stats sent from Rust
-        onStatsUpdated: (ping, decode, frames, bit, codec, connType) => {
+        onStatsUpdated: (ping, decode, frames, bit, codec, decodeBackend, presentBackend, connType) => {
             window.pingMs = ping
             window.decodeLatencyMs = decode
             window.fps = frames
             window.bitrateKbps = bit
             window.activeCodec = codec
+            window.activeDecodeBackend = decodeBackend
+            window.activePresentBackend = presentBackend
             window.connectionType = connType
         }
 
@@ -711,6 +715,22 @@ ApplicationWindow {
                 anchors.right: parent.right
                 Text { text: "Codec"; color: "#94a3b8"; font.pixelSize: 11; font.bold: true; anchors.left: parent.left }
                 Text { text: window.activeCodec.toUpperCase(); color: "#ffffff"; font.pixelSize: 11; font.bold: true; anchors.right: parent.right }
+            }
+
+            Item {
+                height: 16
+                anchors.left: parent.left
+                anchors.right: parent.right
+                Text { text: "Decode"; color: "#94a3b8"; font.pixelSize: 11; font.bold: true; anchors.left: parent.left }
+                Text { text: window.activeDecodeBackend; color: "#ffffff"; font.pixelSize: 11; font.bold: true; anchors.right: parent.right; elide: Text.ElideLeft; width: 165; horizontalAlignment: Text.AlignRight }
+            }
+
+            Item {
+                height: 16
+                anchors.left: parent.left
+                anchors.right: parent.right
+                Text { text: "Present"; color: "#94a3b8"; font.pixelSize: 11; font.bold: true; anchors.left: parent.left }
+                Text { text: window.activePresentBackend; color: window.activePresentBackend.indexOf("CPU") === -1 ? "#4ade80" : "#fb923c"; font.pixelSize: 11; font.bold: true; anchors.right: parent.right; elide: Text.ElideLeft; width: 165; horizontalAlignment: Text.AlignRight }
             }
 
             Item {

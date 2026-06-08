@@ -116,7 +116,7 @@ Rectangle {
             codecCombo.currentIndex = 2;
         }
 
-        decoderCombo.currentIndex = (disableCuda === true) ? 1 : 0;
+        decoderCombo.currentIndex = (disableCuda === true) ? 2 : 0;
 
         bitrateSlider.value = bitrate;
 
@@ -467,11 +467,11 @@ Rectangle {
         }
 
         // Decoder Type
-        Text { text: "Decoder Type:"; color: "#cbd5e1"; font.pixelSize: 13; font.bold: true; width: 120 }
+        Text { text: "Render Backend:"; color: "#cbd5e1"; font.pixelSize: 13; font.bold: true; width: 120 }
         ComboBox {
             id: decoderCombo
             width: 260
-            model: ["GPU (CUDA)", "Software (FFmpeg)"]
+            model: ["Auto GPU", "Native GPU", "Software"]
             currentIndex: 0
 
             delegate: ItemDelegate {
@@ -784,7 +784,7 @@ Rectangle {
                 else if (queueCombo.currentIndex === 4) queueLimit = 4096
                 else if (queueCombo.currentIndex === 5) queueLimit = 16384
 
-                var disableCuda = (decoderCombo.currentIndex === 1);
+                var disableCuda = (decoderCombo.currentIndex === 2);
                 var inputProtocol = (protocolCombo.currentIndex === 1) ? "webtransport" : "webrtc"
                 var encoderOptions = ["auto", "native", "ffmpeg", "nvenc", "amf", "qsv", "vaapi", "software"]
                 var encoder = encoderOptions[encoderCombo.currentIndex] || "auto"
