@@ -1949,6 +1949,97 @@ fn normalize_host_cursor_kind(kind: &str) -> &str {
     }
 }
 
+fn codec_payload_names(codec: &str) -> &'static [&'static str] {
+    match codec {
+        "h265" | "hevc" => &["H265", "HEVC"],
+        "av1" => &["AV1"],
+        _ => &["H264"],
+    }
+}
+
+fn prefer_video_codec_in_sdp(sdp: &str, codec: &str) -> String {
+    let targets = codec_payload_names(codec);
+    let lines: Vec<&str> = sdp.lines().collect();
+    let mut in_target_video = false;
+    let mut selected_pts = std::collections::BTreeSet::<String>::new();
+
+    for line in &lines {
+        if line.starts_with("m=") {
+            in_target_video = line.starts_with("m=video ");
+            continue;
+        }
+
+        if in_target_video && line.starts_with("a=rtpmap:") {
+            let rest = line.trim_start_matches("a=rtpmap:");
+            let mut parts = rest.split_whitespace();
+            if let (Some(pt), Some(codec_name)) = (parts.next(), parts.next()) {
+                let upper = codec_name
+                    .split('/')
+                    .next()
+                    .unwrap_or(codec_name)
+                    .to_ascii_uppercase();
+                if targets.iter().any(|target| *target == upper) {
+                    selected_pts.insert(pt.to_string());
+                }
+            }
+        }
+    }
+
+    if selected_pts.is_empty() {
+        eprintln!(
+            "Requested codec '{}' was not present in SDP answer; keeping generated SDP unchanged",
+            codec
+        );
+        return sdp.to_string();
+    }
+
+    let mut output = Vec::<String>::new();
+    let mut in_video = false;
+    for line in lines {
+        if line.starts_with("m=") {
+            in_video = line.starts_with("m=video ");
+            if in_video {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                if parts.len() > 3 {
+                    let mut rewritten = parts[..3].join(" ");
+                    for pt in &selected_pts {
+                        rewritten.push(' ');
+                        rewritten.push_str(pt);
+                    }
+                    output.push(rewritten);
+                    continue;
+                }
+            }
+            output.push(line.to_string());
+            continue;
+        }
+
+        if in_video {
+            let payload_attr = ["a=rtpmap:", "a=fmtp:", "a=rtcp-fb:"]
+                .iter()
+                .find_map(|prefix| line.strip_prefix(prefix));
+            if let Some(rest) = payload_attr {
+                let pt = rest
+                    .split(|c: char| c.is_ascii_whitespace() || c == ':')
+                    .next()
+                    .unwrap_or_default();
+                if !selected_pts.contains(pt) {
+                    continue;
+                }
+            }
+        }
+
+        output.push(line.to_string());
+    }
+
+    let line_end = if sdp.contains("\r\n") { "\r\n" } else { "\n" };
+    let mut result = output.join(line_end);
+    if sdp.ends_with("\r\n") || sdp.ends_with('\n') {
+        result.push_str(line_end);
+    }
+    result
+}
+
 fn handle_host_cursor_message(data: &[u8]) {
     let Ok(text) = std::str::from_utf8(data) else {
         return;
@@ -2316,6 +2407,9 @@ async fn setup_peer_connection(
                     let mut h264_wait_for_idr = true;
                     let mut h264_dropping_fragment = false;
                     let mut h264_fragment_is_idr = false;
+                    let mut last_packet_loss_log = std::time::Instant::now()
+                        .checked_sub(std::time::Duration::from_secs(60))
+                        .unwrap_or_else(std::time::Instant::now);
 
                     while let Some(rtp_packet) = rtp_rx.blocking_recv() {
                         pending_packets_decoder.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
@@ -2362,7 +2456,15 @@ async fn setup_peer_connection(
                             let &first_seq = packet_buffer.keys().next().unwrap();
                             let missing_start = next_seq_num.unwrap();
                             let missing_end = first_seq - 1;
-                            eprintln!("RTP packet loss detected: missing sequence from {} to {}", missing_start, missing_end);
+                            let now = std::time::Instant::now();
+                            if now.duration_since(last_packet_loss_log) >= std::time::Duration::from_secs(1) {
+                                eprintln!(
+                                    "RTP packet loss detected: missing sequence from {} to {}",
+                                    missing_start,
+                                    missing_end
+                                );
+                                last_packet_loss_log = now;
+                            }
                             
                             // Clear corrupted frame buffer and request keyframe
                             annex_b_buf.clear();
@@ -2408,7 +2510,7 @@ async fn setup_peer_connection(
                                         continue;
                                     }
                                     let sink_lock = sink_ref.sink.lock().unwrap();
-                                    if *frame_count_ref % 60 == 0 {
+                                    if *frame_count_ref == 1 {
                                         println!(
                                             "Decoded frame via {}: {}x{}, sink={:?}",
                                             decoder_ref.presentation_mode_label(),
@@ -3341,7 +3443,15 @@ async fn run_webrtc_client_task(
                                     }
 
                                     match pc.create_answer(None).await {
-                                        Ok(answer) => {
+                                        Ok(mut answer) => {
+                                            let preferred_sdp = prefer_video_codec_in_sdp(&answer.sdp, &codec_str);
+                                            if preferred_sdp != answer.sdp {
+                                                println!(
+                                                    "Applied SDP answer codec preference: requested={} ",
+                                                    codec_str
+                                                );
+                                                answer.sdp = preferred_sdp;
+                                            }
                                             println!("SDP Answer created:\n{}", answer.sdp);
                                             if let Err(e) = pc.set_local_description(answer.clone()).await {
                                                 eprintln!("Failed to set local description: {:?}", e);

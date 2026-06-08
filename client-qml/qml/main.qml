@@ -127,6 +127,8 @@ ApplicationWindow {
     property string agentHostOs: "unknown"
     property int localCursorX: streamWidth / 2
     property int localCursorY: streamHeight / 2
+    property real localCursorVisualX: videoContainer.width / 2
+    property real localCursorVisualY: videoContainer.height / 2
     property bool localCursorVisible: false
     property bool localCursorInitialized: false
 
@@ -193,6 +195,8 @@ ApplicationWindow {
         if (!window.isStreamMode || videoContainer.width <= 0 || videoContainer.height <= 0) return;
         var clampedX = Math.max(0, Math.min(videoContainer.width, localX));
         var clampedY = Math.max(0, Math.min(videoContainer.height, localY));
+        window.localCursorVisualX = clampedX;
+        window.localCursorVisualY = clampedY;
         window.localCursorX = Math.round((clampedX / videoContainer.width) * window.streamWidth);
         window.localCursorY = Math.round((clampedY / videoContainer.height) * window.streamHeight);
         window.localCursorVisible = true;
@@ -204,11 +208,15 @@ ApplicationWindow {
         if (!window.localCursorInitialized) {
             window.localCursorX = window.hostCursorVisible ? window.hostCursorX : Math.round(window.streamWidth / 2);
             window.localCursorY = window.hostCursorVisible ? window.hostCursorY : Math.round(window.streamHeight / 2);
+            window.localCursorVisualX = (window.localCursorX / Math.max(1, window.streamWidth)) * videoContainer.width;
+            window.localCursorVisualY = (window.localCursorY / Math.max(1, window.streamHeight)) * videoContainer.height;
             window.localCursorInitialized = true;
         }
 
         var scaledDx = (dx / Math.max(1, videoContainer.width)) * window.streamWidth;
         var scaledDy = (dy / Math.max(1, videoContainer.height)) * window.streamHeight;
+        window.localCursorVisualX = Math.max(0, Math.min(videoContainer.width, window.localCursorVisualX + dx));
+        window.localCursorVisualY = Math.max(0, Math.min(videoContainer.height, window.localCursorVisualY + dy));
         window.localCursorX = Math.round(Math.max(0, Math.min(window.streamWidth, window.localCursorX + scaledDx)));
         window.localCursorY = Math.round(Math.max(0, Math.min(window.streamHeight, window.localCursorY + scaledDy)));
         window.localCursorVisible = true;
@@ -323,6 +331,8 @@ ApplicationWindow {
             } else if (!window.localCursorInitialized) {
                 window.localCursorX = x
                 window.localCursorY = y
+                window.localCursorVisualX = (x / Math.max(1, window.streamWidth)) * videoContainer.width
+                window.localCursorVisualY = (y / Math.max(1, window.streamHeight)) * videoContainer.height
                 window.localCursorVisible = true
                 window.localCursorInitialized = true
             }
@@ -582,8 +592,8 @@ ApplicationWindow {
                 && window.hideLocalCursor
                 && window.localCursorVisible
                 && !window.shouldHidePredictedCursor()
-            x: videoContainer.x + (Math.max(0, Math.min(window.streamWidth, window.localCursorX)) / Math.max(1, window.streamWidth)) * videoContainer.width - window.cursorHotspotX(window.hostCursorKind)
-            y: videoContainer.y + (Math.max(0, Math.min(window.streamHeight, window.localCursorY)) / Math.max(1, window.streamHeight)) * videoContainer.height - window.cursorHotspotY(window.hostCursorKind)
+            x: videoContainer.x + Math.max(0, Math.min(videoContainer.width, window.localCursorVisualX)) - window.cursorHotspotX(window.hostCursorKind)
+            y: videoContainer.y + Math.max(0, Math.min(videoContainer.height, window.localCursorVisualY)) - window.cursorHotspotY(window.hostCursorKind)
             z: 200
         }
 
