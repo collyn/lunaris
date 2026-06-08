@@ -231,8 +231,20 @@ static GLuint compileShader(GLenum type, const char* source) {
 }
 
 void GpuVideoItem::initCudaGL() {
+    QOpenGLContext* currentContext = QOpenGLContext::currentContext();
+    if (!currentContext) {
+        std::cerr << "Lunaris: CUDA-GL renderer unavailable: no current OpenGL context." << std::endl;
+        setCudaActive(false);
+        return;
+    }
+
     if (!gl) {
-        gl = QOpenGLContext::currentContext()->functions();
+        gl = currentContext->functions();
+        if (!gl) {
+            std::cerr << "Lunaris: CUDA-GL renderer unavailable: no OpenGL functions." << std::endl;
+            setCudaActive(false);
+            return;
+        }
         gl->initializeOpenGLFunctions();
     }
 
@@ -482,6 +494,10 @@ void GpuVideoItem::cleanupCudaGL(bool skipCuda) {
 
 void GpuVideoItem::renderNative() {
     if (!g_cudaSupported) return;
+    if (!QOpenGLContext::currentContext()) {
+        if (m_cudaActive) setCudaActive(false);
+        return;
+    }
 
     QMutexLocker frameLocker(&g_frameMutex);
     QMutexLocker locker(&m_mutex);

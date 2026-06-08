@@ -238,8 +238,12 @@ impl HardwareDecoder {
     fn process_frame(&mut self, gpu_frame: *mut ffi::AVFrame) -> Result<YUVFrame, anyhow::Error> {
         let format = unsafe { (*gpu_frame).format };
         let is_cuda = format == ffi::AVPixelFormat::AV_PIX_FMT_CUDA as i32;
+        let use_direct_cuda_gl = is_cuda
+            && std::env::var("LUNARIS_CLIENT_CUDA_GL")
+                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                .unwrap_or(false);
 
-        if is_cuda {
+        if use_direct_cuda_gl {
             unsafe {
                 let y_ptr = (*gpu_frame).data[0] as u64;
                 let uv_ptr = (*gpu_frame).data[1] as u64;
@@ -309,7 +313,19 @@ impl HardwareDecoder {
                     is_hw_frame = true;
                 } else {
                     ffi::av_frame_free(&mut (temp_frame as *mut _));
+                    if is_cuda {
+                        ffi::av_frame_free(&mut (gpu_frame as *mut _));
+                        return Err(anyhow::anyhow!(
+                            "CUDA decoded frame transfer failed: {}",
+                            transfer_err
+                        ));
+                    }
                 }
+            } else if is_cuda {
+                ffi::av_frame_free(&mut (gpu_frame as *mut _));
+                return Err(anyhow::anyhow!(
+                    "CUDA decoded frame did not include hw_frames_ctx for CPU transfer"
+                ));
             }
         }
 

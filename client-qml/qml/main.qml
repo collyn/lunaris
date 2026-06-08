@@ -170,6 +170,20 @@ ApplicationWindow {
         return 16;
     }
 
+    function qtCursorShape(kind) {
+        var normalized = normalizeCursorKind(kind);
+        if (normalized === "ibeam") return Qt.IBeamCursor;
+        if (normalized === "hand") return Qt.PointingHandCursor;
+        if (normalized === "cross") return Qt.CrossCursor;
+        if (normalized === "move") return Qt.SizeAllCursor;
+        if (normalized === "resize_ns") return Qt.SizeVerCursor;
+        if (normalized === "resize_ew") return Qt.SizeHorCursor;
+        if (normalized === "resize_nesw") return Qt.SizeBDiagCursor;
+        if (normalized === "resize_nwse") return Qt.SizeFDiagCursor;
+        if (normalized === "unavailable") return Qt.ForbiddenCursor;
+        return Qt.ArrowCursor;
+    }
+
     function updateLocalCursorPrediction(localX, localY) {
         if (!window.isStreamMode || videoContainer.width <= 0 || videoContainer.height <= 0) return;
         var clampedX = Math.max(0, Math.min(videoContainer.width, localX));
@@ -488,7 +502,7 @@ ApplicationWindow {
             anchors.fill: parent
             hoverEnabled: true
             acceptedButtons: Qt.LeftButton | Qt.MiddleButton | Qt.RightButton
-            cursorShape: (window.isPointerLocked || window.hideLocalCursor) ? Qt.BlankCursor : Qt.ArrowCursor
+            cursorShape: (window.isPointerLocked || window.shouldHidePredictedCursor()) ? Qt.BlankCursor : window.qtCursorShape(window.hostCursorKind)
 
             onPositionChanged: (mouse) => {
                 if (mouse.y >= 50 && window.ignoreMenuHover) {
@@ -546,6 +560,7 @@ ApplicationWindow {
             mipmap: false
             cache: true
             visible: window.isStreamMode
+                && window.isPointerLocked
                 && window.hideLocalCursor
                 && window.localCursorVisible
                 && !window.shouldHidePredictedCursor()
