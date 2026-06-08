@@ -683,15 +683,35 @@ pub async fn setup_bridge_session(
         .await?;
     let cursor_channel_for_cursor = cursor_channel.clone();
     let latest_host_cursor_payload = Arc::new(tokio::sync::Mutex::new(None::<String>));
-    let latest_host_cursor_on_open = latest_host_cursor_payload.clone();
+    let latest_host_cursor_on_cursor_open = latest_host_cursor_payload.clone();
     let cursor_channel_on_open = cursor_channel.clone();
     cursor_channel.on_open(Box::new(move || {
-        let latest_host_cursor_on_open = latest_host_cursor_on_open.clone();
+        let latest_host_cursor_on_cursor_open = latest_host_cursor_on_cursor_open.clone();
         let cursor_channel_on_open = cursor_channel_on_open.clone();
         Box::pin(async move {
-            if let Some(payload) = latest_host_cursor_on_open.lock().await.clone() {
+            if let Some(payload) = latest_host_cursor_on_cursor_open.lock().await.clone() {
                 if let Err(err) = cursor_channel_on_open.send_text(payload).await {
-                    trace!("Failed to replay cached host cursor update: {:?}", err);
+                    trace!(
+                        "Failed to replay cached host cursor update on cursor channel: {:?}",
+                        err
+                    );
+                }
+            }
+        })
+    }));
+
+    let latest_host_cursor_on_general_open = latest_host_cursor_payload.clone();
+    let general_channel_on_open = general_channel.clone();
+    general_channel.on_open(Box::new(move || {
+        let latest_host_cursor_on_general_open = latest_host_cursor_on_general_open.clone();
+        let general_channel_on_open = general_channel_on_open.clone();
+        Box::pin(async move {
+            if let Some(payload) = latest_host_cursor_on_general_open.lock().await.clone() {
+                if let Err(err) = general_channel_on_open.send_text(payload).await {
+                    trace!(
+                        "Failed to replay cached host cursor update on general channel: {:?}",
+                        err
+                    );
                 }
             }
         })
@@ -974,8 +994,19 @@ pub async fn setup_bridge_session(
                             "rgba": base64::engine::general_purpose::STANDARD.encode(&image.rgba_data),
                         })
                     });
-                    if let Some(image) = image.as_ref() {
-                        latest_cursor_image = Some(image.clone());
+                    if let Some(image_json) = image.as_ref() {
+                        if let Some(media_image) = cursor.image.as_ref() {
+                            info!(
+                                "Host cursor native image update: kind={} size={}x{} hotspot={},{} bytes={}",
+                                cursor_kind,
+                                media_image.width,
+                                media_image.height,
+                                media_image.hotspot_x,
+                                media_image.hotspot_y,
+                                media_image.rgba_data.len()
+                            );
+                        }
+                        latest_cursor_image = Some(image_json.clone());
                     }
                     let realtime_payload = serde_json::json!({
                         "type": "host_cursor",
