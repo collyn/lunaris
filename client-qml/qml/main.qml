@@ -131,6 +131,13 @@ ApplicationWindow {
     property real localCursorVisualY: videoContainer.height / 2
     property bool localCursorVisible: false
     property bool localCursorInitialized: false
+    property bool hasNativeCursorImage: false
+    property string nativeCursorKind: "unknown"
+    property string nativeCursorSource: ""
+    property int nativeCursorWidth: 32
+    property int nativeCursorHeight: 32
+    property int nativeCursorHotspotX: 0
+    property int nativeCursorHotspotY: 0
 
     function normalizeCursorKind(kind) {
         var allowed = {
@@ -163,7 +170,12 @@ ApplicationWindow {
         return "qrc:/cursors/" + cursorAssetName(kind);
     }
 
+    function hasMatchingNativeCursor(kind) {
+        return window.hasNativeCursorImage && window.nativeCursorKind === window.normalizeCursorKind(kind);
+    }
+
     function cursorHotspotX(kind) {
+        if (window.hasMatchingNativeCursor(kind)) return window.nativeCursorHotspotX;
         var normalized = normalizeCursorKind(kind);
         if (normalized === "arrow" || normalized === "unknown") return 0;
         if (normalized === "hand") return 6;
@@ -171,6 +183,7 @@ ApplicationWindow {
     }
 
     function cursorHotspotY(kind) {
+        if (window.hasMatchingNativeCursor(kind)) return window.nativeCursorHotspotY;
         var normalized = normalizeCursorKind(kind);
         if (normalized === "arrow" || normalized === "unknown") return 0;
         if (normalized === "hand") return 1;
@@ -336,6 +349,16 @@ ApplicationWindow {
                 window.localCursorVisible = true
                 window.localCursorInitialized = true
             }
+        }
+
+        onHostCursorImageUpdated: (kind, source, width, height, hotspotX, hotspotY) => {
+            window.nativeCursorKind = window.normalizeCursorKind(kind)
+            window.nativeCursorSource = source
+            window.nativeCursorWidth = Math.max(1, width)
+            window.nativeCursorHeight = Math.max(1, height)
+            window.nativeCursorHotspotX = hotspotX
+            window.nativeCursorHotspotY = hotspotY
+            window.hasNativeCursorImage = source !== ""
         }
 
         onHostOsUpdated: (hostOs) => {
@@ -581,13 +604,14 @@ ApplicationWindow {
 
         Image {
             id: hostCursorOverlay
-            source: window.cursorSourceForKind(window.hostCursorKind)
-            width: 32
-            height: 32
+            source: window.hasMatchingNativeCursor(window.hostCursorKind) ? window.nativeCursorSource : window.cursorSourceForKind(window.hostCursorKind)
+            width: window.hasMatchingNativeCursor(window.hostCursorKind) ? window.nativeCursorWidth : 32
+            height: window.hasMatchingNativeCursor(window.hostCursorKind) ? window.nativeCursorHeight : 32
             fillMode: Image.PreserveAspectFit
             smooth: false
             mipmap: false
-            cache: true
+            cache: false
+            asynchronous: false
             visible: window.isStreamMode
                 && window.hideLocalCursor
                 && window.localCursorVisible

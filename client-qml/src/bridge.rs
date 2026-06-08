@@ -90,6 +90,11 @@ pub struct PendingHostCursor {
     pub visible: bool,
     pub kind: String,
     pub in_window_move_size: bool,
+    pub image_data_url: String,
+    pub image_width: i32,
+    pub image_height: i32,
+    pub image_hotspot_x: i32,
+    pub image_hotspot_y: i32,
 }
 
 pub static PENDING_HOST_CURSOR: std::sync::Mutex<Option<PendingHostCursor>> =
@@ -464,6 +469,17 @@ pub mod qobject {
             visible: bool,
             kind: QString,
             in_window_move_size: bool,
+        );
+
+        #[qsignal]
+        fn host_cursor_image_updated(
+            self: Pin<&mut StreamBridge>,
+            kind: QString,
+            source: QString,
+            width: i32,
+            height: i32,
+            hotspot_x: i32,
+            hotspot_y: i32,
         );
 
         #[qsignal]
@@ -982,9 +998,19 @@ impl qobject::StreamBridge {
                 cursor.x,
                 cursor.y,
                 cursor.visible,
-                kind_qstring,
+                kind_qstring.clone(),
                 cursor.in_window_move_size,
             );
+            if !cursor.image_data_url.is_empty() {
+                self.as_mut().host_cursor_image_updated(
+                    kind_qstring,
+                    cxx_qt_lib::QString::from(&cursor.image_data_url),
+                    cursor.image_width,
+                    cursor.image_height,
+                    cursor.image_hotspot_x,
+                    cursor.image_hotspot_y,
+                );
+            }
         }
 
         let host_os = { PENDING_HOST_OS.lock().unwrap().take() };
@@ -1949,6 +1975,44 @@ fn normalize_host_cursor_kind(kind: &str) -> &str {
     }
 }
 
+fn encode_cursor_png_data_url(image: &serde_json::Value) -> Option<(String, i32, i32, i32, i32)> {
+    use common::base64::Engine;
+
+    let width = image.get("width")?.as_u64()? as u32;
+    let height = image.get("height")?.as_u64()? as u32;
+    let hotspot_x = image.get("hotspot_x")?.as_i64()? as i32;
+    let hotspot_y = image.get("hotspot_y")?.as_i64()? as i32;
+    let rgba_b64 = image.get("rgba")?.as_str()?;
+    if width == 0 || height == 0 || width > 256 || height > 256 {
+        return None;
+    }
+
+    let rgba = common::base64::engine::general_purpose::STANDARD
+        .decode(rgba_b64)
+        .ok()?;
+    if rgba.len() != width as usize * height as usize * 4 {
+        return None;
+    }
+
+    let mut png_bytes = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut png_bytes, width, height);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder.write_header().ok()?;
+        writer.write_image_data(&rgba).ok()?;
+    }
+
+    let encoded = common::base64::engine::general_purpose::STANDARD.encode(png_bytes);
+    Some((
+        format!("data:image/png;base64,{}", encoded),
+        width as i32,
+        height as i32,
+        hotspot_x,
+        hotspot_y,
+    ))
+}
+
 
 
 
@@ -1983,6 +2047,10 @@ fn handle_host_cursor_message(data: &[u8]) {
         .get("in_window_move_size")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+    let (image_data_url, image_width, image_height, image_hotspot_x, image_hotspot_y) = value
+        .get("image")
+        .and_then(encode_cursor_png_data_url)
+        .unwrap_or_else(|| (String::new(), 0, 0, 0, 0));
 
     *PENDING_HOST_CURSOR.lock().unwrap() = Some(PendingHostCursor {
         x: x.round() as i32,
@@ -1990,6 +2058,11 @@ fn handle_host_cursor_message(data: &[u8]) {
         visible,
         kind,
         in_window_move_size,
+        image_data_url,
+        image_width,
+        image_height,
+        image_hotspot_x,
+        image_hotspot_y,
     });
 }
 
@@ -2888,6 +2961,11 @@ async fn setup_peer_connection(
                             visible: false,
                             kind: "arrow".to_string(),
                             in_window_move_size: false,
+                            image_data_url: String::new(),
+                            image_width: 0,
+                            image_height: 0,
+                            image_hotspot_x: 0,
+                            image_hotspot_y: 0,
                         });
                     })
                 }));
