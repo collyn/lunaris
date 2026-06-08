@@ -170,6 +170,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   const twoFingerTouchStartTimeRef = useRef<number>(0);
   const isTwoFingerTapPendingRef = useRef<boolean>(false);
   const localCursorRef = useRef<HTMLDivElement>(null);
+  const localCursorImageRef = useRef<HTMLImageElement>(null);
   const hostCursorRef = useRef<HTMLDivElement>(null);
   const hostCursorImageRef = useRef<HTMLImageElement>(null);
   const hostCursorImageMetricsRef = useRef<HostCursorImageMetrics | null>(null);
@@ -708,7 +709,17 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
             view.setInt16(1, dx, false);
             view.setInt16(3, dy, false);
             mouseRelativeChannel.send(buffer);
-            
+
+            const activeVideo = getActiveVideoElement();
+            const vidWidth = activeVideo?.videoWidth && activeVideo.videoWidth > 0 ? activeVideo.videoWidth : 1920;
+            const vidHeight = activeVideo?.videoHeight && activeVideo.videoHeight > 0 ? activeVideo.videoHeight : 1080;
+            localCursorPosRef.current = {
+              x: Math.max(0, Math.min(vidWidth, localCursorPosRef.current.x + dx)),
+              y: Math.max(0, Math.min(vidHeight, localCursorPosRef.current.y + dy)),
+            };
+            lastHostCursorLocalPredictionAtRef.current = performance.now();
+            updateVirtualCursorDOMRef.current();
+
             // Clear accumulated deltas only on successful transmission
             accDxRef.current = 0;
             accDyRef.current = 0;
@@ -767,7 +778,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
               const predictedX = Math.round(xNorm * vidWidth);
               const predictedY = Math.round(yNorm * vidHeight);
               localCursorPosRef.current = { x: predictedX, y: predictedY };
-              if (touchModeRef.current === 'trackpad') {
+              if (touchModeRef.current === 'trackpad' || hideLocalCursor) {
                 updateVirtualCursorDOMRef.current();
               }
               if (!(hostCursorMouseDownRef.current && agentHostOs === "windows")) {
@@ -798,7 +809,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     return () => {
       window.clearInterval(flushTimerId);
     };
-  }, [status]);
+  }, [status, hideLocalCursor]);
 
 
 
@@ -1613,6 +1624,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       } else {
         updateHostCursorDOM(x, y, visible, kind, image);
       }
+      updateVirtualCursorDOMRef.current();
     } catch {
       // Ignore non-JSON control messages on the shared general channel.
     }
@@ -2225,7 +2237,14 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     const cursorKind = normalizeHostCursorKind(kind);
     hostCursorPosRef.current = { x, y, visible, kind: cursorKind };
 
-    if (!cursorEl || !video || !wrapper || !visible || (hostCursorMouseDownRef.current && agentHostOs === "windows")) {
+    if (
+      !cursorEl
+      || !video
+      || !wrapper
+      || !visible
+      || isHardwareMouseActiveRef.current
+      || (hostCursorMouseDownRef.current && agentHostOs === "windows")
+    ) {
       if (cursorEl) cursorEl.style.display = 'none';
       return;
     }
@@ -2341,20 +2360,28 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
 
   const updateVirtualCursorDOM = () => {
     const cursorEl = localCursorRef.current;
+    const imageEl = localCursorImageRef.current;
     const video = videoRef.current;
     const wrapper = viewportWrapperRef.current;
     if (!cursorEl || !video || !wrapper) return;
 
-    if (touchModeRef.current !== 'trackpad' || status !== 'Streaming' || isHardwareMouseActiveRef.current) {
+    const shouldShowTrackpad = touchModeRef.current === 'trackpad'
+      && status === 'Streaming'
+      && !isHardwareMouseActiveRef.current;
+    const shouldShowHardwarePrediction = status === 'Streaming'
+      && hideLocalCursor
+      && isHardwareMouseActiveRef.current;
+
+    if (!shouldShowTrackpad && !shouldShowHardwarePrediction) {
       cursorEl.style.display = 'none';
       return;
     }
-    cursorEl.style.display = 'block';
 
     const rect = video.getBoundingClientRect();
     const wrapperRect = wrapper.getBoundingClientRect();
 
     if (rect.width <= 0 || rect.height <= 0 || wrapperRect.width <= 0 || wrapperRect.height <= 0) {
+      cursorEl.style.display = 'none';
       return;
     }
 
@@ -2383,17 +2410,24 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       offsetY = (elHeight - actualVidHeight) / 2;
     }
 
-    const xNorm = localCursorPosRef.current.x / vidWidth;
-    const yNorm = localCursorPosRef.current.y / vidHeight;
+    const hostCursor = hostCursorPosRef.current;
+    const cursorKind = normalizeHostCursorKind(hostCursor.kind);
+    const cursorAsset = HOST_CURSOR_ASSETS[cursorKind];
+    if (imageEl && !imageEl.src.endsWith(cursorAsset.src)) {
+      imageEl.src = cursorAsset.src;
+    }
+
+    const xNorm = Math.max(0, Math.min(1, localCursorPosRef.current.x / vidWidth));
+    const yNorm = Math.max(0, Math.min(1, localCursorPosRef.current.y / vidHeight));
 
     const clientX = xNorm * actualVidWidth + offsetX + rect.left;
     const clientY = yNorm * actualVidHeight + offsetY + rect.top;
 
-    const leftWrapper = clientX - wrapperRect.left;
-    const topWrapper = clientY - wrapperRect.top;
+    const leftWrapper = clientX - wrapperRect.left - cursorAsset.hotspotX;
+    const topWrapper = clientY - wrapperRect.top - cursorAsset.hotspotY;
 
-    cursorEl.style.left = `${leftWrapper}px`;
-    cursorEl.style.top = `${topWrapper}px`;
+    cursorEl.style.transform = `translate3d(${leftWrapper}px, ${topWrapper}px, 0)`;
+    cursorEl.style.display = 'block';
   };
 
   const handleVideoLoadedMetadata = () => {
@@ -2409,7 +2443,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
 
   useEffect(() => {
     updateVirtualCursorDOM();
-  }, [zoomScale, zoomPan, touchMode, status]);
+  }, [zoomScale, zoomPan, touchMode, status, hideLocalCursor]);
 
   useEffect(() => {
     window.addEventListener("resize", updateVideoRect);
@@ -3184,6 +3218,35 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
 
     // Absolute mouse mode (no pointer lock): update latest position ref
     latestAbsoluteMousePosRef.current = { clientX: e.clientX, clientY: e.clientY };
+
+    if (hideLocalCursor && videoRef.current) {
+      const video = videoRef.current;
+      const activeVideo = getActiveVideoElement();
+      const rect = cachedVideoRectRef.current;
+      if (rect.width > 0 && rect.height > 0) {
+        const vidWidth = activeVideo?.videoWidth && activeVideo.videoWidth > 0 ? activeVideo.videoWidth : (video as any).width || 1920;
+        const vidHeight = activeVideo?.videoHeight && activeVideo.videoHeight > 0 ? activeVideo.videoHeight : (video as any).height || 1080;
+        const elAspectRatio = rect.width / rect.height;
+        const vidAspectRatio = vidWidth / vidHeight;
+        let actualVidWidth = rect.width;
+        let actualVidHeight = rect.height;
+        let offsetX = 0;
+        let offsetY = 0;
+        if (elAspectRatio > vidAspectRatio) {
+          actualVidHeight = rect.height;
+          actualVidWidth = rect.height * vidAspectRatio;
+          offsetX = (rect.width - actualVidWidth) / 2;
+        } else {
+          actualVidWidth = rect.width;
+          actualVidHeight = rect.width / vidAspectRatio;
+          offsetY = (rect.height - actualVidHeight) / 2;
+        }
+        const xNorm = Math.max(0, Math.min(1, ((e.clientX - rect.left) - offsetX) / actualVidWidth));
+        const yNorm = Math.max(0, Math.min(1, ((e.clientY - rect.top) - offsetY) / actualVidHeight));
+        localCursorPosRef.current = { x: Math.round(xNorm * vidWidth), y: Math.round(yNorm * vidHeight) };
+        updateVirtualCursorDOMRef.current();
+      }
+    }
   };
 
   // Send mouse click event
@@ -3199,6 +3262,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     hostCursorMouseDownRef.current = isDown ? true : e.buttons !== 0;
     const hostCursor = hostCursorPosRef.current;
     updateHostCursorDOM(hostCursor.x, hostCursor.y, hostCursor.visible, hostCursor.kind);
+    updateVirtualCursorDOMRef.current();
     
     const mouseReliableChannel = channelsRef.current["mouse_reliable"];
     if (mouseReliableChannel && mouseReliableChannel.readyState === "open") {
@@ -4311,24 +4375,30 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
           />
         </div>
 
-        {/* Client-side virtual cursor for mobile trackpad mode */}
+        {/* Client-side predicted cursor for local mouse/trackpad feedback. */}
         <div
           ref={localCursorRef}
           className="client-virtual-cursor"
           style={{
             position: 'absolute',
-            width: '18px',
-            height: '18px',
+            width: '32px',
+            height: '32px',
             pointerEvents: 'none',
             zIndex: 150,
-            transform: 'translate(-2px, -2px)',
+            transform: 'translate3d(0, 0, 0)',
             transition: 'none',
             display: "none",
+            willChange: 'transform',
+            contain: 'layout paint style',
           }}
         >
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
-            <path d="M4.5 3V19.5L9.75 14.25H18L4.5 3Z" fill="#a5b4fc" stroke="#ffffff" strokeWidth="2" strokeLinejoin="round" />
-          </svg>
+          <img
+            ref={localCursorImageRef}
+            src="/cursors/windows-aero-arrow.png"
+            alt=""
+            draggable={false}
+            style={{ width: '32px', height: '32px', display: 'block', maxWidth: 'none' }}
+          />
         </div>
 
 
