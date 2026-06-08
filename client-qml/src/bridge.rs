@@ -2374,6 +2374,11 @@ async fn setup_peer_connection(
                     let mut h264_wait_for_idr = true;
                     let mut h264_dropping_fragment = false;
                     let mut h264_fragment_is_idr = false;
+                    let mut h265_seen_config = false;
+                    let mut h265_config_annexb = Vec::<u8>::new();
+                    let mut h265_wait_for_irap = true;
+                    let mut h265_dropping_fragment = false;
+                    let mut h265_fragment_is_irap = false;
                     let mut last_packet_loss_log = std::time::Instant::now()
                         .checked_sub(std::time::Duration::from_secs(60))
                         .unwrap_or_else(std::time::Instant::now);
@@ -2690,16 +2695,57 @@ async fn setup_peer_connection(
                                 }
                                 super::decoder::CodecType::H265 => {
                                     let nal_type = (payload[0] & 0x7E) >> 1;
+                                    let is_h265_config = |t: u8| t == 32 || t == 33 || t == 34;
+                                    let is_h265_irap = |t: u8| (16..=23).contains(&t);
+
                                     if nal_type <= 47 {
                                         // Single NAL unit
                                         let is_vcl = nal_type <= 31;
+                                        let is_irap = is_h265_irap(nal_type);
+
+                                        if is_h265_config(nal_type) {
+                                            if nal_type == 32 {
+                                                h265_config_annexb.clear();
+                                            }
+                                            h265_seen_config = true;
+                                            h265_config_annexb.extend_from_slice(&[0, 0, 0, 1]);
+                                            h265_config_annexb.extend_from_slice(payload);
+                                        }
+
                                         annex_b_buf.extend_from_slice(&[0, 0, 0, 1]);
                                         annex_b_buf.extend_from_slice(payload);
-                                        
+
                                         if is_vcl {
-                                            if let Err(e) = process_and_deliver(&annex_b_buf, &mut decoder, &mut decode_count, &mut total_decode_time_ms, &mut frame_count, &has_decoded, &sink_inner) {
-                                                eprintln!("Decoder error: {:?}. Requesting keyframe...", e);
+                                            if h265_wait_for_irap && !is_irap {
+                                                annex_b_buf.clear();
+                                                next_seq_num = Some(current_expected + 1);
+                                                continue;
+                                            }
+                                            if is_irap && !h265_seen_config {
+                                                annex_b_buf.clear();
+                                                h265_wait_for_irap = true;
                                                 let _ = pli_tx.send(());
+                                                next_seq_num = Some(current_expected + 1);
+                                                continue;
+                                            }
+
+                                            let h265_decode_buf;
+                                            let h265_payload = if is_irap
+                                                && !h265_config_annexb.is_empty()
+                                                && !annex_b_buf.starts_with(&h265_config_annexb)
+                                            {
+                                                h265_decode_buf = [h265_config_annexb.as_slice(), annex_b_buf.as_slice()].concat();
+                                                h265_decode_buf.as_slice()
+                                            } else {
+                                                annex_b_buf.as_slice()
+                                            };
+
+                                            if let Err(e) = process_and_deliver(h265_payload, &mut decoder, &mut decode_count, &mut total_decode_time_ms, &mut frame_count, &has_decoded, &sink_inner) {
+                                                eprintln!("Decoder error: {:?}. Requesting keyframe...", e);
+                                                h265_wait_for_irap = true;
+                                                let _ = pli_tx.send(());
+                                            } else {
+                                                h265_wait_for_irap = false;
                                             }
                                             annex_b_buf.clear();
                                         }
@@ -2714,17 +2760,53 @@ async fn setup_peer_connection(
                                             }
                                             let nalu_data = &payload[offset..offset + nalu_size];
                                             offset += nalu_size;
-                                            
-                                            if !nalu_data.is_empty() {
+
+                                            if nalu_data.len() >= 2 {
                                                 let inner_nal_type = (nalu_data[0] & 0x7E) >> 1;
                                                 let is_vcl = inner_nal_type <= 31;
+                                                let is_irap = is_h265_irap(inner_nal_type);
+
+                                                if is_h265_config(inner_nal_type) {
+                                                    if inner_nal_type == 32 {
+                                                        h265_config_annexb.clear();
+                                                    }
+                                                    h265_seen_config = true;
+                                                    h265_config_annexb.extend_from_slice(&[0, 0, 0, 1]);
+                                                    h265_config_annexb.extend_from_slice(nalu_data);
+                                                }
+
                                                 annex_b_buf.extend_from_slice(&[0, 0, 0, 1]);
                                                 annex_b_buf.extend_from_slice(nalu_data);
-                                                
+
                                                 if is_vcl {
-                                                    if let Err(e) = process_and_deliver(&annex_b_buf, &mut decoder, &mut decode_count, &mut total_decode_time_ms, &mut frame_count, &has_decoded, &sink_inner) {
-                                                        eprintln!("Decoder error: {:?}. Requesting keyframe...", e);
+                                                    if h265_wait_for_irap && !is_irap {
+                                                        annex_b_buf.clear();
+                                                        continue;
+                                                    }
+                                                    if is_irap && !h265_seen_config {
+                                                        annex_b_buf.clear();
+                                                        h265_wait_for_irap = true;
                                                         let _ = pli_tx.send(());
+                                                        continue;
+                                                    }
+
+                                                    let h265_decode_buf;
+                                                    let h265_payload = if is_irap
+                                                        && !h265_config_annexb.is_empty()
+                                                        && !annex_b_buf.starts_with(&h265_config_annexb)
+                                                    {
+                                                        h265_decode_buf = [h265_config_annexb.as_slice(), annex_b_buf.as_slice()].concat();
+                                                        h265_decode_buf.as_slice()
+                                                    } else {
+                                                        annex_b_buf.as_slice()
+                                                    };
+
+                                                    if let Err(e) = process_and_deliver(h265_payload, &mut decoder, &mut decode_count, &mut total_decode_time_ms, &mut frame_count, &has_decoded, &sink_inner) {
+                                                        eprintln!("Decoder error: {:?}. Requesting keyframe...", e);
+                                                        h265_wait_for_irap = true;
+                                                        let _ = pli_tx.send(());
+                                                    } else {
+                                                        h265_wait_for_irap = false;
                                                     }
                                                     annex_b_buf.clear();
                                                 }
@@ -2742,21 +2824,60 @@ async fn setup_peer_connection(
                                         let start_bit = (fu_header & 0x80) != 0;
                                         let end_bit = (fu_header & 0x40) != 0;
                                         let original_nal_type = fu_header & 0x3F;
-                                        
+                                        let is_irap = is_h265_irap(original_nal_type);
+
                                         let reconstructed_header_1 = (fu_indicator_1 & 0x81) | (original_nal_type << 1);
                                         let reconstructed_header_2 = fu_indicator_2;
-                                        
+
                                         if start_bit {
+                                            h265_fragment_is_irap = is_irap;
+                                            h265_dropping_fragment = false;
+                                            annex_b_buf.clear();
+
+                                            if h265_wait_for_irap && !is_irap {
+                                                h265_dropping_fragment = true;
+                                                next_seq_num = Some(current_expected + 1);
+                                                continue;
+                                            }
+                                            if is_irap && !h265_seen_config {
+                                                h265_dropping_fragment = true;
+                                                h265_wait_for_irap = true;
+                                                let _ = pli_tx.send(());
+                                                next_seq_num = Some(current_expected + 1);
+                                                continue;
+                                            }
+
                                             annex_b_buf.extend_from_slice(&[0, 0, 0, 1, reconstructed_header_1, reconstructed_header_2]);
                                             annex_b_buf.extend_from_slice(&payload[3..]);
+                                        } else if h265_dropping_fragment || annex_b_buf.is_empty() {
+                                            if end_bit {
+                                                h265_dropping_fragment = false;
+                                            }
+                                            next_seq_num = Some(current_expected + 1);
+                                            continue;
                                         } else {
                                             annex_b_buf.extend_from_slice(&payload[3..]);
                                         }
-                                        
+
                                         if end_bit {
-                                            if let Err(e) = process_and_deliver(&annex_b_buf, &mut decoder, &mut decode_count, &mut total_decode_time_ms, &mut frame_count, &has_decoded, &sink_inner) {
+                                            h265_dropping_fragment = false;
+                                            let h265_decode_buf;
+                                            let h265_payload = if h265_fragment_is_irap
+                                                && !h265_config_annexb.is_empty()
+                                                && !annex_b_buf.starts_with(&h265_config_annexb)
+                                            {
+                                                h265_decode_buf = [h265_config_annexb.as_slice(), annex_b_buf.as_slice()].concat();
+                                                h265_decode_buf.as_slice()
+                                            } else {
+                                                annex_b_buf.as_slice()
+                                            };
+
+                                            if let Err(e) = process_and_deliver(h265_payload, &mut decoder, &mut decode_count, &mut total_decode_time_ms, &mut frame_count, &has_decoded, &sink_inner) {
                                                 eprintln!("Decoder error: {:?}. Requesting keyframe...", e);
+                                                h265_wait_for_irap = true;
                                                 let _ = pli_tx.send(());
+                                            } else {
+                                                h265_wait_for_irap = false;
                                             }
                                             annex_b_buf.clear();
                                         }
