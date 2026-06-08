@@ -592,7 +592,8 @@ pub mod qobject {
         #[qinvokable]
         fn fetch_hosts(self: Pin<&mut StreamBridge>);
 
-
+        #[qinvokable]
+        fn delete_host(self: Pin<&mut StreamBridge>, host_id: QString);
 
         #[qinvokable]
         fn fetch_apps(self: Pin<&mut StreamBridge>, host_id: QString);
@@ -1153,6 +1154,133 @@ impl qobject::StreamBridge {
                         .push(PendingDashboardEvent::HostsResult {
                             success: false,
                             error_msg: err_msg,
+                            hosts_json: "".to_string(),
+                        });
+                }
+            }
+        });
+    }
+
+
+
+    pub fn delete_host(self: Pin<&mut Self>, host_id: QString) {
+        let host_id_str = host_id.to_string();
+        let settings = match load_settings() {
+            Some(s) => s,
+            None => {
+                PENDING_EVENTS
+                    .lock()
+                    .unwrap()
+                    .push(PendingDashboardEvent::HostsResult {
+                        success: false,
+                        error_msg: "Not authenticated".to_string(),
+                        hosts_json: "".to_string(),
+                    });
+                return;
+            }
+        };
+
+        let server_str = settings.server_url;
+        let token_str = settings.token;
+
+        let mut rust_obj = self.rust_mut();
+        let rt = rust_obj.get_or_init_runtime();
+
+        rt.spawn(async move {
+            let client = reqwest::Client::new();
+            let delete_url = format!("{}/api/hosts/{}", server_str, host_id_str);
+            let delete_res = client
+                .delete(&delete_url)
+                .header("Authorization", format!("Bearer {}", token_str))
+                .send()
+                .await;
+
+            match delete_res {
+                Ok(resp) if resp.status().is_success() => {
+                    let hosts_url = format!("{}/api/hosts", server_str);
+                    match client
+                        .get(&hosts_url)
+                        .header("Authorization", format!("Bearer {}", token_str))
+                        .send()
+                        .await
+                    {
+                        Ok(hosts_resp) if hosts_resp.status().is_success() => {
+                            if let Ok(hosts) = hosts_resp.json::<Vec<common::HostInfo>>().await {
+                                if let Ok(hosts_json) = serde_json::to_string(&hosts) {
+                                    PENDING_EVENTS.lock().unwrap().push(
+                                        PendingDashboardEvent::HostsResult {
+                                            success: true,
+                                            error_msg: "".to_string(),
+                                            hosts_json,
+                                        },
+                                    );
+                                    return;
+                                }
+                            }
+                            PENDING_EVENTS.lock().unwrap().push(
+                                PendingDashboardEvent::HostsResult {
+                                    success: false,
+                                    error_msg: "Host deleted, but failed to refresh host list".to_string(),
+                                    hosts_json: "".to_string(),
+                                },
+                            );
+                        }
+                        Ok(hosts_resp) if hosts_resp.status() == 401 => {
+                            PENDING_EVENTS.lock().unwrap().push(
+                                PendingDashboardEvent::HostsResult {
+                                    success: false,
+                                    error_msg: "Unauthorized".to_string(),
+                                    hosts_json: "".to_string(),
+                                },
+                            );
+                        }
+                        Ok(_) => {
+                            PENDING_EVENTS.lock().unwrap().push(
+                                PendingDashboardEvent::HostsResult {
+                                    success: false,
+                                    error_msg: "Host deleted, but failed to refresh host list".to_string(),
+                                    hosts_json: "".to_string(),
+                                },
+                            );
+                        }
+                        Err(e) => {
+                            PENDING_EVENTS.lock().unwrap().push(
+                                PendingDashboardEvent::HostsResult {
+                                    success: false,
+                                    error_msg: format!("Host deleted, refresh failed: {}", e),
+                                    hosts_json: "".to_string(),
+                                },
+                            );
+                        }
+                    }
+                }
+                Ok(resp) if resp.status() == 401 => {
+                    PENDING_EVENTS
+                        .lock()
+                        .unwrap()
+                        .push(PendingDashboardEvent::HostsResult {
+                            success: false,
+                            error_msg: "Unauthorized".to_string(),
+                            hosts_json: "".to_string(),
+                        });
+                }
+                Ok(_) => {
+                    PENDING_EVENTS
+                        .lock()
+                        .unwrap()
+                        .push(PendingDashboardEvent::HostsResult {
+                            success: false,
+                            error_msg: "Failed to delete host".to_string(),
+                            hosts_json: "".to_string(),
+                        });
+                }
+                Err(e) => {
+                    PENDING_EVENTS
+                        .lock()
+                        .unwrap()
+                        .push(PendingDashboardEvent::HostsResult {
+                            success: false,
+                            error_msg: format!("Connection failed: {}", e),
                             hosts_json: "".to_string(),
                         });
                 }

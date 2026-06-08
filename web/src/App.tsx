@@ -14,6 +14,48 @@ interface Host {
   agent_connected?: boolean;
 }
 
+type HostStreamSettings = {
+  resolution: string;
+  fps: number;
+  codec: string;
+  bitrate: number;
+  mouseQueueLimit: number;
+  inputProtocol: string;
+  useNativeClient: boolean;
+  useCanvasRenderer: boolean;
+  encoder: string;
+  display: string;
+  virtualDisplay: boolean;
+};
+
+const loadHostStreamSettings = (): HostStreamSettings => ({
+  resolution: localStorage.getItem('lunaris_stream_res') || '1080p',
+  fps: Number(localStorage.getItem('lunaris_stream_fps') || '60'),
+  codec: localStorage.getItem('lunaris_stream_codec') || 'h264',
+  bitrate: Number(localStorage.getItem('lunaris_stream_bitrate') || '8000'),
+  mouseQueueLimit: Number(localStorage.getItem('lunaris_mouse_queue_limit') || '256'),
+  inputProtocol: localStorage.getItem('lunaris_input_protocol') || 'webrtc',
+  useNativeClient: localStorage.getItem('lunaris_tauri_use_native') === 'true',
+  useCanvasRenderer: localStorage.getItem('lunaris_canvas_renderer') !== 'false',
+  encoder: localStorage.getItem('lunaris_stream_encoder') || 'auto',
+  display: localStorage.getItem('lunaris_stream_display') || 'default',
+  virtualDisplay: localStorage.getItem('lunaris_stream_virtual_display') === 'true'
+});
+
+const saveHostStreamSettings = (settings: HostStreamSettings) => {
+  localStorage.setItem('lunaris_stream_res', settings.resolution);
+  localStorage.setItem('lunaris_stream_fps', String(settings.fps));
+  localStorage.setItem('lunaris_stream_bitrate', String(settings.bitrate));
+  localStorage.setItem('lunaris_stream_codec', settings.codec);
+  localStorage.setItem('lunaris_mouse_queue_limit', String(settings.mouseQueueLimit));
+  localStorage.setItem('lunaris_input_protocol', settings.inputProtocol);
+  localStorage.setItem('lunaris_tauri_use_native', String(settings.useNativeClient));
+  localStorage.setItem('lunaris_canvas_renderer', String(settings.useCanvasRenderer));
+  localStorage.setItem('lunaris_stream_encoder', settings.encoder);
+  localStorage.setItem('lunaris_stream_display', settings.display);
+  localStorage.setItem('lunaris_stream_virtual_display', String(settings.virtualDisplay));
+};
+
 const getCurrentBrowserServerUrl = () => {
   if (window.location.hostname === 'tauri.localhost' || window.location.protocol.startsWith('tauri')) {
     return 'http://localhost:8080';
@@ -129,6 +171,9 @@ function App() {
   const [viewingAppsLoading, setViewingAppsLoading] = useState<boolean>(false);
   const [viewingAppsError, setViewingAppsError] = useState<string | null>(null);
   const [selectedAppId, setSelectedAppId] = useState<number | null>(null);
+  const [settingsHost, setSettingsHost] = useState<Host | null>(null);
+  const [draftHostSettings, setDraftHostSettings] = useState<HostStreamSettings>(() => loadHostStreamSettings());
+  const [deleteHostLoading, setDeleteHostLoading] = useState<string | null>(null);
 
 
 
@@ -364,6 +409,54 @@ function App() {
   };
 
 
+
+  const openHostSettings = (host: Host) => {
+    setSettingsHost(host);
+    setDraftHostSettings(loadHostStreamSettings());
+  };
+
+  const applyHostSettings = () => {
+    saveHostStreamSettings(draftHostSettings);
+    setSettingsHost(null);
+  };
+
+  const handleDeleteHost = async (host: Host) => {
+    if (!token || deleteHostLoading) return;
+    const confirmed = window.confirm(`Delete host "${host.name}" from this server? Active sessions for this host will be stopped.`);
+    if (!confirmed) return;
+
+    setDeleteHostLoading(host.id);
+    try {
+      const serverHost = getBackendHost();
+      const response = await fetch(`${getBackendProtocol().http}//${serverHost}/api/hosts/${encodeURIComponent(host.id)}`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+
+      if (response.ok) {
+        setHosts((current) => current.filter((h) => h.id !== host.id));
+        if (viewingHost?.id === host.id) {
+          setViewingHost(null);
+          setViewingApps(null);
+        }
+        if (selectedHost?.id === host.id) {
+          setSelectedHost(null);
+        }
+      } else if (response.status === 401) {
+        handleLogout();
+      } else {
+        setHostsError('Failed to delete host');
+      }
+    } catch (err) {
+      setHostsError('Failed to connect to signaling server');
+    } finally {
+      setDeleteHostLoading(null);
+    }
+  };
+
+  const updateDraftHostSettings = <K extends keyof HostStreamSettings>(key: K, value: HostStreamSettings[K]) => {
+    setDraftHostSettings((current) => ({ ...current, [key]: value }));
+  };
 
   const handleStopStream = (hostId: string) => {
     if (!token) return;
@@ -976,6 +1069,34 @@ function App() {
                                   </div>
                                 </div>
 
+                                <div className="host-card-actions" onClick={(e) => e.stopPropagation()}>
+                                  <button
+                                    type="button"
+                                    className="host-action-btn"
+                                    title="Stream settings"
+                                    onClick={() => openHostSettings(host)}
+                                  >
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                      <circle cx="12" cy="12" r="3" />
+                                      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06A1.65 1.65 0 0 0 15 19.4a1.65 1.65 0 0 0-1 .6 1.65 1.65 0 0 0-.4 1.08V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 8.6 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-.6-1 1.65 1.65 0 0 0-1.08-.4H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 8.6a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-.6 1.65 1.65 0 0 0 .4-1.08V3a2 2 0 1 1 4 0v.09A1.65 1.65 0 0 0 15.4 4.6a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9c.38.16.72.4 1 .7.29.29.6.9.6 1.3V12a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+                                    </svg>
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="host-action-btn danger"
+                                    title="Delete host"
+                                    disabled={deleteHostLoading === host.id}
+                                    onClick={() => handleDeleteHost(host)}
+                                  >
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                      <polyline points="3 6 5 6 21 6" />
+                                      <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+                                      <path d="M10 11v6" />
+                                      <path d="M14 11v6" />
+                                      <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
+                                    </svg>
+                                  </button>
+                                </div>
 
                               </div>
                             );
@@ -998,6 +1119,105 @@ function App() {
             </div>
           </div>
         )}
+      {settingsHost && (
+        <div className="stream-settings-overlay" style={{ zIndex: 1200 }} onMouseDown={(e) => { if (e.target === e.currentTarget) setSettingsHost(null); }}>
+          <div className="stream-settings-card">
+            <h2>Stream Settings</h2>
+            <p className="subtitle">Defaults used when connecting to {settingsHost.name}</p>
+            <div className="settings-grid">
+              <div className="settings-group">
+                <label htmlFor="hostResolution">Resolution</label>
+                <select id="hostResolution" value={draftHostSettings.resolution} onChange={(e) => updateDraftHostSettings('resolution', e.target.value)}>
+                  <option value="1080p">1080p (1920x1080)</option>
+                  <option value="720p">720p (1280x720)</option>
+                  <option value="540p">540p (960x540)</option>
+                </select>
+              </div>
+              <div className="settings-group">
+                <label htmlFor="hostFps">Frame Rate</label>
+                <select id="hostFps" value={draftHostSettings.fps} onChange={(e) => updateDraftHostSettings('fps', Number(e.target.value))}>
+                  <option value={240}>240 FPS</option>
+                  <option value={144}>144 FPS</option>
+                  <option value={120}>120 FPS</option>
+                  <option value={90}>90 FPS</option>
+                  <option value={60}>60 FPS</option>
+                  <option value={30}>30 FPS</option>
+                </select>
+              </div>
+              <div className="settings-group">
+                <label htmlFor="hostCodec">Video Codec</label>
+                <select id="hostCodec" value={draftHostSettings.codec} onChange={(e) => updateDraftHostSettings('codec', e.target.value)}>
+                  <option value="h264">H.264</option>
+                  <option value="h265">H.265 (HEVC)</option>
+                  <option value="av1">AV1</option>
+                  <option value="auto">Auto</option>
+                </select>
+              </div>
+              <div className="settings-group">
+                <label htmlFor="hostEncoder">Encoder Backend</label>
+                <select id="hostEncoder" value={draftHostSettings.encoder} onChange={(e) => updateDraftHostSettings('encoder', e.target.value)}>
+                  <option value="auto">Auto (Recommended)</option>
+                  <option value="native">Native GPU</option>
+                  <option value="ffmpeg">FFmpeg GPU</option>
+                  <option value="nvenc">NVENC</option>
+                  <option value="amf">AMF</option>
+                  <option value="qsv">QSV</option>
+                  <option value="vaapi">VAAPI</option>
+                  <option value="software">Software</option>
+                </select>
+              </div>
+              <div className="settings-group full-width">
+                <label htmlFor="hostDisplay">Display</label>
+                <input id="hostDisplay" type="text" value={draftHostSettings.display} onChange={(e) => updateDraftHostSettings('display', e.target.value)} placeholder="default, 0, HDMI-1, DP-1..." />
+              </div>
+              <div className="settings-group full-width">
+                <label htmlFor="hostBitrate">Bitrate (Kbps)</label>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                  <input id="hostBitrate" type="range" min={1000} max={150000} step={500} value={draftHostSettings.bitrate} onChange={(e) => updateDraftHostSettings('bitrate', Number(e.target.value))} style={{ flex: 1 }} />
+                  <span style={{ minWidth: '70px', textAlign: 'right', fontWeight: 'bold', color: 'var(--accent-cyan)' }}>{(draftHostSettings.bitrate / 1000).toFixed(1)} Mbps</span>
+                </div>
+              </div>
+              <div className="settings-group full-width">
+                <label htmlFor="hostMouseQueue">Mouse Queue Limit</label>
+                <select id="hostMouseQueue" value={draftHostSettings.mouseQueueLimit} onChange={(e) => updateDraftHostSettings('mouseQueueLimit', Number(e.target.value))}>
+                  <option value={0}>0 B (Strict No Queue)</option>
+                  <option value={64}>64 B (Ultra Low Buffer)</option>
+                  <option value={256}>256 B (Recommended)</option>
+                  <option value={1024}>1024 B (Moderate Buffer)</option>
+                  <option value={4096}>4096 B (High Buffer)</option>
+                  <option value={16384}>16384 B (Previous Default)</option>
+                </select>
+              </div>
+              <div className="settings-group full-width">
+                <label htmlFor="hostInputProtocol">Input Protocol</label>
+                <select id="hostInputProtocol" value={draftHostSettings.inputProtocol} onChange={(e) => updateDraftHostSettings('inputProtocol', e.target.value)}>
+                  <option value="webrtc">WebRTC Data Channels (SCTP)</option>
+                  <option value="webtransport" disabled={typeof (window as any).WebTransport === 'undefined'}>WebTransport QUIC Datagrams {typeof (window as any).WebTransport === 'undefined' ? '(Unsupported)' : '(Experimental)'}</option>
+                </select>
+              </div>
+              {!!(window as any).__TAURI__ && (
+                <div className="settings-checkbox-group">
+                  <input id="hostNativeClient" type="checkbox" checked={draftHostSettings.useNativeClient} onChange={(e) => updateDraftHostSettings('useNativeClient', e.target.checked)} />
+                  <label htmlFor="hostNativeClient">Use native client binary</label>
+                </div>
+              )}
+              <div className="settings-checkbox-group">
+                <input id="hostCanvasRenderer" type="checkbox" checked={draftHostSettings.useCanvasRenderer} disabled={typeof (window as any).MediaStreamTrackProcessor === 'undefined'} onChange={(e) => updateDraftHostSettings('useCanvasRenderer', e.target.checked)} />
+                <label htmlFor="hostCanvasRenderer">Use Canvas Renderer {typeof (window as any).MediaStreamTrackProcessor === 'undefined' ? '(Unsupported)' : ''}</label>
+              </div>
+              <div className="settings-checkbox-group">
+                <input id="hostVirtualDisplay" type="checkbox" checked={draftHostSettings.virtualDisplay} onChange={(e) => updateDraftHostSettings('virtualDisplay', e.target.checked)} />
+                <label htmlFor="hostVirtualDisplay">Create Virtual Display</label>
+              </div>
+            </div>
+            <div className="settings-actions">
+              <button onClick={() => setSettingsHost(null)} className="btn-secondary">Cancel</button>
+              <button onClick={applyHostSettings} className="btn-primary">Save Settings</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       </main>
 
 

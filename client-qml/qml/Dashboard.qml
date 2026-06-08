@@ -42,6 +42,7 @@ Rectangle {
     property string configEncoder: "auto"
     property string configDisplay: "default"
     property bool configVirtualDisplay: false
+    property var pendingDeleteHost: null
 
 
 
@@ -602,7 +603,7 @@ Rectangle {
                         width: 260
                         height: 180
 
-                        property bool isHostHovered: cardMouseArea.containsMouse || gearBtn.hovered
+                        property bool isHostHovered: cardMouseArea.containsMouse || gearBtn.hovered || deleteBtn.hovered
 
                         // Static background click handler to avoid hover-translation flicker
                         MouseArea {
@@ -772,6 +773,40 @@ Rectangle {
                                                 Rectangle {
                                                     anchors.centerIn: parent; width: 6.4; height: 6.4; radius: 3.2; color: "#0f172a"
                                                 }
+                                            }
+                                        }
+                                    }
+
+                                    Button {
+                                        id: deleteBtn
+                                        onClicked: {
+                                            dashboardRoot.pendingDeleteHost = modelData;
+                                            deleteHostDialog.open();
+                                        }
+                                        background: Rectangle {
+                                            implicitWidth: 32; implicitHeight: 32; radius: 6
+                                            color: deleteBtn.hovered ? Qt.rgba(239/255, 68/255, 68/255, 0.1) : "transparent"
+                                            border.color: deleteBtn.hovered ? "#ef4444" : "transparent"
+                                            border.width: 1
+                                        }
+                                        contentItem: Item {
+                                            implicitWidth: 16; implicitHeight: 16
+                                            Item {
+                                                width: 16; height: 16
+                                                anchors.centerIn: parent
+                                                Rectangle {
+                                                    x: 4; y: 5; width: 8; height: 9; radius: 1
+                                                    color: "transparent"
+                                                    border.color: deleteBtn.hovered ? "#ef4444" : "#cbd5e1"
+                                                    border.width: 1.4
+                                                }
+                                                Rectangle {
+                                                    x: 3; y: 3; width: 10; height: 1.5; radius: 0.75
+                                                    color: deleteBtn.hovered ? "#ef4444" : "#cbd5e1"
+                                                }
+                                                Rectangle { x: 6; y: 1.5; width: 4; height: 1.4; radius: 0.7; color: deleteBtn.hovered ? "#ef4444" : "#cbd5e1" }
+                                                Rectangle { x: 6.2; y: 7; width: 1.2; height: 5; radius: 0.6; color: deleteBtn.hovered ? "#ef4444" : "#cbd5e1" }
+                                                Rectangle { x: 9; y: 7; width: 1.2; height: 5; radius: 0.6; color: deleteBtn.hovered ? "#ef4444" : "#cbd5e1" }
                                             }
                                         }
                                     }
@@ -1117,6 +1152,39 @@ Rectangle {
                 spacing: 12
                 Text { text: "No games/apps available"; font.pixelSize: 14; color: "#94a3b8"; anchors.horizontalCenter: parent.horizontalCenter }
             }
+        }
+    }
+
+    Dialog {
+        id: deleteHostDialog
+        modal: true
+        anchors.centerIn: parent
+        title: "Delete Host"
+        standardButtons: Dialog.Ok | Dialog.Cancel
+        z: 1001
+
+        onAccepted: {
+            if (dashboardRoot.pendingDeleteHost) {
+                dashboardRoot.hostsLoading = true;
+                bridge.deleteHost(dashboardRoot.pendingDeleteHost.id);
+                dashboardRoot.pendingDeleteHost = null;
+            }
+        }
+        onRejected: dashboardRoot.pendingDeleteHost = null
+
+        contentItem: Text {
+            width: 360
+            wrapMode: Text.Wrap
+            color: "#cbd5e1"
+            text: dashboardRoot.pendingDeleteHost
+                ? "Delete host '" + dashboardRoot.pendingDeleteHost.name + "' from this server? Any active session for this host will be stopped."
+                : "Delete this host?"
+        }
+        background: Rectangle {
+            color: "#0f1626"
+            border.color: Qt.rgba(255, 255, 255, 0.12)
+            border.width: 1
+            radius: 12
         }
     }
 
