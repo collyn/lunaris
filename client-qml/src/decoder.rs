@@ -100,8 +100,13 @@ impl HardwareDecoder {
 
         let mut candidates = Vec::new();
         if !disable_cuda {
+            let cuda_disabled = std::env::var("LUNARIS_DISABLE_CUDA").is_ok();
+            let cuda_gl_requested = std::env::var("LUNARIS_CLIENT_CUDA_GL")
+                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                .unwrap_or(false);
+
             if cfg!(target_os = "linux") {
-                if std::env::var("LUNARIS_DISABLE_CUDA").is_err() {
+                if !cuda_disabled {
                     candidates.push(ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_CUDA);
                 } else {
                     println!("CUDA hardware decoding is disabled.");
@@ -109,11 +114,14 @@ impl HardwareDecoder {
                 candidates.push(ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_VAAPI);
                 candidates.push(ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_VDPAU);
             } else if cfg!(target_os = "windows") {
-                if std::env::var("LUNARIS_DISABLE_CUDA").is_err() {
+                if cuda_gl_requested && !cuda_disabled {
                     candidates.push(ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_CUDA);
                 }
                 candidates.push(ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_D3D11VA);
                 candidates.push(ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_DXVA2);
+                if !cuda_gl_requested && !cuda_disabled {
+                    candidates.push(ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_CUDA);
+                }
             } else if cfg!(target_os = "macos") {
                 candidates.push(ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_VIDEOTOOLBOX);
             }
