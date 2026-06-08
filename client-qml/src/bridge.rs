@@ -1739,7 +1739,7 @@ async fn setup_peer_connection(
                 mime_type: webrtc::api::media_engine::MIME_TYPE_H264.to_string(),
                 clock_rate: 90000,
                 channels: 0,
-                sdp_fmtp_line: "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e033".to_string(),
+                sdp_fmtp_line: "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42002a".to_string(),
                 rtcp_feedback: vec![
                     RTCPFeedback {
                         typ: "nack".to_string(),
@@ -1867,6 +1867,18 @@ async fn setup_peer_connection(
     };
 
     let peer_connection = Arc::new(api.new_peer_connection(config).await?);
+
+    peer_connection.on_ice_connection_state_change(Box::new(|state| {
+        Box::pin(async move {
+            println!("Client ICE connection state changed: {:?}", state);
+        })
+    }));
+
+    peer_connection.on_peer_connection_state_change(Box::new(|state| {
+        Box::pin(async move {
+            println!("Client WebRTC peer connection state changed: {:?}", state);
+        })
+    }));
 
     // Register ICE candidate gathering callback
     let outbox_tx_clone = outbox_tx.clone();
@@ -2552,6 +2564,7 @@ async fn run_webrtc_client_task(
     let (outbox_tx, mut outbox_rx) = tokio::sync::mpsc::unbounded_channel::<ClientMessage>();
 
     let mut peer_connection: Option<Arc<RTCPeerConnection>> = None;
+    let mut pending_remote_ice: Vec<RTCIceCandidateInit> = Vec::new();
 
     // Setup input channels
     let (kb_tx, mut kb_rx) = tokio::sync::mpsc::unbounded_channel::<Bytes>();
@@ -2841,33 +2854,60 @@ async fn run_webrtc_client_task(
                                 }
                             };
 
-                            if let Ok(rtc_sdp) = RTCSessionDescription::offer(sdp.sdp.clone()) {
-                                println!("SDP Offer received:\n{}", sdp.sdp);
-                                if let Err(e) = pc.set_remote_description(rtc_sdp).await {
-                                    eprintln!("Failed to set remote description: {:?}", e);
-                                    continue;
-                                }
-
-                                if let Ok(answer) = pc.create_answer(None).await {
-                                    println!("SDP Answer created:\n{}", answer.sdp);
-                                    if let Err(e) = pc.set_local_description(answer.clone()).await {
-                                        eprintln!("Failed to set local description: {:?}", e);
+                            match RTCSessionDescription::offer(sdp.sdp.clone()) {
+                                Ok(rtc_sdp) => {
+                                    println!("SDP Offer received:\n{}", sdp.sdp);
+                                    if let Err(e) = pc.set_remote_description(rtc_sdp).await {
+                                        eprintln!("Failed to set remote description: {:?}", e);
                                         continue;
                                     }
 
-                                    let answer_msg =
-                                        ClientMessage::Signaling(SignalingMessage::Sdp {
-                                            target_id: host_id.clone(),
-                                            sdp: RtcSessionDescription {
-                                                ty: RtcSdpType::Answer,
-                                                sdp: answer.sdp,
-                                            },
-                                            ice_servers: None,
-                                            webtransport_port: None,
-                                            webtransport_cert_hash: None,
-                                        });
-                                    let _ = outbox_tx.send(answer_msg);
-                                    println!("SDP Answer created and sent successfully.");
+                                    if !pending_remote_ice.is_empty() {
+                                        println!(
+                                            "Adding {} queued remote ICE candidates",
+                                            pending_remote_ice.len()
+                                        );
+                                        for rtc_cand in pending_remote_ice.drain(..) {
+                                            if let Err(e) = pc.add_ice_candidate(rtc_cand).await {
+                                                eprintln!("Failed to add queued ICE candidate: {:?}", e);
+                                            }
+                                        }
+                                    }
+
+                                    match pc.create_answer(None).await {
+                                        Ok(answer) => {
+                                            println!("SDP Answer created:\n{}", answer.sdp);
+                                            if let Err(e) = pc.set_local_description(answer.clone()).await {
+                                                eprintln!("Failed to set local description: {:?}", e);
+                                                continue;
+                                            }
+
+                                            let answer_msg =
+                                                ClientMessage::Signaling(SignalingMessage::Sdp {
+                                                    target_id: host_id.clone(),
+                                                    sdp: RtcSessionDescription {
+                                                        ty: RtcSdpType::Answer,
+                                                        sdp: answer.sdp,
+                                                    },
+                                                    ice_servers: None,
+                                                    webtransport_port: None,
+                                                    webtransport_cert_hash: None,
+                                                });
+                                            if let Err(e) = outbox_tx.send(answer_msg) {
+                                                eprintln!("Failed to queue SDP answer for websocket send: {:?}", e);
+                                                continue;
+                                            }
+                                            println!("SDP Answer created and queued successfully.");
+                                        }
+                                        Err(e) => {
+                                            eprintln!("Failed to create SDP answer: {:?}", e);
+                                            continue;
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    eprintln!("Failed to parse SDP offer: {:?}", e);
+                                    continue;
                                 }
                             }
                             let pc_clone = Arc::clone(&pc);
@@ -2922,16 +2962,23 @@ async fn run_webrtc_client_task(
                         }
                     }
                     SignalingMessage::IceCandidate { candidate, .. } => {
+                        let rtc_cand = RTCIceCandidateInit {
+                            candidate: candidate.candidate,
+                            sdp_mid: candidate.sdp_mid,
+                            sdp_mline_index: candidate.sdp_mline_index,
+                            username_fragment: candidate.username_fragment,
+                        };
+
                         if let Some(ref pc) = peer_connection {
-                            let rtc_cand = RTCIceCandidateInit {
-                                candidate: candidate.candidate,
-                                sdp_mid: candidate.sdp_mid,
-                                sdp_mline_index: candidate.sdp_mline_index,
-                                username_fragment: candidate.username_fragment,
-                            };
-                            let _ = pc.add_ice_candidate(rtc_cand).await;
+                            if let Err(e) = pc.add_ice_candidate(rtc_cand).await {
+                                eprintln!("Failed to add remote ICE candidate: {:?}", e);
+                            }
                         } else {
-                            eprintln!("Warning: Received ICE candidate before peer connection was initialized.");
+                            pending_remote_ice.push(rtc_cand);
+                            println!(
+                                "Queued remote ICE candidate before peer connection was initialized (pending={})",
+                                pending_remote_ice.len()
+                            );
                         }
                     }
                     SignalingMessage::EndSession { .. } => {
