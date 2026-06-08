@@ -174,6 +174,7 @@ function App() {
   const [settingsHost, setSettingsHost] = useState<Host | null>(null);
   const [draftHostSettings, setDraftHostSettings] = useState<HostStreamSettings>(() => loadHostStreamSettings());
   const [deleteHostLoading, setDeleteHostLoading] = useState<string | null>(null);
+  const [pendingDeleteHost, setPendingDeleteHost] = useState<Host | null>(null);
 
 
 
@@ -422,8 +423,6 @@ function App() {
 
   const handleDeleteHost = async (host: Host) => {
     if (!token || deleteHostLoading) return;
-    const confirmed = window.confirm(`Delete host "${host.name}" from this server? Active sessions for this host will be stopped.`);
-    if (!confirmed) return;
 
     setDeleteHostLoading(host.id);
     try {
@@ -434,6 +433,7 @@ function App() {
       });
 
       if (response.ok) {
+        setPendingDeleteHost(null);
         setHosts((current) => current.filter((h) => h.id !== host.id));
         if (viewingHost?.id === host.id) {
           setViewingHost(null);
@@ -1086,7 +1086,7 @@ function App() {
                                     className="host-action-btn danger"
                                     title="Delete host"
                                     disabled={deleteHostLoading === host.id}
-                                    onClick={() => handleDeleteHost(host)}
+                                    onClick={() => setPendingDeleteHost(host)}
                                   >
                                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                                       <polyline points="3 6 5 6 21 6" />
@@ -1119,6 +1119,32 @@ function App() {
             </div>
           </div>
         )}
+      {pendingDeleteHost && (
+        <div className="host-confirm-overlay" onMouseDown={(e) => { if (e.target === e.currentTarget && !deleteHostLoading) setPendingDeleteHost(null); }}>
+          <div className="host-confirm-card" role="dialog" aria-modal="true" aria-labelledby="deleteHostTitle">
+            <div className="host-confirm-icon danger">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="3 6 5 6 21 6" />
+                <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+                <path d="M10 11v6" />
+                <path d="M14 11v6" />
+                <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
+              </svg>
+            </div>
+            <div className="host-confirm-content">
+              <h2 id="deleteHostTitle">Delete Host</h2>
+              <p>Delete <strong>{pendingDeleteHost.name}</strong> from this server? Active sessions for this host will be stopped.</p>
+            </div>
+            <div className="host-confirm-actions">
+              <button className="btn-secondary" disabled={!!deleteHostLoading} onClick={() => setPendingDeleteHost(null)}>Cancel</button>
+              <button className="btn-danger" disabled={!!deleteHostLoading} onClick={() => handleDeleteHost(pendingDeleteHost)}>
+                {deleteHostLoading === pendingDeleteHost.id ? 'Deleting...' : 'Delete Host'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {settingsHost && (
         <div className="stream-settings-overlay" style={{ zIndex: 1200 }} onMouseDown={(e) => { if (e.target === e.currentTarget) setSettingsHost(null); }}>
           <div className="stream-settings-card">
