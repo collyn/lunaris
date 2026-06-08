@@ -111,13 +111,16 @@ impl HardwareDecoder {
                 .unwrap_or(false);
 
             if cfg!(target_os = "linux") {
-                if !cuda_disabled {
+                if cuda_gl_requested && !cuda_disabled {
                     candidates.push(ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_CUDA);
-                } else {
-                    println!("CUDA hardware decoding is disabled.");
                 }
                 candidates.push(ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_VAAPI);
                 candidates.push(ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_VDPAU);
+                if !cuda_gl_requested && !cuda_disabled {
+                    candidates.push(ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_CUDA);
+                } else if cuda_disabled {
+                    println!("CUDA hardware decoding is disabled.");
+                }
             } else if cfg!(target_os = "windows") {
                 if cuda_gl_requested && !cuda_disabled {
                     candidates.push(ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_CUDA);
@@ -292,11 +295,15 @@ impl HardwareDecoder {
     fn process_frame(&mut self, gpu_frame: *mut ffi::AVFrame) -> Result<DecodedFrame, anyhow::Error> {
         let format = unsafe { (*gpu_frame).format };
         let is_cuda = format == ffi::AVPixelFormat::AV_PIX_FMT_CUDA as i32;
+        let cuda_gl_failed = crate::bridge::qobject::cuda_gl_render_failed();
+        if cuda_gl_failed {
+            clear_active_cuda_frame_for_decoder(self as *const _ as usize);
+        }
         let use_direct_cuda_gl = is_cuda
             && std::env::var("LUNARIS_CLIENT_CUDA_GL")
                 .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
                 .unwrap_or(false)
-            && !crate::bridge::qobject::cuda_gl_render_failed();
+            && !cuda_gl_failed;
 
         if use_direct_cuda_gl {
             unsafe {

@@ -139,6 +139,14 @@ pub fn parse_deeplink_url(url_str: &str) -> Option<AppArgs> {
     None
 }
 
+fn linux_nvidia_cuda_present() -> bool {
+    if !cfg!(target_os = "linux") {
+        return false;
+    }
+    std::path::Path::new("/dev/nvidiactl").exists()
+        || std::path::Path::new("/proc/driver/nvidia/version").exists()
+}
+
 fn handle_single_instance() -> bool {
     let args: Vec<String> = std::env::args().collect();
     let message = if args.len() >= 2 && args[1].starts_with("lunaris://") {
@@ -432,7 +440,7 @@ pub fn run() {
     let cuda_gl_requested = cuda_gl_env
         .as_deref()
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(cfg!(target_os = "linux") && gpu_mode_enabled && !force_cpu_present);
+        .unwrap_or(linux_nvidia_cuda_present() && gpu_mode_enabled && !force_cpu_present);
     let cuda_gl_disabled = cuda_gl_env
         .as_deref()
         .map(|v| v == "0" || v.eq_ignore_ascii_case("false"))

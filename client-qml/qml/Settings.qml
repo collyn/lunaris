@@ -492,7 +492,7 @@ Rectangle {
         ComboBox {
             id: decoderCombo
             width: 260
-            model: ["Auto GPU", "Native GPU", "Software"]
+            model: ["Auto GPU", "Prefer Native GPU", "Software"]
             currentIndex: 0
 
             delegate: ItemDelegate {

@@ -368,9 +368,9 @@ Item {
             LunarisComboBox {
                 id: decoderComboBox
                 customWidth: 110
-                model: ["Auto GPU", "Native GPU", "Software"]
+                model: ["Auto GPU", "Prefer Native GPU", "Software"]
                 anchors.verticalCenter: parent.verticalCenter
-                LunarisToolTip { text: "Decode and presentation backend" }
+                LunarisToolTip { text: "Decode and presentation backend. Prefer Native GPU may fall back until native presenter is available." }
                 onActivated: menuContainer.applyCurrentSettings()
             }
 

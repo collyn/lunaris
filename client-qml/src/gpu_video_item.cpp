@@ -5,6 +5,7 @@
 #include <QRunnable>
 #include <QDebug>
 #include <iostream>
+#include <atomic>
 
 #if defined(_WIN32)
 #include <windows.h>
@@ -128,7 +129,7 @@ struct CudaApi {
 static CudaApi g_cudaApi;
 static bool g_cudaSupported = false;
 static bool g_streamActive = false;
-static bool g_cudaRenderFailed = false;
+static std::atomic_bool g_cudaRenderFailed{false};
 
 struct PendingCudaFrame {
     uint64_t cuda_ctx = 0;
@@ -156,7 +157,7 @@ static void checkGlError(const char* op) {
 }
 
 static void markCudaGlFailed(const char* reason) {
-    g_cudaRenderFailed = true;
+    g_cudaRenderFailed.store(true, std::memory_order_release);
     std::cerr << "Lunaris: CUDA-GL renderer disabled: " << reason << std::endl;
     if (g_activeItem) {
         QMetaObject::invokeMethod(g_activeItem, "setCudaActive", Qt::QueuedConnection, Q_ARG(bool, false));
@@ -718,13 +719,13 @@ extern "C" void register_gpu_video_item_type() {
 }
 
 extern "C" bool cuda_gl_render_failed() {
-    return g_cudaRenderFailed;
+    return g_cudaRenderFailed.load(std::memory_order_acquire);
 }
 
 extern "C" void set_cuda_stream_active(bool active) {
     g_streamActive = active;
     if (active) {
-        g_cudaRenderFailed = false;
+        g_cudaRenderFailed.store(false, std::memory_order_release);
         if (g_activeItem) {
             QMetaObject::invokeMethod(g_activeItem, "setCudaActive", Qt::QueuedConnection, Q_ARG(bool, false));
         }
