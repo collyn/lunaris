@@ -62,6 +62,7 @@ pub struct HardwareDecoder {
     codec_ctx: *mut ffi::AVCodecContext,
     hw_device_ctx: *mut ffi::AVBufferRef,
     hw_device_type: ffi::AVHWDeviceType,
+    hardware_decode_requested: bool,
     sws_ctx: *mut ffi::SwsContext,
     last_width: i32,
     last_height: i32,
@@ -102,9 +103,10 @@ impl HardwareDecoder {
 
         let mut hw_device_ctx: *mut ffi::AVBufferRef = std::ptr::null_mut();
         let mut hw_device_type = ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_NONE;
+        let hardware_decode_requested = !disable_cuda;
 
         let mut candidates = Vec::new();
-        if !disable_cuda {
+        if hardware_decode_requested {
             let cuda_disabled = std::env::var("LUNARIS_DISABLE_CUDA").is_ok();
             let cuda_gl_requested = std::env::var("LUNARIS_CLIENT_CUDA_GL")
                 .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
@@ -182,6 +184,7 @@ impl HardwareDecoder {
             codec_ctx,
             hw_device_ctx,
             hw_device_type,
+            hardware_decode_requested,
             sws_ctx: std::ptr::null_mut(),
             last_width: 0,
             last_height: 0,
@@ -202,15 +205,23 @@ impl HardwareDecoder {
         }
     }
 
+    fn cuda_gl_requested() -> bool {
+        std::env::var("LUNARIS_CLIENT_CUDA_GL")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false)
+    }
+
+    pub fn gpu_decode_enabled(&self) -> bool {
+        self.hw_device_type != ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_NONE
+    }
+
     pub fn present_backend_label(&self) -> &'static str {
         if self.hw_device_type == ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_NONE {
             return "CPU/QVideoSink";
         }
 
         let direct_cuda_gl = self.hw_device_type == ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_CUDA
-            && std::env::var("LUNARIS_CLIENT_CUDA_GL")
-                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-                .unwrap_or(false)
+            && Self::cuda_gl_requested()
             && !crate::bridge::qobject::cuda_gl_render_failed();
 
         if direct_cuda_gl {
@@ -218,6 +229,25 @@ impl HardwareDecoder {
         } else {
             "CPU/QVideoSink"
         }
+    }
+
+    pub fn fallback_reason(&self) -> String {
+        if !self.hardware_decode_requested {
+            return "Software backend selected".to_string();
+        }
+        if !self.gpu_decode_enabled() {
+            return "No GPU decoder available".to_string();
+        }
+        if self.present_backend_label() == "CPU/QVideoSink" {
+            if self.hw_device_type == ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_CUDA
+                && Self::cuda_gl_requested()
+                && crate::bridge::qobject::cuda_gl_render_failed()
+            {
+                return "CUDA-GL present failed; using CPU/QVideoSink".to_string();
+            }
+            return "GPU decode with CPU/QVideoSink present".to_string();
+        }
+        "None".to_string()
     }
 
     pub fn presentation_mode_label(&self) -> String {
@@ -299,11 +329,7 @@ impl HardwareDecoder {
         if cuda_gl_failed {
             clear_active_cuda_frame_for_decoder(self as *const _ as usize);
         }
-        let use_direct_cuda_gl = is_cuda
-            && std::env::var("LUNARIS_CLIENT_CUDA_GL")
-                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-                .unwrap_or(false)
-            && !cuda_gl_failed;
+        let use_direct_cuda_gl = is_cuda && Self::cuda_gl_requested() && !cuda_gl_failed;
 
         if use_direct_cuda_gl {
             unsafe {

@@ -119,13 +119,34 @@ pub struct StreamStats {
     pub decode: f64,
     pub fps: f64,
     pub bitrate: f64,
-    pub codec: String,
+    pub requested_codec: String,
+    pub negotiated_codec: String,
     pub decode_backend: String,
     pub present_backend: String,
+    pub gpu_decode_enabled: bool,
+    pub fallback_reason: String,
+    pub packet_loss_events: u64,
+    pub packets_lost: u64,
+    pub queue_lag_events: u64,
+    pub max_queue_lag: usize,
     pub connection_type: String,
 }
 
 pub static STREAM_STATS: std::sync::Mutex<Option<StreamStats>> = std::sync::Mutex::new(None);
+
+fn args_codec_for_stats() -> String {
+    ACTIVE_CONFIG
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|c| c.codec.to_uppercase())
+        .or_else(|| APP_ARGS.get().map(|c| c.codec.to_uppercase()))
+        .unwrap_or_else(|| "Unknown".to_string())
+}
+
+fn saturating_i32(value: u64) -> i32 {
+    value.min(i32::MAX as u64) as i32
+}
 
 #[derive(Debug, Clone)]
 pub struct PendingHostCursor {
@@ -504,9 +525,16 @@ pub mod qobject {
             decode: f64,
             fps: f64,
             bitrate: f64,
-            codec: QString,
+            requested_codec: QString,
+            negotiated_codec: QString,
             decode_backend: QString,
             present_backend: QString,
+            gpu_decode_enabled: bool,
+            fallback_reason: QString,
+            packet_loss_events: i32,
+            packets_lost: i32,
+            queue_lag_events: i32,
+            max_queue_lag: i32,
             connection_type: QString,
         );
 
@@ -825,9 +853,16 @@ impl qobject::StreamBridge {
             decode: 0.0,
             fps: 0.0,
             bitrate: 0.0,
-            codec: String::new(),
+            requested_codec: args_codec_for_stats(),
+            negotiated_codec: String::new(),
             decode_backend: "Unknown".to_string(),
             present_backend: "Unknown".to_string(),
+            gpu_decode_enabled: false,
+            fallback_reason: "Waiting for video track".to_string(),
+            packet_loss_events: 0,
+            packets_lost: 0,
+            queue_lag_events: 0,
+            max_queue_lag: 0,
             connection_type: "P2P (Direct)".to_string(),
         });
         qobject::set_cuda_stream_active(true);
@@ -1097,18 +1132,27 @@ impl qobject::StreamBridge {
     pub fn poll_stats(mut self: Pin<&mut Self>) {
         let stats = { STREAM_STATS.lock().unwrap().clone() };
         if let Some(s) = stats {
-            let codec_qstring = cxx_qt_lib::QString::from(&s.codec);
+            let requested_codec_qstring = cxx_qt_lib::QString::from(&s.requested_codec);
+            let negotiated_codec_qstring = cxx_qt_lib::QString::from(&s.negotiated_codec);
             let decode_backend_qstring = cxx_qt_lib::QString::from(&s.decode_backend);
             let present_backend_qstring = cxx_qt_lib::QString::from(&s.present_backend);
+            let fallback_reason_qstring = cxx_qt_lib::QString::from(&s.fallback_reason);
             let conn_type_qstring = cxx_qt_lib::QString::from(&s.connection_type);
             self.as_mut().stats_updated(
                 s.ping,
                 s.decode,
                 s.fps,
                 s.bitrate,
-                codec_qstring,
+                requested_codec_qstring,
+                negotiated_codec_qstring,
                 decode_backend_qstring,
                 present_backend_qstring,
+                s.gpu_decode_enabled,
+                fallback_reason_qstring,
+                saturating_i32(s.packet_loss_events),
+                saturating_i32(s.packets_lost),
+                saturating_i32(s.queue_lag_events),
+                s.max_queue_lag.min(i32::MAX as usize) as i32,
                 conn_type_qstring,
             );
         }
@@ -2429,10 +2473,10 @@ async fn setup_peer_connection(
                     _ => unreachable!(),
                 };
                 
-                let disable_cuda = if let Some(ref config) = *ACTIVE_CONFIG.lock().unwrap() {
-                    config.effective_disable_cuda()
+                let (disable_cuda, requested_codec) = if let Some(ref config) = *ACTIVE_CONFIG.lock().unwrap() {
+                    (config.effective_disable_cuda(), config.codec.to_uppercase())
                 } else {
-                    false
+                    (false, "Unknown".to_string())
                 };
                 let decoder = match super::decoder::HardwareDecoder::new(codec_type, disable_cuda) {
                     Ok(d) => d,
@@ -2477,16 +2521,22 @@ async fn setup_peer_connection(
                 let pending_packets_reader = Arc::clone(&pending_packets);
                 let pending_packets_decoder = Arc::clone(&pending_packets);
 
-                let (rtp_tx, mut rtp_rx) = tokio::sync::mpsc::unbounded_channel();
+                const RTP_QUEUE_LIMIT: usize = 256;
+                let (rtp_tx, mut rtp_rx) = tokio::sync::mpsc::channel(RTP_QUEUE_LIMIT);
                 let track_clone_reader = Arc::clone(&track_clone);
                 tokio::spawn(async move {
                     while let Ok((rtp_packet, _)) = track_clone_reader.read_rtp().await {
                         if rtp_packet.payload.is_empty() {
                             continue;
                         }
-                        pending_packets_reader.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                        if let Err(_) = rtp_tx.send(rtp_packet) {
-                            break;
+                        match rtp_tx.try_send(rtp_packet) {
+                            Ok(()) => {
+                                pending_packets_reader.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            }
+                            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                                pending_packets_reader.store(RTP_QUEUE_LIMIT, std::sync::atomic::Ordering::SeqCst);
+                            }
+                            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
                         }
                     }
                 });
@@ -2537,22 +2587,35 @@ async fn setup_peer_connection(
                     let mut last_packet_loss_log = std::time::Instant::now()
                         .checked_sub(std::time::Duration::from_secs(60))
                         .unwrap_or_else(std::time::Instant::now);
+                    let mut packet_loss_events: u64 = 0;
+                    let mut packets_lost: u64 = 0;
+                    let mut queue_lag_events: u64 = 0;
+                    let mut max_queue_lag: usize = 0;
 
                     while let Some(rtp_packet) = rtp_rx.blocking_recv() {
-                        pending_packets_decoder.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                        let _ = pending_packets_decoder.fetch_update(
+                            std::sync::atomic::Ordering::SeqCst,
+                            std::sync::atomic::Ordering::SeqCst,
+                            |value| Some(value.saturating_sub(1)),
+                        );
 
                         // Check for backlog (decoder lagging)
                         let pending_val = pending_packets_decoder.load(std::sync::atomic::Ordering::SeqCst);
                         if pending_val > 150 {
+                            queue_lag_events = queue_lag_events.saturating_add(1);
+                            max_queue_lag = max_queue_lag.max(pending_val);
                             eprintln!("Video receiver queue lag detected ({} packets). Flushing queue...", pending_val);
-                            while let Ok(_) = rtp_rx.try_recv() {
-                                pending_packets_decoder.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
-                            }
+                            while let Ok(_) = rtp_rx.try_recv() {}
+                            pending_packets_decoder.store(0, std::sync::atomic::Ordering::SeqCst);
                             packet_buffer.clear();
                             annex_b_buf.clear();
                             av1_obu_buf.clear();
                             h264_wait_for_idr = true;
                             h264_dropping_fragment = false;
+                            h264_fragment_is_idr = false;
+                            h265_wait_for_irap = true;
+                            h265_dropping_fragment = false;
+                            h265_fragment_is_irap = false;
                             let _ = pli_tx.send(());
                             next_seq_num = None;
                             continue;
@@ -2584,6 +2647,10 @@ async fn setup_peer_connection(
                             let missing_start = next_seq_num.unwrap();
                             let missing_end = first_seq - 1;
                             let now = std::time::Instant::now();
+                            packet_loss_events = packet_loss_events.saturating_add(1);
+                            if missing_end >= missing_start {
+                                packets_lost = packets_lost.saturating_add(missing_end - missing_start + 1);
+                            }
                             if now.duration_since(last_packet_loss_log) >= std::time::Duration::from_secs(1) {
                                 eprintln!(
                                     "RTP packet loss detected: missing sequence from {} to {}",
@@ -2598,6 +2665,10 @@ async fn setup_peer_connection(
                             av1_obu_buf.clear();
                             h264_wait_for_idr = true;
                             h264_dropping_fragment = false;
+                            h264_fragment_is_idr = false;
+                            h265_wait_for_irap = true;
+                            h265_dropping_fragment = false;
+                            h265_fragment_is_irap = false;
                             let _ = pli_tx.send(());
                             
                             next_seq_num = Some(first_seq);
@@ -3157,7 +3228,7 @@ async fn setup_peer_connection(
                                 0.0
                             };
                             
-                            let codec_name = match codec_type {
+                            let negotiated_codec = match codec_type {
                                 super::decoder::CodecType::H264 => "H264",
                                 super::decoder::CodecType::H265 => "H265",
                                 super::decoder::CodecType::AV1 => "AV1",
@@ -3165,23 +3236,39 @@ async fn setup_peer_connection(
                             
                             let decode_backend = decoder.decode_backend_label().to_string();
                             let present_backend = decoder.present_backend_label().to_string();
+                            let gpu_decode_enabled = decoder.gpu_decode_enabled();
+                            let fallback_reason = decoder.fallback_reason();
                             let mut stats_lock = STREAM_STATS.lock().unwrap();
                             if let Some(ref mut s) = *stats_lock {
                                 s.decode = avg_decode_ms;
                                 s.fps = fps;
                                 s.bitrate = bitrate_kbps;
-                                s.codec = codec_name;
+                                s.requested_codec = requested_codec.clone();
+                                s.negotiated_codec = negotiated_codec;
                                 s.decode_backend = decode_backend;
                                 s.present_backend = present_backend;
+                                s.gpu_decode_enabled = gpu_decode_enabled;
+                                s.fallback_reason = fallback_reason;
+                                s.packet_loss_events = packet_loss_events;
+                                s.packets_lost = packets_lost;
+                                s.queue_lag_events = queue_lag_events;
+                                s.max_queue_lag = max_queue_lag;
                             } else {
                                 *stats_lock = Some(StreamStats {
                                     ping: 0.0,
                                     decode: avg_decode_ms,
                                     fps,
                                     bitrate: bitrate_kbps,
-                                    codec: codec_name,
+                                    requested_codec: requested_codec.clone(),
+                                    negotiated_codec,
                                     decode_backend,
                                     present_backend,
+                                    gpu_decode_enabled,
+                                    fallback_reason,
+                                    packet_loss_events,
+                                    packets_lost,
+                                    queue_lag_events,
+                                    max_queue_lag,
                                     connection_type: "P2P (Direct)".to_string(),
                                 });
                             }

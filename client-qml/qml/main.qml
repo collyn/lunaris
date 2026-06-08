@@ -107,9 +107,16 @@ ApplicationWindow {
     property real decodeLatencyMs: 0.0
     property real fps: 0.0
     property real bitrateKbps: 0.0
-    property string activeCodec: "H264"
+    property string requestedCodec: "Unknown"
+    property string activeCodec: "Unknown"
     property string activeDecodeBackend: "Unknown"
     property string activePresentBackend: "Unknown"
+    property bool gpuDecodeEnabled: false
+    property string decodeFallbackReason: "Waiting for video track"
+    property int packetLossEvents: 0
+    property int packetsLost: 0
+    property int queueLagEvents: 0
+    property int maxQueueLag: 0
     property string connectionType: "P2P (Direct)"
     property string activeEncoderName: "Unknown"
     property string activeEncoderHw: "Unknown"
@@ -327,14 +334,21 @@ ApplicationWindow {
         id: bridge
 
         // Handle diagnostic stats sent from Rust
-        onStatsUpdated: (ping, decode, frames, bit, codec, decodeBackend, presentBackend, connType) => {
+        onStatsUpdated: (ping, decode, frames, bit, requestedCodec, negotiatedCodec, decodeBackend, presentBackend, gpuDecodeEnabled, fallbackReason, packetLossEvents, packetsLost, queueLagEvents, maxQueueLag, connType) => {
             window.pingMs = ping
             window.decodeLatencyMs = decode
             window.fps = frames
             window.bitrateKbps = bit
-            window.activeCodec = codec
-            window.activeDecodeBackend = decodeBackend
-            window.activePresentBackend = presentBackend
+            window.requestedCodec = requestedCodec || "Unknown"
+            window.activeCodec = negotiatedCodec || "Unknown"
+            window.activeDecodeBackend = decodeBackend || "Unknown"
+            window.activePresentBackend = presentBackend || "Unknown"
+            window.gpuDecodeEnabled = gpuDecodeEnabled
+            window.decodeFallbackReason = fallbackReason || "None"
+            window.packetLossEvents = packetLossEvents
+            window.packetsLost = packetsLost
+            window.queueLagEvents = queueLagEvents
+            window.maxQueueLag = maxQueueLag
             window.connectionType = connType
         }
 
@@ -653,7 +667,7 @@ ApplicationWindow {
         
         anchors.rightMargin: 16
         width: 280
-        height: 320
+        height: 416
         radius: 16
         color: Qt.rgba(20/255, 20/255, 20/255, 0.6)
         border.color: Qt.rgba(255/255, 255/255, 255/255, 0.08)
@@ -715,7 +729,15 @@ ApplicationWindow {
                 height: 16
                 anchors.left: parent.left
                 anchors.right: parent.right
-                Text { text: "Codec"; color: "#94a3b8"; font.pixelSize: 11; font.bold: true; anchors.left: parent.left }
+                Text { text: "Requested Codec"; color: "#94a3b8"; font.pixelSize: 11; font.bold: true; anchors.left: parent.left }
+                Text { text: window.requestedCodec.toUpperCase(); color: "#ffffff"; font.pixelSize: 11; font.bold: true; anchors.right: parent.right }
+            }
+
+            Item {
+                height: 16
+                anchors.left: parent.left
+                anchors.right: parent.right
+                Text { text: "Negotiated Codec"; color: "#94a3b8"; font.pixelSize: 11; font.bold: true; anchors.left: parent.left }
                 Text { text: window.activeCodec.toUpperCase(); color: "#ffffff"; font.pixelSize: 11; font.bold: true; anchors.right: parent.right }
             }
 
@@ -733,6 +755,22 @@ ApplicationWindow {
                 anchors.right: parent.right
                 Text { text: "Present"; color: "#94a3b8"; font.pixelSize: 11; font.bold: true; anchors.left: parent.left }
                 Text { text: window.activePresentBackend; color: window.activePresentBackend.indexOf("CPU") === -1 ? "#4ade80" : "#fb923c"; font.pixelSize: 11; font.bold: true; anchors.right: parent.right; elide: Text.ElideLeft; width: 165; horizontalAlignment: Text.AlignRight }
+            }
+
+            Item {
+                height: 16
+                anchors.left: parent.left
+                anchors.right: parent.right
+                Text { text: "GPU Decode"; color: "#94a3b8"; font.pixelSize: 11; font.bold: true; anchors.left: parent.left }
+                Text { text: window.gpuDecodeEnabled ? "Enabled" : "Disabled"; color: window.gpuDecodeEnabled ? "#4ade80" : "#fb923c"; font.pixelSize: 11; font.bold: true; anchors.right: parent.right }
+            }
+
+            Item {
+                height: 16
+                anchors.left: parent.left
+                anchors.right: parent.right
+                Text { text: "Fallback"; color: "#94a3b8"; font.pixelSize: 11; font.bold: true; anchors.left: parent.left }
+                Text { text: window.decodeFallbackReason; color: window.decodeFallbackReason === "None" ? "#4ade80" : "#fb923c"; font.pixelSize: 11; font.bold: true; anchors.right: parent.right; elide: Text.ElideLeft; width: 165; horizontalAlignment: Text.AlignRight }
             }
 
             Item {
@@ -773,6 +811,22 @@ ApplicationWindow {
                 anchors.right: parent.right
                 Text { text: "Input Protocol"; color: "#94a3b8"; font.pixelSize: 11; font.bold: true; anchors.left: parent.left }
                 Text { text: window.activeInputProtocol.toUpperCase(); color: window.activeInputProtocol === "webtransport" ? "#4ade80" : "#38bdf8"; font.pixelSize: 11; font.bold: true; anchors.right: parent.right }
+            }
+
+            Item {
+                height: 16
+                anchors.left: parent.left
+                anchors.right: parent.right
+                Text { text: "Packet Loss"; color: "#94a3b8"; font.pixelSize: 11; font.bold: true; anchors.left: parent.left }
+                Text { text: window.packetLossEvents + " events / " + window.packetsLost + " pkts"; color: window.packetLossEvents > 0 ? "#fb923c" : "#4ade80"; font.pixelSize: 11; font.bold: true; anchors.right: parent.right }
+            }
+
+            Item {
+                height: 16
+                anchors.left: parent.left
+                anchors.right: parent.right
+                Text { text: "Queue Lag"; color: "#94a3b8"; font.pixelSize: 11; font.bold: true; anchors.left: parent.left }
+                Text { text: window.queueLagEvents + " events / max " + window.maxQueueLag; color: window.queueLagEvents > 0 ? "#fb923c" : "#4ade80"; font.pixelSize: 11; font.bold: true; anchors.right: parent.right }
             }
 
             Item {
