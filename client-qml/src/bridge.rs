@@ -2265,6 +2265,31 @@ fn handle_host_cursor_message(data: &[u8]) {
     });
 }
 
+fn select_video_codec_for_offer(requested_codec: &str, offer_sdp: &str) -> String {
+    let requested = requested_codec.trim().to_ascii_lowercase();
+    let sdp = offer_sdp.to_ascii_lowercase();
+    let has_h264 = sdp.contains(" h264/90000") || sdp.contains("h264/90000");
+    let has_h265 = sdp.contains(" h265/90000") || sdp.contains("hevc/90000") || sdp.contains("h265/90000");
+    let has_av1 = sdp.contains(" av1/90000") || sdp.contains("av1/90000");
+
+    match requested.as_str() {
+        "h265" | "hevc" if has_h265 => "h265".to_string(),
+        "av1" if has_av1 => "av1".to_string(),
+        "h264" if has_h264 => "h264".to_string(),
+        _ => {
+            if has_h264 {
+                "h264".to_string()
+            } else if has_h265 {
+                "h265".to_string()
+            } else if has_av1 {
+                "av1".to_string()
+            } else {
+                requested
+            }
+        }
+    }
+}
+
 async fn setup_peer_connection(
     ice_servers: Option<Vec<common::RtcIceServer>>,
     outbox_tx: tokio::sync::mpsc::UnboundedSender<ClientMessage>,
@@ -3753,6 +3778,14 @@ async fn run_webrtc_client_task(
                                 }
                             }
 
+                            let offer_codec = select_video_codec_for_offer(&codec_str, &sdp.sdp);
+                            if offer_codec != codec_str {
+                                println!(
+                                    "Client codec preference adjusted to match SDP offer: requested={}, offer={}",
+                                    codec_str, offer_codec
+                                );
+                            }
+
                             let pc = match setup_peer_connection(
                                 ice_servers,
                                 outbox_tx.clone(),
@@ -3762,7 +3795,7 @@ async fn run_webrtc_client_task(
                                 ma_chan_ref.clone(),
                                 mr_chan_ref.clone(),
                                 active_decoder.clone(),
-                                &codec_str,
+                                &offer_codec,
                             )
                             .await
                             {
