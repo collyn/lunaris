@@ -89,6 +89,7 @@ pub struct PendingHostCursor {
     pub y: i32,
     pub visible: bool,
     pub kind: String,
+    pub in_window_move_size: bool,
 }
 
 pub static PENDING_HOST_CURSOR: std::sync::Mutex<Option<PendingHostCursor>> =
@@ -439,6 +440,7 @@ pub mod qobject {
             y: i32,
             visible: bool,
             kind: QString,
+            in_window_move_size: bool,
         );
 
         #[qsignal]
@@ -929,8 +931,13 @@ impl qobject::StreamBridge {
         let cursor = { PENDING_HOST_CURSOR.lock().unwrap().take() };
         if let Some(cursor) = cursor {
             let kind_qstring = cxx_qt_lib::QString::from(&cursor.kind);
-            self.as_mut()
-                .host_cursor_updated(cursor.x, cursor.y, cursor.visible, kind_qstring);
+            self.as_mut().host_cursor_updated(
+                cursor.x,
+                cursor.y,
+                cursor.visible,
+                kind_qstring,
+                cursor.in_window_move_size,
+            );
         }
     }
 
@@ -1770,12 +1777,17 @@ fn handle_host_cursor_message(data: &[u8]) {
         .map(normalize_host_cursor_kind)
         .unwrap_or("arrow")
         .to_string();
+    let in_window_move_size = value
+        .get("in_window_move_size")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
 
     *PENDING_HOST_CURSOR.lock().unwrap() = Some(PendingHostCursor {
         x: x.round() as i32,
         y: y.round() as i32,
         visible,
         kind,
+        in_window_move_size,
     });
 }
 
@@ -2674,6 +2686,7 @@ async fn setup_peer_connection(
                             y: 0,
                             visible: false,
                             kind: "arrow".to_string(),
+                            in_window_move_size: false,
                         });
                     })
                 }));

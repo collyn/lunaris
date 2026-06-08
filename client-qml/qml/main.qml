@@ -118,6 +118,7 @@ ApplicationWindow {
     property bool hostCursorVisible: false
     property string hostCursorKind: "arrow"
     property bool hostCursorMouseDown: false
+    property bool hostCursorInWindowMoveSize: false
 
     function normalizeCursorKind(kind) {
         var allowed = {
@@ -265,11 +266,12 @@ ApplicationWindow {
             window.connectionType = connType
         }
 
-        onHostCursorUpdated: (x, y, visible, kind) => {
+        onHostCursorUpdated: (x, y, visible, kind, inWindowMoveSize) => {
             window.hostCursorX = x
             window.hostCursorY = y
             window.hostCursorVisible = visible
             window.hostCursorKind = window.normalizeCursorKind(kind)
+            window.hostCursorInWindowMoveSize = inWindowMoveSize
         }
 
         onNewVersionAvailable: (version, url) => {
@@ -500,7 +502,10 @@ ApplicationWindow {
             smooth: false
             mipmap: false
             cache: true
-            visible: window.isStreamMode && window.hideLocalCursor && window.hostCursorVisible
+            visible: window.isStreamMode
+                && window.hideLocalCursor
+                && window.hostCursorVisible
+                && !(window.hostCursorMouseDown && window.hostCursorInWindowMoveSize)
             x: videoContainer.x + (Math.max(0, Math.min(window.streamWidth, window.hostCursorX)) / Math.max(1, window.streamWidth)) * videoContainer.width - window.cursorHotspotX(window.hostCursorKind)
             y: videoContainer.y + (Math.max(0, Math.min(window.streamHeight, window.hostCursorY)) / Math.max(1, window.streamHeight)) * videoContainer.height - window.cursorHotspotY(window.hostCursorKind)
             z: 200
