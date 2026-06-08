@@ -113,6 +113,65 @@ ApplicationWindow {
     property string latestVersion: ""
     property string releaseUrl: ""
     property bool showUpdateBanner: false
+    property int hostCursorX: streamWidth / 2
+    property int hostCursorY: streamHeight / 2
+    property bool hostCursorVisible: false
+    property string hostCursorKind: "arrow"
+    property bool hostCursorMouseDown: false
+
+    function normalizeCursorKind(kind) {
+        var allowed = {
+            "arrow": true,
+            "ibeam": true,
+            "hand": true,
+            "cross": true,
+            "move": true,
+            "resize_ns": true,
+            "resize_ew": true,
+            "resize_nesw": true,
+            "resize_nwse": true,
+            "unavailable": true,
+            "unknown": true
+        };
+        return allowed[kind] ? kind : "arrow";
+    }
+
+    function cursorAssetName(kind) {
+        var normalized = normalizeCursorKind(kind);
+        if (normalized === "unknown") normalized = "arrow";
+        if (normalized === "resize_ns") return "windows-aero-resize-ns.png";
+        if (normalized === "resize_ew") return "windows-aero-resize-ew.png";
+        if (normalized === "resize_nesw") return "windows-aero-resize-nesw.png";
+        if (normalized === "resize_nwse") return "windows-aero-resize-nwse.png";
+        return "windows-aero-" + normalized + ".png";
+    }
+
+    function cursorSourceForKind(kind) {
+        return "qrc:/cursors/" + cursorAssetName(kind);
+    }
+
+    function cursorHotspotX(kind) {
+        var normalized = normalizeCursorKind(kind);
+        if (normalized === "arrow" || normalized === "unknown") return 0;
+        if (normalized === "hand") return 6;
+        return 16;
+    }
+
+    function cursorHotspotY(kind) {
+        var normalized = normalizeCursorKind(kind);
+        if (normalized === "arrow" || normalized === "unknown") return 0;
+        if (normalized === "hand") return 1;
+        return 16;
+    }
+
+    function updatePredictedHostCursor(localX, localY) {
+        if (!window.isStreamMode || videoContainer.width <= 0 || videoContainer.height <= 0) return;
+        var clampedX = Math.max(0, Math.min(videoContainer.width, localX));
+        var clampedY = Math.max(0, Math.min(videoContainer.height, localY));
+        window.hostCursorX = Math.round((clampedX / videoContainer.width) * window.streamWidth);
+        window.hostCursorY = Math.round((clampedY / videoContainer.height) * window.streamHeight);
+        window.hostCursorVisible = true;
+    }
 
     // Hold ESC to unlock cursor properties
     property bool isEscHeld: false
@@ -206,6 +265,13 @@ ApplicationWindow {
             window.connectionType = connType
         }
 
+        onHostCursorUpdated: (x, y, visible, kind) => {
+            window.hostCursorX = x
+            window.hostCursorY = y
+            window.hostCursorVisible = visible
+            window.hostCursorKind = window.normalizeCursorKind(kind)
+        }
+
         onNewVersionAvailable: (version, url) => {
             window.latestVersion = version
             window.releaseUrl = url
@@ -245,6 +311,15 @@ ApplicationWindow {
         repeat: true
         onTriggered: {
             bridge.pollStats();
+        }
+    }
+
+    Timer {
+        interval: 16
+        running: window.isStreamMode
+        repeat: true
+        onTriggered: {
+            bridge.pollCursor();
         }
     }
 
@@ -379,18 +454,25 @@ ApplicationWindow {
                     // Map window coordinates to videoContainer-local coordinates
                     var mapped = streamView.mapToItem(videoContainer, mouse.x, mouse.y);
                     bridge.sendMouseMove(mapped.x, mapped.y, videoContainer.width, videoContainer.height, 0, 0, false);
+                    window.updatePredictedHostCursor(mapped.x, mapped.y);
                 }
             }
 
             onPressed: (mouse) => {
                 rootContainer.forceActiveFocus();
+                window.hostCursorMouseDown = true;
                 if (!window.isPointerLocked) {
+                    var mapped = streamView.mapToItem(videoContainer, mouse.x, mouse.y);
+                    window.updatePredictedHostCursor(mapped.x, mapped.y);
                     bridge.sendMouseClick(getButtonCode(mouse.button), true);
                 }
             }
 
             onReleased: (mouse) => {
+                window.hostCursorMouseDown = mouse.buttons !== 0;
                 if (!window.isPointerLocked) {
+                    var mapped = streamView.mapToItem(videoContainer, mouse.x, mouse.y);
+                    window.updatePredictedHostCursor(mapped.x, mapped.y);
                     bridge.sendMouseClick(getButtonCode(mouse.button), false);
                 }
             }
@@ -407,6 +489,21 @@ ApplicationWindow {
                 if (btn === Qt.RightButton) return 3;
                 return 0;
             }
+        }
+
+        Image {
+            id: hostCursorOverlay
+            source: window.cursorSourceForKind(window.hostCursorKind)
+            width: 32
+            height: 32
+            fillMode: Image.PreserveAspectFit
+            smooth: false
+            mipmap: false
+            cache: true
+            visible: window.isStreamMode && window.hideLocalCursor && window.hostCursorVisible
+            x: videoContainer.x + (Math.max(0, Math.min(window.streamWidth, window.hostCursorX)) / Math.max(1, window.streamWidth)) * videoContainer.width - window.cursorHotspotX(window.hostCursorKind)
+            y: videoContainer.y + (Math.max(0, Math.min(window.streamHeight, window.hostCursorY)) / Math.max(1, window.streamHeight)) * videoContainer.height - window.cursorHotspotY(window.hostCursorKind)
+            z: 200
         }
 
     // Global Shortcut to escape pointer lock (always active regardless of focus)

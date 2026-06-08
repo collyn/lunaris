@@ -83,6 +83,17 @@ pub struct StreamStats {
 
 pub static STREAM_STATS: std::sync::Mutex<Option<StreamStats>> = std::sync::Mutex::new(None);
 
+#[derive(Debug, Clone)]
+pub struct PendingHostCursor {
+    pub x: i32,
+    pub y: i32,
+    pub visible: bool,
+    pub kind: String,
+}
+
+pub static PENDING_HOST_CURSOR: std::sync::Mutex<Option<PendingHostCursor>> =
+    std::sync::Mutex::new(None);
+
 #[derive(Clone)]
 pub struct VideoSinkWrapper {
     pub sink: Arc<Mutex<Option<usize>>>,
@@ -422,6 +433,15 @@ pub mod qobject {
         );
 
         #[qsignal]
+        fn host_cursor_updated(
+            self: Pin<&mut StreamBridge>,
+            x: i32,
+            y: i32,
+            visible: bool,
+            kind: QString,
+        );
+
+        #[qsignal]
         fn new_version_available(
             self: Pin<&mut StreamBridge>,
             latest_version: QString,
@@ -546,6 +566,9 @@ pub mod qobject {
 
         #[qinvokable]
         fn poll_stats(self: Pin<&mut StreamBridge>);
+
+        #[qinvokable]
+        fn poll_cursor(self: Pin<&mut StreamBridge>);
 
         #[qinvokable]
         fn has_connection_args(self: Pin<&mut StreamBridge>) -> bool;
@@ -899,6 +922,15 @@ impl qobject::StreamBridge {
             let conn_type_qstring = cxx_qt_lib::QString::from(&s.connection_type);
             self.as_mut()
                 .stats_updated(s.ping, s.decode, s.fps, s.bitrate, codec_qstring, conn_type_qstring);
+        }
+    }
+
+    pub fn poll_cursor(mut self: Pin<&mut Self>) {
+        let cursor = { PENDING_HOST_CURSOR.lock().unwrap().take() };
+        if let Some(cursor) = cursor {
+            let kind_qstring = cxx_qt_lib::QString::from(&cursor.kind);
+            self.as_mut()
+                .host_cursor_updated(cursor.x, cursor.y, cursor.visible, kind_qstring);
         }
     }
 
@@ -1689,7 +1721,7 @@ use tokio_tungstenite::tungstenite::protocol::Message as WsMessage;
 use wtransport::{ClientConfig, Endpoint};
 use webrtc::api::media_engine::MediaEngine;
 use webrtc::api::APIBuilder;
-use webrtc::data_channel::RTCDataChannel;
+use webrtc::data_channel::{data_channel_message::DataChannelMessage, RTCDataChannel};
 use webrtc::ice_transport::ice_candidate::{RTCIceCandidate, RTCIceCandidateInit};
 use webrtc::ice_transport::ice_server::RTCIceServer;
 use webrtc::peer_connection::configuration::RTCConfiguration;
@@ -1702,6 +1734,50 @@ use webrtc::rtp_transceiver::rtp_codec::{
 use webrtc::rtp_transceiver::RTCPFeedback;
 use webrtc::interceptor::registry::Registry;
 use webrtc::api::interceptor_registry::register_default_interceptors;
+
+fn normalize_host_cursor_kind(kind: &str) -> &str {
+    match kind {
+        "arrow" | "ibeam" | "hand" | "cross" | "move" | "resize_ns" | "resize_ew"
+        | "resize_nesw" | "resize_nwse" | "unavailable" | "unknown" => kind,
+        _ => "arrow",
+    }
+}
+
+fn handle_host_cursor_message(data: &[u8]) {
+    let Ok(text) = std::str::from_utf8(data) else {
+        return;
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
+        return;
+    };
+    if value.get("type").and_then(|v| v.as_str()) != Some("host_cursor") {
+        return;
+    }
+
+    let Some(x) = value.get("x").and_then(|v| v.as_f64()) else {
+        return;
+    };
+    let Some(y) = value.get("y").and_then(|v| v.as_f64()) else {
+        return;
+    };
+    let visible = value
+        .get("visible")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+    let kind = value
+        .get("kind")
+        .and_then(|v| v.as_str())
+        .map(normalize_host_cursor_kind)
+        .unwrap_or("arrow")
+        .to_string();
+
+    *PENDING_HOST_CURSOR.lock().unwrap() = Some(PendingHostCursor {
+        x: x.round() as i32,
+        y: y.round() as i32,
+        visible,
+        kind,
+    });
+}
 
 async fn setup_peer_connection(
     ice_servers: Option<Vec<common::RtcIceServer>>,
@@ -2024,6 +2100,11 @@ async fn setup_peer_connection(
                     
                     let mut next_seq_num: Option<u64> = None;
                     let mut packet_buffer = std::collections::BTreeMap::<u64, webrtc::rtp::packet::Packet>::new();
+                    let mut h264_seen_config = false;
+                    let mut h264_config_annexb = Vec::<u8>::new();
+                    let mut h264_wait_for_idr = true;
+                    let mut h264_dropping_fragment = false;
+                    let mut h264_fragment_is_idr = false;
 
                     while let Some(rtp_packet) = rtp_rx.blocking_recv() {
                         pending_packets_decoder.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
@@ -2038,6 +2119,8 @@ async fn setup_peer_connection(
                             packet_buffer.clear();
                             annex_b_buf.clear();
                             av1_obu_buf.clear();
+                            h264_wait_for_idr = true;
+                            h264_dropping_fragment = false;
                             let _ = pli_tx.send(());
                             next_seq_num = None;
                             continue;
@@ -2073,6 +2156,8 @@ async fn setup_peer_connection(
                             // Clear corrupted frame buffer and request keyframe
                             annex_b_buf.clear();
                             av1_obu_buf.clear();
+                            h264_wait_for_idr = true;
+                            h264_dropping_fragment = false;
                             let _ = pli_tx.send(());
                             
                             next_seq_num = Some(first_seq);
@@ -2135,14 +2220,53 @@ async fn setup_peer_connection(
                                     let nal_type = payload[0] & 0x1F;
                                     if nal_type >= 1 && nal_type <= 23 {
                                         // Single NAL unit
+                                        let is_config = nal_type == 7 || nal_type == 8;
                                         let is_vcl = nal_type >= 1 && nal_type <= 5;
+                                        let is_idr = nal_type == 5;
+
+                                        if is_config {
+                                            if nal_type == 7 {
+                                                h264_config_annexb.clear();
+                                            }
+                                            h264_seen_config = true;
+                                            h264_config_annexb.extend_from_slice(&[0, 0, 0, 1]);
+                                            h264_config_annexb.extend_from_slice(payload);
+                                        }
+
                                         annex_b_buf.extend_from_slice(&[0, 0, 0, 1]);
                                         annex_b_buf.extend_from_slice(payload);
-                                        
+
                                         if is_vcl {
-                                            if let Err(e) = process_and_deliver(&annex_b_buf, &mut decoder, &mut decode_count, &mut total_decode_time_ms, &mut frame_count, &has_decoded, &sink_inner) {
-                                                eprintln!("Decoder error: {:?}. Requesting keyframe...", e);
+                                            if h264_wait_for_idr && !is_idr {
+                                                annex_b_buf.clear();
+                                                next_seq_num = Some(current_expected + 1);
+                                                continue;
+                                            }
+                                            if is_idr && !h264_seen_config {
+                                                annex_b_buf.clear();
+                                                h264_wait_for_idr = true;
                                                 let _ = pli_tx.send(());
+                                                next_seq_num = Some(current_expected + 1);
+                                                continue;
+                                            }
+
+                                            let h264_decode_buf;
+                                            let h264_payload = if is_idr
+                                                && !h264_config_annexb.is_empty()
+                                                && !annex_b_buf.starts_with(&h264_config_annexb)
+                                            {
+                                                h264_decode_buf = [h264_config_annexb.as_slice(), annex_b_buf.as_slice()].concat();
+                                                h264_decode_buf.as_slice()
+                                            } else {
+                                                annex_b_buf.as_slice()
+                                            };
+
+                                            if let Err(e) = process_and_deliver(h264_payload, &mut decoder, &mut decode_count, &mut total_decode_time_ms, &mut frame_count, &has_decoded, &sink_inner) {
+                                                eprintln!("Decoder error: {:?}. Requesting keyframe...", e);
+                                                h264_wait_for_idr = true;
+                                                let _ = pli_tx.send(());
+                                            } else {
+                                                h264_wait_for_idr = false;
                                             }
                                             annex_b_buf.clear();
                                         }
@@ -2157,17 +2281,54 @@ async fn setup_peer_connection(
                                             }
                                             let nalu_data = &payload[offset..offset + nalu_size];
                                             offset += nalu_size;
-                                            
+
                                             if !nalu_data.is_empty() {
                                                 let inner_nal_type = nalu_data[0] & 0x1F;
+                                                let is_config = inner_nal_type == 7 || inner_nal_type == 8;
                                                 let is_vcl = inner_nal_type >= 1 && inner_nal_type <= 5;
+                                                let is_idr = inner_nal_type == 5;
+
+                                                if is_config {
+                                                    if inner_nal_type == 7 {
+                                                        h264_config_annexb.clear();
+                                                    }
+                                                    h264_seen_config = true;
+                                                    h264_config_annexb.extend_from_slice(&[0, 0, 0, 1]);
+                                                    h264_config_annexb.extend_from_slice(nalu_data);
+                                                }
+
                                                 annex_b_buf.extend_from_slice(&[0, 0, 0, 1]);
                                                 annex_b_buf.extend_from_slice(nalu_data);
-                                                
+
                                                 if is_vcl {
-                                                    if let Err(e) = process_and_deliver(&annex_b_buf, &mut decoder, &mut decode_count, &mut total_decode_time_ms, &mut frame_count, &has_decoded, &sink_inner) {
-                                                        eprintln!("Decoder error: {:?}. Requesting keyframe...", e);
+                                                    if h264_wait_for_idr && !is_idr {
+                                                        annex_b_buf.clear();
+                                                        continue;
+                                                    }
+                                                    if is_idr && !h264_seen_config {
+                                                        annex_b_buf.clear();
+                                                        h264_wait_for_idr = true;
                                                         let _ = pli_tx.send(());
+                                                        continue;
+                                                    }
+
+                                                    let h264_decode_buf;
+                                                    let h264_payload = if is_idr
+                                                        && !h264_config_annexb.is_empty()
+                                                        && !annex_b_buf.starts_with(&h264_config_annexb)
+                                                    {
+                                                        h264_decode_buf = [h264_config_annexb.as_slice(), annex_b_buf.as_slice()].concat();
+                                                        h264_decode_buf.as_slice()
+                                                    } else {
+                                                        annex_b_buf.as_slice()
+                                                    };
+
+                                                    if let Err(e) = process_and_deliver(h264_payload, &mut decoder, &mut decode_count, &mut total_decode_time_ms, &mut frame_count, &has_decoded, &sink_inner) {
+                                                        eprintln!("Decoder error: {:?}. Requesting keyframe...", e);
+                                                        h264_wait_for_idr = true;
+                                                        let _ = pli_tx.send(());
+                                                    } else {
+                                                        h264_wait_for_idr = false;
                                                     }
                                                     annex_b_buf.clear();
                                                 }
@@ -2185,18 +2346,57 @@ async fn setup_peer_connection(
                                         let end_bit = (fu_header & 0x40) != 0;
                                         let inner_nal_type = fu_header & 0x1F;
                                         let reconstructed_header = (fu_indicator & 0xE0) | inner_nal_type;
-                                        
+
                                         if start_bit {
+                                            let is_idr = inner_nal_type == 5;
+                                            h264_fragment_is_idr = is_idr;
+                                            h264_dropping_fragment = false;
+                                            annex_b_buf.clear();
+
+                                            if h264_wait_for_idr && !is_idr {
+                                                h264_dropping_fragment = true;
+                                                next_seq_num = Some(current_expected + 1);
+                                                continue;
+                                            }
+                                            if is_idr && !h264_seen_config {
+                                                h264_dropping_fragment = true;
+                                                h264_wait_for_idr = true;
+                                                let _ = pli_tx.send(());
+                                                next_seq_num = Some(current_expected + 1);
+                                                continue;
+                                            }
+
                                             annex_b_buf.extend_from_slice(&[0, 0, 0, 1, reconstructed_header]);
                                             annex_b_buf.extend_from_slice(&payload[2..]);
+                                        } else if h264_dropping_fragment || annex_b_buf.is_empty() {
+                                            if end_bit {
+                                                h264_dropping_fragment = false;
+                                            }
+                                            next_seq_num = Some(current_expected + 1);
+                                            continue;
                                         } else {
                                             annex_b_buf.extend_from_slice(&payload[2..]);
                                         }
-                                        
+
                                         if end_bit {
-                                            if let Err(e) = process_and_deliver(&annex_b_buf, &mut decoder, &mut decode_count, &mut total_decode_time_ms, &mut frame_count, &has_decoded, &sink_inner) {
+                                            h264_dropping_fragment = false;
+                                            let h264_decode_buf;
+                                            let h264_payload = if h264_fragment_is_idr
+                                                && !h264_config_annexb.is_empty()
+                                                && !annex_b_buf.starts_with(&h264_config_annexb)
+                                            {
+                                                h264_decode_buf = [h264_config_annexb.as_slice(), annex_b_buf.as_slice()].concat();
+                                                h264_decode_buf.as_slice()
+                                            } else {
+                                                annex_b_buf.as_slice()
+                                            };
+
+                                            if let Err(e) = process_and_deliver(h264_payload, &mut decoder, &mut decode_count, &mut total_decode_time_ms, &mut frame_count, &has_decoded, &sink_inner) {
                                                 eprintln!("Decoder error: {:?}. Requesting keyframe...", e);
+                                                h264_wait_for_idr = true;
                                                 let _ = pli_tx.send(());
+                                            } else {
+                                                h264_wait_for_idr = false;
                                             }
                                             annex_b_buf.clear();
                                         }
@@ -2459,6 +2659,24 @@ async fn setup_peer_connection(
             }
             "mouse_relative" => {
                 *mr_c.lock().unwrap() = Some(channel_ref);
+            }
+            "general" | "cursor" => {
+                d.on_message(Box::new(move |msg: DataChannelMessage| {
+                    Box::pin(async move {
+                        handle_host_cursor_message(&msg.data);
+                    })
+                }));
+
+                d.on_close(Box::new(move || {
+                    Box::pin(async move {
+                        *PENDING_HOST_CURSOR.lock().unwrap() = Some(PendingHostCursor {
+                            x: 0,
+                            y: 0,
+                            visible: false,
+                            kind: "arrow".to_string(),
+                        });
+                    })
+                }));
             }
             _ => {}
         }

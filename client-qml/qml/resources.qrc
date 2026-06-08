@@ -6,5 +6,15 @@
     <file>Dashboard.qml</file>
     <file>Settings.qml</file>
     <file>icon.png</file>
+    <file>cursors/windows-aero-arrow.png</file>
+    <file>cursors/windows-aero-cross.png</file>
+    <file>cursors/windows-aero-hand.png</file>
+    <file>cursors/windows-aero-ibeam.png</file>
+    <file>cursors/windows-aero-move.png</file>
+    <file>cursors/windows-aero-resize-ew.png</file>
+    <file>cursors/windows-aero-resize-nesw.png</file>
+    <file>cursors/windows-aero-resize-ns.png</file>
+    <file>cursors/windows-aero-resize-nwse.png</file>
+    <file>cursors/windows-aero-unavailable.png</file>
 </qresource>
 </RCC>
