@@ -109,6 +109,11 @@ ApplicationWindow {
     property real bitrateKbps: 0.0
     property string activeCodec: "H264"
     property string connectionType: "P2P (Direct)"
+    property string activeEncoderName: "Unknown"
+    property string activeEncoderHw: "Unknown"
+    property string agentGpuInfo: "Unknown"
+    property string requestedEncoder: "auto"
+    property string activeInputProtocol: "webrtc"
     property bool useCuda: true
     property string latestVersion: ""
     property string releaseUrl: ""
@@ -327,6 +332,19 @@ ApplicationWindow {
             window.agentHostOs = String(hostOs).toLowerCase()
         }
 
+        onHostInfoUpdated: (gpuInfo, hostOs) => {
+            if (gpuInfo !== "") window.agentGpuInfo = gpuInfo
+            if (hostOs !== "") window.agentHostOs = String(hostOs).toLowerCase()
+        }
+
+        onEncoderStatusUpdated: (encoder, hwType, gpuInfo, requestedEncoder, hostOs) => {
+            window.activeEncoderName = encoder || "Unknown"
+            window.activeEncoderHw = hwType || "Unknown"
+            window.agentGpuInfo = gpuInfo || window.agentGpuInfo || "Unknown"
+            window.requestedEncoder = requestedEncoder || "auto"
+            if (hostOs !== "") window.agentHostOs = String(hostOs).toLowerCase()
+        }
+
         onLocalCursorDelta: (rx, ry) => {
             window.updateLocalCursorDelta(rx, ry)
         }
@@ -340,6 +358,7 @@ ApplicationWindow {
         onSettingsLoaded: (res, fps, codec, bitrate, queueLimit, hostName, disableCuda, inputProtocol) => {
             menuBar.initializeSettings(res, fps, codec, bitrate, queueLimit, hostName, disableCuda, inputProtocol);
             window.useCuda = !disableCuda;
+            window.activeInputProtocol = String(inputProtocol).toLowerCase();
             var parts = res.split("x");
             if (parts.length === 2) {
                 window.streamWidth = parseInt(parts[0]);
@@ -512,8 +531,8 @@ ApplicationWindow {
                 if (!window.isPointerLocked) {
                     // Map window coordinates to videoContainer-local coordinates
                     var mapped = streamView.mapToItem(videoContainer, mouse.x, mouse.y);
-                    bridge.sendMouseMove(mapped.x, mapped.y, videoContainer.width, videoContainer.height, 0, 0, false);
                     window.updateLocalCursorPrediction(mapped.x, mapped.y);
+                    bridge.sendMouseMove(mapped.x, mapped.y, videoContainer.width, videoContainer.height, 0, 0, false);
                 }
             }
 
@@ -593,8 +612,8 @@ ApplicationWindow {
         }
         
         anchors.rightMargin: 16
-        width: 220
-        height: 180
+        width: 280
+        height: 320
         radius: 16
         color: Qt.rgba(20/255, 20/255, 20/255, 0.6)
         border.color: Qt.rgba(255/255, 255/255, 255/255, 0.08)
@@ -658,6 +677,46 @@ ApplicationWindow {
                 anchors.right: parent.right
                 Text { text: "Codec"; color: "#94a3b8"; font.pixelSize: 11; font.bold: true; anchors.left: parent.left }
                 Text { text: window.activeCodec.toUpperCase(); color: "#ffffff"; font.pixelSize: 11; font.bold: true; anchors.right: parent.right }
+            }
+
+            Item {
+                height: 16
+                anchors.left: parent.left
+                anchors.right: parent.right
+                Text { text: "Encoder"; color: "#94a3b8"; font.pixelSize: 11; font.bold: true; anchors.left: parent.left }
+                Text { text: window.activeEncoderName + " (" + window.activeEncoderHw + ")"; color: "#ffffff"; font.pixelSize: 11; font.bold: true; anchors.right: parent.right; elide: Text.ElideLeft; width: 150; horizontalAlignment: Text.AlignRight }
+            }
+
+            Item {
+                height: 16
+                anchors.left: parent.left
+                anchors.right: parent.right
+                Text { text: "GPU"; color: "#94a3b8"; font.pixelSize: 11; font.bold: true; anchors.left: parent.left }
+                Text { text: window.agentGpuInfo; color: "#ffffff"; font.pixelSize: 11; font.bold: true; anchors.right: parent.right; elide: Text.ElideLeft; width: 170; horizontalAlignment: Text.AlignRight }
+            }
+
+            Item {
+                height: 16
+                anchors.left: parent.left
+                anchors.right: parent.right
+                Text { text: "Host OS"; color: "#94a3b8"; font.pixelSize: 11; font.bold: true; anchors.left: parent.left }
+                Text { text: window.agentHostOs; color: "#ffffff"; font.pixelSize: 11; font.bold: true; anchors.right: parent.right }
+            }
+
+            Item {
+                height: 16
+                anchors.left: parent.left
+                anchors.right: parent.right
+                Text { text: "Requested Encoder"; color: "#94a3b8"; font.pixelSize: 11; font.bold: true; anchors.left: parent.left }
+                Text { text: window.requestedEncoder; color: "#ffffff"; font.pixelSize: 11; font.bold: true; anchors.right: parent.right }
+            }
+
+            Item {
+                height: 16
+                anchors.left: parent.left
+                anchors.right: parent.right
+                Text { text: "Input Protocol"; color: "#94a3b8"; font.pixelSize: 11; font.bold: true; anchors.left: parent.left }
+                Text { text: window.activeInputProtocol.toUpperCase(); color: window.activeInputProtocol === "webtransport" ? "#4ade80" : "#38bdf8"; font.pixelSize: 11; font.bold: true; anchors.right: parent.right }
             }
 
             Item {
@@ -759,6 +818,7 @@ ApplicationWindow {
 
         onSettingsChanged: (res, fps, codec, bitrate, queueLimit, disableCuda, inputProtocol) => {
             window.useCuda = !disableCuda;
+            window.activeInputProtocol = String(inputProtocol).toLowerCase();
             bridge.updateStreamConfig(res, fps, codec, bitrate, queueLimit, disableCuda, inputProtocol);
             var parts = res.split("x");
             if (parts.length === 2) {

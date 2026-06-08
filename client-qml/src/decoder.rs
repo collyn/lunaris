@@ -56,6 +56,7 @@ pub struct YUVFrame {
 pub struct HardwareDecoder {
     codec_ctx: *mut ffi::AVCodecContext,
     hw_device_ctx: *mut ffi::AVBufferRef,
+    hw_device_type: ffi::AVHWDeviceType,
     sws_ctx: *mut ffi::SwsContext,
     last_width: i32,
     last_height: i32,
@@ -164,11 +165,29 @@ impl HardwareDecoder {
         Ok(HardwareDecoder {
             codec_ctx,
             hw_device_ctx,
+            hw_device_type,
             sws_ctx: std::ptr::null_mut(),
             last_width: 0,
             last_height: 0,
             last_format: -1,
         })
+    }
+
+    pub fn presentation_mode_label(&self) -> &'static str {
+        if self.hw_device_type == ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_NONE {
+            return "software decode";
+        }
+
+        let direct_cuda_gl = self.hw_device_type == ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_CUDA
+            && std::env::var("LUNARIS_CLIENT_CUDA_GL")
+                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                .unwrap_or(false);
+
+        if direct_cuda_gl {
+            "CUDA decode + CUDA-GL present"
+        } else {
+            "GPU decode + CPU present"
+        }
     }
 
     pub fn decode(&mut self, data: &[u8]) -> Result<Vec<YUVFrame>, anyhow::Error> {

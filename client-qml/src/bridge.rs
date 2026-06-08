@@ -97,6 +97,27 @@ pub static PENDING_HOST_CURSOR: std::sync::Mutex<Option<PendingHostCursor>> =
 
 pub static PENDING_HOST_OS: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
+#[derive(Debug, Clone)]
+pub struct PendingHostInfo {
+    pub gpu_info: String,
+    pub host_os: String,
+}
+
+pub static PENDING_HOST_INFO: std::sync::Mutex<Option<PendingHostInfo>> =
+    std::sync::Mutex::new(None);
+
+#[derive(Debug, Clone)]
+pub struct PendingEncoderStatus {
+    pub encoder: String,
+    pub hw_type: String,
+    pub gpu_info: String,
+    pub requested_encoder: String,
+    pub host_os: String,
+}
+
+pub static PENDING_ENCODER_STATUS: std::sync::Mutex<Option<PendingEncoderStatus>> =
+    std::sync::Mutex::new(None);
+
 #[derive(Clone)]
 pub struct VideoSinkWrapper {
     pub sink: Arc<Mutex<Option<usize>>>,
@@ -447,6 +468,19 @@ pub mod qobject {
 
         #[qsignal]
         fn host_os_updated(self: Pin<&mut StreamBridge>, host_os: QString);
+
+        #[qsignal]
+        fn host_info_updated(self: Pin<&mut StreamBridge>, gpu_info: QString, host_os: QString);
+
+        #[qsignal]
+        fn encoder_status_updated(
+            self: Pin<&mut StreamBridge>,
+            encoder: QString,
+            hw_type: QString,
+            gpu_info: QString,
+            requested_encoder: QString,
+            host_os: QString,
+        );
 
         #[qsignal]
         fn local_cursor_delta(self: Pin<&mut StreamBridge>, rx: i32, ry: i32);
@@ -957,6 +991,25 @@ impl qobject::StreamBridge {
         if let Some(host_os) = host_os {
             self.as_mut()
                 .host_os_updated(cxx_qt_lib::QString::from(&host_os));
+        }
+
+        let host_info = { PENDING_HOST_INFO.lock().unwrap().take() };
+        if let Some(info) = host_info {
+            self.as_mut().host_info_updated(
+                cxx_qt_lib::QString::from(&info.gpu_info),
+                cxx_qt_lib::QString::from(&info.host_os),
+            );
+        }
+
+        let encoder_status = { PENDING_ENCODER_STATUS.lock().unwrap().take() };
+        if let Some(status) = encoder_status {
+            self.as_mut().encoder_status_updated(
+                cxx_qt_lib::QString::from(&status.encoder),
+                cxx_qt_lib::QString::from(&status.hw_type),
+                cxx_qt_lib::QString::from(&status.gpu_info),
+                cxx_qt_lib::QString::from(&status.requested_encoder),
+                cxx_qt_lib::QString::from(&status.host_os),
+            );
         }
     }
 
@@ -2356,7 +2409,13 @@ async fn setup_peer_connection(
                                     }
                                     let sink_lock = sink_ref.sink.lock().unwrap();
                                     if *frame_count_ref % 60 == 0 {
-                                        println!("Decoded software frame: {}x{}, sink={:?}", frame.width, frame.height, *sink_lock);
+                                        println!(
+                                            "Decoded frame via {}: {}x{}, sink={:?}",
+                                            decoder_ref.presentation_mode_label(),
+                                            frame.width,
+                                            frame.height,
+                                            *sink_lock
+                                        );
                                     }
                                     if let Some(sink_ptr_val) = *sink_lock {
                                         unsafe {
@@ -3172,11 +3231,35 @@ async fn run_webrtc_client_task(
 
             match server_msg {
                 ServerToClientMessage::Signaling(sig) => match sig {
-                    SignalingMessage::CapabilitiesResponse { host_os, .. }
-                    | SignalingMessage::EncoderStatus { host_os, .. } => {
-                        if let Some(host_os) = host_os {
-                            *PENDING_HOST_OS.lock().unwrap() = Some(host_os.to_ascii_lowercase());
+                    SignalingMessage::CapabilitiesResponse { gpu_info, host_os, .. } => {
+                        let host_os = host_os.unwrap_or_default().to_ascii_lowercase();
+                        if !host_os.is_empty() {
+                            *PENDING_HOST_OS.lock().unwrap() = Some(host_os.clone());
                         }
+                        *PENDING_HOST_INFO.lock().unwrap() = Some(PendingHostInfo {
+                            gpu_info: gpu_info.unwrap_or_default(),
+                            host_os,
+                        });
+                    }
+                    SignalingMessage::EncoderStatus {
+                        encoder,
+                        hw_type,
+                        gpu_info,
+                        requested_encoder,
+                        host_os,
+                        ..
+                    } => {
+                        let host_os = host_os.unwrap_or_default().to_ascii_lowercase();
+                        if !host_os.is_empty() {
+                            *PENDING_HOST_OS.lock().unwrap() = Some(host_os.clone());
+                        }
+                        *PENDING_ENCODER_STATUS.lock().unwrap() = Some(PendingEncoderStatus {
+                            encoder,
+                            hw_type,
+                            gpu_info: gpu_info.unwrap_or_default(),
+                            requested_encoder: requested_encoder.unwrap_or_else(|| "auto".to_string()),
+                            host_os,
+                        });
                     }
                     SignalingMessage::Sdp {
                         sdp, ice_servers, webtransport_port, ..
