@@ -1242,8 +1242,7 @@ impl qobject::StreamBridge {
             }
         }
 
-        // Restart stream
-        self.as_mut().stop_stream();
+        // Restart stream. start_stream() owns cleanup of the previous session.
         self.as_mut().start_stream();
     }
 

@@ -555,6 +555,27 @@ async fn handle_client_signaling(
         } => {
             info!("Client {} requested session for host {} with settings: w={:?}, h={:?}, fps={:?}, bitrate={:?}, codec={:?}, app_id={:?}, virtual_display={:?}", client_id, host_id, width, height, fps, bitrate, codec, app_id, virtual_display);
 
+            let previous_host = state.client_to_agent.write().unwrap().remove(client_id);
+            let mut stopped_previous_agent_session = false;
+            if let Some(previous_host_id) = previous_host {
+                if let Some(agent_tx) = state.agents.read().unwrap().get(&previous_host_id).cloned() {
+                    let _ = agent_tx.send(ServerToAgentMessage::Signaling(
+                        SignalingMessage::EndSession {
+                            target_id: client_id.to_string(),
+                        },
+                    ));
+                    stopped_previous_agent_session = true;
+                    info!(
+                        "Stopped previous session for client {} on host {} before starting a new session",
+                        client_id, previous_host_id
+                    );
+                }
+                state.set_host_status(&previous_host_id, HostStatus::Online).await;
+            }
+            if stopped_previous_agent_session {
+                tokio::time::sleep(std::time::Duration::from_millis(1300)).await;
+            }
+
             // Check if there is an active session for host_id, if so terminate it first
             let old_session = {
                 let mut sessions = state.local_sessions.write().unwrap();
