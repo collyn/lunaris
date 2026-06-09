@@ -382,6 +382,10 @@ pub async fn run_agent_loop(
                                 if let Some(old_session) = lock.take() {
                                     info!("Cleaning up previous active session before setting up new one...");
                                     let _ = old_session.peer_connection.close().await;
+                                    LAST_STREAM_STOP_TIME_MS.store(
+                                        get_current_time_ms(),
+                                        std::sync::atomic::Ordering::SeqCst,
+                                    );
                                 }
                             }
 
