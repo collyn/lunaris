@@ -77,11 +77,19 @@ pub const RENDER_BACKEND_NATIVE_GPU: &str = "native_gpu";
 pub const RENDER_BACKEND_SOFTWARE: &str = "software";
 
 pub fn normalize_render_backend(value: &str, disable_cuda_fallback: bool) -> String {
-    let normalized = value.trim().to_ascii_lowercase().replace('-', "_").replace(' ', "_");
+    let normalized = value
+        .trim()
+        .to_ascii_lowercase()
+        .replace('-', "_")
+        .replace(' ', "_");
     match normalized.as_str() {
         "auto" | "auto_gpu" | "gpu" | "hardware" | "hw" => RENDER_BACKEND_AUTO_GPU.to_string(),
-        "native" | "native_gpu" | "native_render" | "gpu_native" => RENDER_BACKEND_NATIVE_GPU.to_string(),
-        "software" | "cpu" | "ffmpeg" | "qvideosink" | "cpu_present" => RENDER_BACKEND_SOFTWARE.to_string(),
+        "native" | "native_gpu" | "native_render" | "gpu_native" => {
+            RENDER_BACKEND_NATIVE_GPU.to_string()
+        }
+        "software" | "cpu" | "ffmpeg" | "qvideosink" | "cpu_present" => {
+            RENDER_BACKEND_SOFTWARE.to_string()
+        }
         "" => render_backend_from_disable_cuda(disable_cuda_fallback),
         _ => render_backend_from_disable_cuda(disable_cuda_fallback),
     }
@@ -97,6 +105,71 @@ pub fn render_backend_from_disable_cuda(disable_cuda: bool) -> String {
 
 pub fn render_backend_disables_cuda(render_backend: &str) -> bool {
     normalize_render_backend(render_backend, false) == RENDER_BACKEND_SOFTWARE
+}
+
+fn qt_opengl_scenegraph_available_runtime() -> bool {
+    if std::env::var("LUNARIS_ASSUME_QT_OPENGL")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+    {
+        return true;
+    }
+
+    let mut roots = Vec::new();
+    if let Ok(path) = std::env::var("QT_PLUGIN_PATH") {
+        roots.extend(
+            path.split(':')
+                .filter(|p| !p.is_empty())
+                .map(std::path::PathBuf::from),
+        );
+    }
+    roots.push(std::path::PathBuf::from(
+        "/usr/lib/x86_64-linux-gnu/qt6/plugins",
+    ));
+    roots.push(std::path::PathBuf::from("/usr/lib/qt6/plugins"));
+    roots.push(std::path::PathBuf::from("/usr/local/lib/qt6/plugins"));
+
+    roots.iter().any(|root| {
+        let scenegraph = root.join("scenegraph");
+        [
+            scenegraph.join("libqsgopengl.so"),
+            scenegraph.join("libqsgopengladaptation.so"),
+            scenegraph.join("libqtquick2plugin.so"),
+        ]
+        .iter()
+        .any(|path| path.exists())
+    })
+}
+
+fn qt_opengl_scenegraph_active_runtime() -> bool {
+    std::env::var("QSG_RHI_BACKEND")
+        .map(|v| v.eq_ignore_ascii_case("opengl"))
+        .unwrap_or(false)
+        && std::env::var("QT_QUICK_BACKEND")
+            .map(|v| v.eq_ignore_ascii_case("opengl"))
+            .unwrap_or(false)
+}
+
+fn configure_native_present_for_stream(args: &mut AppArgs) {
+    std::env::remove_var("LUNARIS_CLIENT_CUDA_GL");
+    std::env::remove_var("LUNARIS_CLIENT_DMABUF_GL");
+
+    if args.effective_render_backend() != RENDER_BACKEND_NATIVE_GPU {
+        return;
+    }
+
+    if cfg!(target_os = "linux") {
+        if !qt_opengl_scenegraph_available_runtime() || !qt_opengl_scenegraph_active_runtime() {
+            eprintln!(
+                "Native GPU presentation requested, but Qt OpenGL scenegraph is unavailable or inactive. Falling back to Auto GPU decode + QVideoSink present."
+            );
+            args.render_backend = RENDER_BACKEND_AUTO_GPU.to_string();
+            args.disable_cuda = false;
+            return;
+        }
+        std::env::set_var("LUNARIS_CLIENT_CUDA_GL", "1");
+        std::env::set_var("LUNARIS_CLIENT_DMABUF_GL", "1");
+    }
 }
 
 impl AppArgs {
@@ -458,6 +531,8 @@ pub mod qobject {
         include!("QtMultimedia/QVideoSink");
         include!("video_helper.h");
         include!("gpu_video_item.h");
+        include!("d3d11_video_item.h");
+        include!("vaapi_dmabuf_video_item.h");
 
         #[cxx_name = "QVideoSink"]
         type QVideoSink;
@@ -501,11 +576,49 @@ pub mod qobject {
         #[rust_name = "register_gpu_video_item_type"]
         fn register_gpu_video_item_type();
 
+        #[rust_name = "register_native_video_item_types"]
+        fn register_native_video_item_types();
+
         #[rust_name = "set_cuda_stream_active"]
         fn set_cuda_stream_active(active: bool);
 
         #[rust_name = "cuda_gl_render_failed"]
         fn cuda_gl_render_failed() -> bool;
+
+        #[rust_name = "deliver_d3d11_frame"]
+        unsafe fn deliver_d3d11_frame(
+            texture_ptr: u64,
+            array_index: i32,
+            width: i32,
+            height: i32,
+            format: u32,
+        ) -> bool;
+
+        #[rust_name = "d3d11_render_failed"]
+        fn d3d11_render_failed() -> bool;
+
+        #[rust_name = "set_d3d11_stream_active"]
+        fn set_d3d11_stream_active(active: bool);
+
+        #[rust_name = "deliver_dmabuf_frame"]
+        unsafe fn deliver_dmabuf_frame(
+            fd0: i32,
+            fd1: i32,
+            fourcc: u32,
+            modifier: u64,
+            offset0: i32,
+            pitch0: i32,
+            offset1: i32,
+            pitch1: i32,
+            width: i32,
+            height: i32,
+        ) -> bool;
+
+        #[rust_name = "dmabuf_render_failed"]
+        fn dmabuf_render_failed() -> bool;
+
+        #[rust_name = "set_dmabuf_stream_active"]
+        fn set_dmabuf_stream_active(active: bool);
     }
 
     unsafe extern "C++" {
@@ -616,8 +729,6 @@ pub mod qobject {
             error_msg: QString,
             hosts_json: QString,
         );
-
-
 
         #[qsignal]
         fn apps_result(
@@ -865,8 +976,6 @@ impl qobject::StreamBridge {
             max_queue_lag: 0,
             connection_type: "P2P (Direct)".to_string(),
         });
-        qobject::set_cuda_stream_active(true);
-
         // Load active config, if None, initialize from APP_ARGS
         let mut active_config_lock = ACTIVE_CONFIG.lock().unwrap();
         if active_config_lock.is_none() {
@@ -874,15 +983,20 @@ impl qobject::StreamBridge {
                 *active_config_lock = Some(args.clone());
             }
         }
-        let args = match &*active_config_lock {
+        let mut args = match &*active_config_lock {
             Some(a) => a.clone(),
             None => {
                 eprintln!("AppArgs static configuration not initialized!");
                 return;
             }
         };
-        // Drop lock before async tokio spawning
+        configure_native_present_for_stream(&mut args);
+        *active_config_lock = Some(args.clone());
         drop(active_config_lock);
+
+        qobject::set_cuda_stream_active(true);
+        qobject::set_d3d11_stream_active(true);
+        qobject::set_dmabuf_stream_active(true);
 
         // Create tokio runtime if not exists
         let rt = match tokio::runtime::Runtime::new() {
@@ -946,6 +1060,8 @@ impl qobject::StreamBridge {
     pub fn stop_stream(mut self: Pin<&mut Self>) {
         println!("Stopping stream and releasing signaling runtime...");
         qobject::set_cuda_stream_active(false);
+        qobject::set_d3d11_stream_active(false);
+        qobject::set_dmabuf_stream_active(false);
         let handle = self
             .as_mut()
             .rust_mut()
@@ -1044,7 +1160,8 @@ impl qobject::StreamBridge {
         disable_cuda: bool,
         input_protocol: QString,
     ) {
-        let render_backend = cxx_qt_lib::QString::from(&render_backend_from_disable_cuda(disable_cuda));
+        let render_backend =
+            cxx_qt_lib::QString::from(&render_backend_from_disable_cuda(disable_cuda));
         self.update_stream_config_with_backend(
             res,
             fps,
@@ -1071,7 +1188,8 @@ impl qobject::StreamBridge {
         let res_str = res.to_string();
         let codec_str = codec.to_string().to_lowercase();
         let input_proto_str = input_protocol.to_string().to_lowercase();
-        let render_backend_str = normalize_render_backend(&render_backend.to_string(), disable_cuda);
+        let render_backend_str =
+            normalize_render_backend(&render_backend.to_string(), disable_cuda);
         let effective_disable_cuda = render_backend_disables_cuda(&render_backend_str);
         println!("Updating stream configuration: res={}, fps={}, codec={}, bitrate={}, mouse_queue_limit={}, render_backend={}, disable_cuda={}, input_protocol={}", res_str, fps, codec_str, bitrate, mouse_queue_limit, render_backend_str, effective_disable_cuda, input_proto_str);
 
@@ -1220,7 +1338,8 @@ impl qobject::StreamBridge {
             let codec_qstring = cxx_qt_lib::QString::from(&config.codec);
             let host_name_qstring = cxx_qt_lib::QString::from(&config.host_name);
             let input_proto_qstring = cxx_qt_lib::QString::from(&config.input_protocol);
-            let render_backend_qstring = cxx_qt_lib::QString::from(&config.effective_render_backend());
+            let render_backend_qstring =
+                cxx_qt_lib::QString::from(&config.effective_render_backend());
             self.as_mut().settings_loaded(
                 res_qstring,
                 config.fps as i32,
@@ -1428,8 +1547,6 @@ impl qobject::StreamBridge {
         });
     }
 
-
-
     pub fn delete_host(self: Pin<&mut Self>, host_id: QString) {
         let host_id_str = host_id.to_string();
         let settings = match load_settings() {
@@ -1487,7 +1604,8 @@ impl qobject::StreamBridge {
                             PENDING_EVENTS.lock().unwrap().push(
                                 PendingDashboardEvent::HostsResult {
                                     success: false,
-                                    error_msg: "Host deleted, but failed to refresh host list".to_string(),
+                                    error_msg: "Host deleted, but failed to refresh host list"
+                                        .to_string(),
                                     hosts_json: "".to_string(),
                                 },
                             );
@@ -1505,7 +1623,8 @@ impl qobject::StreamBridge {
                             PENDING_EVENTS.lock().unwrap().push(
                                 PendingDashboardEvent::HostsResult {
                                     success: false,
-                                    error_msg: "Host deleted, but failed to refresh host list".to_string(),
+                                    error_msg: "Host deleted, but failed to refresh host list"
+                                        .to_string(),
                                     hosts_json: "".to_string(),
                                 },
                             );
@@ -1554,8 +1673,6 @@ impl qobject::StreamBridge {
             }
         });
     }
-
-
 
     pub fn fetch_apps(self: Pin<&mut Self>, host_id: QString) {
         let host_id_str = host_id.to_string();
@@ -1730,10 +1847,25 @@ impl qobject::StreamBridge {
         display_id: QString,
         virtual_display: bool,
     ) {
-        let render_backend = cxx_qt_lib::QString::from(&render_backend_from_disable_cuda(disable_cuda));
+        let render_backend =
+            cxx_qt_lib::QString::from(&render_backend_from_disable_cuda(disable_cuda));
         self.start_game_session_with_backend(
-            server, token, host_id, host_name, app_id, res, fps, codec, bitrate, mouse_queue_limit,
-            disable_cuda, render_backend, input_protocol, encoder, display_id, virtual_display,
+            server,
+            token,
+            host_id,
+            host_name,
+            app_id,
+            res,
+            fps,
+            codec,
+            bitrate,
+            mouse_queue_limit,
+            disable_cuda,
+            render_backend,
+            input_protocol,
+            encoder,
+            display_id,
+            virtual_display,
         );
     }
 
@@ -1763,7 +1895,8 @@ impl qobject::StreamBridge {
         let res_str = res.to_string();
         let codec_str = codec.to_string().to_lowercase();
         let input_proto_str = input_protocol.to_string().to_lowercase();
-        let render_backend_str = normalize_render_backend(&render_backend.to_string(), disable_cuda);
+        let render_backend_str =
+            normalize_render_backend(&render_backend.to_string(), disable_cuda);
         let effective_disable_cuda = render_backend_disables_cuda(&render_backend_str);
         let encoder_str = encoder.to_string().to_lowercase();
         let display_str = display_id.to_string();
@@ -1801,8 +1934,16 @@ impl qobject::StreamBridge {
             disable_cuda: effective_disable_cuda,
             render_backend: render_backend_str,
             input_protocol: input_proto_str,
-            encoder: if encoder_str.is_empty() || encoder_str == "auto" { None } else { Some(encoder_str) },
-            display_id: if display_str.is_empty() || display_str == "default" { None } else { Some(display_str) },
+            encoder: if encoder_str.is_empty() || encoder_str == "auto" {
+                None
+            } else {
+                Some(encoder_str)
+            },
+            display_id: if display_str.is_empty() || display_str == "default" {
+                None
+            } else {
+                Some(display_str)
+            },
             virtual_display,
         };
 
@@ -1885,7 +2026,10 @@ impl qobject::StreamBridge {
                     let url_qstr = QString::from(&url);
                     self.as_mut().deeplink_received(url_qstr);
                 }
-                PendingDashboardEvent::UpdateAvailable { latest_version, release_url } => {
+                PendingDashboardEvent::UpdateAvailable {
+                    latest_version,
+                    release_url,
+                } => {
                     let ver_qstr = QString::from(&latest_version);
                     let url_qstr = QString::from(&release_url);
                     self.as_mut().new_version_available(ver_qstr, url_qstr);
@@ -2071,34 +2215,38 @@ impl qobject::StreamBridge {
         let rt = rust_obj.get_or_init_runtime();
 
         rt.spawn(async move {
-            let client = match reqwest::Client::builder().user_agent("lunaris-client").build() {
+            let client = match reqwest::Client::builder()
+                .user_agent("lunaris-client")
+                .build()
+            {
                 Ok(c) => c,
                 Err(_) => return,
             };
-            
-            let res = match client.get("https://api.github.com/repos/collyn/lunaris/releases/latest")
+
+            let res = match client
+                .get("https://api.github.com/repos/collyn/lunaris/releases/latest")
                 .send()
                 .await
             {
                 Ok(r) => r,
                 Err(_) => return,
             };
-            
+
             if !res.status().is_success() {
                 return;
             }
-            
+
             #[derive(serde::Deserialize)]
             struct GithubRelease {
                 tag_name: String,
                 html_url: String,
             }
-            
+
             let release: GithubRelease = match res.json().await {
                 Ok(rel) => rel,
                 Err(_) => return,
             };
-            
+
             let current_version = env!("CARGO_PKG_VERSION");
             if is_newer_version(current_version, &release.tag_name) {
                 let mut lock = PENDING_EVENTS.lock().unwrap();
@@ -2114,14 +2262,20 @@ impl qobject::StreamBridge {
 fn is_newer_version(current: &str, latest: &str) -> bool {
     let current_clean = current.trim_start_matches('v');
     let latest_clean = latest.trim_start_matches('v');
-    
+
     let current_parts: Vec<&str> = current_clean.split('.').collect();
     let latest_parts: Vec<&str> = latest_clean.split('.').collect();
-    
+
     for i in 0..std::cmp::max(current_parts.len(), latest_parts.len()) {
-        let current_num = current_parts.get(i).and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
-        let latest_num = latest_parts.get(i).and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
-        
+        let current_num = current_parts
+            .get(i)
+            .and_then(|s| s.parse::<u32>().ok())
+            .unwrap_or(0);
+        let latest_num = latest_parts
+            .get(i)
+            .and_then(|s| s.parse::<u32>().ok())
+            .unwrap_or(0);
+
         if latest_num > current_num {
             return true;
         } else if current_num > latest_num {
@@ -2149,22 +2303,22 @@ use common::{
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::protocol::Message as WsMessage;
-use wtransport::{ClientConfig, Endpoint};
+use webrtc::api::interceptor_registry::register_default_interceptors;
 use webrtc::api::media_engine::MediaEngine;
 use webrtc::api::APIBuilder;
 use webrtc::data_channel::{data_channel_message::DataChannelMessage, RTCDataChannel};
 use webrtc::ice_transport::ice_candidate::{RTCIceCandidate, RTCIceCandidateInit};
 use webrtc::ice_transport::ice_server::RTCIceServer;
+use webrtc::interceptor::registry::Registry;
 use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::peer_connection::RTCPeerConnection;
-use webrtc::track::track_remote::TrackRemote;
 use webrtc::rtp_transceiver::rtp_codec::{
-    RTCRtpCodecCapability, RTCRtpCodecParameters, RTPCodecType
+    RTCRtpCodecCapability, RTCRtpCodecParameters, RTPCodecType,
 };
 use webrtc::rtp_transceiver::RTCPFeedback;
-use webrtc::interceptor::registry::Registry;
-use webrtc::api::interceptor_registry::register_default_interceptors;
+use webrtc::track::track_remote::TrackRemote;
+use wtransport::{ClientConfig, Endpoint};
 
 fn normalize_host_cursor_kind(kind: &str) -> &str {
     match kind {
@@ -2211,9 +2365,6 @@ fn encode_cursor_png_data_url(image: &serde_json::Value) -> Option<(String, i32,
         hotspot_y,
     ))
 }
-
-
-
 
 fn handle_host_cursor_message(data: &[u8]) {
     let Ok(text) = std::str::from_utf8(data) else {
@@ -2269,7 +2420,8 @@ fn select_video_codec_for_offer(requested_codec: &str, offer_sdp: &str) -> Strin
     let requested = requested_codec.trim().to_ascii_lowercase();
     let sdp = offer_sdp.to_ascii_lowercase();
     let has_h264 = sdp.contains(" h264/90000") || sdp.contains("h264/90000");
-    let has_h265 = sdp.contains(" h265/90000") || sdp.contains("hevc/90000") || sdp.contains("h265/90000");
+    let has_h265 =
+        sdp.contains(" h265/90000") || sdp.contains("hevc/90000") || sdp.contains("h265/90000");
     let has_av1 = sdp.contains(" av1/90000") || sdp.contains("av1/90000");
 
     match requested.as_str() {
@@ -2303,7 +2455,7 @@ async fn setup_peer_connection(
 ) -> Result<Arc<RTCPeerConnection>, anyhow::Error> {
     // WebRTC connection setup
     let mut media_engine = MediaEngine::default();
-    
+
     // Register Opus
     media_engine.register_codec(
         RTCRtpCodecParameters {
@@ -2344,7 +2496,8 @@ async fn setup_peer_connection(
                         mime_type: webrtc::api::media_engine::MIME_TYPE_HEVC.to_string(),
                         clock_rate: 90000,
                         channels: 0,
-                        sdp_fmtp_line: "profile-id=1;tier-flag=0;level-id=120;tx-mode=SRST".to_string(),
+                        sdp_fmtp_line: "profile-id=1;tier-flag=0;level-id=120;tx-mode=SRST"
+                            .to_string(),
                         rtcp_feedback: video_rtcp_feedback,
                     },
                     payload_type: 98,
@@ -2377,7 +2530,9 @@ async fn setup_peer_connection(
                         mime_type: webrtc::api::media_engine::MIME_TYPE_H264.to_string(),
                         clock_rate: 90000,
                         channels: 0,
-                        sdp_fmtp_line: "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42002a".to_string(),
+                        sdp_fmtp_line:
+                            "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42002a"
+                                .to_string(),
                         rtcp_feedback: video_rtcp_feedback,
                     },
                     payload_type: 96,
@@ -2616,6 +2771,7 @@ async fn setup_peer_connection(
                     let mut packets_lost: u64 = 0;
                     let mut queue_lag_events: u64 = 0;
                     let mut max_queue_lag: usize = 0;
+                    let mut last_present_log_label = String::new();
 
                     while let Some(rtp_packet) = rtp_rx.blocking_recv() {
                         let _ = pending_packets_decoder.fetch_update(
@@ -2714,7 +2870,7 @@ async fn setup_peer_connection(
                             
                             byte_count += payload.len();
                             
-                            let process_and_deliver = |annex_b_data: &[u8], decoder_ref: &mut super::decoder::HardwareDecoder, decode_count_ref: &mut usize, total_decode_time_ref: &mut f64, frame_count_ref: &mut usize, has_decoded_ref: &Arc<std::sync::atomic::AtomicBool>, sink_ref: &VideoSinkWrapper| -> Result<(), anyhow::Error> {
+                            let mut process_and_deliver = |annex_b_data: &[u8], decoder_ref: &mut super::decoder::HardwareDecoder, decode_count_ref: &mut usize, total_decode_time_ref: &mut f64, frame_count_ref: &mut usize, has_decoded_ref: &Arc<std::sync::atomic::AtomicBool>, sink_ref: &VideoSinkWrapper| -> Result<(), anyhow::Error> {
                                 let start_decode = std::time::Instant::now();
                                 let decoded_frames = decoder_ref.decode(annex_b_data)?;
                                 let decode_time_ms = start_decode.elapsed().as_secs_f64() * 1000.0;
@@ -2731,23 +2887,24 @@ async fn setup_peer_connection(
                                 for frame in decoded_frames {
                                     match frame {
                                         super::decoder::DecodedFrame::NativePresented => {
-                                            if *frame_count_ref == 1 {
-                                                println!(
-                                                    "Decoded frame via {}",
-                                                    decoder_ref.presentation_mode_label()
-                                                );
+                                            let label = decoder_ref.presentation_mode_label();
+                                            if last_present_log_label != label {
+                                                println!("Decoded frame via {}", label);
+                                                last_present_log_label = label;
                                             }
                                         }
                                         super::decoder::DecodedFrame::CpuYuv(frame) => {
                                             let sink_lock = sink_ref.sink.lock().unwrap();
-                                            if *frame_count_ref == 1 {
+                                            let label = decoder_ref.presentation_mode_label();
+                                            if last_present_log_label != label {
                                                 println!(
                                                     "Decoded frame via {}: {}x{}, sink={:?}",
-                                                    decoder_ref.presentation_mode_label(),
+                                                    label,
                                                     frame.width,
                                                     frame.height,
                                                     *sink_lock
                                                 );
+                                                last_present_log_label = label;
                                             }
                                             if let Some(sink_ptr_val) = *sink_lock {
                                                 unsafe {
@@ -3172,7 +3329,7 @@ async fn setup_peer_connection(
                                     let mut first = true;
                                     
                                     // Process AV1 OBU fragment
-                                    let process_fragment = |element_data: &[u8], is_first_elem: bool, is_last_elem: bool, av1_obu_buf_ref: &mut Vec<u8>, decoder_ref: &mut super::decoder::HardwareDecoder, decode_count_ref: &mut usize, total_decode_time_ref: &mut f64, frame_count_ref: &mut usize, has_decoded_ref: &Arc<std::sync::atomic::AtomicBool>, sink_ref: &VideoSinkWrapper| {
+                                    let mut process_fragment = |element_data: &[u8], is_first_elem: bool, is_last_elem: bool, av1_obu_buf_ref: &mut Vec<u8>, decoder_ref: &mut super::decoder::HardwareDecoder, decode_count_ref: &mut usize, total_decode_time_ref: &mut f64, frame_count_ref: &mut usize, has_decoded_ref: &Arc<std::sync::atomic::AtomicBool>, sink_ref: &VideoSinkWrapper| {
                                         if is_first_elem && z {
                                             av1_obu_buf_ref.extend_from_slice(element_data);
                                         } else {
@@ -3405,7 +3562,9 @@ async fn send_relative_packet(
             } else {
                 true
             }
-        } else { false }
+        } else {
+            false
+        }
     } else {
         false
     };
@@ -3414,8 +3573,10 @@ async fn send_relative_packet(
         if let Some(ref chan) = cached_chan {
             let mut cached_buffer_ok = true;
             if mouse_queue_limit > 0 {
-                static LAST_CHECK: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
-                static LAST_RESULT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+                static LAST_CHECK: std::sync::Mutex<Option<std::time::Instant>> =
+                    std::sync::Mutex::new(None);
+                static LAST_RESULT: std::sync::atomic::AtomicBool =
+                    std::sync::atomic::AtomicBool::new(true);
                 let now = std::time::Instant::now();
                 let should_check = {
                     let mut guard = LAST_CHECK.lock().unwrap();
@@ -3429,7 +3590,11 @@ async fn send_relative_packet(
                 };
                 if should_check {
                     let amt = chan.buffered_amount().await;
-                    let limit = if mouse_queue_limit < 10240 { 65536 } else { mouse_queue_limit as usize };
+                    let limit = if mouse_queue_limit < 10240 {
+                        65536
+                    } else {
+                        mouse_queue_limit as usize
+                    };
                     let ok = amt < limit;
                     LAST_RESULT.store(ok, std::sync::atomic::Ordering::Relaxed);
                     cached_buffer_ok = ok;
@@ -3499,7 +3664,8 @@ async fn run_webrtc_client_task(
     let mr_chan_ref: Arc<Mutex<Option<Arc<RTCDataChannel>>>> = Arc::new(Mutex::new(None));
 
     let wt_conn_ref: Arc<Mutex<Option<wtransport::Connection>>> = Arc::new(Mutex::new(None));
-    let wt_connected: Arc<std::sync::atomic::AtomicBool> = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let wt_connected: Arc<std::sync::atomic::AtomicBool> =
+        Arc::new(std::sync::atomic::AtomicBool::new(false));
 
     // Spawn input senders tasks
     let k_c = Arc::clone(&kb_chan_ref);
@@ -3519,7 +3685,9 @@ async fn run_webrtc_client_task(
                     } else {
                         true
                     }
-                } else { false }
+                } else {
+                    false
+                }
             } else {
                 false
             };
@@ -3566,7 +3734,9 @@ async fn run_webrtc_client_task(
                     } else {
                         true
                     }
-                } else { false }
+                } else {
+                    false
+                }
             } else {
                 false
             };
@@ -3575,8 +3745,10 @@ async fn run_webrtc_client_task(
                 if let Some(ref chan) = cached_chan {
                     let mut cached_buffer_ok = true;
                     if mouse_queue_limit > 0 {
-                        static LAST_CHECK: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
-                        static LAST_RESULT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+                        static LAST_CHECK: std::sync::Mutex<Option<std::time::Instant>> =
+                            std::sync::Mutex::new(None);
+                        static LAST_RESULT: std::sync::atomic::AtomicBool =
+                            std::sync::atomic::AtomicBool::new(true);
                         let now = std::time::Instant::now();
                         let should_check = {
                             let mut guard = LAST_CHECK.lock().unwrap();
@@ -3590,12 +3762,17 @@ async fn run_webrtc_client_task(
                         };
                         if should_check {
                             let amt = chan.buffered_amount().await;
-                            let limit = if mouse_queue_limit < 10240 { 65536 } else { mouse_queue_limit as usize };
+                            let limit = if mouse_queue_limit < 10240 {
+                                65536
+                            } else {
+                                mouse_queue_limit as usize
+                            };
                             let ok = amt < limit;
                             LAST_RESULT.store(ok, std::sync::atomic::Ordering::Relaxed);
                             cached_buffer_ok = ok;
                         } else {
-                            cached_buffer_ok = LAST_RESULT.load(std::sync::atomic::Ordering::Relaxed);
+                            cached_buffer_ok =
+                                LAST_RESULT.load(std::sync::atomic::Ordering::Relaxed);
                         }
                     }
 
@@ -3623,7 +3800,11 @@ async fn run_webrtc_client_task(
             let mut has_motion = false;
 
             // Process a packet and return it if it's not a relative motion event
-            let process_packet = |buf: bytes::Bytes, acc_dx: &mut i16, acc_dy: &mut i16, has_mot: &mut bool| -> Option<bytes::Bytes> {
+            let process_packet = |buf: bytes::Bytes,
+                                  acc_dx: &mut i16,
+                                  acc_dy: &mut i16,
+                                  has_mot: &mut bool|
+             -> Option<bytes::Bytes> {
                 if buf[0] == 0 {
                     *acc_dx = acc_dx.wrapping_add(i16::from_be_bytes([buf[1], buf[2]]));
                     *acc_dy = acc_dy.wrapping_add(i16::from_be_bytes([buf[3], buf[4]]));
@@ -3634,13 +3815,23 @@ async fn run_webrtc_client_task(
                 }
             };
 
-            let mut non_motion_buf = process_packet(first_buf, &mut accumulated_dx, &mut accumulated_dy, &mut has_motion);
+            let mut non_motion_buf = process_packet(
+                first_buf,
+                &mut accumulated_dx,
+                &mut accumulated_dy,
+                &mut has_motion,
+            );
 
             // Drain any pending relative mouse packets in queue to aggregate them
             while non_motion_buf.is_none() {
                 match mr_rx.try_recv() {
                     Ok(buf) => {
-                        non_motion_buf = process_packet(buf, &mut accumulated_dx, &mut accumulated_dy, &mut has_motion);
+                        non_motion_buf = process_packet(
+                            buf,
+                            &mut accumulated_dx,
+                            &mut accumulated_dy,
+                            &mut has_motion,
+                        );
                     }
                     Err(_) => break,
                 }
@@ -3651,11 +3842,27 @@ async fn run_webrtc_client_task(
                 motion_buf[0] = 0;
                 motion_buf[1..3].copy_from_slice(&accumulated_dx.to_be_bytes());
                 motion_buf[3..5].copy_from_slice(&accumulated_dy.to_be_bytes());
-                send_relative_packet(&motion_buf, &mr_c, &mut cached_chan, &wt_c, &has_wt, mouse_queue_limit).await;
+                send_relative_packet(
+                    &motion_buf,
+                    &mr_c,
+                    &mut cached_chan,
+                    &wt_c,
+                    &has_wt,
+                    mouse_queue_limit,
+                )
+                .await;
             }
 
             if let Some(buf) = non_motion_buf {
-                send_relative_packet(&buf, &mr_c, &mut cached_chan, &wt_c, &has_wt, mouse_queue_limit).await;
+                send_relative_packet(
+                    &buf,
+                    &mr_c,
+                    &mut cached_chan,
+                    &wt_c,
+                    &has_wt,
+                    mouse_queue_limit,
+                )
+                .await;
             }
         }
     });
@@ -3708,7 +3915,9 @@ async fn run_webrtc_client_task(
 
             match server_msg {
                 ServerToClientMessage::Signaling(sig) => match sig {
-                    SignalingMessage::CapabilitiesResponse { gpu_info, host_os, .. } => {
+                    SignalingMessage::CapabilitiesResponse {
+                        gpu_info, host_os, ..
+                    } => {
                         let host_os = host_os.unwrap_or_default().to_ascii_lowercase();
                         if !host_os.is_empty() {
                             *PENDING_HOST_OS.lock().unwrap() = Some(host_os.clone());
@@ -3734,12 +3943,16 @@ async fn run_webrtc_client_task(
                             encoder,
                             hw_type,
                             gpu_info: gpu_info.unwrap_or_default(),
-                            requested_encoder: requested_encoder.unwrap_or_else(|| "auto".to_string()),
+                            requested_encoder: requested_encoder
+                                .unwrap_or_else(|| "auto".to_string()),
                             host_os,
                         });
                     }
                     SignalingMessage::Sdp {
-                        sdp, ice_servers, webtransport_port, ..
+                        sdp,
+                        ice_servers,
+                        webtransport_port,
+                        ..
                     } => {
                         if sdp.ty == RtcSdpType::Offer {
                             if input_protocol == "webtransport" {
@@ -3750,17 +3963,27 @@ async fn run_webrtc_client_task(
                                     tokio::spawn(async move {
                                         if let Ok(parsed_url) = url::Url::parse(&server_url_c) {
                                             if let Some(host) = parsed_url.host_str() {
-                                                println!("WebTransport: Connecting to https://{}:{}", host, port);
+                                                println!(
+                                                    "WebTransport: Connecting to https://{}:{}",
+                                                    host, port
+                                                );
                                                 let config = ClientConfig::builder()
                                                     .with_bind_default()
                                                     .with_no_cert_validation()
                                                     .build();
                                                 match Endpoint::client(config) {
                                                     Ok(endpoint) => {
-                                                        match endpoint.connect(format!("https://{}:{}", host, port)).await {
+                                                        match endpoint
+                                                            .connect(format!(
+                                                                "https://{}:{}",
+                                                                host, port
+                                                            ))
+                                                            .await
+                                                        {
                                                             Ok(connection) => {
                                                                 println!("WebTransport connected successfully!");
-                                                                *wt_conn_c.lock().unwrap() = Some(connection);
+                                                                *wt_conn_c.lock().unwrap() =
+                                                                    Some(connection);
                                                                 wt_connected_flag.store(true, std::sync::atomic::Ordering::Release);
                                                             }
                                                             Err(e) => {
@@ -3821,7 +4044,10 @@ async fn run_webrtc_client_task(
                                         );
                                         for rtc_cand in pending_remote_ice.drain(..) {
                                             if let Err(e) = pc.add_ice_candidate(rtc_cand).await {
-                                                eprintln!("Failed to add queued ICE candidate: {:?}", e);
+                                                eprintln!(
+                                                    "Failed to add queued ICE candidate: {:?}",
+                                                    e
+                                                );
                                             }
                                         }
                                     }
@@ -3829,8 +4055,13 @@ async fn run_webrtc_client_task(
                                     match pc.create_answer(None).await {
                                         Ok(answer) => {
                                             println!("SDP Answer created:\n{}", answer.sdp);
-                                            if let Err(e) = pc.set_local_description(answer.clone()).await {
-                                                eprintln!("Failed to set local description: {:?}", e);
+                                            if let Err(e) =
+                                                pc.set_local_description(answer.clone()).await
+                                            {
+                                                eprintln!(
+                                                    "Failed to set local description: {:?}",
+                                                    e
+                                                );
                                                 continue;
                                             }
 
@@ -3867,43 +4098,64 @@ async fn run_webrtc_client_task(
                                 loop {
                                     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                                     let stats = pc_clone.get_stats().await;
-                                    
+
                                     let mut conn_type = "P2P (Direct)".to_string();
                                     let mut dynamic_ping = 0.0;
                                     let mut selected_pair = None;
-                                    
+
                                     for (_key, val) in &stats.reports {
-                                        if let webrtc::stats::StatsReportType::CandidatePair(pair_stats) = val {
+                                        if let webrtc::stats::StatsReportType::CandidatePair(
+                                            pair_stats,
+                                        ) = val
+                                        {
                                             if pair_stats.nominated {
                                                 selected_pair = Some(pair_stats);
                                                 break;
                                             }
                                         }
                                     }
-                                    
+
                                     if let Some(pair_stats) = selected_pair {
                                         dynamic_ping = pair_stats.current_round_trip_time * 1000.0;
-                                        
-                                        let local_cand = stats.reports.get(&pair_stats.local_candidate_id);
-                                        let remote_cand = stats.reports.get(&pair_stats.remote_candidate_id);
-                                        
-                                        let is_local_relay = if let Some(webrtc::stats::StatsReportType::LocalCandidate(cand_stats)) = local_cand {
-                                            matches!(cand_stats.candidate_type, webrtc::ice::candidate::CandidateType::Relay)
+
+                                        let local_cand =
+                                            stats.reports.get(&pair_stats.local_candidate_id);
+                                        let remote_cand =
+                                            stats.reports.get(&pair_stats.remote_candidate_id);
+
+                                        let is_local_relay = if let Some(
+                                            webrtc::stats::StatsReportType::LocalCandidate(
+                                                cand_stats,
+                                            ),
+                                        ) = local_cand
+                                        {
+                                            matches!(
+                                                cand_stats.candidate_type,
+                                                webrtc::ice::candidate::CandidateType::Relay
+                                            )
                                         } else {
                                             false
                                         };
-                                        
-                                        let is_remote_relay = if let Some(webrtc::stats::StatsReportType::RemoteCandidate(cand_stats)) = remote_cand {
-                                            matches!(cand_stats.candidate_type, webrtc::ice::candidate::CandidateType::Relay)
+
+                                        let is_remote_relay = if let Some(
+                                            webrtc::stats::StatsReportType::RemoteCandidate(
+                                                cand_stats,
+                                            ),
+                                        ) = remote_cand
+                                        {
+                                            matches!(
+                                                cand_stats.candidate_type,
+                                                webrtc::ice::candidate::CandidateType::Relay
+                                            )
                                         } else {
                                             false
                                         };
-                                        
+
                                         if is_local_relay || is_remote_relay {
                                             conn_type = "TURN Relay".to_string();
                                         }
                                     }
-                                    
+
                                     if let Some(ref mut s) = *STREAM_STATS.lock().unwrap() {
                                         s.ping = dynamic_ping;
                                         s.connection_type = conn_type;

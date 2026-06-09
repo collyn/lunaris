@@ -9,6 +9,8 @@
 #include <QMouseEvent>
 #include <QWheelEvent>
 #include <QMetaObject>
+#include <QPointer>
+#include <QThread>
 #include <cstring>
 #include <iostream>
 #include <cmath>
@@ -61,7 +63,20 @@ void deliver_yuv_frame(QVideoSink* sink,
         }
 
         frame.unmap();
-        sink->setVideoFrame(frame);
+
+        if (sink->thread() == QThread::currentThread()) {
+            sink->setVideoFrame(frame);
+        } else {
+            QPointer<QVideoSink> sink_guard(sink);
+            QMetaObject::invokeMethod(
+                sink,
+                [sink_guard, frame]() mutable {
+                    if (sink_guard) {
+                        sink_guard->setVideoFrame(frame);
+                    }
+                },
+                Qt::QueuedConnection);
+        }
     }
 }
 

@@ -31,9 +31,6 @@ pub fn parse_deeplink_url(url_str: &str) -> Option<AppArgs> {
         let mut app_id: Option<u32> = None;
         let mut mouse_queue_limit = 256;
         let mut host_name = "Desktop • Host".to_string();
-        #[cfg(target_os = "linux")]
-        let mut disable_cuda = true;
-        #[cfg(not(target_os = "linux"))]
         let mut disable_cuda = false;
         let mut input_protocol = "webrtc".to_string();
         let mut encoder: Option<String> = None;
@@ -139,6 +136,40 @@ pub fn parse_deeplink_url(url_str: &str) -> Option<AppArgs> {
     None
 }
 
+fn qt_opengl_scenegraph_available() -> bool {
+    if std::env::var("LUNARIS_ASSUME_QT_OPENGL")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+    {
+        return true;
+    }
+
+    let mut roots = Vec::new();
+    if let Ok(path) = std::env::var("QT_PLUGIN_PATH") {
+        roots.extend(
+            path.split(':')
+                .filter(|p| !p.is_empty())
+                .map(std::path::PathBuf::from),
+        );
+    }
+    roots.push(std::path::PathBuf::from(
+        "/usr/lib/x86_64-linux-gnu/qt6/plugins",
+    ));
+    roots.push(std::path::PathBuf::from("/usr/lib/qt6/plugins"));
+    roots.push(std::path::PathBuf::from("/usr/local/lib/qt6/plugins"));
+
+    roots.iter().any(|root| {
+        let scenegraph = root.join("scenegraph");
+        [
+            scenegraph.join("libqsgopengl.so"),
+            scenegraph.join("libqsgopengladaptation.so"),
+            scenegraph.join("libqtquick2plugin.so"),
+        ]
+        .iter()
+        .any(|path| path.exists())
+    })
+}
+
 fn linux_nvidia_cuda_present() -> bool {
     if !cfg!(target_os = "linux") {
         return false;
@@ -242,9 +273,6 @@ fn parse_args() -> Option<AppArgs> {
     let mut app_id: Option<u32> = None;
     let mut mouse_queue_limit = 256;
     let mut host_name = "Desktop • Host".to_string();
-    #[cfg(target_os = "linux")]
-    let mut disable_cuda = true;
-    #[cfg(not(target_os = "linux"))]
     let mut disable_cuda = false;
     let mut input_protocol = "webrtc".to_string();
     let mut encoder: Option<String> = None;
@@ -301,12 +329,20 @@ fn parse_args() -> Option<AppArgs> {
             }
             "--encoder" => {
                 let value = args[i + 1].clone().to_lowercase();
-                encoder = if value.is_empty() || value == "auto" { None } else { Some(value) };
+                encoder = if value.is_empty() || value == "auto" {
+                    None
+                } else {
+                    Some(value)
+                };
                 i += 2;
             }
             "--display" | "--display-id" => {
                 let value = args[i + 1].clone();
-                display_id = if value.is_empty() || value == "default" { None } else { Some(value) };
+                display_id = if value.is_empty() || value == "default" {
+                    None
+                } else {
+                    Some(value)
+                };
                 i += 2;
             }
             "--app-id" => {
@@ -396,8 +432,8 @@ pub fn run() {
 
     // Init standard tracing logger. Keep SRTP duplicate-packet notices out of the
     // default INFO stream; AV1 packet loss/retransmit can otherwise flood stdout.
-    let rust_log = std::env::var("RUST_LOG")
-        .unwrap_or_else(|_| "info,client_qml=debug,bridge=debug".into());
+    let rust_log =
+        std::env::var("RUST_LOG").unwrap_or_else(|_| "info,client_qml=debug,bridge=debug".into());
     let mut rust_log = if rust_log.contains("webrtc_srtp") {
         rust_log
     } else {
@@ -430,46 +466,72 @@ pub fn run() {
     }
 
     // Select Qt Quick RHI backend before QGuiApplication is created.
-    // CUDA-GL needs OpenGL, but Windows AMD/Intel native rendering should use D3D11.
+    // CUDA-GL and Linux DMABUF need OpenGL; Windows native rendering should use D3D11.
     // Keep CPU-present as an explicit escape hatch for compatibility/debugging.
     let gpu_mode_enabled = APP_ARGS.get().map_or(true, |a| a.gpu_mode_enabled());
     let force_cpu_present = std::env::var("LUNARIS_CLIENT_CPU_PRESENT")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
     let cuda_gl_env = std::env::var("LUNARIS_CLIENT_CUDA_GL").ok();
+    let opengl_scenegraph_available =
+        !cfg!(target_os = "linux") || qt_opengl_scenegraph_available();
     let cuda_gl_requested = cuda_gl_env
         .as_deref()
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(linux_nvidia_cuda_present() && gpu_mode_enabled && !force_cpu_present);
+        .unwrap_or(
+            linux_nvidia_cuda_present()
+                && gpu_mode_enabled
+                && !force_cpu_present
+                && opengl_scenegraph_available,
+        );
     let cuda_gl_disabled = cuda_gl_env
         .as_deref()
         .map(|v| v == "0" || v.eq_ignore_ascii_case("false"))
         .unwrap_or(false);
 
     if gpu_mode_enabled && !force_cpu_present && cuda_gl_requested && !cuda_gl_disabled {
-        if std::env::var("QSG_RHI_BACKEND").is_err() {
-            std::env::set_var("QSG_RHI_BACKEND", "opengl");
-        }
-        if std::env::var("QT_QUICK_BACKEND").is_err() {
-            std::env::set_var("QT_QUICK_BACKEND", "opengl");
+        if opengl_scenegraph_available {
+            if std::env::var("QSG_RHI_BACKEND").is_err() {
+                std::env::set_var("QSG_RHI_BACKEND", "opengl");
+            }
+            if std::env::var("QT_QUICK_BACKEND").is_err() {
+                std::env::set_var("QT_QUICK_BACKEND", "opengl");
+            }
         }
 
         let qsg_backend = std::env::var("QSG_RHI_BACKEND").unwrap_or_default();
         let qt_backend = std::env::var("QT_QUICK_BACKEND").unwrap_or_default();
-        if qsg_backend.eq_ignore_ascii_case("opengl") && qt_backend.eq_ignore_ascii_case("opengl") {
+        if opengl_scenegraph_available
+            && qsg_backend.eq_ignore_ascii_case("opengl")
+            && qt_backend.eq_ignore_ascii_case("opengl")
+        {
             std::env::set_var("LUNARIS_CLIENT_CUDA_GL", "1");
+            std::env::set_var("LUNARIS_CLIENT_DMABUF_GL", "1");
             info!("Client GPU presentation: CUDA decode + CUDA/OpenGL render enabled");
         } else {
+            std::env::remove_var("LUNARIS_CLIENT_CUDA_GL");
+            std::env::remove_var("LUNARIS_CLIENT_DMABUF_GL");
             warn!(
-                "CUDA-GL disabled because Qt backend is not OpenGL: QSG_RHI_BACKEND={}, QT_QUICK_BACKEND={}",
+                "CUDA-GL/DMABUF-GL disabled because Qt OpenGL scenegraph is unavailable or not active: QSG_RHI_BACKEND={}, QT_QUICK_BACKEND={}",
                 qsg_backend, qt_backend
             );
         }
     } else if std::env::var("QSG_RHI_BACKEND").is_err() {
         if cfg!(target_os = "windows") && gpu_mode_enabled && !force_cpu_present {
             std::env::set_var("QSG_RHI_BACKEND", "d3d11");
-        } else {
-            std::env::set_var("QSG_RHI_BACKEND", "vulkan");
+        } else if cfg!(target_os = "linux")
+            && gpu_mode_enabled
+            && !force_cpu_present
+            && opengl_scenegraph_available
+        {
+            std::env::set_var("QSG_RHI_BACKEND", "opengl");
+            if std::env::var("QT_QUICK_BACKEND").is_err() {
+                std::env::set_var("QT_QUICK_BACKEND", "opengl");
+            }
+            std::env::set_var("LUNARIS_CLIENT_DMABUF_GL", "1");
+            info!("Client GPU presentation: VAAPI/DMABUF OpenGL render enabled when available");
+        } else if cfg!(target_os = "linux") && gpu_mode_enabled && !force_cpu_present {
+            info!("Client GPU decode enabled; native OpenGL presentation skipped because Qt OpenGL scenegraph plugin is unavailable");
         }
     }
 
@@ -478,6 +540,7 @@ pub fn run() {
 
     // Register our custom QML video rendering item
     bridge::qobject::register_gpu_video_item_type();
+    bridge::qobject::register_native_video_item_types();
 
     // 2. Create QQmlApplicationEngine
     let mut engine = QQmlApplicationEngine::new();

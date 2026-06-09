@@ -125,6 +125,7 @@ ApplicationWindow {
     property string activeInputProtocol: "webrtc"
     property bool useCuda: true
     property string renderBackend: "auto_gpu"
+    property bool nativeVideoActive: gpuVideoItem.cudaActive || d3d11VideoItem.d3d11Active || vaapiDmabufVideoItem.dmabufActive
     property string latestVersion: ""
     property string releaseUrl: ""
     property bool showUpdateBanner: false
@@ -548,7 +549,7 @@ ApplicationWindow {
                 id: videoOutput
                 anchors.fill: parent
                 fillMode: VideoOutput.Stretch
-                visible: !gpuVideoItem.cudaSupported || !window.useCuda || !gpuVideoItem.cudaActive
+                visible: !window.useCuda || !window.nativeVideoActive
 
                 onVisibleChanged: {
                     if (visible && videoOutput.videoSink) {
@@ -562,6 +563,18 @@ ApplicationWindow {
                 id: gpuVideoItem
                 anchors.fill: parent
                 visible: gpuVideoItem.cudaSupported && window.useCuda && gpuVideoItem.cudaActive
+            }
+
+            D3D11VideoItem {
+                id: d3d11VideoItem
+                anchors.fill: parent
+                visible: d3d11VideoItem.d3d11Supported && window.useCuda && d3d11VideoItem.d3d11Active
+            }
+
+            VaapiDmabufVideoItem {
+                id: vaapiDmabufVideoItem
+                anchors.fill: parent
+                visible: vaapiDmabufVideoItem.dmabufSupported && window.useCuda && vaapiDmabufVideoItem.dmabufActive
             }
 
         }

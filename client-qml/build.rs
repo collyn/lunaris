@@ -64,25 +64,40 @@ fn main() {
     }
 
     let current_dir = std::env::current_dir().unwrap();
-    let header_path = current_dir.join("src/gpu_video_item.h");
-    let moc_cpp = format!("{}/moc_gpu_video_item.cpp", out_dir);
-    let moc_status = std::process::Command::new(&moc_path)
-        .arg(&header_path)
-        .arg("-f")
-        .arg("gpu_video_item.h")
-        .arg("-o")
-        .arg(&moc_cpp)
-        .status();
+    let moc_headers = [
+        ("gpu_video_item", "src/gpu_video_item.h"),
+        ("d3d11_video_item", "src/d3d11_video_item.h"),
+        ("vaapi_dmabuf_video_item", "src/vaapi_dmabuf_video_item.h"),
+    ];
+    let mut moc_cpp_files = Vec::new();
 
-    match moc_status {
-        Ok(status) if status.success() => {
-            println!("cargo:warning=Successfully ran moc on src/gpu_video_item.h");
-        }
-        _ => {
-            panic!(
-                "Failed to execute Qt6 moc on src/gpu_video_item.h using path {}",
-                moc_path
-            );
+    for (name, header) in moc_headers {
+        let header_path = current_dir.join(header);
+        let moc_cpp = format!("{}/moc_{}.cpp", out_dir, name);
+        let include_arg = std::path::Path::new(header)
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        let moc_status = std::process::Command::new(&moc_path)
+            .arg(&header_path)
+            .arg("-f")
+            .arg(&include_arg)
+            .arg("-o")
+            .arg(&moc_cpp)
+            .status();
+
+        match moc_status {
+            Ok(status) if status.success() => {
+                println!("cargo:warning=Successfully ran moc on {}", header);
+                moc_cpp_files.push(moc_cpp);
+            }
+            _ => {
+                panic!(
+                    "Failed to execute Qt6 moc on {} using path {}",
+                    header, moc_path
+                );
+            }
         }
     }
 
@@ -106,9 +121,19 @@ fn main() {
         .cc_builder(|cc| {
             cc.file("src/video_helper.cpp");
             cc.file("src/gpu_video_item.cpp");
-            cc.file(&moc_cpp);
+            cc.file("src/d3d11_video_item.cpp");
+            cc.file("src/vaapi_dmabuf_video_item.cpp");
+            for moc_cpp in &moc_cpp_files {
+                cc.file(moc_cpp);
+            }
             cc.include("src");
             cc.include(&out_dir);
+            if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux") {
+                println!("cargo:rustc-link-lib=EGL");
+            }
+            if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+                println!("cargo:rustc-link-lib=d3d11");
+            }
         })
         // Register resources.qrc
         .qrc("qml/resources.qrc")
@@ -116,6 +141,11 @@ fn main() {
 
     // Force rerun if QML files change
     println!("cargo:rerun-if-changed=src/gpu_video_item.h");
+    println!("cargo:rerun-if-changed=src/gpu_video_item.cpp");
+    println!("cargo:rerun-if-changed=src/d3d11_video_item.h");
+    println!("cargo:rerun-if-changed=src/d3d11_video_item.cpp");
+    println!("cargo:rerun-if-changed=src/vaapi_dmabuf_video_item.h");
+    println!("cargo:rerun-if-changed=src/vaapi_dmabuf_video_item.cpp");
     println!("cargo:rerun-if-changed=qml/main.qml");
     println!("cargo:rerun-if-changed=qml/LunarisMenuBar.qml");
     println!("cargo:rerun-if-changed=qml/Settings.qml");

@@ -3,6 +3,13 @@ use ffmpeg_next::sys as ffi;
 // SWS_BILINEAR is 2 in FFmpeg. We define it locally because on some platforms/FFmpeg versions
 // bindgen generates it as a global constant, while on others it is an enum variant (SwsFlags::SWS_BILINEAR).
 const SWS_BILINEAR: i32 = 2;
+const DRM_FORMAT_NV12: u32 = 0x3231_564e;
+
+#[cfg(target_os = "linux")]
+extern "C" {
+    fn dup(fd: i32) -> i32;
+    fn close(fd: i32) -> i32;
+}
 
 struct SendRawFrame {
     frame: *mut ffi::AVFrame,
@@ -72,6 +79,14 @@ pub struct HardwareDecoder {
 unsafe impl Send for HardwareDecoder {}
 
 impl HardwareDecoder {
+    fn linux_nvidia_cuda_present() -> bool {
+        if !cfg!(target_os = "linux") {
+            return false;
+        }
+        std::path::Path::new("/dev/nvidiactl").exists()
+            || std::path::Path::new("/proc/driver/nvidia/version").exists()
+    }
+
     pub fn new(codec_type: CodecType, disable_cuda: bool) -> Result<Self, anyhow::Error> {
         unsafe {
             ffi::av_log_set_level(ffi::AV_LOG_WARNING);
@@ -113,12 +128,14 @@ impl HardwareDecoder {
                 .unwrap_or(false);
 
             if cfg!(target_os = "linux") {
-                if cuda_gl_requested && !cuda_disabled {
+                let prefer_cuda_decode = !cuda_disabled
+                    && (cuda_gl_requested || Self::linux_nvidia_cuda_present());
+                if prefer_cuda_decode {
                     candidates.push(ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_CUDA);
                 }
                 candidates.push(ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_VAAPI);
                 candidates.push(ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_VDPAU);
-                if !cuda_gl_requested && !cuda_disabled {
+                if !prefer_cuda_decode && !cuda_disabled {
                     candidates.push(ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_CUDA);
                 } else if cuda_disabled {
                     println!("CUDA hardware decoding is disabled.");
@@ -211,6 +228,12 @@ impl HardwareDecoder {
             .unwrap_or(false)
     }
 
+    fn dmabuf_gl_requested() -> bool {
+        std::env::var("LUNARIS_CLIENT_DMABUF_GL")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false)
+    }
+
     pub fn gpu_decode_enabled(&self) -> bool {
         self.hw_device_type != ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_NONE
     }
@@ -225,10 +248,23 @@ impl HardwareDecoder {
             && !crate::bridge::qobject::cuda_gl_render_failed();
 
         if direct_cuda_gl {
-            "CUDA-GL"
-        } else {
-            "CPU/QVideoSink"
+            return "CUDA-GL";
         }
+
+        if self.hw_device_type == ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_VAAPI
+            && Self::dmabuf_gl_requested()
+            && !crate::bridge::qobject::dmabuf_render_failed()
+        {
+            return "DMABUF/OpenGL";
+        }
+
+        if self.hw_device_type == ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_D3D11VA
+            && !crate::bridge::qobject::d3d11_render_failed()
+        {
+            return "D3D11";
+        }
+
+        "CPU/QVideoSink"
     }
 
     pub fn fallback_reason(&self) -> String {
@@ -244,6 +280,19 @@ impl HardwareDecoder {
                 && crate::bridge::qobject::cuda_gl_render_failed()
             {
                 return "CUDA-GL present failed; using CPU/QVideoSink".to_string();
+            }
+            if self.hw_device_type == ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_VAAPI {
+                if crate::bridge::qobject::dmabuf_render_failed() {
+                    return "DMABUF present failed; using CPU/QVideoSink".to_string();
+                }
+                if !Self::dmabuf_gl_requested() {
+                    return "DMABUF/OpenGL not enabled; using CPU/QVideoSink".to_string();
+                }
+            }
+            if self.hw_device_type == ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_D3D11VA
+                && crate::bridge::qobject::d3d11_render_failed()
+            {
+                return "D3D11 present failed; using CPU/QVideoSink".to_string();
             }
             return "GPU decode with CPU/QVideoSink present".to_string();
         }
@@ -322,7 +371,10 @@ impl HardwareDecoder {
         Ok(decoded_frames)
     }
 
-    fn process_frame(&mut self, gpu_frame: *mut ffi::AVFrame) -> Result<DecodedFrame, anyhow::Error> {
+    fn process_frame(
+        &mut self,
+        gpu_frame: *mut ffi::AVFrame,
+    ) -> Result<DecodedFrame, anyhow::Error> {
         let format = unsafe { (*gpu_frame).format };
         let is_cuda = format == ffi::AVPixelFormat::AV_PIX_FMT_CUDA as i32;
         let cuda_gl_failed = crate::bridge::qobject::cuda_gl_render_failed();
@@ -368,6 +420,14 @@ impl HardwareDecoder {
                 );
             }
 
+            return Ok(DecodedFrame::NativePresented);
+        }
+
+        if self.try_present_dmabuf(gpu_frame)? {
+            return Ok(DecodedFrame::NativePresented);
+        }
+
+        if self.try_present_d3d11(gpu_frame)? {
             return Ok(DecodedFrame::NativePresented);
         }
 
@@ -611,6 +671,143 @@ impl HardwareDecoder {
             u_stride: width / 2,
             v_stride: width / 2,
         }))
+    }
+
+    #[cfg(target_os = "linux")]
+    fn try_present_dmabuf(&mut self, gpu_frame: *mut ffi::AVFrame) -> Result<bool, anyhow::Error> {
+        if self.hw_device_type != ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_VAAPI
+            || !Self::dmabuf_gl_requested()
+            || crate::bridge::qobject::dmabuf_render_failed()
+        {
+            return Ok(false);
+        }
+
+        unsafe {
+            let mapped_frame = ffi::av_frame_alloc();
+            if mapped_frame.is_null() {
+                return Ok(false);
+            }
+
+            let map_err =
+                ffi::av_hwframe_map(mapped_frame, gpu_frame, ffi::AV_HWFRAME_MAP_READ as i32);
+            if map_err < 0 {
+                ffi::av_frame_free(&mut (mapped_frame as *mut _));
+                return Ok(false);
+            }
+
+            if (*mapped_frame).format != ffi::AVPixelFormat::AV_PIX_FMT_DRM_PRIME as i32
+                || (*mapped_frame).data[0].is_null()
+            {
+                ffi::av_frame_free(&mut (mapped_frame as *mut _));
+                return Ok(false);
+            }
+
+            let desc = (*mapped_frame).data[0] as *const ffi::AVDRMFrameDescriptor;
+            if desc.is_null() || (*desc).nb_layers < 1 || (*desc).nb_objects < 1 {
+                ffi::av_frame_free(&mut (mapped_frame as *mut _));
+                return Ok(false);
+            }
+
+            let layer = (*desc).layers[0];
+            if layer.format != DRM_FORMAT_NV12 || layer.nb_planes < 2 {
+                ffi::av_frame_free(&mut (mapped_frame as *mut _));
+                return Ok(false);
+            }
+
+            let plane0 = layer.planes[0];
+            let plane1 = layer.planes[1];
+            if plane0.object_index < 0
+                || plane1.object_index < 0
+                || plane0.object_index as usize >= (*desc).objects.len()
+                || plane1.object_index as usize >= (*desc).objects.len()
+                || plane0.object_index >= (*desc).nb_objects
+                || plane1.object_index >= (*desc).nb_objects
+            {
+                ffi::av_frame_free(&mut (mapped_frame as *mut _));
+                return Ok(false);
+            }
+
+            let object0 = (*desc).objects[plane0.object_index as usize];
+            let object1 = (*desc).objects[plane1.object_index as usize];
+            let fd0 = dup(object0.fd);
+            let fd1 = dup(object1.fd);
+            if fd0 < 0 || fd1 < 0 {
+                if fd0 >= 0 {
+                    close(fd0);
+                }
+                if fd1 >= 0 {
+                    close(fd1);
+                }
+                ffi::av_frame_free(&mut (mapped_frame as *mut _));
+                return Ok(false);
+            }
+
+            let modifier = object0.format_modifier;
+            let delivered = crate::bridge::qobject::deliver_dmabuf_frame(
+                fd0,
+                fd1,
+                layer.format,
+                modifier,
+                plane0.offset as i32,
+                plane0.pitch as i32,
+                plane1.offset as i32,
+                plane1.pitch as i32,
+                (*gpu_frame).width as i32,
+                (*gpu_frame).height as i32,
+            );
+            ffi::av_frame_free(&mut (mapped_frame as *mut _));
+            if delivered {
+                ffi::av_frame_free(&mut (gpu_frame as *mut _));
+                return Ok(true);
+            }
+        }
+
+        Ok(false)
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn try_present_dmabuf(&mut self, _gpu_frame: *mut ffi::AVFrame) -> Result<bool, anyhow::Error> {
+        Ok(false)
+    }
+
+    #[cfg(target_os = "windows")]
+    fn try_present_d3d11(&mut self, gpu_frame: *mut ffi::AVFrame) -> Result<bool, anyhow::Error> {
+        if self.hw_device_type != ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_D3D11VA
+            || crate::bridge::qobject::d3d11_render_failed()
+        {
+            return Ok(false);
+        }
+
+        unsafe {
+            let format = (*gpu_frame).format;
+            if format != ffi::AVPixelFormat::AV_PIX_FMT_D3D11 as i32
+                && format != ffi::AVPixelFormat::AV_PIX_FMT_D3D11VA_VLD as i32
+            {
+                return Ok(false);
+            }
+            let texture_ptr = (*gpu_frame).data[0] as u64;
+            if texture_ptr == 0 {
+                return Ok(false);
+            }
+            let array_index = (*gpu_frame).data[1] as isize as i32;
+            let delivered = crate::bridge::qobject::deliver_d3d11_frame(
+                texture_ptr,
+                array_index,
+                (*gpu_frame).width as i32,
+                (*gpu_frame).height as i32,
+                format as u32,
+            );
+            if delivered {
+                ffi::av_frame_free(&mut (gpu_frame as *mut _));
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    fn try_present_d3d11(&mut self, _gpu_frame: *mut ffi::AVFrame) -> Result<bool, anyhow::Error> {
+        Ok(false)
     }
 }
 
