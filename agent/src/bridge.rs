@@ -148,7 +148,11 @@ fn parse_av1_annexb_temporal_units(input: &[u8]) -> Option<Vec<u8>> {
             }
         }
     }
-    if out.is_empty() { None } else { Some(out) }
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
+    }
 }
 
 fn parse_av1_size_prefixed_obus(input: &[u8]) -> Option<Vec<u8>> {
@@ -163,7 +167,11 @@ fn parse_av1_size_prefixed_obus(input: &[u8]) -> Option<Vec<u8>> {
         out.extend_from_slice(&input[pos..pos + obu_size]);
         pos += obu_size;
     }
-    if out.is_empty() { None } else { Some(out) }
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
+    }
 }
 
 fn read_av1_leb128(input: &[u8], mut pos: usize) -> Option<(usize, usize)> {
@@ -224,7 +232,9 @@ fn codec_supported_for_realtime(
     codec: lunaris_media::VideoCodec,
 ) -> bool {
     match codec {
-        lunaris_media::VideoCodec::H264 => encoders.iter().any(|e| encoder_supports_codec(e, codec)),
+        lunaris_media::VideoCodec::H264 => {
+            encoders.iter().any(|e| encoder_supports_codec(e, codec))
+        }
         lunaris_media::VideoCodec::H265 => encoders.iter().any(|e| {
             e.hw_type != lunaris_media::HwAccelType::Software && encoder_supports_codec(e, codec)
         }),
@@ -285,6 +295,21 @@ pub async fn setup_bridge_session(
         virtual_display.unwrap_or(false)
     );
 
+    // Resolve codec settings before registering WebRTC codecs. The SDP offer
+    // must only advertise the codec the host can actually encode; otherwise
+    // the answer can select H.265 while the RTP track is configured for H.264.
+    let encoders = lunaris_media::encode::list_available_encoders();
+    let hevc_supported = codec_supported_for_realtime(&encoders, lunaris_media::VideoCodec::H265);
+    let av1_supported = codec_supported_for_realtime(&encoders, lunaris_media::VideoCodec::AV1);
+    if codec_str == "av1" && !av1_supported {
+        info!("AV1 requested but host doesn't support it, falling back to H.264");
+        codec_str = "h264".to_string();
+    }
+    if codec_str == "h265" && !hevc_supported {
+        info!("H.265 requested but host doesn't support it, falling back to H.264");
+        codec_str = "h264".to_string();
+    }
+
     // 1. Setup WebRTC PeerConnection
     let mut api_settings = SettingEngine::default();
     api_settings.set_include_loopback_candidate(true);
@@ -295,98 +320,67 @@ pub async fn setup_bridge_session(
 
     let mut api_media = MediaEngine::default();
 
-    // Register H264
-    api_media.register_codec(
-        RTCRtpCodecParameters {
-            capability: RTCRtpCodecCapability {
-                mime_type: MIME_TYPE_H264.to_string(),
-                clock_rate: 90000,
-                channels: 0,
-                sdp_fmtp_line:
-                    // Use 42002a (Baseline, Level 4.2) to support both CBP (Constrained Baseline)
-                    // and AMD AMF standard Baseline (which outputs profile_idc=66, constraints=0x40).
-                    // Chrome's WebRTC decoder supports 42002a natively and will accept the 42402a
-                    // AMD stream without rejecting it or entering an infinite PLI loop.
-                    "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42002a"
-                        .to_string(),
-                rtcp_feedback: vec![
-                    RTCPFeedback {
-                        typ: "nack".to_string(),
-                        parameter: "".to_string(),
-                    },
-                    RTCPFeedback {
-                        typ: "nack".to_string(),
-                        parameter: "pli".to_string(),
-                    },
-                    RTCPFeedback {
-                        typ: "goog-remb".to_string(),
-                        parameter: "".to_string(),
-                    },
-                ],
-            },
-            payload_type: 96,
-            ..Default::default()
+    let video_rtcp_feedback = vec![
+        RTCPFeedback {
+            typ: "nack".to_string(),
+            parameter: "".to_string(),
         },
-        RTPCodecType::Video,
-    )?;
+        RTCPFeedback {
+            typ: "nack".to_string(),
+            parameter: "pli".to_string(),
+        },
+        RTCPFeedback {
+            typ: "goog-remb".to_string(),
+            parameter: "".to_string(),
+        },
+    ];
 
-    // Register HEVC (H265)
-    api_media.register_codec(
-        RTCRtpCodecParameters {
-            capability: RTCRtpCodecCapability {
-                mime_type: MIME_TYPE_HEVC.to_string(),
-                clock_rate: 90000,
-                channels: 0,
-                sdp_fmtp_line: "profile-id=1;tier-flag=0;level-id=120;tx-mode=SRST".to_string(),
-                rtcp_feedback: vec![
-                    RTCPFeedback {
-                        typ: "nack".to_string(),
-                        parameter: "".to_string(),
-                    },
-                    RTCPFeedback {
-                        typ: "nack".to_string(),
-                        parameter: "pli".to_string(),
-                    },
-                    RTCPFeedback {
-                        typ: "goog-remb".to_string(),
-                        parameter: "".to_string(),
-                    },
-                ],
+    match codec_str.as_str() {
+        "h265" => api_media.register_codec(
+            RTCRtpCodecParameters {
+                capability: RTCRtpCodecCapability {
+                    mime_type: MIME_TYPE_HEVC.to_string(),
+                    clock_rate: 90000,
+                    channels: 0,
+                    sdp_fmtp_line: "profile-id=1;tier-flag=0;level-id=120;tx-mode=SRST".to_string(),
+                    rtcp_feedback: video_rtcp_feedback,
+                },
+                payload_type: 98,
+                ..Default::default()
             },
-            payload_type: 98,
-            ..Default::default()
-        },
-        RTPCodecType::Video,
-    )?;
-
-    // Register AV1
-    api_media.register_codec(
-        RTCRtpCodecParameters {
-            capability: RTCRtpCodecCapability {
-                mime_type: MIME_TYPE_AV1.to_string(),
-                clock_rate: 90000,
-                channels: 0,
-                sdp_fmtp_line: "profile=0".to_string(),
-                rtcp_feedback: vec![
-                    RTCPFeedback {
-                        typ: "nack".to_string(),
-                        parameter: "".to_string(),
-                    },
-                    RTCPFeedback {
-                        typ: "nack".to_string(),
-                        parameter: "pli".to_string(),
-                    },
-                    RTCPFeedback {
-                        typ: "goog-remb".to_string(),
-                        parameter: "".to_string(),
-                    },
-                ],
+            RTPCodecType::Video,
+        )?,
+        "av1" => api_media.register_codec(
+            RTCRtpCodecParameters {
+                capability: RTCRtpCodecCapability {
+                    mime_type: MIME_TYPE_AV1.to_string(),
+                    clock_rate: 90000,
+                    channels: 0,
+                    sdp_fmtp_line: "profile=0".to_string(),
+                    rtcp_feedback: video_rtcp_feedback,
+                },
+                payload_type: 102,
+                ..Default::default()
             },
-            payload_type: 102,
-            ..Default::default()
-        },
-        RTPCodecType::Video,
-    )?;
+            RTPCodecType::Video,
+        )?,
+        _ => api_media.register_codec(
+            RTCRtpCodecParameters {
+                capability: RTCRtpCodecCapability {
+                    mime_type: MIME_TYPE_H264.to_string(),
+                    clock_rate: 90000,
+                    channels: 0,
+                    sdp_fmtp_line:
+                        "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42002a"
+                            .to_string(),
+                    rtcp_feedback: video_rtcp_feedback,
+                },
+                payload_type: 96,
+                ..Default::default()
+            },
+            RTPCodecType::Video,
+        )?,
+    }
 
     // Register Opus
     api_media.register_codec(
@@ -462,20 +456,6 @@ pub async fn setup_bridge_session(
         ..Default::default()
     };
     let peer_connection = Arc::new(api.new_peer_connection(rtc_config).await?);
-
-    // Resolve codec settings with host capability checks. Do not let H.265/AV1
-    // requests fall through to software encoders for interactive remote desktop.
-    let encoders = lunaris_media::encode::list_available_encoders();
-    let hevc_supported = codec_supported_for_realtime(&encoders, lunaris_media::VideoCodec::H265);
-    let av1_supported = codec_supported_for_realtime(&encoders, lunaris_media::VideoCodec::AV1);
-    if codec_str == "av1" && !av1_supported {
-        info!("AV1 requested but host doesn't support it, falling back to H.264");
-        codec_str = "h264".to_string();
-    }
-    if codec_str == "h265" && !hevc_supported {
-        info!("H.265 requested but host doesn't support it, falling back to H.264");
-        codec_str = "h264".to_string();
-    }
 
     let (mime_type, sdp_fmtp_line, payload_type, payloader) = match codec_str.as_str() {
         "h265" => (
