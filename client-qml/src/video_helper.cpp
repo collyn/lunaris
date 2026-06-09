@@ -195,6 +195,7 @@ public:
                             if ((flags & MOUSE_MOVE_ABSOLUTE) == 0) {
                                 if (rx != 0 || ry != 0) {
                                     QMetaObject::invokeMethod(g_streamBridge, "sendMouseMove",
+                                                              Qt::QueuedConnection,
                                                               Q_ARG(::std::int32_t, 0),
                                                               Q_ARG(::std::int32_t, 0),
                                                               Q_ARG(::std::int32_t, g_windowWidth),
@@ -207,6 +208,7 @@ public:
                         }
                     }
                 }
+                return true; // Consume raw mouse input while pointer lock owns relative motion.
             }
         }
         return false; // Let Qt process standard messages
@@ -264,8 +266,9 @@ protected:
             int gx = std::round(me->globalPosition().x());
             int gy = std::round(me->globalPosition().y());
 
-            // Check if this matches a warp event
-            if (gx == g_globalCenterX && gy == g_globalCenterY && g_pendingWarps > 0) {
+            // Check if this matches a warp event. Some compositors report the
+            // synthetic move a pixel or two away from the requested center.
+            if (g_pendingWarps > 0 && std::abs(gx - g_globalCenterX) <= 2 && std::abs(gy - g_globalCenterY) <= 2) {
                 g_pendingWarps--;
                 g_lastGlobalX = g_globalCenterX;
                 g_lastGlobalY = g_globalCenterY;
@@ -280,6 +283,7 @@ protected:
 
             if (rx != 0 || ry != 0) {
                 QMetaObject::invokeMethod(g_streamBridge, "sendMouseMove",
+                                          Qt::QueuedConnection,
                                           Q_ARG(::std::int32_t, (::std::int32_t)me->position().x()),
                                           Q_ARG(::std::int32_t, (::std::int32_t)me->position().y()),
                                           Q_ARG(::std::int32_t, g_windowWidth),
@@ -287,7 +291,13 @@ protected:
                                           Q_ARG(::std::int32_t, rx),
                                           Q_ARG(::std::int32_t, ry),
                                           Q_ARG(bool, true));
+            }
 
+            int dx_from_center = me->position().x() - g_centerX;
+            int dy_from_center = me->position().y() - g_centerY;
+            if (std::abs(dx_from_center) > g_windowWidth / 4 || std::abs(dy_from_center) > g_windowHeight / 4) {
+                g_lastGlobalX = g_globalCenterX;
+                g_lastGlobalY = g_globalCenterY;
                 g_pendingWarps++;
                 QCursor::setPos(g_globalCenterX, g_globalCenterY);
             }
@@ -298,6 +308,7 @@ protected:
         if (event->type() == QEvent::MouseButtonPress) {
             QMouseEvent* me = static_cast<QMouseEvent*>(event);
             QMetaObject::invokeMethod(g_streamBridge, "sendMouseClick",
+                                      Qt::QueuedConnection,
                                       Q_ARG(::std::int32_t, getButtonCode(me->button())),
                                       Q_ARG(bool, true));
             return true;
@@ -306,6 +317,7 @@ protected:
         if (event->type() == QEvent::MouseButtonRelease) {
             QMouseEvent* me = static_cast<QMouseEvent*>(event);
             QMetaObject::invokeMethod(g_streamBridge, "sendMouseClick",
+                                      Qt::QueuedConnection,
                                       Q_ARG(::std::int32_t, getButtonCode(me->button())),
                                       Q_ARG(bool, false));
             return true;
@@ -314,6 +326,7 @@ protected:
         if (event->type() == QEvent::Wheel) {
             QWheelEvent* we = static_cast<QWheelEvent*>(event);
             QMetaObject::invokeMethod(g_streamBridge, "sendMouseWheel",
+                                      Qt::QueuedConnection,
                                       Q_ARG(::std::int32_t, we->angleDelta().y()));
             return true;
         }

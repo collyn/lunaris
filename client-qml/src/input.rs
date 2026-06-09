@@ -101,15 +101,17 @@ pub fn handle_mouse_move(
         buf[9..13].copy_from_slice(&ts.to_be_bytes());
         let _ = senders.mouse_abs.send(Bytes::from(buf));
     } else {
+        let clamp_i16 =
+            |value: f64| -> i16 { value.round().clamp(i16::MIN as f64, i16::MAX as f64) as i16 };
         let scaled_rx = if senders.stream_width > 0 && width > 0 {
-            (rx as f64 * (senders.stream_width as f64 / width as f64)) as i16
+            clamp_i16(rx as f64 * (senders.stream_width as f64 / width as f64))
         } else {
-            rx as i16
+            rx.clamp(i16::MIN as i32, i16::MAX as i32) as i16
         };
         let scaled_ry = if senders.stream_height > 0 && height > 0 {
-            (ry as f64 * (senders.stream_height as f64 / height as f64)) as i16
+            clamp_i16(ry as f64 * (senders.stream_height as f64 / height as f64))
         } else {
-            ry as i16
+            ry.clamp(i16::MIN as i32, i16::MAX as i32) as i16
         };
 
         let mut buf = vec![0u8; 5];
