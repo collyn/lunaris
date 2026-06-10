@@ -123,13 +123,13 @@ impl HardwareDecoder {
         let mut candidates = Vec::new();
         if hardware_decode_requested {
             let cuda_disabled = std::env::var("LUNARIS_DISABLE_CUDA").is_ok();
-            let cuda_gl_requested = std::env::var("LUNARIS_CLIENT_CUDA_GL")
-                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-                .unwrap_or(false);
+            // Use the same logic as cuda_gl_requested() — auto-enable on
+            // Linux, respect explicit env var overrides.
+            let cuda_gl_on = Self::cuda_gl_requested();
 
             if cfg!(target_os = "linux") {
                 let prefer_cuda_decode = !cuda_disabled
-                    && (cuda_gl_requested || Self::linux_nvidia_cuda_present());
+                    && (cuda_gl_on || Self::linux_nvidia_cuda_present());
                 if prefer_cuda_decode {
                     candidates.push(ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_CUDA);
                 }
@@ -141,12 +141,12 @@ impl HardwareDecoder {
                     println!("CUDA hardware decoding is disabled.");
                 }
             } else if cfg!(target_os = "windows") {
-                if cuda_gl_requested && !cuda_disabled {
+                if cuda_gl_on && !cuda_disabled {
                     candidates.push(ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_CUDA);
                 }
                 candidates.push(ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_D3D11VA);
                 candidates.push(ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_DXVA2);
-                if !cuda_gl_requested && !cuda_disabled {
+                if !cuda_gl_on && !cuda_disabled {
                     candidates.push(ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_CUDA);
                 }
             } else if cfg!(target_os = "macos") {
@@ -222,16 +222,32 @@ impl HardwareDecoder {
         }
     }
 
+    /// Whether the CUDA-GL native present path is requested.
+    /// Explicit `LUNARIS_CLIENT_CUDA_GL=1` forces it on; `=0` forces it off.
+    /// When unset, auto-enable on Linux (where `lib.rs` detected OpenGL and
+    /// set the env var), otherwise off.
     fn cuda_gl_requested() -> bool {
-        std::env::var("LUNARIS_CLIENT_CUDA_GL")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false)
+        match std::env::var("LUNARIS_CLIENT_CUDA_GL") {
+            Ok(ref v) if v == "1" || v.eq_ignore_ascii_case("true") => true,
+            Ok(_) => false, // explicit "0" / "false" / etc.
+            Err(_) => {
+                // Not set at all — auto-enable on Linux where we know
+                // lib.rs attempted OpenGL setup.
+                cfg!(target_os = "linux")
+            }
+        }
     }
 
+    /// Whether the VAAPI DMABUF-GL native present path is requested.
+    /// Explicit `LUNARIS_CLIENT_DMABUF_GL=1` forces it on; `=0` forces it off.
+    /// When unset, auto-enable on Linux (where VAAPI + EGL DMABUF may work),
+    /// otherwise off.
     fn dmabuf_gl_requested() -> bool {
-        std::env::var("LUNARIS_CLIENT_DMABUF_GL")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false)
+        match std::env::var("LUNARIS_CLIENT_DMABUF_GL") {
+            Ok(ref v) if v == "1" || v.eq_ignore_ascii_case("true") => true,
+            Ok(_) => false,
+            Err(_) => cfg!(target_os = "linux"),
+        }
     }
 
     pub fn gpu_decode_enabled(&self) -> bool {

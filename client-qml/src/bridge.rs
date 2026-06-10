@@ -150,10 +150,12 @@ fn qt_opengl_scenegraph_active_runtime() -> bool {
             .unwrap_or(false)
 }
 
+/// Validate that the user-chosen render backend can actually work.
+/// When the user explicitly requests `native_gpu` but the required OpenGL
+/// scenegraph isn't available, downgrade to `auto_gpu` with a warning.
+/// The per-frame present path self-falls-back when native present fails,
+/// so we only need to guard against explicitly-unmet preconditions here.
 fn configure_native_present_for_stream(args: &mut AppArgs) {
-    std::env::remove_var("LUNARIS_CLIENT_CUDA_GL");
-    std::env::remove_var("LUNARIS_CLIENT_DMABUF_GL");
-
     if args.effective_render_backend() != RENDER_BACKEND_NATIVE_GPU {
         return;
     }
@@ -161,14 +163,13 @@ fn configure_native_present_for_stream(args: &mut AppArgs) {
     if cfg!(target_os = "linux") {
         if !qt_opengl_scenegraph_available_runtime() || !qt_opengl_scenegraph_active_runtime() {
             eprintln!(
-                "Native GPU presentation requested, but Qt OpenGL scenegraph is unavailable or inactive. Falling back to Auto GPU decode + QVideoSink present."
+                "Native GPU presentation requested, but Qt OpenGL scenegraph is \
+                 unavailable or inactive. Falling back to Auto GPU decode + \
+                 QVideoSink present."
             );
             args.render_backend = RENDER_BACKEND_AUTO_GPU.to_string();
             args.disable_cuda = false;
-            return;
         }
-        std::env::set_var("LUNARIS_CLIENT_CUDA_GL", "1");
-        std::env::set_var("LUNARIS_CLIENT_DMABUF_GL", "1");
     }
 }
 

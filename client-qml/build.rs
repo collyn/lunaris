@@ -133,6 +133,7 @@ fn main() {
             }
             if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
                 println!("cargo:rustc-link-lib=d3d11");
+                println!("cargo:rustc-link-lib=d3dcompiler");
             }
         })
         // Register resources.qrc

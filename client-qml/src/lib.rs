@@ -144,6 +144,7 @@ fn qt_opengl_scenegraph_available() -> bool {
         return true;
     }
 
+    // Search common Qt plugin directories for the OpenGL scenegraph plugin.
     let mut roots = Vec::new();
     if let Ok(path) = std::env::var("QT_PLUGIN_PATH") {
         roots.extend(
@@ -152,11 +153,48 @@ fn qt_opengl_scenegraph_available() -> bool {
                 .map(std::path::PathBuf::from),
         );
     }
+    // Try pkg-config for the Qt6 GUI plugin directory.
+    if let Ok(output) = std::process::Command::new("pkg-config")
+        .args(["--variable=plugindir", "Qt6Gui"])
+        .output()
+    {
+        if output.status.success() {
+            let dir = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !dir.is_empty() {
+                roots.push(std::path::PathBuf::from(&dir));
+            }
+        }
+    }
+    // Common hardcoded paths.
     roots.push(std::path::PathBuf::from(
         "/usr/lib/x86_64-linux-gnu/qt6/plugins",
     ));
     roots.push(std::path::PathBuf::from("/usr/lib/qt6/plugins"));
     roots.push(std::path::PathBuf::from("/usr/local/lib/qt6/plugins"));
+
+    // Also try ldconfig to find Qt libraries and infer the plugin path.
+    if let Ok(output) = std::process::Command::new("ldconfig")
+        .args(["-p"])
+        .output()
+    {
+        let libs = String::from_utf8_lossy(&output.stdout);
+        for line in libs.lines() {
+            if line.contains("libQt6Gui.so") {
+                // Extract the directory from something like:
+                //   libQt6Gui.so.6 (libc6,x86-64) => /usr/lib/x86_64-linux-gnu/libQt6Gui.so.6
+                if let Some(idx) = line.find("=>") {
+                    let lib_path = line[idx + 2..].trim();
+                    if let Some(parent) = std::path::Path::new(lib_path).parent() {
+                        // lib dir → plugin dir is usually ../qt6/plugins
+                        let plugin_root = parent.join("qt6").join("plugins");
+                        if plugin_root.exists() {
+                            roots.push(plugin_root);
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     roots.iter().any(|root| {
         let scenegraph = root.join("scenegraph");
@@ -465,73 +503,126 @@ pub fn run() {
         info!("No stream configurations provided on command-line. Starting in Launcher Dashboard mode.");
     }
 
-    // Select Qt Quick RHI backend before QGuiApplication is created.
-    // CUDA-GL and Linux DMABUF need OpenGL; Windows native rendering should use D3D11.
-    // Keep CPU-present as an explicit escape hatch for compatibility/debugging.
+    // ── GPU present auto-configuration ──────────────────────────────────────
+    // Try to enable native GPU present (CUDA-GL, DMABUF-GL, or D3D11) by
+    // default whenever GPU decode is active.  The per-frame code in
+    // decoder.rs gracefully falls back to CPU/QVideoSink when native present
+    // fails at runtime, so we can be optimistic here.
+    //
+    // Explicit env vars (LUNARIS_CLIENT_CUDA_GL=0, LUNARIS_CLIENT_CPU_PRESENT=1,
+    // --disable-cuda) still act as escape hatches.
+
     let gpu_mode_enabled = APP_ARGS.get().map_or(true, |a| a.gpu_mode_enabled());
     let force_cpu_present = std::env::var("LUNARIS_CLIENT_CPU_PRESENT")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
-    let cuda_gl_env = std::env::var("LUNARIS_CLIENT_CUDA_GL").ok();
-    let opengl_scenegraph_available =
-        !cfg!(target_os = "linux") || qt_opengl_scenegraph_available();
-    let cuda_gl_requested = cuda_gl_env
-        .as_deref()
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(
-            linux_nvidia_cuda_present()
-                && gpu_mode_enabled
-                && !force_cpu_present
-                && opengl_scenegraph_available,
-        );
-    let cuda_gl_disabled = cuda_gl_env
+
+    // Respect explicit user overrides.
+    let cuda_gl_explicit = std::env::var("LUNARIS_CLIENT_CUDA_GL").ok();
+    let dmabuf_gl_explicit = std::env::var("LUNARIS_CLIENT_DMABUF_GL").ok();
+    let cuda_gl_disabled = cuda_gl_explicit
         .as_deref()
         .map(|v| v == "0" || v.eq_ignore_ascii_case("false"))
         .unwrap_or(false);
 
-    if gpu_mode_enabled && !force_cpu_present && cuda_gl_requested && !cuda_gl_disabled {
-        if opengl_scenegraph_available {
+    if gpu_mode_enabled && !force_cpu_present {
+        let opengl_available = !cfg!(target_os = "linux") || qt_opengl_scenegraph_available();
+
+        if opengl_available {
+            // Set Qt to use the OpenGL RHI backend.
             if std::env::var("QSG_RHI_BACKEND").is_err() {
                 std::env::set_var("QSG_RHI_BACKEND", "opengl");
             }
             if std::env::var("QT_QUICK_BACKEND").is_err() {
                 std::env::set_var("QT_QUICK_BACKEND", "opengl");
             }
-        }
 
-        let qsg_backend = std::env::var("QSG_RHI_BACKEND").unwrap_or_default();
-        let qt_backend = std::env::var("QT_QUICK_BACKEND").unwrap_or_default();
-        if opengl_scenegraph_available
-            && qsg_backend.eq_ignore_ascii_case("opengl")
-            && qt_backend.eq_ignore_ascii_case("opengl")
-        {
-            std::env::set_var("LUNARIS_CLIENT_CUDA_GL", "1");
-            std::env::set_var("LUNARIS_CLIENT_DMABUF_GL", "1");
-            info!("Client GPU presentation: CUDA decode + CUDA/OpenGL render enabled");
+            let qsg_backend = std::env::var("QSG_RHI_BACKEND").unwrap_or_default();
+            let qt_backend = std::env::var("QT_QUICK_BACKEND").unwrap_or_default();
+            let opengl_active = qsg_backend.eq_ignore_ascii_case("opengl")
+                && qt_backend.eq_ignore_ascii_case("opengl");
+
+            if opengl_active {
+                // CUDA-GL: enable by default on NVIDIA hardware unless explicitly
+                // disabled.  The runtime will self-disable if CUDA init fails.
+                if !cuda_gl_disabled {
+                    let nvidia = linux_nvidia_cuda_present();
+                    let cuda_gl_on = cuda_gl_explicit
+                        .as_deref()
+                        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                        .unwrap_or(nvidia); // auto-on for NVIDIA
+                    if cuda_gl_on {
+                        std::env::set_var("LUNARIS_CLIENT_CUDA_GL", "1");
+                    } else if cuda_gl_explicit.is_none() {
+                        std::env::remove_var("LUNARIS_CLIENT_CUDA_GL");
+                    }
+                } else {
+                    std::env::remove_var("LUNARIS_CLIENT_CUDA_GL");
+                }
+
+                // DMABUF-GL: enable by default on Linux (VAAPI → DMABUF path).
+                // Safe — the per-frame code falls back gracefully.
+                let dmabuf_on = dmabuf_gl_explicit
+                    .as_deref()
+                    .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                    .unwrap_or(cfg!(target_os = "linux"));
+                if dmabuf_on {
+                    std::env::set_var("LUNARIS_CLIENT_DMABUF_GL", "1");
+                } else if dmabuf_gl_explicit.is_none() {
+                    std::env::remove_var("LUNARIS_CLIENT_DMABUF_GL");
+                }
+
+                let nvidia = linux_nvidia_cuda_present();
+                info!(
+                    "GPU presentation: OpenGL scenegraph active — \
+                     NVIDIA={} CUDA-GL={} DMABUF-GL={}",
+                    nvidia,
+                    std::env::var("LUNARIS_CLIENT_CUDA_GL").unwrap_or_default() == "1",
+                    std::env::var("LUNARIS_CLIENT_DMABUF_GL").unwrap_or_default() == "1",
+                );
+            } else {
+                // User overrode QSG_RHI_BACKEND to something non-OpenGL.
+                std::env::remove_var("LUNARIS_CLIENT_CUDA_GL");
+                std::env::remove_var("LUNARIS_CLIENT_DMABUF_GL");
+                info!(
+                    "GPU presentation: QSG_RHI_BACKEND={} (not OpenGL) — \
+                     native present disabled, GPU decode + CPU/QVideoSink",
+                    qsg_backend,
+                );
+            }
         } else {
+            // No OpenGL scenegraph plugin found.
             std::env::remove_var("LUNARIS_CLIENT_CUDA_GL");
             std::env::remove_var("LUNARIS_CLIENT_DMABUF_GL");
-            warn!(
-                "CUDA-GL/DMABUF-GL disabled because Qt OpenGL scenegraph is unavailable or not active: QSG_RHI_BACKEND={}, QT_QUICK_BACKEND={}",
-                qsg_backend, qt_backend
-            );
-        }
-    } else if std::env::var("QSG_RHI_BACKEND").is_err() {
-        if cfg!(target_os = "windows") && gpu_mode_enabled && !force_cpu_present {
-            std::env::set_var("QSG_RHI_BACKEND", "d3d11");
-        } else if cfg!(target_os = "linux")
-            && gpu_mode_enabled
-            && !force_cpu_present
-            && opengl_scenegraph_available
-        {
-            std::env::set_var("QSG_RHI_BACKEND", "opengl");
-            if std::env::var("QT_QUICK_BACKEND").is_err() {
-                std::env::set_var("QT_QUICK_BACKEND", "opengl");
+            if cfg!(target_os = "linux") {
+                // Still set QSG_RHI_BACKEND to opengl on Linux — Qt may
+                // find the plugin at runtime even if our filesystem check
+                // missed it.
+                if std::env::var("QSG_RHI_BACKEND").is_err() {
+                    std::env::set_var("QSG_RHI_BACKEND", "opengl");
+                }
+                if std::env::var("QT_QUICK_BACKEND").is_err() {
+                    std::env::set_var("QT_QUICK_BACKEND", "opengl");
+                }
+                info!(
+                    "GPU presentation: OpenGL scenegraph plugin not found on disk, \
+                     but QSG_RHI_BACKEND=opengl set — Qt may locate it at runtime. \
+                     GPU decode + CPU/QVideoSink present until proven otherwise."
+                );
             }
-            std::env::set_var("LUNARIS_CLIENT_DMABUF_GL", "1");
-            info!("Client GPU presentation: VAAPI/DMABUF OpenGL render enabled when available");
-        } else if cfg!(target_os = "linux") && gpu_mode_enabled && !force_cpu_present {
-            info!("Client GPU decode enabled; native OpenGL presentation skipped because Qt OpenGL scenegraph plugin is unavailable");
+
+            if cfg!(target_os = "windows") && std::env::var("QSG_RHI_BACKEND").is_err() {
+                std::env::set_var("QSG_RHI_BACKEND", "d3d11");
+            }
+        }
+    } else {
+        // GPU mode is disabled or CPU-present forced — wipe native present env vars.
+        std::env::remove_var("LUNARIS_CLIENT_CUDA_GL");
+        std::env::remove_var("LUNARIS_CLIENT_DMABUF_GL");
+        if force_cpu_present {
+            info!("GPU presentation: forced CPU-only via LUNARIS_CLIENT_CPU_PRESENT");
+        } else {
+            info!("GPU presentation: disabled via --disable-cuda / software render backend");
         }
     }
 
