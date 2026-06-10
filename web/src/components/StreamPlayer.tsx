@@ -602,8 +602,12 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       offsetY = (rect.height - actualVidHeight) / 2;
     }
 
-    const xNorm = Math.max(0, Math.min(1, ((clientX - rect.left) - offsetX) / actualVidWidth));
-    const yNorm = Math.max(0, Math.min(1, ((clientY - rect.top) - offsetY) / actualVidHeight));
+    const xLocal = (clientX - rect.left) - offsetX;
+    const yLocal = (clientY - rect.top) - offsetY;
+    if (xLocal < 0 || yLocal < 0 || xLocal > actualVidWidth || yLocal > actualVidHeight) return null;
+
+    const xNorm = xLocal / actualVidWidth;
+    const yNorm = yLocal / actualVidHeight;
     return {
       x: Math.round(xNorm * vidWidth),
       y: Math.round(yNorm * vidHeight),
@@ -3388,31 +3392,10 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     latestAbsoluteMousePosRef.current = { clientX: e.clientX, clientY: e.clientY };
 
     const shouldUseWindowsPrediction = agentHostOs === "windows" && hasNativeCursorImageRef.current;
-    if ((hideLocalCursor || shouldUseWindowsPrediction) && videoRef.current) {
-      const video = videoRef.current;
-      const activeVideo = getActiveVideoElement();
-      const rect = cachedVideoRectRef.current;
-      if (rect.width > 0 && rect.height > 0) {
-        const vidWidth = activeVideo?.videoWidth && activeVideo.videoWidth > 0 ? activeVideo.videoWidth : (video as any).width || 1920;
-        const vidHeight = activeVideo?.videoHeight && activeVideo.videoHeight > 0 ? activeVideo.videoHeight : (video as any).height || 1080;
-        const elAspectRatio = rect.width / rect.height;
-        const vidAspectRatio = vidWidth / vidHeight;
-        let actualVidWidth = rect.width;
-        let actualVidHeight = rect.height;
-        let offsetX = 0;
-        let offsetY = 0;
-        if (elAspectRatio > vidAspectRatio) {
-          actualVidHeight = rect.height;
-          actualVidWidth = rect.height * vidAspectRatio;
-          offsetX = (rect.width - actualVidWidth) / 2;
-        } else {
-          actualVidWidth = rect.width;
-          actualVidHeight = rect.width / vidAspectRatio;
-          offsetY = (rect.height - actualVidHeight) / 2;
-        }
-        const xNorm = Math.max(0, Math.min(1, ((e.clientX - rect.left) - offsetX) / actualVidWidth));
-        const yNorm = Math.max(0, Math.min(1, ((e.clientY - rect.top) - offsetY) / actualVidHeight));
-        localCursorPosRef.current = { x: Math.round(xNorm * vidWidth), y: Math.round(yNorm * vidHeight) };
+    const hostPoint = getHostPointFromClient(e.clientX, e.clientY);
+    if (hostPoint) {
+      localCursorPosRef.current = { x: hostPoint.x, y: hostPoint.y };
+      if (hideLocalCursor || shouldUseWindowsPrediction) {
         updateVirtualCursorDOMRef.current();
       }
     }
