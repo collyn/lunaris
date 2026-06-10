@@ -2412,12 +2412,20 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     document.exitPointerLock();
   };
 
-  // Request pointer lock for relative controls
+  // Request pointer lock for relative controls.
+  // navigator.keyboard.lock (required for the 3 s ESC hold) only takes
+  // effect while fullscreen is active, so we enter fullscreen alongside
+  // pointer lock.  The fullscreenchange handler (which fires shortly
+  // after) calls keyboard.lock to intercept ESC.
   const togglePointerLock = () => {
     if (!videoRef.current) return;
     if (document.pointerLockElement === videoRef.current) {
       document.exitPointerLock();
     } else {
+      // Enter fullscreen in parallel — keyboard.lock requires it.
+      if (!document.fullscreenElement && containerRef.current) {
+        containerRef.current.requestFullscreen().catch(() => {});
+      }
       const promise = (videoRef.current as any).requestPointerLock({
         unadjustedMovement: true,
       });
