@@ -280,6 +280,47 @@ ApplicationWindow {
     property int warpY: -1
     property bool showLockBanner: false
 
+    // Mouse send throttle — avoids saturating the QML→Rust bridge at high
+    // polling rates (1000 Hz mice) which causes main-thread congestion and
+    // visible cursor lag.
+    property real lastMouseSendTime: 0
+    property int pendingMouseX: -1
+    property int pendingMouseY: -1
+    property int pendingMouseW: 0
+    property int pendingMouseH: 0
+    property bool mouseSendPending: false
+
+    Timer {
+        id: mouseSendTimer
+        interval: 4  // ~250 Hz flush rate
+        repeat: true
+        running: window.isStreamMode
+        onTriggered: {
+            if (window.mouseSendPending) {
+                window.mouseSendPending = false;
+                bridge.sendMouseMove(window.pendingMouseX, window.pendingMouseY,
+                                     window.pendingMouseW, window.pendingMouseH,
+                                     0, 0, window.isPointerLocked);
+            }
+        }
+    }
+
+    function throttledSendMouseMove(localX, localY, w, h) {
+        var now = Date.now();
+        var elapsed = now - window.lastMouseSendTime;
+        if (elapsed >= 4) {
+            window.lastMouseSendTime = now;
+            window.mouseSendPending = false;
+            bridge.sendMouseMove(localX, localY, w, h, 0, 0, false);
+        } else {
+            window.pendingMouseX = localX;
+            window.pendingMouseY = localY;
+            window.pendingMouseW = w;
+            window.pendingMouseH = h;
+            window.mouseSendPending = true;
+        }
+    }
+
     onIsPointerLockedChanged: {
         if (isPointerLocked) {
             window.syncPointerLockCursor();
@@ -618,7 +659,7 @@ ApplicationWindow {
                     // Map window coordinates to videoContainer-local coordinates
                     var mapped = streamView.mapToItem(videoContainer, mouse.x, mouse.y);
                     window.updateLocalCursorPrediction(mapped.x, mapped.y);
-                    bridge.sendMouseMove(mapped.x, mapped.y, videoContainer.width, videoContainer.height, 0, 0, false);
+                    window.throttledSendMouseMove(mapped.x, mapped.y, videoContainer.width, videoContainer.height);
                 }
             }
 
