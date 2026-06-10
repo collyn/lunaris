@@ -675,6 +675,18 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
         syncPointerLockCursor();
       } else {
         // Pointer unlocked
+        // Release any pressed mouse buttons to prevent stuck states on host
+        const mouseReliableChannel = channelsRef.current["mouse_reliable"];
+        if (mouseReliableChannel && mouseReliableChannel.readyState === "open") {
+          [1, 2, 3].forEach(button => {
+            const buffer = new ArrayBuffer(3);
+            const view = new DataView(buffer);
+            view.setUint8(0, 2); // Type 2: MouseButton
+            view.setUint8(1, 0); // 0 = Release
+            view.setUint8(2, button);
+            mouseReliableChannel.send(buffer);
+          });
+        }
       }
     };
 
@@ -792,13 +804,6 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
         if (mouseRelativeChannel && mouseRelativeChannel.readyState === "open") {
           const buffered = mouseRelativeChannel.bufferedAmount;
           if (buffered === undefined || buffered <= qLimit) {
-            const buffer = new ArrayBuffer(5);
-            const view = new DataView(buffer);
-            view.setUint8(0, 0); // Type 0: MouseMove (Relative)
-            view.setInt16(1, dx, false);
-            view.setInt16(3, dy, false);
-            mouseRelativeChannel.send(buffer);
-
             const activeVideo = getActiveVideoElement();
             const video = videoRef.current;
             const rect = cachedVideoRectRef.current;
@@ -821,6 +826,17 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
               scaledDx = (dx / Math.max(1, actualVidWidth)) * vidWidth;
               scaledDy = (dy / Math.max(1, actualVidHeight)) * vidHeight;
             }
+
+            const sendDx = Math.round(scaledDx);
+            const sendDy = Math.round(scaledDy);
+
+            const buffer = new ArrayBuffer(5);
+            const view = new DataView(buffer);
+            view.setUint8(0, 0); // Type 0: MouseMove (Relative)
+            view.setInt16(1, sendDx, false);
+            view.setInt16(3, sendDy, false);
+            mouseRelativeChannel.send(buffer);
+
             localCursorPosRef.current = {
               x: Math.max(0, Math.min(vidWidth, localCursorPosRef.current.x + scaledDx)),
               y: Math.max(0, Math.min(vidHeight, localCursorPosRef.current.y + scaledDy)),

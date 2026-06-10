@@ -20,3 +20,7 @@ panic = "abort"
 
 [patch.crates-io]
 ffmpeg-sys-next = { path = "vendor/ffmpeg-sys-next" }
+
+[patch."https://github.com/collyn/lunaris-media.git"]
+lunaris-media = { path = "../lunaris-media" }
+
