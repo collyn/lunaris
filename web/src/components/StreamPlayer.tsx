@@ -573,6 +573,39 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     console.log(`[Lunaris] ${msg}`);
   };
 
+  const syncPointerLockCursor = () => {
+    const video = videoRef.current;
+    const mouseAbsoluteChannel = channelsRef.current["mouse_absolute"];
+    if (!video || !mouseAbsoluteChannel || mouseAbsoluteChannel.readyState !== "open") return;
+
+    const activeVideo = getActiveVideoElement();
+    const vidWidth = activeVideo?.videoWidth && activeVideo.videoWidth > 0 ? activeVideo.videoWidth : (video as any).width || 1920;
+    const vidHeight = activeVideo?.videoHeight && activeVideo.videoHeight > 0 ? activeVideo.videoHeight : (video as any).height || 1080;
+    const centerX = Math.round(vidWidth / 2);
+    const centerY = Math.round(vidHeight / 2);
+
+    accDxRef.current = 0;
+    accDyRef.current = 0;
+    mouseAccumulatorXRef.current = 0;
+    mouseAccumulatorYRef.current = 0;
+    rawPredictionXRef.current = -1;
+    rawPredictionYRef.current = -1;
+    localCursorPosRef.current = { x: centerX, y: centerY };
+    lastHostCursorLocalPredictionAtRef.current = performance.now();
+    updateVirtualCursorDOMRef.current();
+
+    const buffer = new ArrayBuffer(13);
+    const view = new DataView(buffer);
+    view.setUint8(0, 1);
+    view.setInt16(1, 2048, false);
+    view.setInt16(3, 2048, false);
+    view.setInt16(5, 4096, false);
+    view.setInt16(7, 4096, false);
+    const seq = (mouseSeqRef.current++) >>> 0;
+    view.setUint32(9, seq, false);
+    mouseAbsoluteChannel.send(buffer);
+  };
+
   useEffect(() => {
     addLog(`[System Diagnostics] RTCPeerConnection supported: ${typeof window.RTCPeerConnection !== 'undefined'}`);
     addLog(`[System Diagnostics] useNativeClient is set to: ${useNativeClient}`);
@@ -590,8 +623,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
 
       // Prediction cursor: show on lock, hide on unlock
       if (locked) {
-        rawPredictionXRef.current = -1; // Will initialize to center on first event
-        rawPredictionYRef.current = -1;
+        syncPointerLockCursor();
       } else {
         // Pointer unlocked
       }
