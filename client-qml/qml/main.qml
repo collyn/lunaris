@@ -227,6 +227,14 @@ ApplicationWindow {
         window.localCursorInitialized = true;
     }
 
+    function syncPointerLockCursor() {
+        if (!window.isStreamMode || videoContainer.width <= 0 || videoContainer.height <= 0) return;
+        var centerX = videoContainer.width / 2;
+        var centerY = videoContainer.height / 2;
+        window.updateLocalCursorPrediction(centerX, centerY);
+        bridge.sendMouseMove(centerX, centerY, videoContainer.width, videoContainer.height, 0, 0, false);
+    }
+
     function updateLocalCursorDelta(dx, dy) {
         if (!window.isStreamMode || videoContainer.width <= 0 || videoContainer.height <= 0) return;
         if (!window.localCursorInitialized) {
@@ -263,13 +271,15 @@ ApplicationWindow {
     property bool showLockBanner: false
 
     onIsPointerLockedChanged: {
-        bridge.setPointerLocked(isPointerLocked);
         if (isPointerLocked) {
+            window.syncPointerLockCursor();
+            bridge.setPointerLocked(true);
             rootContainer.forceActiveFocus();
             window.showLockBanner = true;
             bannerTimer.restart();
             keyboardGrabTimer.restart();
         } else {
+            bridge.setPointerLocked(false);
             window.showLockBanner = false;
             bannerTimer.stop();
             keyboardGrabTimer.stop();
@@ -647,6 +657,7 @@ ApplicationWindow {
             asynchronous: false
             visible: window.isStreamMode
                 && window.hideLocalCursor
+                && !window.isPointerLocked
                 && window.localCursorVisible
                 && !window.shouldHidePredictedCursor()
             x: videoContainer.x + Math.max(0, Math.min(videoContainer.width, window.localCursorVisualX)) - window.cursorHotspotX(window.hostCursorKind)
