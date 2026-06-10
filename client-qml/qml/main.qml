@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Controls
 import QtMultimedia
 import Qt.labs.platform as Platform
+import Qt5Compat.GraphicalEffects
 import com.lunaris.client 1.0
 import com.lunaris.client.gpu 1.0
 
@@ -694,6 +695,40 @@ ApplicationWindow {
                 if (btn === Qt.RightButton) return 3;
                 return 0;
             }
+        }
+
+        // Dark drop-shadow for the Aero cursor — the white cursor assets
+        // are invisible on light backgrounds without an outline.  Matches
+        // the CSS drop-shadow() filter used by the web client.
+        Image {
+            id: hostCursorShadowSrc
+            // Position off-screen so it renders (DropShadow needs the texture)
+            // but the user never sees the raw source.
+            x: -100; y: -100
+            source: window.hasMatchingNativeCursor(window.hostCursorKind) ? window.nativeCursorSource : window.cursorSourceForKind(window.hostCursorKind)
+            width: hostCursorOverlay.width
+            height: hostCursorOverlay.height
+            fillMode: Image.PreserveAspectFit
+            smooth: false
+            mipmap: false
+            cache: false
+            asynchronous: false
+        }
+
+        DropShadow {
+            anchors.fill: hostCursorShadowSrc
+            source: hostCursorShadowSrc
+            horizontalOffset: 0
+            verticalOffset: 0
+            radius: 2.5
+            samples: 5
+            color: "#cc000000"
+            visible: hostCursorOverlay.visible && !window.hasMatchingNativeCursor(window.hostCursorKind)
+            x: hostCursorOverlay.x
+            y: hostCursorOverlay.y
+            width: hostCursorOverlay.width
+            height: hostCursorOverlay.height
+            z: 199
         }
 
         Image {
