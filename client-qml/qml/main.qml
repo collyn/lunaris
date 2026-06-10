@@ -229,10 +229,20 @@ ApplicationWindow {
 
     function syncPointerLockCursor() {
         if (!window.isStreamMode || videoContainer.width <= 0 || videoContainer.height <= 0) return;
-        var centerX = videoContainer.width / 2;
-        var centerY = videoContainer.height / 2;
-        window.updateLocalCursorPrediction(centerX, centerY);
-        bridge.sendMouseMove(centerX, centerY, videoContainer.width, videoContainer.height, 0, 0, false);
+        // Sync to the last known host cursor position so the prediction
+        // cursor starts where the remote cursor actually is, not the
+        // center of the window.
+        var targetX = window.hostCursorVisible ? window.hostCursorX : Math.round(window.streamWidth / 2);
+        var targetY = window.hostCursorVisible ? window.hostCursorY : Math.round(window.streamHeight / 2);
+        var visualX = (targetX / Math.max(1, window.streamWidth)) * videoContainer.width;
+        var visualY = (targetY / Math.max(1, window.streamHeight)) * videoContainer.height;
+        window.localCursorVisualX = visualX;
+        window.localCursorVisualY = visualY;
+        window.localCursorX = targetX;
+        window.localCursorY = targetY;
+        window.localCursorVisible = true;
+        window.localCursorInitialized = true;
+        bridge.sendMouseMove(targetX, targetY, videoContainer.width, videoContainer.height, 0, 0, false);
     }
 
     function updateLocalCursorDelta(dx, dy) {
@@ -657,7 +667,6 @@ ApplicationWindow {
             asynchronous: false
             visible: window.isStreamMode
                 && window.hideLocalCursor
-                && !window.isPointerLocked
                 && window.localCursorVisible
                 && !window.shouldHidePredictedCursor()
             x: videoContainer.x + Math.max(0, Math.min(videoContainer.width, window.localCursorVisualX)) - window.cursorHotspotX(window.hostCursorKind)

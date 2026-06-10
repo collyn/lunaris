@@ -75,7 +75,7 @@ void deliver_yuv_frame(QVideoSink* sink,
                         sink_guard->setVideoFrame(frame);
                     }
                 },
-                Qt::QueuedConnection);
+                Qt::DirectConnection);
         }
     }
 }
@@ -195,7 +195,7 @@ public:
                             if ((flags & MOUSE_MOVE_ABSOLUTE) == 0) {
                                 if (rx != 0 || ry != 0) {
                                     QMetaObject::invokeMethod(g_streamBridge, "sendMouseMove",
-                                                              Qt::QueuedConnection,
+                                                              Qt::DirectConnection,
                                                               Q_ARG(::std::int32_t, 0),
                                                               Q_ARG(::std::int32_t, 0),
                                                               Q_ARG(::std::int32_t, g_windowWidth),
@@ -283,7 +283,7 @@ protected:
 
             if (rx != 0 || ry != 0) {
                 QMetaObject::invokeMethod(g_streamBridge, "sendMouseMove",
-                                          Qt::QueuedConnection,
+                                          Qt::DirectConnection,
                                           Q_ARG(::std::int32_t, (::std::int32_t)me->position().x()),
                                           Q_ARG(::std::int32_t, (::std::int32_t)me->position().y()),
                                           Q_ARG(::std::int32_t, g_windowWidth),
@@ -308,7 +308,7 @@ protected:
         if (event->type() == QEvent::MouseButtonPress) {
             QMouseEvent* me = static_cast<QMouseEvent*>(event);
             QMetaObject::invokeMethod(g_streamBridge, "sendMouseClick",
-                                      Qt::QueuedConnection,
+                                      Qt::DirectConnection,
                                       Q_ARG(::std::int32_t, getButtonCode(me->button())),
                                       Q_ARG(bool, true));
             return true;
@@ -317,7 +317,7 @@ protected:
         if (event->type() == QEvent::MouseButtonRelease) {
             QMouseEvent* me = static_cast<QMouseEvent*>(event);
             QMetaObject::invokeMethod(g_streamBridge, "sendMouseClick",
-                                      Qt::QueuedConnection,
+                                      Qt::DirectConnection,
                                       Q_ARG(::std::int32_t, getButtonCode(me->button())),
                                       Q_ARG(bool, false));
             return true;
@@ -326,7 +326,7 @@ protected:
         if (event->type() == QEvent::Wheel) {
             QWheelEvent* we = static_cast<QWheelEvent*>(event);
             QMetaObject::invokeMethod(g_streamBridge, "sendMouseWheel",
-                                      Qt::QueuedConnection,
+                                      Qt::DirectConnection,
                                       Q_ARG(::std::int32_t, we->angleDelta().y()));
             return true;
         }
