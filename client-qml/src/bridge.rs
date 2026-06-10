@@ -1107,10 +1107,13 @@ impl qobject::StreamBridge {
             self.as_mut().local_cursor_delta(rx, ry);
         }
 
-        let binding = self.as_ref();
-        let senders = binding.rust().input_senders.lock().unwrap();
-        if let Some(ref s) = *senders {
-            super::input::handle_mouse_move(x, y, width, height, rx, ry, pointer_locked, s);
+        // Use try_lock to avoid blocking the main/QML thread when the
+        // WebRTC send path holds the lock.  Dropping a mouse-move packet
+        // is preferable to a frame of cursor lag.
+        if let Ok(guard) = self.as_ref().rust().input_senders.try_lock() {
+            if let Some(ref s) = *guard {
+                super::input::handle_mouse_move(x, y, width, height, rx, ry, pointer_locked, s);
+            }
         }
     }
 
