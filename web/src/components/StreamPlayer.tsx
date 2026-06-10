@@ -800,13 +800,19 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     const sendTick = () => {
       const qLimit = mouseQueueLimitRef.current;
 
-      // 1. Process relative mouse moves (pointer locked)
+      // 1. Process pointer-locked mouse moves via absolute positioning.
+      //    We send absolute positions (normalised to [0, 4095]) instead of
+      //    raw relative deltas so the agent can map them to the hostʼs
+      //    actual monitor resolution — exactly the same code path as
+      //    unlocked absolute mode.  This avoids the scaling mismatch that
+      //    occurs when vidWidth ≠ monitorWidth and keeps the two cursors
+      //    in sync regardless of host DPI / capture resolution.
       const dx = accDxRef.current;
       const dy = accDyRef.current;
       if (dx !== 0 || dy !== 0) {
-        const mouseRelativeChannel = channelsRef.current["mouse_relative"];
-        if (mouseRelativeChannel && mouseRelativeChannel.readyState === "open") {
-          const buffered = mouseRelativeChannel.bufferedAmount;
+        const mouseAbsoluteChannel = channelsRef.current["mouse_absolute"];
+        if (mouseAbsoluteChannel && mouseAbsoluteChannel.readyState === "open") {
+          const buffered = mouseAbsoluteChannel.bufferedAmount;
           if (buffered === undefined || buffered <= qLimit) {
             const activeVideo = getActiveVideoElement();
             const video = videoRef.current;
@@ -831,20 +837,28 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
               scaledDy = (dy / Math.max(1, actualVidHeight)) * vidHeight;
             }
 
-            const sendDx = Math.round(scaledDx);
-            const sendDy = Math.round(scaledDy);
-
-            const buffer = new ArrayBuffer(5);
-            const view = new DataView(buffer);
-            view.setUint8(0, 0); // Type 0: MouseMove (Relative)
-            view.setInt16(1, sendDx, false);
-            view.setInt16(3, sendDy, false);
-            mouseRelativeChannel.send(buffer);
-
+            // Update the predicted cursor position from accumulated deltas
             localCursorPosRef.current = {
               x: Math.max(0, Math.min(vidWidth, localCursorPosRef.current.x + scaledDx)),
               y: Math.max(0, Math.min(vidHeight, localCursorPosRef.current.y + scaledDy)),
             };
+
+            // Send predicted position as absolute (normalised 0..4095) so the
+            // agent applies the same monitor-resolution mapping as unlocked mode.
+            const x16 = Math.round((localCursorPosRef.current.x / Math.max(1, vidWidth)) * 4096.0);
+            const y16 = Math.round((localCursorPosRef.current.y / Math.max(1, vidHeight)) * 4096.0);
+
+            const buffer = new ArrayBuffer(13);
+            const view = new DataView(buffer);
+            view.setUint8(0, 1); // Type 1: MousePosition (Absolute)
+            view.setInt16(1, x16, false);
+            view.setInt16(3, y16, false);
+            view.setInt16(5, 4096, false);
+            view.setInt16(7, 4096, false);
+            const seq = (mouseSeqRef.current++) >>> 0;
+            view.setUint32(9, seq, false);
+            mouseAbsoluteChannel.send(buffer);
+
             lastHostCursorLocalPredictionAtRef.current = performance.now();
             updateVirtualCursorDOMRef.current();
 
@@ -855,7 +869,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
         }
       }
 
-      // 2. Process absolute mouse moves (pointer not locked)
+      // 2. Process absolute mouse moves (unlocked / trackpad mode)
       const pos = latestAbsoluteMousePosRef.current;
       if (pos) {
         const mouseAbsoluteChannel = channelsRef.current["mouse_absolute"];
