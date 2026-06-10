@@ -2,7 +2,6 @@ import QtQuick
 import QtQuick.Controls
 import QtMultimedia
 import Qt.labs.platform as Platform
-import Qt5Compat.GraphicalEffects
 import com.lunaris.client 1.0
 import com.lunaris.client.gpu 1.0
 
@@ -697,37 +696,24 @@ ApplicationWindow {
             }
         }
 
-        // Dark drop-shadow for the Aero cursor — the white cursor assets
-        // are invisible on light backgrounds without an outline.  Matches
-        // the CSS drop-shadow() filter used by the web client.
-        Image {
-            id: hostCursorShadowSrc
-            // Position off-screen so it renders (DropShadow needs the texture)
-            // but the user never sees the raw source.
-            x: -100; y: -100
-            source: window.hasMatchingNativeCursor(window.hostCursorKind) ? window.nativeCursorSource : window.cursorSourceForKind(window.hostCursorKind)
-            width: hostCursorOverlay.width
-            height: hostCursorOverlay.height
-            fillMode: Image.PreserveAspectFit
-            smooth: false
-            mipmap: false
-            cache: false
-            asynchronous: false
-        }
-
-        DropShadow {
-            anchors.fill: hostCursorShadowSrc
-            source: hostCursorShadowSrc
-            horizontalOffset: 0
-            verticalOffset: 0
-            radius: 2.5
-            samples: 5
-            color: "#cc000000"
+        // Dark outline glow for the Aero cursor — the white cursor assets
+        // are invisible on light backgrounds (e.g. text inputs) without
+        // an outline.  We use a soft radial gradient rectangle instead of
+        // Qt5Compat.GraphicalEffects (which may not be installed) to
+        // approximate the CSS drop-shadow() filter from the web client.
+        Rectangle {
+            id: hostCursorGlow
             visible: hostCursorOverlay.visible && !window.hasMatchingNativeCursor(window.hostCursorKind)
-            x: hostCursorOverlay.x
-            y: hostCursorOverlay.y
-            width: hostCursorOverlay.width
-            height: hostCursorOverlay.height
+            x: hostCursorOverlay.x - 6
+            y: hostCursorOverlay.y - 6
+            width: hostCursorOverlay.width + 12
+            height: hostCursorOverlay.height + 12
+            radius: Math.min(width, height) / 2
+            gradient: Gradient {
+                GradientStop { position: 0.0; color: "#55000000" }
+                GradientStop { position: 0.6; color: "#22000000" }
+                GradientStop { position: 1.0; color: "transparent" }
+            }
             z: 199
         }
 
