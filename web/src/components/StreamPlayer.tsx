@@ -2521,7 +2521,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     }
 
     if (!cursorMetrics || !cursorMetrics.native) {
-      const allowAssetFallback = agentHostOs !== 'windows' && !hasNativeCursorImageRef.current;
+      const allowAssetFallback = !hasNativeCursorImageRef.current;
       if (!allowAssetFallback) {
         cursorEl.style.display = 'none';
         return;
@@ -2671,7 +2671,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       // The next host_cursor image update will replace it with the exact new native shape.
     }
     if (!cursorMetrics || !cursorMetrics.native) {
-      const allowAssetFallback = agentHostOs !== 'windows' && !hasNativeCursorImageRef.current;
+      const allowAssetFallback = !hasNativeCursorImageRef.current;
       if (!allowAssetFallback) {
         cursorEl.style.display = 'none';
         return;
