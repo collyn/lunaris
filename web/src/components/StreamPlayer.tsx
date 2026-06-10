@@ -626,8 +626,12 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     const activeVideo = getActiveVideoElement();
     const vidWidth = activeVideo?.videoWidth && activeVideo.videoWidth > 0 ? activeVideo.videoWidth : (video as any)?.width || 1920;
     const vidHeight = activeVideo?.videoHeight && activeVideo.videoHeight > 0 ? activeVideo.videoHeight : (video as any)?.height || 1080;
-    const fallbackX = Math.max(0, Math.min(vidWidth, localCursorPosRef.current.x));
-    const fallbackY = Math.max(0, Math.min(vidHeight, localCursorPosRef.current.y));
+    // Prefer the last confirmed host cursor position as fallback so the
+    // virtual cursor starts where the remote cursor actually is, avoiding
+    // a visual disconnect when the local mouse was off-video or stale.
+    const hostCursor = hostCursorPosRef.current;
+    const fallbackX = Math.max(0, Math.min(vidWidth, hostCursor.x));
+    const fallbackY = Math.max(0, Math.min(vidHeight, hostCursor.y));
     const targetX = point?.x ?? fallbackX;
     const targetY = point?.y ?? fallbackY;
     const x16 = point?.x16 ?? Math.round((targetX / Math.max(1, vidWidth)) * 4096.0);
@@ -1784,10 +1788,13 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
 
       applyNativeCursorImage(localCursorImageRef.current, localCursorImageMetricsRef, kind, image);
 
-      const hostCursor = hostCursorPosRef.current;
       const localPredictionFresh = performance.now() - lastHostCursorLocalPredictionAtRef.current < 140;
+      // Always keep the reference position current so that future syncs
+      // (e.g. pointer-lock entry) use the real host cursor position.
+      hostCursorPosRef.current = { x, y, visible, kind, inWindowMoveSize };
       if (localPredictionFresh && visible) {
-        updateHostCursorDOM(hostCursor.x, hostCursor.y, visible, kind, image, inWindowMoveSize);
+        // Prediction is active — skip DOM host-cursor update to avoid jitter.
+        // The hostCursorPosRef is already current (set above).
       } else {
         updateHostCursorDOM(x, y, visible, kind, image, inWindowMoveSize);
       }
