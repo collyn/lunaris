@@ -213,6 +213,11 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   const useCanvasRendererRef = useRef<boolean>(true);
   const mouseQueueLimitRef = useRef<number>(256);
   const updateVirtualCursorDOMRef = useRef<() => void>(() => {});
+  const isPointerLockedRef = useRef<boolean>(false);
+  const escapeHoldTimerRef = useRef<number | null>(null);
+  const escapeHoldStartRef = useRef<number>(0);
+  const escapeHoldLastTickRef = useRef<number>(0);
+  const [escapeHoldProgress, setEscapeHoldProgress] = useState<number>(0); // 0 – 1, 0 = not holding
 
   const [status, setStatus] = useState<string>('Initializing...');
   const [canvasKey, setCanvasKey] = useState<number>(0);
@@ -669,6 +674,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     const handlePointerLockChange = () => {
       const locked = document.pointerLockElement === videoRef.current;
       setIsPointerLocked(locked);
+      isPointerLockedRef.current = locked;
       addLog(locked ? "Pointer locked. Prediction cursor mode." : "Pointer unlocked. Absolute mouse mode.");
       // When pointer is locked, show host cursor (user needs to see it in the stream).
       // When unlocked on mobile trackpad: hide host cursor (SVG virtual cursor shown instead).
@@ -676,9 +682,20 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
 
       // Prediction cursor: show on lock, hide on unlock
       if (locked) {
+        // Lock the Escape key so the browser does not exit pointer lock
+        // immediately.  Our key handlers require a 3‑second hold instead.
+        if ((navigator as any).keyboard && (navigator as any).keyboard.lock) {
+          (navigator as any).keyboard.lock(["Escape"]).catch(() => {});
+        }
         syncPointerLockCursor();
       } else {
-        // Pointer unlocked
+        // Pointer unlocked — clear any in-progress ESC hold
+        if (escapeHoldTimerRef.current !== null) {
+          window.clearTimeout(escapeHoldTimerRef.current);
+          escapeHoldTimerRef.current = null;
+        }
+        setEscapeHoldProgress(0);
+
         // Release any pressed mouse buttons to prevent stuck states on host
         const mouseReliableChannel = channelsRef.current["mouse_reliable"];
         if (mouseReliableChannel && mouseReliableChannel.readyState === "open") {
@@ -1370,16 +1387,47 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     const handleGlobalKeyDown = (e: KeyboardEvent) => {
       const activeEl = document.activeElement;
       if (
-        activeEl && 
-        (activeEl.tagName === 'INPUT' || 
-         activeEl.tagName === 'SELECT' || 
-         activeEl.tagName === 'TEXTAREA' || 
+        activeEl &&
+        (activeEl.tagName === 'INPUT' ||
+         activeEl.tagName === 'SELECT' ||
+         activeEl.tagName === 'TEXTAREA' ||
          (activeEl as HTMLElement).isContentEditable)
       ) {
         return;
       }
 
       if (showSettingsModal) return;
+
+      // ESC hold-to-exit for pointer lock (requires keyboard.lock to be active).
+      // When the browser has granted keyboard lock, pressing ESC does not
+      // immediately exit pointer lock — instead we require a 3‑second hold.
+      if (e.code === 'Escape' && isPointerLockedRef.current) {
+        e.preventDefault();
+        if (escapeHoldTimerRef.current === null) {
+          const HOLD_MS = 3000;
+          escapeHoldStartRef.current = performance.now();
+          escapeHoldLastTickRef.current = escapeHoldStartRef.current;
+          setEscapeHoldProgress(0.001); // > 0 so UI knows we started
+
+          const tick = () => {
+            const elapsed = performance.now() - escapeHoldStartRef.current;
+            if (elapsed >= HOLD_MS) {
+              // Hold complete — release pointer lock and fullscreen
+              escapeHoldTimerRef.current = null;
+              setEscapeHoldProgress(0);
+              document.exitPointerLock();
+              if (document.fullscreenElement) {
+                document.exitFullscreen();
+              }
+            } else {
+              setEscapeHoldProgress(Math.min(0.99, elapsed / HOLD_MS));
+              escapeHoldTimerRef.current = window.setTimeout(tick, 50);
+            }
+          };
+          escapeHoldTimerRef.current = window.setTimeout(tick, 50);
+        }
+        return;
+      }
 
       e.preventDefault();
       sendKeyEvent(e.code, e.shiftKey, e.ctrlKey, e.altKey, e.metaKey, true);
@@ -1388,16 +1436,27 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     const handleGlobalKeyUp = (e: KeyboardEvent) => {
       const activeEl = document.activeElement;
       if (
-        activeEl && 
-        (activeEl.tagName === 'INPUT' || 
-         activeEl.tagName === 'SELECT' || 
-         activeEl.tagName === 'TEXTAREA' || 
+        activeEl &&
+        (activeEl.tagName === 'INPUT' ||
+         activeEl.tagName === 'SELECT' ||
+         activeEl.tagName === 'TEXTAREA' ||
          (activeEl as HTMLElement).isContentEditable)
       ) {
         return;
       }
 
       if (showSettingsModal) return;
+
+      // Cancel the ESC hold timer on release
+      if (e.code === 'Escape' && isPointerLockedRef.current) {
+        e.preventDefault();
+        if (escapeHoldTimerRef.current !== null) {
+          window.clearTimeout(escapeHoldTimerRef.current);
+          escapeHoldTimerRef.current = null;
+        }
+        setEscapeHoldProgress(0);
+        return;
+      }
 
       e.preventDefault();
       sendKeyEvent(e.code, e.shiftKey, e.ctrlKey, e.altKey, e.metaKey, false);
@@ -4302,7 +4361,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
         <button 
           onClick={togglePointerLock}
           className={`stream-action-btn ${isPointerLocked ? 'active' : ''}`}
-          title={isPointerLocked ? "Release Pointer Lock (ESC)" : "Lock Pointer"}
+          title={isPointerLocked ? "Release Pointer Lock (Hold ESC 3s)" : "Lock Pointer"}
         >
           {isPointerLocked ? (
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
@@ -4562,6 +4621,47 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
             style={{ width: '32px', height: '32px', display: 'block', maxWidth: 'none' }}
           />
         </div>
+
+        {/* ESC hold-to-exit progress bar overlay */}
+        {escapeHoldProgress > 0 && (
+          <div style={{
+            position: 'absolute',
+            bottom: '12px',
+            left: '50%',
+            transform: 'translateX(-50%)',
+            zIndex: 200,
+            background: 'rgba(0, 0, 0, 0.75)',
+            borderRadius: '6px',
+            padding: '6px 14px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px',
+            pointerEvents: 'none',
+            userSelect: 'none',
+          }}>
+            <span style={{
+              color: '#ccc',
+              fontSize: '12px',
+              fontFamily: 'system-ui, sans-serif',
+              whiteSpace: 'nowrap',
+            }}>Hold ESC to exit</span>
+            <div style={{
+              width: '80px',
+              height: '4px',
+              background: 'rgba(255,255,255,0.2)',
+              borderRadius: '2px',
+              overflow: 'hidden',
+            }}>
+              <div style={{
+                width: `${Math.round(escapeHoldProgress * 100)}%`,
+                height: '100%',
+                background: '#f44',
+                borderRadius: '2px',
+                transition: 'width 50ms linear',
+              }} />
+            </div>
+          </div>
+        )}
 
         {/* Client-side predicted cursor for local mouse/trackpad feedback. */}
         <div
