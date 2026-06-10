@@ -573,16 +573,61 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     console.log(`[Lunaris] ${msg}`);
   };
 
-  const syncPointerLockCursor = () => {
+  const getHostPointFromClient = (clientX: number, clientY: number) => {
     const video = videoRef.current;
-    const mouseAbsoluteChannel = channelsRef.current["mouse_absolute"];
-    if (!video || !mouseAbsoluteChannel || mouseAbsoluteChannel.readyState !== "open") return;
+    if (!video) return null;
 
     const activeVideo = getActiveVideoElement();
+    const rect = cachedVideoRectRef.current.width > 0 && cachedVideoRectRef.current.height > 0
+      ? cachedVideoRectRef.current
+      : video.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return null;
+
     const vidWidth = activeVideo?.videoWidth && activeVideo.videoWidth > 0 ? activeVideo.videoWidth : (video as any).width || 1920;
     const vidHeight = activeVideo?.videoHeight && activeVideo.videoHeight > 0 ? activeVideo.videoHeight : (video as any).height || 1080;
-    const centerX = Math.round(vidWidth / 2);
-    const centerY = Math.round(vidHeight / 2);
+    const elAspectRatio = rect.width / rect.height;
+    const vidAspectRatio = vidWidth / vidHeight;
+    let actualVidWidth = rect.width;
+    let actualVidHeight = rect.height;
+    let offsetX = 0;
+    let offsetY = 0;
+
+    if (elAspectRatio > vidAspectRatio) {
+      actualVidHeight = rect.height;
+      actualVidWidth = rect.height * vidAspectRatio;
+      offsetX = (rect.width - actualVidWidth) / 2;
+    } else {
+      actualVidWidth = rect.width;
+      actualVidHeight = rect.width / vidAspectRatio;
+      offsetY = (rect.height - actualVidHeight) / 2;
+    }
+
+    const xNorm = Math.max(0, Math.min(1, ((clientX - rect.left) - offsetX) / actualVidWidth));
+    const yNorm = Math.max(0, Math.min(1, ((clientY - rect.top) - offsetY) / actualVidHeight));
+    return {
+      x: Math.round(xNorm * vidWidth),
+      y: Math.round(yNorm * vidHeight),
+      x16: Math.round(xNorm * 4096.0),
+      y16: Math.round(yNorm * 4096.0),
+    };
+  };
+
+  const syncPointerLockCursor = () => {
+    const mouseAbsoluteChannel = channelsRef.current["mouse_absolute"];
+    if (!mouseAbsoluteChannel || mouseAbsoluteChannel.readyState !== "open") return;
+
+    const latest = latestAbsoluteMousePosRef.current;
+    const point = latest ? getHostPointFromClient(latest.clientX, latest.clientY) : null;
+    const video = videoRef.current;
+    const activeVideo = getActiveVideoElement();
+    const vidWidth = activeVideo?.videoWidth && activeVideo.videoWidth > 0 ? activeVideo.videoWidth : (video as any)?.width || 1920;
+    const vidHeight = activeVideo?.videoHeight && activeVideo.videoHeight > 0 ? activeVideo.videoHeight : (video as any)?.height || 1080;
+    const fallbackX = Math.max(0, Math.min(vidWidth, localCursorPosRef.current.x));
+    const fallbackY = Math.max(0, Math.min(vidHeight, localCursorPosRef.current.y));
+    const targetX = point?.x ?? fallbackX;
+    const targetY = point?.y ?? fallbackY;
+    const x16 = point?.x16 ?? Math.round((targetX / Math.max(1, vidWidth)) * 4096.0);
+    const y16 = point?.y16 ?? Math.round((targetY / Math.max(1, vidHeight)) * 4096.0);
 
     accDxRef.current = 0;
     accDyRef.current = 0;
@@ -590,15 +635,15 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     mouseAccumulatorYRef.current = 0;
     rawPredictionXRef.current = -1;
     rawPredictionYRef.current = -1;
-    localCursorPosRef.current = { x: centerX, y: centerY };
+    localCursorPosRef.current = { x: targetX, y: targetY };
     lastHostCursorLocalPredictionAtRef.current = performance.now();
     updateVirtualCursorDOMRef.current();
 
     const buffer = new ArrayBuffer(13);
     const view = new DataView(buffer);
     view.setUint8(0, 1);
-    view.setInt16(1, 2048, false);
-    view.setInt16(3, 2048, false);
+    view.setInt16(1, x16, false);
+    view.setInt16(3, y16, false);
     view.setInt16(5, 4096, false);
     view.setInt16(7, 4096, false);
     const seq = (mouseSeqRef.current++) >>> 0;
