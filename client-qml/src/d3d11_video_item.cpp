@@ -10,7 +10,7 @@
 #if defined(Q_OS_WIN)
 #include <d3d11.h>
 #include <d3dcompiler.h>
-#include <private/qrhi_p.h>
+#include <QSGRendererInterface>
 #endif
 
 namespace {
@@ -94,31 +94,31 @@ static void releaseAllD3d() {
     g_window = nullptr;
 }
 
-/// Get Qt's D3D11 device + context from the QRhi.
+/// Get Qt's D3D11 device + context via the public QSGRendererInterface.
+/// No private Qt headers required.
 static bool ensureQtD3D(QQuickWindow *window) {
     if (g_qtDevice && g_window == window) return true;
     if (!window) return false;
 
-    QRhi *rhi = window->rhi();
-    if (!rhi || rhi->backend() != QRhi::D3D11) {
-        markD3d11Failed("Qt RHI backend is not D3D11");
+    QSGRendererInterface *rif = window->rendererInterface();
+    if (!rif) {
+        markD3d11Failed("QQuickWindow::rendererInterface() returned null");
         return false;
     }
 
-    // QRhi nativeHandles() gives us the D3D11 device pointer.
-    // Cast the opaque void* to ID3D11Device* — the layout is guaranteed
-    // by the Qt RHI contract when backend == D3D11.
-    const void *handles = rhi->nativeHandles();
-    if (!handles) {
-        markD3d11Failed("QRhi::nativeHandles() returned null");
+    // Check the graphics API is D3D11.
+    if (rif->graphicsApi() != QSGRendererInterface::Direct3D11) {
+        markD3d11Failed("Qt scenegraph is not using Direct3D11");
         return false;
     }
-    // The first field of QRhiD3D11NativeHandles is `ID3D11Device *dev`.
-    g_qtDevice = *static_cast<ID3D11Device *const *>(handles);
-    if (!g_qtDevice) {
-        markD3d11Failed("QRhi D3D11 device is null");
+
+    // Get the native D3D11 device via the public getResource() API.
+    void *devPtr = rif->getResource(window, QSGRendererInterface::DeviceResource);
+    if (!devPtr) {
+        markD3d11Failed("QSGRendererInterface::DeviceResource returned null");
         return false;
     }
+    g_qtDevice = static_cast<ID3D11Device*>(devPtr);
     g_qtDevice->GetImmediateContext(&g_qtContext);
     g_window = window;
     std::cerr << "Lunaris: D3D11 present — obtained Qt device ok." << std::endl;
