@@ -1127,7 +1127,17 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     ws.onopen = () => {
       if (wsRef.current !== ws) return;
       addLog("Signaling WebSocket connected.");
-      
+
+      // Always request host capabilities (displays & encoders)
+      ws.send(JSON.stringify({
+        event: "Signaling",
+        data: {
+          type: "GetCapabilities",
+          payload: { target_id: hostId }
+        }
+      }));
+      addLog("Sent GetCapabilities command.");
+
       if (selectedAppId === null) {
         setStatus("Loading Apps...");
         ws.send(JSON.stringify({
@@ -1138,15 +1148,6 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
           }
         }));
         addLog("Sent GetAppList command.");
-        // Also request host capabilities (displays & encoders)
-        ws.send(JSON.stringify({
-          event: "Signaling",
-          data: {
-            type: "GetCapabilities",
-            payload: { target_id: hostId }
-          }
-        }));
-        addLog("Sent GetCapabilities command.");
       } else {
         setStatus("Signaling...");
         let width = 1920;
