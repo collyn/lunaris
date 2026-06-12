@@ -12,6 +12,9 @@ Rectangle {
     visible: false
 
     property var fpsPresets: getSupportedFpsPresets()
+    property var availableEncoders: ["Auto", "Native", "FFmpeg", "NVENC", "AMF", "QSV", "VAAPI", "Software"]
+    property var availableDisplayIds: []
+    property var availableDisplayLabels: []
 
     function getSupportedFpsPresets() {
         var maxRate = (Screen && Screen.refreshRate > 0) ? Math.ceil(Screen.refreshRate) : 60;
@@ -107,6 +110,41 @@ Rectangle {
         return "auto_gpu";
     }
 
+    function updateCapabilities(displaysJson, encodersJson) {
+        try {
+            var displays = JSON.parse(displaysJson);
+            var encoders = JSON.parse(encodersJson);
+
+            // Update encoder list: merge agent-discovered with defaults
+            var defaultEncoders = ["auto", "native", "ffmpeg", "software"];
+            var merged = defaultEncoders.slice();
+            for (var i = 0; i < encoders.length; i++) {
+                var enc = encoders[i].toLowerCase();
+                if (merged.indexOf(enc) === -1) {
+                    merged.push(enc);
+                }
+            }
+            availableEncoders = merged.map(function(e) {
+                return e.charAt(0).toUpperCase() + e.slice(1);
+            });
+
+            // Update display list
+            var ids = ["default"];
+            var labels = ["Default"];
+            for (var j = 0; j < displays.length; j++) {
+                var d = displays[j];
+                ids.push(d.id);
+                var label = d.name + " (" + d.width + "x" + d.height + " @ " + Math.round(d.refresh_rate) + "Hz)";
+                if (d.is_primary) label += " ★";
+                labels.push(label);
+            }
+            availableDisplayIds = ids;
+            availableDisplayLabels = labels;
+        } catch (e) {
+            console.log("updateCapabilities: failed to parse JSON:", e);
+        }
+    }
+
     function setCurrentSettings(res, fps, codec, bitrate, queueLimit, disableCuda, inputProtocol, encoder, displayId, virtualDisplay, renderBackend) {
         if (res.indexOf("1920") !== -1 || res.indexOf("1080") !== -1) {
             resCombo.currentIndex = 0;
@@ -157,10 +195,16 @@ Rectangle {
         }
 
         var encoderLower = (encoder || "auto").toLowerCase();
-        var encoderOptions = ["auto", "native", "ffmpeg", "nvenc", "amf", "qsv", "vaapi", "software"];
+        var encoderOptions = settingsRoot.availableEncoders.map(function(e) { return e.toLowerCase(); });
         var encoderIdx = encoderOptions.indexOf(encoderLower);
         encoderCombo.currentIndex = encoderIdx >= 0 ? encoderIdx : 0;
-        displayInput.text = displayId || "default";
+
+        // Set display combo from displayId
+        var displayIdStr = displayId || "default";
+        var displayIds = settingsRoot.availableDisplayIds.length > 0 ? settingsRoot.availableDisplayIds : ["default"];
+        var displayIdx = displayIds.indexOf(displayIdStr);
+        displayCombo.currentIndex = displayIdx >= 0 ? displayIdx : 0;
+
         virtualDisplayCheck.checked = virtualDisplay === true;
     }
 
@@ -445,7 +489,7 @@ Rectangle {
         ComboBox {
             id: encoderCombo
             width: 260
-            model: ["Auto", "Native", "FFmpeg", "NVENC", "AMF", "QSV", "VAAPI", "Software"]
+            model: settingsRoot.availableEncoders
             currentIndex: 0
             delegate: ItemDelegate {
                 width: encoderCombo.width
@@ -464,17 +508,24 @@ Rectangle {
 
         // Display ID
         Text { text: "Display:"; color: "#cbd5e1"; font.pixelSize: 13; font.bold: true; width: 120 }
-        TextField {
-            id: displayInput
+        ComboBox {
+            id: displayCombo
             width: 260
-            height: 38
-            text: "default"
-            placeholderText: "default, 0, HDMI-1, DP-1..."
-            color: "#ffffff"
-            placeholderTextColor: "#64748b"
-            font.pixelSize: 13
-            leftPadding: 12
-            background: Rectangle { color: "#0f1626"; border.color: displayInput.activeFocus ? "#00f0ff" : Qt.rgba(1, 1, 1, 0.08); border.width: 1; radius: 8 }
+            model: settingsRoot.availableDisplayLabels.length > 0 ? settingsRoot.availableDisplayLabels : ["Default"]
+            currentIndex: 0
+            delegate: ItemDelegate {
+                width: displayCombo.width
+                contentItem: Text { text: modelData; color: displayCombo.highlightedIndex === index ? "#ffffff" : "#cbd5e1"; font.pixelSize: 13; verticalAlignment: Text.AlignVCenter }
+                background: Rectangle { color: displayCombo.highlightedIndex === index ? "#4f46e5" : "transparent" }
+                highlighted: displayCombo.highlightedIndex === index
+            }
+            contentItem: Text { leftPadding: 12; text: displayCombo.displayText; font.pixelSize: 13; color: "#ffffff"; verticalAlignment: Text.AlignVCenter }
+            background: Rectangle { implicitHeight: 38; color: "#0f1626"; border.color: displayCombo.activeFocus ? "#00f0ff" : Qt.rgba(1, 1, 1, 0.08); border.width: 1; radius: 8 }
+            popup: Popup {
+                y: displayCombo.height + 4; width: displayCombo.width; implicitHeight: contentItem.implicitHeight; padding: 1
+                contentItem: ListView { clip: true; implicitHeight: contentHeight; model: displayCombo.popup.visible ? displayCombo.delegateModel : null; currentIndex: displayCombo.highlightedIndex }
+                background: Rectangle { color: "#0f1626"; border.color: Qt.rgba(1, 1, 1, 0.15); border.width: 1; radius: 8 }
+            }
         }
 
         // Virtual Display
@@ -808,9 +859,10 @@ Rectangle {
                 var renderBackend = settingsRoot.currentRenderBackend();
                 var disableCuda = (renderBackend === "software");
                 var inputProtocol = (protocolCombo.currentIndex === 1) ? "webtransport" : "webrtc"
-                var encoderOptions = ["auto", "native", "ffmpeg", "nvenc", "amf", "qsv", "vaapi", "software"]
+                var encoderOptions = settingsRoot.availableEncoders.map(function(e) { return e.toLowerCase(); })
                 var encoder = encoderOptions[encoderCombo.currentIndex] || "auto"
-                var displayId = displayInput.text.trim().length > 0 ? displayInput.text.trim() : "default"
+                var displayIds = settingsRoot.availableDisplayIds.length > 0 ? settingsRoot.availableDisplayIds : ["default"]
+                var displayId = displayIds[displayCombo.currentIndex] || "default"
                 var virtualDisplay = virtualDisplayCheck.checked
 
                 settingsRoot.applySettings(selectedRes, fps, codec, bitrate, queueLimit, disableCuda, renderBackend, inputProtocol, encoder, displayId, virtualDisplay);

@@ -748,6 +748,10 @@ Rectangle {
                                             }
                                             dashboardRoot.activeConfigHost = modelData;
                                             settingsModal.setCurrentSettings(dashboardRoot.configRes, dashboardRoot.configFps, dashboardRoot.configCodec, dashboardRoot.configBitrate, dashboardRoot.configQueueLimit, dashboardRoot.configDisableCuda, dashboardRoot.configInputProtocol, dashboardRoot.configEncoder, dashboardRoot.configDisplay, dashboardRoot.configVirtualDisplay, dashboardRoot.configRenderBackend);
+                                            // Fetch encoder/display capabilities from agent
+                                            if (dashboardRoot.serverUrl && dashboardRoot.token && modelData.id) {
+                                                bridge.fetchCapabilities(dashboardRoot.serverUrl, dashboardRoot.token, modelData.id);
+                                            }
                                             settingsModal.open();
                                         }
                                         background: Rectangle {

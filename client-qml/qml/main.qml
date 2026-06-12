@@ -495,6 +495,10 @@ ApplicationWindow {
                 rootContainer.forceActiveFocus();
             }
         }
+
+        onCapabilitiesUpdated: (displaysJson, encodersJson, gpuInfo, hostOs) => {
+            dashboardView.settingsModal.updateCapabilities(displaysJson, encodersJson);
+        }
     }
 
     // Periodic timer to poll statistics from Rust backend

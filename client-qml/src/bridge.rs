@@ -262,6 +262,17 @@ pub struct PendingEncoderStatus {
 pub static PENDING_ENCODER_STATUS: std::sync::Mutex<Option<PendingEncoderStatus>> =
     std::sync::Mutex::new(None);
 
+#[derive(Debug, Clone, Default)]
+pub struct PendingCapabilities {
+    pub displays_json: String,
+    pub encoders_json: String,
+    pub gpu_info: String,
+    pub host_os: String,
+}
+
+pub static PENDING_CAPABILITIES: std::sync::Mutex<Option<PendingCapabilities>> =
+    std::sync::Mutex::new(None);
+
 #[derive(Clone)]
 pub struct VideoSinkWrapper {
     pub sink: Arc<Mutex<Option<usize>>>,
@@ -690,6 +701,15 @@ pub mod qobject {
         );
 
         #[qsignal]
+        fn capabilities_updated(
+            self: Pin<&mut StreamBridge>,
+            displays_json: QString,
+            encoders_json: QString,
+            gpu_info: QString,
+            host_os: QString,
+        );
+
+        #[qsignal]
         fn local_cursor_delta(self: Pin<&mut StreamBridge>, rx: i32, ry: i32);
 
         #[qsignal]
@@ -858,6 +878,9 @@ pub mod qobject {
 
         #[qinvokable]
         fn fetch_apps(self: Pin<&mut StreamBridge>, host_id: QString);
+
+        #[qinvokable]
+        fn fetch_capabilities(self: Pin<&mut StreamBridge>, server: QString, token: QString, host_id: QString);
 
         #[qinvokable]
         fn start_game_session(
@@ -1324,6 +1347,16 @@ impl qobject::StreamBridge {
                 cxx_qt_lib::QString::from(&status.gpu_info),
                 cxx_qt_lib::QString::from(&status.requested_encoder),
                 cxx_qt_lib::QString::from(&status.host_os),
+            );
+        }
+
+        let capabilities = { PENDING_CAPABILITIES.lock().unwrap().take() };
+        if let Some(caps) = capabilities {
+            self.as_mut().capabilities_updated(
+                cxx_qt_lib::QString::from(&caps.displays_json),
+                cxx_qt_lib::QString::from(&caps.encoders_json),
+                cxx_qt_lib::QString::from(&caps.gpu_info),
+                cxx_qt_lib::QString::from(&caps.host_os),
             );
         }
     }
@@ -1827,6 +1860,104 @@ impl qobject::StreamBridge {
                             host_id: host_id_str,
                             apps_json: "".to_string(),
                         });
+                }
+            }
+        });
+    }
+
+    pub fn fetch_capabilities(self: Pin<&mut Self>, server: QString, token: QString, host_id: QString) {
+        let server_str = server.to_string();
+        let token_str = token.to_string();
+        let host_id_str = host_id.to_string();
+
+        let mut rust_obj = self.rust_mut();
+        let rt = rust_obj.get_or_init_runtime();
+
+        rt.spawn(async move {
+            let encoded_token: String =
+                url::form_urlencoded::byte_serialize(token_str.as_bytes()).collect();
+            let ws_url = format!(
+                "{}/ws/client?token={}",
+                server_str.replace("http", "ws"),
+                encoded_token
+            );
+
+            let connect_result = connect_async(&ws_url).await;
+            let (mut ws_stream, _) = match connect_result {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("fetch_capabilities: WebSocket connection failed: {}", e);
+                    return;
+                }
+            };
+
+            let get_caps_msg = ClientMessage::Signaling(SignalingMessage::GetCapabilities {
+                target_id: host_id_str.clone(),
+            });
+
+            if let Ok(text) = serde_json::to_string(&get_caps_msg) {
+                if let Err(e) = ws_stream.send(WsMessage::Text(text)).await {
+                    eprintln!("fetch_capabilities: Failed to send GetCapabilities: {}", e);
+                    return;
+                }
+            }
+
+            let result = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                while let Some(msg_result) = ws_stream.next().await {
+                    match msg_result {
+                        Ok(WsMessage::Text(text)) => {
+                            if let Ok(server_msg) =
+                                serde_json::from_str::<common::ServerToClientMessage>(&text)
+                            {
+                                match server_msg {
+                                    common::ServerToClientMessage::Signaling(sig) => match sig {
+                                        SignalingMessage::CapabilitiesResponse {
+                                            displays,
+                                            encoders,
+                                            gpu_info,
+                                            host_os,
+                                            ..
+                                        } => {
+                                            return Ok((displays, encoders, gpu_info, host_os));
+                                        }
+                                        SignalingMessage::Error { message } => {
+                                            return Err(message);
+                                        }
+                                        _ => {}
+                                    },
+                                }
+                            }
+                        }
+                        Ok(_) => {}
+                        Err(e) => {
+                            return Err(format!("WebSocket error: {}", e));
+                        }
+                    }
+                }
+                Err("Connection closed before response received".to_string())
+            })
+            .await;
+
+            let _ = ws_stream.close(None).await;
+
+            match result {
+                Ok(Ok((displays, encoders, gpu_info, host_os))) => {
+                    let displays_json =
+                        serde_json::to_string(&displays).unwrap_or_else(|_| "[]".to_string());
+                    let encoders_json =
+                        serde_json::to_string(&encoders).unwrap_or_else(|_| "[]".to_string());
+                    *PENDING_CAPABILITIES.lock().unwrap() = Some(PendingCapabilities {
+                        displays_json,
+                        encoders_json,
+                        gpu_info: gpu_info.unwrap_or_default(),
+                        host_os: host_os.unwrap_or_default(),
+                    });
+                }
+                Ok(Err(e)) => {
+                    eprintln!("fetch_capabilities error: {}", e);
+                }
+                Err(_) => {
+                    eprintln!("fetch_capabilities: Timed out waiting for CapabilitiesResponse");
                 }
             }
         });
@@ -3919,15 +4050,30 @@ async fn run_webrtc_client_task(
             match server_msg {
                 ServerToClientMessage::Signaling(sig) => match sig {
                     SignalingMessage::CapabilitiesResponse {
-                        gpu_info, host_os, ..
+                        displays,
+                        encoders,
+                        gpu_info,
+                        host_os,
+                        ..
                     } => {
-                        let host_os = host_os.unwrap_or_default().to_ascii_lowercase();
-                        if !host_os.is_empty() {
-                            *PENDING_HOST_OS.lock().unwrap() = Some(host_os.clone());
+                        let host_os_str = host_os.clone().unwrap_or_default();
+                        let host_os_lower = host_os_str.to_ascii_lowercase();
+                        if !host_os_lower.is_empty() {
+                            *PENDING_HOST_OS.lock().unwrap() = Some(host_os_lower.clone());
                         }
                         *PENDING_HOST_INFO.lock().unwrap() = Some(PendingHostInfo {
+                            gpu_info: gpu_info.clone().unwrap_or_default(),
+                            host_os: host_os_lower,
+                        });
+                        let displays_json =
+                            serde_json::to_string(&displays).unwrap_or_else(|_| "[]".to_string());
+                        let encoders_json =
+                            serde_json::to_string(&encoders).unwrap_or_else(|_| "[]".to_string());
+                        *PENDING_CAPABILITIES.lock().unwrap() = Some(PendingCapabilities {
+                            displays_json,
+                            encoders_json,
                             gpu_info: gpu_info.unwrap_or_default(),
-                            host_os,
+                            host_os: host_os_str,
                         });
                     }
                     SignalingMessage::EncoderStatus {
