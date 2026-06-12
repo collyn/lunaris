@@ -2474,6 +2474,11 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       setActiveInputProtocol(value);
       setDraftInputProtocol(value);
       if (value !== activeInputProtocol) setStatus("Connecting...");
+    } else if (key === 'display') {
+      localStorage.setItem('lunaris_stream_display', value);
+      setActiveDisplay(value);
+      setDraftDisplay(value);
+      if (value !== activeDisplay) setStatus("Connecting...");
     }
   };
 
@@ -3779,20 +3784,37 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
                   </label>
                 </div>
                 <div className="settings-checkbox-group">
-                  <input 
-                    type="checkbox" 
+                  <input
+                    type="checkbox"
                     id="virtualDisplay"
-                    checked={draftVirtualDisplay} 
+                    checked={draftVirtualDisplay}
                     onChange={(e) => setDraftVirtualDisplay(e.target.checked)}
                   />
                   <label htmlFor="virtualDisplay">
                     Create Virtual Display (Linux: xrandr virtual output, Windows: IddSampleDriver required)
                   </label>
                 </div>
+                {availableDisplays.length > 0 && (
+                  <div className="settings-group full-width">
+                    <label htmlFor="display">Display</label>
+                    <select
+                      id="display"
+                      value={draftDisplay}
+                      onChange={(e) => setDraftDisplay(e.target.value)}
+                    >
+                      <option value="default">Default</option>
+                      {availableDisplays.map(d => (
+                        <option key={d.id} value={d.id}>
+                          {d.name} ({d.width}x{d.height} @ {d.refresh_rate.toFixed(0)}Hz){d.is_primary ? ' ★' : ''}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
               </div>
 
               <div className="settings-actions">
-                <button 
+                <button
                   onClick={() => {
                     setDraftMouseQueueLimit(mouseQueueLimit);
                     setDraftUseNativeClient(useNativeClient);
@@ -4364,6 +4386,21 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
           <option value="webtransport" disabled={typeof (window as any).WebTransport === 'undefined'}>
             WebTransport {typeof (window as any).WebTransport === 'undefined' ? "(Unsupported)" : ""}
           </option>
+        </select>
+
+        {/* Display Dropdown */}
+        <select
+          value={activeDisplay}
+          onChange={(e) => updateSetting('display', e.target.value)}
+          className="stream-select"
+          title="Display"
+        >
+          <option value="default">Default Display</option>
+          {availableDisplays.map(d => (
+            <option key={d.id} value={d.id}>
+              {d.name} ({d.width}x{d.height}){d.is_primary ? ' ★' : ''}
+            </option>
+          ))}
         </select>
 
         {/* Separator */}
