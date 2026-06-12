@@ -764,10 +764,11 @@ pub async fn setup_bridge_session(
 
     let video_frame_tx_clone = video_frame_tx.clone();
     let audio_tx_clone = audio_tx.clone();
+    let display_id_for_pipeline = display_id.clone();
 
     let pipeline_task = tokio::spawn(async move {
         info!("Running lunaris-media pipeline...");
-        let display = display_id.clone().unwrap_or_else(|| "default".to_string());
+        let display = display_id_for_pipeline.unwrap_or_else(|| "default".to_string());
         if let Err(e) = pipeline.run(&display).await {
             error!("Media pipeline exited with error: {:?}", e);
         }
@@ -809,6 +810,7 @@ pub async fn setup_bridge_session(
     let cursor_channel_for_media = cursor_channel_for_cursor.clone();
     let general_channel_for_media = general_channel_for_cursor.clone();
     let latest_host_cursor_for_media = latest_host_cursor_payload.clone();
+    let active_display_id_for_media = display_id.clone();
     let media_event_task = tokio::spawn(async move {
         let mut metrics_started = Instant::now();
         let mut forwarded_frames: u64 = 0;
@@ -837,6 +839,8 @@ pub async fn setup_bridge_session(
                             gpu_info: gpu_name,
                             requested_encoder,
                             host_os: Some(std::env::consts::OS.to_string()),
+                            display_id: active_display_id_for_media.clone(),
+                            display_name: None, // Could be resolved from display list if needed
                         },
                     ));
                 }

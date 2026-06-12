@@ -451,12 +451,14 @@ ApplicationWindow {
             if (hostOs !== "") window.agentHostOs = String(hostOs).toLowerCase()
         }
 
-        onEncoderStatusUpdated: (encoder, hwType, gpuInfo, requestedEncoder, hostOs) => {
+        onEncoderStatusUpdated: (encoder, hwType, gpuInfo, requestedEncoder, hostOs, displayId, displayName) => {
             window.activeEncoderName = encoder || "Unknown"
             window.activeEncoderHw = hwType || "Unknown"
             window.agentGpuInfo = gpuInfo || window.agentGpuInfo || "Unknown"
             window.requestedEncoder = requestedEncoder || "auto"
             if (hostOs !== "") window.agentHostOs = String(hostOs).toLowerCase()
+            window.activeDisplayId = displayId || ""
+            window.activeDisplayName = displayName || ""
         }
 
         onLocalCursorDelta: (rx, ry) => {

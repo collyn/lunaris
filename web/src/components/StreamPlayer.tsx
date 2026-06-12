@@ -276,11 +276,13 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   const [availableEncoders, setAvailableEncoders] = useState<string[]>([]);
   const [agentGpuInfo, setAgentGpuInfo] = useState<string>('');
   const [agentHostOs, setAgentHostOs] = useState<string>('unknown');
-  const [activeEncoderStatus, setActiveEncoderStatus] = useState<{ encoder: string; hwType: string; gpuInfo: string; requestedEncoder: string }>({
+  const [activeEncoderStatus, setActiveEncoderStatus] = useState<{ encoder: string; hwType: string; gpuInfo: string; requestedEncoder: string; displayId: string; displayName: string }>({
     encoder: 'Pending',
     hwType: 'Unknown',
     gpuInfo: '',
-    requestedEncoder: activeEncoder
+    requestedEncoder: activeEncoder,
+    displayId: '',
+    displayName: ''
   });
   const [availableDisplays, setAvailableDisplays] = useState<{id: string; name: string; width: number; height: number; refresh_rate: number; is_primary: boolean}[]>([]);
 
@@ -1210,11 +1212,13 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
               encoder: payload.encoder || 'Unknown',
               hwType: payload.hw_type || 'Unknown',
               gpuInfo: payload.gpu_info || agentGpuInfo || '',
-              requestedEncoder: payload.requested_encoder || 'auto'
+              requestedEncoder: payload.requested_encoder || 'auto',
+              displayId: payload.display_id || '',
+              displayName: payload.display_name || ''
             });
             if (payload.gpu_info) setAgentGpuInfo(payload.gpu_info);
             if (payload.host_os) setAgentHostOs(String(payload.host_os).toLowerCase());
-            addLog(`Agent encoder active: ${payload.encoder || 'unknown'} (${payload.hw_type || 'unknown'}) on ${payload.gpu_info || 'unknown GPU'}`);
+            addLog(`Agent encoder active: ${payload.encoder || 'unknown'} (${payload.hw_type || 'unknown'}) on ${payload.gpu_info || 'unknown GPU'}${payload.display_id ? ', display: ' + payload.display_id : ''}`);
             break;
 
           case "StopActiveStreamResponse":
@@ -5116,6 +5120,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
             <div>Encoder: <span className="stat-value">{activeEncoderStatus.encoder} ({activeEncoderStatus.hwType})</span></div>
             <div>GPU: <span className="stat-value">{activeEncoderStatus.gpuInfo || agentGpuInfo || 'Unknown'}</span></div>
             <div>Host OS: <span className="stat-value">{agentHostOs}</span></div>
+            <div>Display: <span className="stat-value">{activeEncoderStatus.displayName || activeEncoderStatus.displayId || activeDisplay || 'Default'}</span></div>
             <div>Requested Encoder: <span className="stat-value">{activeEncoderStatus.requestedEncoder}</span></div>
             <div>Input Protocol: <span className="stat-value" style={{ color: isWebTransportConnected ? '#4ade80' : '#38bdf8', fontWeight: 'bold' }}>
               {isWebTransportConnected ? "WebTransport (QUIC)" : "WebRTC (SCTP)"}

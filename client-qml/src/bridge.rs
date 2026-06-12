@@ -257,6 +257,8 @@ pub struct PendingEncoderStatus {
     pub gpu_info: String,
     pub requested_encoder: String,
     pub host_os: String,
+    pub display_id: String,
+    pub display_name: String,
 }
 
 pub static PENDING_ENCODER_STATUS: std::sync::Mutex<Option<PendingEncoderStatus>> =
@@ -698,6 +700,8 @@ pub mod qobject {
             gpu_info: QString,
             requested_encoder: QString,
             host_os: QString,
+            display_id: QString,
+            display_name: QString,
         );
 
         #[qsignal]
@@ -1347,6 +1351,8 @@ impl qobject::StreamBridge {
                 cxx_qt_lib::QString::from(&status.gpu_info),
                 cxx_qt_lib::QString::from(&status.requested_encoder),
                 cxx_qt_lib::QString::from(&status.host_os),
+                cxx_qt_lib::QString::from(&status.display_id),
+                cxx_qt_lib::QString::from(&status.display_name),
             );
         }
 
@@ -4082,6 +4088,8 @@ async fn run_webrtc_client_task(
                         gpu_info,
                         requested_encoder,
                         host_os,
+                        display_id,
+                        display_name,
                         ..
                     } => {
                         let host_os = host_os.unwrap_or_default().to_ascii_lowercase();
@@ -4095,6 +4103,8 @@ async fn run_webrtc_client_task(
                             requested_encoder: requested_encoder
                                 .unwrap_or_else(|| "auto".to_string()),
                             host_os,
+                            display_id: display_id.unwrap_or_default(),
+                            display_name: display_name.unwrap_or_default(),
                         });
                     }
                     SignalingMessage::Sdp {
