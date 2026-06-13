@@ -1320,6 +1320,42 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hostId, activeResolution, activeCodec, token, hostName, selectedAppId, useNativeClient, activeInputProtocol, useCanvasRenderer, activeEncoder, activeDisplay, activeVirtualDisplay]);
 
+  // Fetch display/encoder capabilities from agent when host is selected (before stream starts)
+  useEffect(() => {
+    if (!hostId || !token || status === 'Streaming') return;
+
+    const protocol = getBackendProtocol().ws;
+    const host = getBackendHost();
+    const wsUrl = `${protocol}//${host}/ws/client?token=${encodeURIComponent(token)}`;
+
+    const ws = new WebSocket(wsUrl);
+    ws.onopen = () => {
+      ws.send(JSON.stringify({
+        event: "Signaling",
+        data: {
+          type: "GetCapabilities",
+          payload: { target_id: hostId }
+        }
+      }));
+    };
+    ws.onmessage = (event) => {
+      try {
+        const msg = JSON.parse(event.data);
+        if (msg.data?.type === 'CapabilitiesResponse' && msg.data?.payload) {
+          const payload = msg.data.payload;
+          if (payload.displays) setAvailableDisplays(payload.displays);
+          if (payload.encoders) setAvailableEncoders(payload.encoders);
+          if (payload.gpu_info) setAgentGpuInfo(payload.gpu_info);
+        }
+      } catch {}
+      ws.close();
+    };
+    ws.onerror = () => ws.close();
+    ws.onclose = () => {};
+
+    return () => ws.close();
+  }, [hostId, token, status]);
+
   // Helper to send dynamic pipeline commands via the general data channel.
   // Format: u16 length prefix + JSON string, matching the agent's InboundPacket::deserialize.
   const sendDynamicCommand = (type: string, value: number) => {
