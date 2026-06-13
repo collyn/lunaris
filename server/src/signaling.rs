@@ -504,8 +504,10 @@ async fn handle_agent_signaling(sig: SignalingMessage, agent_id: &str, state: Ar
             }
         }
         SignalingMessage::CapabilitiesResponse { target_id, displays, encoders, gpu_info, host_os } => {
+            info!("Server: CapabilitiesResponse from agent {} for client {} ({} displays, {} encoders)", agent_id, target_id, displays.len(), encoders.len());
             let clients = state.clients.read().unwrap();
             if let Some(client_tx) = clients.get(&target_id) {
+                info!("Server: Found client {} in clients map, forwarding CapabilitiesResponse", target_id);
                 let msg = ServerToClientMessage::Signaling(SignalingMessage::CapabilitiesResponse {
                     target_id: agent_id.to_string(),
                     displays,
@@ -514,6 +516,8 @@ async fn handle_agent_signaling(sig: SignalingMessage, agent_id: &str, state: Ar
                     host_os,
                 });
                 let _ = client_tx.send(msg);
+            } else {
+                warn!("Server: Client {} NOT found in clients map! Cannot forward CapabilitiesResponse", target_id);
             }
         }
         SignalingMessage::EncoderStatus { target_id, encoder, hw_type, gpu_info, requested_encoder, host_os, display_id, display_name } => {

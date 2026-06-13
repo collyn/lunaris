@@ -425,13 +425,18 @@ function App() {
   // Fetch display list from agent when host settings modal opens
   useEffect(() => {
     if (!settingsHost || !token) return;
+    setHostAvailableDisplays([]); // reset on new host
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const host = window.location.host;
-    const wsUrl = `${protocol}//${host}/ws/client?token=${encodeURIComponent(token)}`;
+    const wsHost = window.location.host;
+    const wsUrl = `${protocol}//${wsHost}/ws/client?token=${encodeURIComponent(token)}`;
+    console.log(`[Capabilities] Connecting to ${wsUrl}`);
 
+    let gotResponse = false;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
     const ws = new WebSocket(wsUrl);
     ws.onopen = () => {
+      console.log('[Capabilities] WebSocket opened, sending GetCapabilities');
       ws.send(JSON.stringify({
         event: "Signaling",
         data: {
@@ -439,18 +444,34 @@ function App() {
           payload: { target_id: settingsHost.id }
         }
       }));
+      // Timeout: close after 5s if no response
+      timeoutId = setTimeout(() => {
+        if (!gotResponse) {
+          console.log('[Capabilities] Timeout - no response received');
+          ws.close();
+        }
+      }, 5000);
     };
     ws.onmessage = (event) => {
       try {
         const msg = JSON.parse(event.data);
-        if (msg.data?.type === 'CapabilitiesResponse' && msg.data?.payload) {
-          const payload = msg.data.payload;
-          if (payload.displays) setHostAvailableDisplays(payload.displays);
+        // Skip non-signaling messages (SDP, ICE, etc from other sessions)
+        if (msg.event !== 'Signaling' || msg.data?.type !== 'CapabilitiesResponse') return;
+        console.log('[Capabilities] Got CapabilitiesResponse!');
+        const payload = msg.data.payload;
+        if (payload?.displays) {
+          console.log('[Capabilities] Displays:', JSON.stringify(payload.displays));
+          setHostAvailableDisplays(payload.displays);
         }
-      } catch {}
-      ws.close();
+        gotResponse = true;
+        if (timeoutId) clearTimeout(timeoutId);
+        ws.close();
+      } catch (e) {
+        console.error('[Capabilities] Parse error:', e);
+      }
     };
-    ws.onerror = () => ws.close();
+    ws.onerror = (e) => { console.error('[Capabilities] WebSocket error:', e); if (timeoutId) clearTimeout(timeoutId); ws.close(); };
+    ws.onclose = () => console.log('[Capabilities] WebSocket closed');
 
     return () => ws.close();
   }, [settingsHost, token]);
