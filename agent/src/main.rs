@@ -557,10 +557,12 @@ pub async fn run_agent_loop(
                                     Ok(cap) => {
                                         match cap.list_displays().await {
                                             Ok(display_list) => {
-                                                for d in display_list {
+                                                info!("Discovered {} display(s)", display_list.len());
+                                                for d in &display_list {
+                                                    info!("  Display: {} ({}) {}x{} @{}Hz primary={}", d.id, d.name, d.width, d.height, d.refresh_rate, d.is_primary);
                                                     displays.push(common::DisplayInfoMsg {
-                                                        id: d.id,
-                                                        name: d.name,
+                                                        id: d.id.clone(),
+                                                        name: d.name.clone(),
                                                         width: d.width,
                                                         height: d.height,
                                                         refresh_rate: d.refresh_rate,
