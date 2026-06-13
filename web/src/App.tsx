@@ -175,6 +175,7 @@ function App() {
   const [draftHostSettings, setDraftHostSettings] = useState<HostStreamSettings>(() => loadHostStreamSettings());
   const [deleteHostLoading, setDeleteHostLoading] = useState<string | null>(null);
   const [pendingDeleteHost, setPendingDeleteHost] = useState<Host | null>(null);
+  const [hostAvailableDisplays, setHostAvailableDisplays] = useState<{id: string; name: string; width: number; height: number; refresh_rate: number; is_primary: boolean}[]>([]);
 
 
 
@@ -420,6 +421,39 @@ function App() {
     saveHostStreamSettings(draftHostSettings);
     setSettingsHost(null);
   };
+
+  // Fetch display list from agent when host settings modal opens
+  useEffect(() => {
+    if (!settingsHost || !token) return;
+
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const host = window.location.host;
+    const wsUrl = `${protocol}//${host}/ws/client?token=${encodeURIComponent(token)}`;
+
+    const ws = new WebSocket(wsUrl);
+    ws.onopen = () => {
+      ws.send(JSON.stringify({
+        event: "Signaling",
+        data: {
+          type: "GetCapabilities",
+          payload: { target_id: settingsHost.id }
+        }
+      }));
+    };
+    ws.onmessage = (event) => {
+      try {
+        const msg = JSON.parse(event.data);
+        if (msg.data?.type === 'CapabilitiesResponse' && msg.data?.payload) {
+          const payload = msg.data.payload;
+          if (payload.displays) setHostAvailableDisplays(payload.displays);
+        }
+      } catch {}
+      ws.close();
+    };
+    ws.onerror = () => ws.close();
+
+    return () => ws.close();
+  }, [settingsHost, token]);
 
   const handleDeleteHost = async (host: Host) => {
     if (!token || deleteHostLoading) return;
@@ -1194,7 +1228,14 @@ function App() {
               </div>
               <div className="settings-group full-width">
                 <label htmlFor="hostDisplay">Display</label>
-                <input id="hostDisplay" type="text" value={draftHostSettings.display} onChange={(e) => updateDraftHostSettings('display', e.target.value)} placeholder="default, 0, HDMI-1, DP-1..." />
+                <select id="hostDisplay" value={draftHostSettings.display} onChange={(e) => updateDraftHostSettings('display', e.target.value)}>
+                  <option value="default">Default</option>
+                  {hostAvailableDisplays.map(d => (
+                    <option key={d.id} value={d.id}>
+                      {d.name} ({d.width}x{d.height} @ {d.refresh_rate.toFixed(0)}Hz){d.is_primary ? ' ★' : ''}
+                    </option>
+                  ))}
+                </select>
               </div>
               <div className="settings-group full-width">
                 <label htmlFor="hostBitrate">Bitrate (Kbps)</label>
