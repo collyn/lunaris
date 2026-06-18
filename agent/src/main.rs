@@ -321,13 +321,19 @@ pub async fn run_agent_loop(
     // Spawn outbound WS writing task
     let write_task = tokio::spawn(async move {
         while let Some(msg) = agent_rx.recv().await {
-            if let Ok(json) = serde_json::to_string(&msg) {
-                if let Err(e) = ws_write.send(WsMessage::Text(json)).await {
-                    error!("WebSocket write error: {:?}", e);
-                    break;
+            match serde_json::to_string(&msg) {
+                Ok(json) => {
+                    if let Err(e) = ws_write.send(WsMessage::Text(json)).await {
+                        error!("WebSocket write error: {:?}", e);
+                        break;
+                    }
+                }
+                Err(e) => {
+                    error!("Failed to serialize outbound message: {:?}", e);
                 }
             }
         }
+        info!("Outbound WS write task ended");
     });
 
     // Active session
@@ -548,68 +554,74 @@ pub async fn run_agent_loop(
                         SignalingMessage::GetCapabilities { target_id } => {
                             info!("Received GetCapabilities request from target: {}", target_id);
                             let agent_tx_clone = agent_tx.clone();
-                            tokio::spawn(async move {
-                                let mut displays = Vec::new();
-                                let mut encoders = Vec::new();
 
-                                // Query available displays from capture backends
-                                match lunaris_media::capture::create_screen_capture() {
-                                    Ok(cap) => {
-                                        match cap.list_displays().await {
-                                            Ok(display_list) => {
-                                                info!("Discovered {} display(s)", display_list.len());
-                                                for d in &display_list {
-                                                    info!("  Display: {} ({}) {}x{} @{}Hz primary={}", d.id, d.name, d.width, d.height, d.refresh_rate, d.is_primary);
-                                                    displays.push(common::DisplayInfoMsg {
-                                                        id: d.id.clone(),
-                                                        name: d.name.clone(),
-                                                        width: d.width,
-                                                        height: d.height,
-                                                        refresh_rate: d.refresh_rate,
-                                                        is_primary: d.is_primary,
-                                                    });
-                                                }
-                                            }
-                                            Err(e) => {
-                                                error!("Failed to list displays: {:?}", e);
+                            // 1. List displays (sync operation, blocks until NvFBC responds)
+                            let mut displays = Vec::new();
+                            match lunaris_media::capture::create_screen_capture() {
+                                Ok(cap) => {
+                                    match cap.list_displays().await {
+                                        Ok(display_list) => {
+                                            info!("[GetCapabilities] Discovered {} display(s)", display_list.len());
+                                            for d in &display_list {
+                                                info!("  Display: {} ({}) {}x{} @{}Hz primary={}", d.id, d.name, d.width, d.height, d.refresh_rate, d.is_primary);
+                                                displays.push(common::DisplayInfoMsg {
+                                                    id: d.id.clone(),
+                                                    name: d.name.clone(),
+                                                    width: d.width,
+                                                    height: d.height,
+                                                    refresh_rate: d.refresh_rate,
+                                                    is_primary: d.is_primary,
+                                                });
                                             }
                                         }
+                                        Err(e) => error!("Failed to list displays: {:?}", e),
                                     }
-                                    Err(e) => {
-                                        error!("Failed to create screen capture for display listing: {:?}", e);
-                                    }
+                                    // 2. Drop cap on blocking thread — NvfbcCapture::drop() joins a thread
+                                    info!("[GetCapabilities] Dropping capture on blocking thread...");
+                                    tokio::task::spawn_blocking(move || {
+                                        drop(cap);
+                                        info!("[GetCapabilities] Capture dropped");
+                                    });
+                                    // Don't await — let it drop in the background
                                 }
+                                Err(e) => error!("Failed to create screen capture: {:?}", e),
+                            }
 
-                                // Query available encoders. Generic entries control backend family;
-                                // concrete entries allow advanced users to force a specific encoder.
-                                encoders.push("native".to_string());
-                                encoders.push("ffmpeg".to_string());
-                                let encoder_list = lunaris_media::encode::list_available_encoders();
-                                for enc in encoder_list {
-                                    if !encoders.contains(&enc.name) {
-                                        encoders.push(enc.name.clone());
-                                    }
-                                    let hw_name = format!("{}", enc.hw_type).to_lowercase();
-                                    if !encoders.contains(&hw_name) {
-                                        encoders.push(hw_name);
-                                    }
+                            // 3. Query encoders (fast, non-blocking)
+                            info!("[GetCapabilities] Querying encoders...");
+                            let mut encoders = Vec::new();
+                            encoders.push("native".to_string());
+                            encoders.push("ffmpeg".to_string());
+                            let encoder_list = lunaris_media::encode::list_available_encoders();
+                            for enc in encoder_list {
+                                if !encoders.contains(&enc.name) {
+                                    encoders.push(enc.name.clone());
                                 }
-                                // Always include software as fallback
-                                if !encoders.contains(&"software".to_string()) {
-                                    encoders.push("software".to_string());
+                                let hw_name = format!("{}", enc.hw_type).to_lowercase();
+                                if !encoders.contains(&hw_name) {
+                                    encoders.push(hw_name);
                                 }
+                            }
+                            if !encoders.contains(&"software".to_string()) {
+                                encoders.push("software".to_string());
+                            }
 
-                                let resp = AgentMessage::Signaling(
-                                    SignalingMessage::CapabilitiesResponse {
-                                        target_id,
-                                        displays,
-                                        encoders,
-                                        gpu_info: lunaris_media::encode::describe_host_gpu(None),
-                                        host_os: Some(std::env::consts::OS.to_string()),
-                                    },
-                                );
-                                let _ = agent_tx_clone.send(resp);
-                            });
+                            // 4. Send response
+                            info!("[GetCapabilities] Sending response: {} displays, {} encoders", displays.len(), encoders.len());
+                            let resp = AgentMessage::Signaling(
+                                SignalingMessage::CapabilitiesResponse {
+                                    target_id,
+                                    displays,
+                                    encoders,
+                                    gpu_info: lunaris_media::encode::describe_host_gpu(None),
+                                    host_os: Some(std::env::consts::OS.to_string()),
+                                },
+                            );
+                            if let Err(e) = agent_tx_clone.send(resp) {
+                                error!("Failed to send CapabilitiesResponse: {:?}", e);
+                            } else {
+                                info!("[GetCapabilities] Response sent!");
+                            }
                         }
                         SignalingMessage::StopActiveStream { target_id } => {
                             info!(

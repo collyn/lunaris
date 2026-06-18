@@ -35,8 +35,8 @@ pub struct SignalingState {
     pub client_to_agent: RwLock<HashMap<String, String>>,
     // agent_id -> active connection Uuid
     pub agent_connections: RwLock<HashMap<String, Uuid>>,
-    // client_id -> active connection Uuid
-    pub client_connections: RwLock<HashMap<String, Uuid>>,
+    // conn_id (String) -> client_id — tracks which client owns each connection
+    pub client_connections: RwLock<HashMap<String, String>>,
     // client_id -> BridgeSession managed by server
     pub local_sessions: RwLock<HashMap<String, Arc<crate::bridge::BridgeSession>>>,
 }
@@ -290,10 +290,21 @@ async fn handle_agent_socket(socket: WebSocket, params: AgentParams, state: Arc<
 
         for client_id in clients_to_disconnect {
             state.client_to_agent.write().unwrap().remove(&client_id);
-            if let Some(client_tx) = state.clients.read().unwrap().get(&client_id) {
-                let _ = client_tx.send(ServerToClientMessage::Signaling(SignalingMessage::Error {
-                    message: "Host disconnected".to_string(),
-                }));
+            // Find all connections for this client and send error to each
+            let conn_ids: Vec<String> = {
+                let conn_map = state.client_connections.read().unwrap();
+                conn_map.iter()
+                    .filter(|(_, c_id)| *c_id == &client_id)
+                    .map(|(conn_id, _)| conn_id.clone())
+                    .collect()
+            };
+            let clients = state.clients.read().unwrap();
+            for conn_id in conn_ids {
+                if let Some(client_tx) = clients.get(&conn_id) {
+                    let _ = client_tx.send(ServerToClientMessage::Signaling(SignalingMessage::Error {
+                        message: "Host disconnected".to_string(),
+                    }));
+                }
             }
         }
     }
@@ -307,16 +318,17 @@ async fn handle_client_socket(socket: WebSocket, client_id: String, state: Arc<S
     let (tx, mut rx) = mpsc::unbounded_channel::<ServerToClientMessage>();
     let conn_id = Uuid::new_v4();
 
-    // Register active client sender
+    // Register active client sender (keyed by conn_id to support multiple connections per client)
+    let conn_id_str = conn_id.to_string();
     {
-        state.clients.write().unwrap().insert(client_id.clone(), tx);
+        state.clients.write().unwrap().insert(conn_id_str.clone(), tx);
         state
             .client_connections
             .write()
             .unwrap()
-            .insert(client_id.clone(), conn_id);
+            .insert(conn_id_str.clone(), client_id.clone());
     }
-    info!("Client WebSocket connected: {}", client_id);
+    info!("Client WebSocket connected: {} (conn: {})", client_id, conn_id_str);
 
     // Spawn a task to handle outbound messages to the client (with heartbeat to prevent idle timeouts)
     let client_id_clone = client_id.clone();
@@ -358,39 +370,51 @@ async fn handle_client_socket(socket: WebSocket, client_id: String, state: Arc<S
         let msg = match result {
             Ok(m) => m,
             Err(e) => {
-                warn!("WebSocket read error from client {}: {}", client_id, e);
+                warn!("WebSocket read error from client {} (conn: {}): {}", client_id, conn_id, e);
                 break;
             }
         };
+
+        match &msg {
+            Message::Text(_) => {},
+            Message::Close(frame) => {
+                info!("Client {} (conn: {}) sent close frame: {:?}", client_id, conn_id, frame);
+                break;
+            }
+            _ => {
+                debug!("Client {} (conn: {}) sent non-text message: {:?}", client_id, conn_id, msg);
+            }
+        }
 
         if let Message::Text(text) = msg {
             let client_msg: ClientMessage = match serde_json::from_str(&text) {
                 Ok(m) => m,
                 Err(e) => {
-                    error!("Failed to parse client message: {}", e);
+                    error!("Failed to parse client message from {} (conn: {}): {}", client_id, conn_id, e);
                     continue;
                 }
             };
 
             match client_msg {
                 ClientMessage::Signaling(sig) => {
-                    handle_client_signaling(sig, &client_id, state.clone()).await;
+                    handle_client_signaling(sig, &client_id, &conn_id.to_string(), state.clone()).await;
                 }
             }
         }
     }
 
     // Connection closed
-    info!("Client WebSocket disconnected: {}", client_id);
-    let mut should_cleanup = false;
-    {
-        let mut conn_map = state.client_connections.write().unwrap();
-        if conn_map.get(&client_id) == Some(&conn_id) {
-            conn_map.remove(&client_id);
-            state.clients.write().unwrap().remove(&client_id);
-            should_cleanup = true;
-        }
-    }
+    info!("Client WebSocket disconnected: {} (conn: {})", client_id, conn_id);
+    // Remove this specific connection
+    state.clients.write().unwrap().remove(&conn_id_str);
+    state.client_connections.write().unwrap().remove(&conn_id_str);
+
+    // Only clean up session if this was the last connection for this client
+    let has_other_connections = {
+        let conn_map = state.client_connections.read().unwrap();
+        conn_map.values().any(|cid| cid == &client_id)
+    };
+    let should_cleanup = !has_other_connections;
 
     if should_cleanup {
         let host_id_opt = state.client_to_agent.write().unwrap().remove(&client_id);
@@ -544,6 +568,7 @@ async fn handle_agent_signaling(sig: SignalingMessage, agent_id: &str, state: Ar
 async fn handle_client_signaling(
     sig: SignalingMessage,
     client_id: &str,
+    conn_id: &str,
     state: Arc<SignalingState>,
 ) {
     match sig {
@@ -567,7 +592,7 @@ async fn handle_client_signaling(
                 if let Some(agent_tx) = state.agents.read().unwrap().get(&previous_host_id).cloned() {
                     let _ = agent_tx.send(ServerToAgentMessage::Signaling(
                         SignalingMessage::EndSession {
-                            target_id: client_id.to_string(),
+                            target_id: conn_id.to_string(),
                         },
                     ));
                     stopped_previous_agent_session = true;
@@ -601,7 +626,7 @@ async fn handle_client_signaling(
                 let ice_servers = state.fetch_ice_servers().await;
                 let incoming_msg =
                     ServerToAgentMessage::Signaling(SignalingMessage::IncomingSession {
-                        client_id: client_id.to_string(),
+                        client_id: conn_id.to_string(),
                         width,
                         height,
                         fps,
@@ -637,7 +662,7 @@ async fn handle_client_signaling(
 
             // No agent available for this host
             error!("No agent connected for host {}", host_id);
-            if let Some(client_tx) = state.clients.read().unwrap().get(client_id) {
+            if let Some(client_tx) = state.clients.read().unwrap().get(conn_id) {
                 let _ = client_tx.send(ServerToClientMessage::Signaling(SignalingMessage::Error {
                     message: "No agent connected for this host. Please ensure the agent is running.".to_string(),
                 }));
@@ -665,7 +690,7 @@ async fn handle_client_signaling(
             if let Some(agent_tx) = agent_tx_opt {
                 // Forward the SDP Answer to the agent
                 let _ = agent_tx.send(ServerToAgentMessage::Signaling(SignalingMessage::Sdp {
-                    target_id: client_id.to_string(),
+                    target_id: conn_id.to_string(),
                     sdp,
                     ice_servers: None,
                     webtransport_port,
@@ -724,7 +749,7 @@ async fn handle_client_signaling(
                 // Forward IceCandidate to the agent
                 let _ = agent_tx.send(ServerToAgentMessage::Signaling(
                     SignalingMessage::IceCandidate {
-                        target_id: client_id.to_string(),
+                        target_id: conn_id.to_string(),
                         candidate,
                     },
                 ));
@@ -766,7 +791,7 @@ async fn handle_client_signaling(
                 // Forward EndSession to the agent
                 let _ = agent_tx.send(ServerToAgentMessage::Signaling(
                     SignalingMessage::EndSession {
-                        target_id: client_id.to_string(),
+                        target_id: conn_id.to_string(),
                     },
                 ));
                 state.client_to_agent.write().unwrap().remove(client_id);
@@ -795,12 +820,12 @@ async fn handle_client_signaling(
             if let Some(agent_tx) = agent_tx_opt {
                 let _ = agent_tx.send(ServerToAgentMessage::Signaling(
                     SignalingMessage::GetAppList {
-                        target_id: client_id.to_string(),
+                        target_id: conn_id.to_string(),
                     },
                 ));
             } else {
                 warn!("No agent connected for host {}, cannot get app list", target_id);
-                if let Some(client_tx) = state.clients.read().unwrap().get(client_id) {
+                if let Some(client_tx) = state.clients.read().unwrap().get(conn_id) {
                     let _ = client_tx.send(ServerToClientMessage::Signaling(
                         SignalingMessage::Error {
                             message: "No agent connected for this host.".to_string(),
@@ -817,12 +842,12 @@ async fn handle_client_signaling(
             if let Some(agent_tx) = agent_tx_opt {
                 let _ = agent_tx.send(ServerToAgentMessage::Signaling(
                     SignalingMessage::StopActiveStream {
-                        target_id: client_id.to_string(),
+                        target_id: conn_id.to_string(),
                     },
                 ));
             } else {
                 warn!("No agent connected for host {}, cannot stop stream", target_id);
-                if let Some(client_tx) = state.clients.read().unwrap().get(client_id) {
+                if let Some(client_tx) = state.clients.read().unwrap().get(conn_id) {
                     let _ = client_tx.send(ServerToClientMessage::Signaling(
                         SignalingMessage::StopActiveStreamResponse {
                             target_id: target_id.clone(),
@@ -834,12 +859,19 @@ async fn handle_client_signaling(
             }
         }
         SignalingMessage::GetCapabilities { target_id } => {
+            info!("GetCapabilities from client {} for host {} (conn: {})", client_id, target_id, conn_id);
             let agents = state.agents.read().unwrap();
             if let Some(agent_tx) = agents.get(&target_id) {
                 let msg = ServerToAgentMessage::Signaling(SignalingMessage::GetCapabilities {
-                    target_id: client_id.to_string(),
+                    target_id: conn_id.to_string(),
                 });
-                let _ = agent_tx.send(msg);
+                if let Err(e) = agent_tx.send(msg) {
+                    error!("Failed to forward GetCapabilities to agent {}: {:?}", target_id, e);
+                } else {
+                    info!("GetCapabilities forwarded to agent {} with conn_id {}", target_id, conn_id);
+                }
+            } else {
+                warn!("No agent found for host {} when handling GetCapabilities", target_id);
             }
         }
         _ => {}

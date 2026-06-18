@@ -283,6 +283,7 @@ function App() {
     const ws = new WebSocket(wsUrl);
 
     let isMounted = true;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
 
     ws.onopen = () => {
       if (!isMounted) return;
@@ -293,6 +294,15 @@ function App() {
           payload: { target_id: viewingHost.id }
         }
       }));
+      // Timeout: close after 10s if no response
+      timeoutId = setTimeout(() => {
+        if (isMounted) {
+          console.warn('[AppList] Timeout - no response received');
+          setViewingAppsError("Timeout: agent did not respond");
+          setViewingAppsLoading(false);
+          ws.close();
+        }
+      }, 10000);
     };
 
     ws.onmessage = (event) => {
@@ -304,10 +314,12 @@ function App() {
           const payload = msg.data.payload;
 
           if (type === "AppListResponse") {
+            if (timeoutId) clearTimeout(timeoutId);
             setViewingApps(payload.apps);
             setViewingAppsLoading(false);
             ws.close();
           } else if (type === "Error") {
+            if (timeoutId) clearTimeout(timeoutId);
             setViewingAppsError(payload.message || "Failed to load applications");
             setViewingAppsLoading(false);
             ws.close();
@@ -320,17 +332,20 @@ function App() {
 
     ws.onerror = () => {
       if (!isMounted) return;
+      if (timeoutId) clearTimeout(timeoutId);
       setViewingAppsError("Connection error while fetching applications");
       setViewingAppsLoading(false);
     };
 
     ws.onclose = () => {
       if (!isMounted) return;
+      if (timeoutId) clearTimeout(timeoutId);
       setViewingAppsLoading(false);
     };
 
     return () => {
       isMounted = false;
+      if (timeoutId) clearTimeout(timeoutId);
       if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
         ws.close();
       }
@@ -427,15 +442,17 @@ function App() {
     if (!settingsHost || !token) return;
     setHostAvailableDisplays([]); // reset on new host
 
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsHost = window.location.host;
-    const wsUrl = `${protocol}//${wsHost}/ws/client?token=${encodeURIComponent(token)}`;
+    const protocol = getBackendProtocol().ws;
+    const serverHost = getBackendHost();
+    const wsUrl = `${protocol}//${serverHost}/ws/client?token=${encodeURIComponent(token)}`;
     console.log(`[Capabilities] Connecting to ${wsUrl}`);
 
     let gotResponse = false;
     let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    let isMounted = true;
     const ws = new WebSocket(wsUrl);
     ws.onopen = () => {
+      if (!isMounted) return;
       console.log('[Capabilities] WebSocket opened, sending GetCapabilities');
       ws.send(JSON.stringify({
         event: "Signaling",
@@ -446,13 +463,14 @@ function App() {
       }));
       // Timeout: close after 5s if no response
       timeoutId = setTimeout(() => {
-        if (!gotResponse) {
+        if (!gotResponse && isMounted) {
           console.log('[Capabilities] Timeout - no response received');
           ws.close();
         }
       }, 5000);
     };
     ws.onmessage = (event) => {
+      if (!isMounted) return;
       try {
         const msg = JSON.parse(event.data);
         // Skip non-signaling messages (SDP, ICE, etc from other sessions)
@@ -470,10 +488,27 @@ function App() {
         console.error('[Capabilities] Parse error:', e);
       }
     };
-    ws.onerror = (e) => { console.error('[Capabilities] WebSocket error:', e); if (timeoutId) clearTimeout(timeoutId); ws.close(); };
-    ws.onclose = () => console.log('[Capabilities] WebSocket closed');
+    ws.onerror = (e) => {
+      if (!isMounted) return;
+      console.error('[Capabilities] WebSocket error:', e);
+      if (timeoutId) clearTimeout(timeoutId);
+    };
+    ws.onclose = (e) => {
+      if (!isMounted) return;
+      console.log(`[Capabilities] WebSocket closed: code=${e.code} reason=${e.reason} wasClean=${e.wasClean}`);
+      if (!gotResponse && timeoutId) {
+        // Unexpected close before response - don't log timeout
+        clearTimeout(timeoutId);
+      }
+    };
 
-    return () => ws.close();
+    return () => {
+      isMounted = false;
+      if (timeoutId) clearTimeout(timeoutId);
+      if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+        ws.close();
+      }
+    };
   }, [settingsHost, token]);
 
   const handleDeleteHost = async (host: Host) => {
