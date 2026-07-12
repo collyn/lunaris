@@ -103,3 +103,18 @@ monitors. Pick one rated for 1080p@120/144.
   it looks for an output literally named `VIRTUAL*` (Xorg VirtualHeads), which the
   NVIDIA driver does not expose — that is why it errors with "No disconnected
   VIRTUAL output found". Use this DP-2 CustomEDID approach instead.
+
+## Windows
+
+This directory (Xorg config + EDID) is **Linux-only**. On Windows the same
+"Virtual Screen" UI toggle works through an **IddCx virtual display driver**
+(handled by the agent via `lunaris-media`), which is hot-pluggable — a virtual
+monitor is created/destroyed at runtime with **no reboot**. The only one-time
+prerequisite is installing an IddCx driver on the host:
+
+- [usbmmidd / IddSampleDriver](https://github.com/ge9/IddSampleDriver)
+- [Virtual Display Driver (VDD)](https://github.com/itsmikethetech/Virtual-Display-Driver) — supports up to 240Hz
+
+After the driver is installed, Enable/Disable + refresh selection in the app just
+work; no scripts and no `xorg.conf`.
+

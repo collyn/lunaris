@@ -1,11 +1,17 @@
-//! Runtime enable/disable of a forced high-refresh "virtual" display via xrandr.
+//! Runtime enable/disable of a high-refresh "virtual" display, per platform.
 //!
-//! The virtual output (default `DP-2`) is a forced-connected connector whose
-//! CustomEDID advertises high-refresh modes. The one-time Xorg config + EDID are
-//! auto-installed via `pkexec` (a graphical auth prompt) the first time the user
-//! enables the virtual screen — see [`provision`]. After a single X restart the
-//! connector stays forced across reboots and enable/disable is pure xrandr.
+//! - **Linux (X11/NVIDIA):** a forced-connected connector (default `DP-2`) whose
+//!   CustomEDID advertises high-refresh modes. The one-time Xorg config + EDID are
+//!   auto-installed via `pkexec` the first time the user enables it; after a single
+//!   X re-login, enable/disable is pure xrandr.
+//! - **Windows:** an IddCx virtual monitor created/destroyed at runtime (hot-plug,
+//!   no reboot) via an installed IddCx driver (usbmmidd / Virtual Display Driver).
+//!
+//! The public API — [`enable`], [`disable`], [`enrich_refresh_rates`] — is identical
+//! on every platform; the implementation lives in the cfg-selected `platform` module.
 
+#[cfg(target_os = "linux")]
+mod platform {
 use std::io::Write;
 use std::process::Command;
 
@@ -305,3 +311,65 @@ fn output_rates(text: &str, output: &str) -> Vec<f64> {
     }
     rates
 }
+} // mod platform (linux)
+
+// ===== Windows: IddCx virtual display driver (hot-plug, no reboot) =====
+#[cfg(target_os = "windows")]
+mod platform {
+    use once_cell::sync::Lazy;
+    use std::sync::Mutex;
+
+    use lunaris_media::capture::virtual_display::{create_virtual_display, VirtualDisplayHandle};
+
+    /// The currently active virtual monitor. Dropping the handle destroys it, so
+    /// it is kept alive here for the lifetime of the "enabled" state.
+    static ACTIVE: Lazy<Mutex<Option<Box<dyn VirtualDisplayHandle>>>> =
+        Lazy::new(|| Mutex::new(None));
+
+    /// `output` is ignored on Windows (IddCx has no connector name); a virtual
+    /// monitor is created hot-plug at the requested resolution/refresh.
+    pub fn enable(_output: &str, width: u32, height: u32, refresh_hz: u32) -> Result<(), String> {
+        // Tear down any previous virtual monitor before creating a new one.
+        *ACTIVE.lock().unwrap() = None;
+        let vd = create_virtual_display(width, height, refresh_hz).map_err(|e| {
+            format!(
+                "Failed to create virtual display: {}. Install an IddCx virtual \
+                 display driver (usbmmidd or Virtual Display Driver) on the host first.",
+                e
+            )
+        })?;
+        log::info!(
+            "Windows virtual display created: {} ({}x{}@{}Hz)",
+            vd.display_id(),
+            width,
+            height,
+            refresh_hz
+        );
+        *ACTIVE.lock().unwrap() = Some(vd);
+        Ok(())
+    }
+
+    pub fn disable(_output: &str) -> Result<(), String> {
+        // Dropping the stored handle tears the virtual monitor down.
+        *ACTIVE.lock().unwrap() = None;
+        Ok(())
+    }
+
+    pub fn enrich_refresh_rates(_displays: &mut [common::DisplayInfoMsg]) {
+        // DXGI already reports each monitor's real refresh rate on Windows.
+    }
+}
+
+// ===== Other platforms =====
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+mod platform {
+    pub fn enable(_output: &str, _width: u32, _height: u32, _refresh_hz: u32) -> Result<(), String> {
+        Err("Virtual display is not supported on this platform".into())
+    }
+    pub fn disable(_output: &str) -> Result<(), String> {
+        Ok(())
+    }
+    pub fn enrich_refresh_rates(_displays: &mut [common::DisplayInfoMsg]) {}
+}
+
+pub use platform::{disable, enable, enrich_refresh_rates};
