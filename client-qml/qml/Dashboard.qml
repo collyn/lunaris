@@ -1295,5 +1295,11 @@ Rectangle {
             dashboardRoot.configDisplay = displayId;
             dashboardRoot.configVirtualDisplay = virtualDisplay;
         }
+
+        onConfigureVirtualDisplay: (enable, refreshHz) => {
+            if (dashboardRoot.serverUrl && dashboardRoot.token && dashboardRoot.activeConfigHost && dashboardRoot.activeConfigHost.id) {
+                bridge.configureVirtualDisplay(dashboardRoot.serverUrl, dashboardRoot.token, dashboardRoot.activeConfigHost.id, enable, 1920, 1080, refreshHz);
+            }
+        }
     }
 }

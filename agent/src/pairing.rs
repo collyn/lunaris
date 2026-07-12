@@ -29,6 +29,9 @@ pub struct AgentConfig {
     pub autostart: bool,
     #[serde(default)]
     pub close_to_tray: bool,
+    /// Connector name of the forced high-refresh "virtual" display (default "DP-2").
+    #[serde(default)]
+    pub virtual_display_output: Option<String>,
 }
 
 

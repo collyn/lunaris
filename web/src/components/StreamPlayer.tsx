@@ -285,6 +285,10 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     displayName: ''
   });
   const [availableDisplays, setAvailableDisplays] = useState<{id: string; name: string; width: number; height: number; refresh_rate: number; is_primary: boolean}[]>([]);
+  // Virtual Screen (forced high-refresh host output) control state
+  const [vdRefresh, setVdRefresh] = useState<number>(() => Number(localStorage.getItem('lunaris_vd_refresh') || '144'));
+  const [vdStatus, setVdStatus] = useState<string>('');
+  const [vdBusy, setVdBusy] = useState<boolean>(false);
 
   const [useNativeClient, setUseNativeClient] = useState<boolean>(() => {
     if (typeof window.RTCPeerConnection === 'undefined') {
@@ -1355,6 +1359,45 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
 
     return () => ws.close();
   }, [hostId, token, status]);
+
+  // Enable/disable the host's forced high-refresh "virtual screen" (e.g. DP-2).
+  // Opens a short-lived signaling socket, sends ConfigureVirtualDisplay, and
+  // refreshes the display list from the VirtualDisplayConfigured reply so the
+  // Display dropdown immediately shows the virtual output at its real refresh.
+  const configureVirtualScreen = (enable: boolean) => {
+    if (!hostId || !token) { setVdStatus('No host selected'); return; }
+    setVdBusy(true);
+    setVdStatus(enable ? `Enabling virtual screen @ ${vdRefresh}Hz…` : 'Disabling virtual screen…');
+    const protocol = getBackendProtocol().ws;
+    const host = getBackendHost();
+    const wsUrl = `${protocol}//${host}/ws/client?token=${encodeURIComponent(token)}`;
+    const ws = new WebSocket(wsUrl);
+    const timer = setTimeout(() => { setVdBusy(false); setVdStatus('Timed out'); try { ws.close(); } catch {} }, 8000);
+    ws.onopen = () => {
+      ws.send(JSON.stringify({
+        event: "Signaling",
+        data: {
+          type: "ConfigureVirtualDisplay",
+          payload: { target_id: hostId, enable, width: 1920, height: 1080, refresh_hz: vdRefresh }
+        }
+      }));
+    };
+    ws.onmessage = (event) => {
+      try {
+        const msg = JSON.parse(event.data);
+        if (msg.data?.type === 'VirtualDisplayConfigured' && msg.data?.payload) {
+          const p = msg.data.payload;
+          if (Array.isArray(p.displays)) setAvailableDisplays(p.displays);
+          setVdStatus((p.success ? '✓ ' : '✗ ') + (p.message || ''));
+          addLog(`[VirtualScreen] ${p.success ? 'OK' : 'FAIL'}: ${p.message || ''}`);
+          clearTimeout(timer);
+          setVdBusy(false);
+          ws.close();
+        }
+      } catch {}
+    };
+    ws.onerror = () => { clearTimeout(timer); setVdBusy(false); setVdStatus('Connection error'); try { ws.close(); } catch {} };
+  };
 
   // Helper to send dynamic pipeline commands via the general data channel.
   // Format: u16 length prefix + JSON string, matching the agent's InboundPacket::deserialize.
@@ -3831,6 +3874,27 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
                     Create Virtual Display (Linux: xrandr virtual output, Windows: IddSampleDriver required)
                   </label>
                 </div>
+                <div className="settings-group full-width">
+                  <label>Virtual Screen (host high-refresh output)</label>
+                  <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                    <select
+                      value={vdRefresh}
+                      onChange={(e) => { const v = Number(e.target.value); setVdRefresh(v); localStorage.setItem('lunaris_vd_refresh', String(v)); }}
+                      disabled={vdBusy}
+                    >
+                      <option value={240}>240 Hz</option>
+                      <option value={144}>144 Hz</option>
+                      <option value={120}>120 Hz</option>
+                      <option value={60}>60 Hz</option>
+                    </select>
+                    <button type="button" className="btn-secondary" disabled={vdBusy} onClick={() => configureVirtualScreen(true)}>Enable</button>
+                    <button type="button" className="btn-secondary" disabled={vdBusy} onClick={() => configureVirtualScreen(false)}>Disable</button>
+                  </div>
+                  {vdStatus && <div style={{ fontSize: '0.8rem', opacity: 0.85, marginTop: '0.35rem' }}>{vdStatus}</div>}
+                  <div style={{ fontSize: '0.75rem', opacity: 0.6, marginTop: '0.25rem' }}>
+                    After enabling, pick the new display below and stream it. Requires one-time host setup (scripts/virtual-display).
+                  </div>
+                </div>
                 {availableDisplays.length > 0 && (
                   <div className="settings-group full-width">
                     <label htmlFor="display">Display</label>
@@ -4212,6 +4276,24 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
                 <label htmlFor="virtualDisplay">
                   Create Virtual Display (Linux: xrandr virtual output, Windows: IddSampleDriver required)
                 </label>
+              </div>
+              <div className="settings-group full-width">
+                <label>Virtual Screen (host high-refresh output)</label>
+                <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                  <select
+                    value={vdRefresh}
+                    onChange={(e) => { const v = Number(e.target.value); setVdRefresh(v); localStorage.setItem('lunaris_vd_refresh', String(v)); }}
+                    disabled={vdBusy}
+                  >
+                    <option value={240}>240 Hz</option>
+                    <option value={144}>144 Hz</option>
+                    <option value={120}>120 Hz</option>
+                    <option value={60}>60 Hz</option>
+                  </select>
+                  <button type="button" className="btn-secondary" disabled={vdBusy} onClick={() => configureVirtualScreen(true)}>Enable</button>
+                  <button type="button" className="btn-secondary" disabled={vdBusy} onClick={() => configureVirtualScreen(false)}>Disable</button>
+                </div>
+                {vdStatus && <div style={{ fontSize: '0.8rem', opacity: 0.85, marginTop: '0.35rem' }}>{vdStatus}</div>}
               </div>
             </div>
 

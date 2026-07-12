@@ -94,6 +94,7 @@ fn get_config() -> Result<ConfigResponse, String> {
         webtransport_port: 55200,
         autostart: false,
         close_to_tray: false,
+        virtual_display_output: None,
     });
 
     // Extract name from environment or host name
@@ -130,6 +131,7 @@ fn save_config(
         webtransport_port: 55200,
         autostart: false,
         close_to_tray: false,
+        virtual_display_output: None,
     });
 
     config.server_url = server_url;
@@ -410,6 +412,7 @@ pub fn run_gui(minimized: bool) {
         webtransport_port: 55200,
         autostart: false,
         close_to_tray: false,
+        virtual_display_output: None,
     });
 
     let close_to_tray_val = config.close_to_tray;

@@ -544,6 +544,21 @@ async fn handle_agent_signaling(sig: SignalingMessage, agent_id: &str, state: Ar
                 warn!("Server: Client {} NOT found in clients map! Cannot forward CapabilitiesResponse", target_id);
             }
         }
+        SignalingMessage::VirtualDisplayConfigured { target_id, success, message, displays } => {
+            info!("Server: VirtualDisplayConfigured from agent {} for client {} (success={}, {} displays)", agent_id, target_id, success, displays.len());
+            let clients = state.clients.read().unwrap();
+            if let Some(client_tx) = clients.get(&target_id) {
+                let msg = ServerToClientMessage::Signaling(SignalingMessage::VirtualDisplayConfigured {
+                    target_id: agent_id.to_string(),
+                    success,
+                    message,
+                    displays,
+                });
+                let _ = client_tx.send(msg);
+            } else {
+                warn!("Server: Client {} NOT found in clients map! Cannot forward VirtualDisplayConfigured", target_id);
+            }
+        }
         SignalingMessage::EncoderStatus { target_id, encoder, hw_type, gpu_info, requested_encoder, host_os, display_id, display_name } => {
             let clients = state.clients.read().unwrap();
             if let Some(client_tx) = clients.get(&target_id) {
@@ -872,6 +887,26 @@ async fn handle_client_signaling(
                 }
             } else {
                 warn!("No agent found for host {} when handling GetCapabilities", target_id);
+            }
+        }
+        SignalingMessage::ConfigureVirtualDisplay { target_id, enable, width, height, refresh_hz } => {
+            info!("ConfigureVirtualDisplay from client {} for host {} (enable={}, {}x{}@{}Hz, conn: {})", client_id, target_id, enable, width, height, refresh_hz, conn_id);
+            let agents = state.agents.read().unwrap();
+            if let Some(agent_tx) = agents.get(&target_id) {
+                let msg = ServerToAgentMessage::Signaling(SignalingMessage::ConfigureVirtualDisplay {
+                    target_id: conn_id.to_string(),
+                    enable,
+                    width,
+                    height,
+                    refresh_hz,
+                });
+                if let Err(e) = agent_tx.send(msg) {
+                    error!("Failed to forward ConfigureVirtualDisplay to agent {}: {:?}", target_id, e);
+                } else {
+                    info!("ConfigureVirtualDisplay forwarded to agent {} with conn_id {}", target_id, conn_id);
+                }
+            } else {
+                warn!("No agent found for host {} when handling ConfigureVirtualDisplay", target_id);
             }
         }
         _ => {}

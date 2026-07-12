@@ -17,7 +17,11 @@ Rectangle {
     property var availableDisplayLabels: []
 
     function getSupportedFpsPresets() {
-        var maxRate = (Screen && Screen.refreshRate > 0) ? Math.ceil(Screen.refreshRate) : 60;
+        // Allow up to 240 regardless of the local monitor: this FPS is the host
+        // encode rate (e.g. streaming a 240Hz virtual screen), not the client's
+        // own display refresh.
+        var localRate = (Screen && Screen.refreshRate > 0) ? Math.ceil(Screen.refreshRate) : 60;
+        var maxRate = Math.max(240, localRate);
         var allPresets = [240, 144, 120, 90, 60, 30];
         var filtered = [];
         
@@ -80,6 +84,8 @@ Rectangle {
 
     // Signals
     signal applySettings(string res, int fps, string codec, int bitrate, int queueLimit, bool disableCuda, string renderBackend, string inputProtocol, string encoder, string displayId, bool virtualDisplay)
+    // Enable/disable the host's forced high-refresh "virtual screen" (e.g. DP-2).
+    signal configureVirtualDisplay(bool enable, int refreshHz)
 
     function open() {
         settingsRoot.visible = true;
@@ -536,6 +542,27 @@ Rectangle {
             text: "Create virtual display"
             checked: false
             contentItem: Text { text: virtualDisplayCheck.text; color: "#cbd5e1"; font.pixelSize: 13; verticalAlignment: Text.AlignVCenter; leftPadding: virtualDisplayCheck.indicator.width + 8 }
+        }
+
+        // Virtual Screen (host high-refresh output) — enable/disable + refresh
+        Text { text: "Virtual Screen:"; color: "#cbd5e1"; font.pixelSize: 13; font.bold: true; width: 120 }
+        Row {
+            width: 260
+            spacing: 8
+            ComboBox {
+                id: vdRefreshCombo
+                width: 96
+                model: [240, 144, 120, 60]
+                currentIndex: 1
+            }
+            Button {
+                text: "Enable"
+                onClicked: settingsRoot.configureVirtualDisplay(true, parseInt(vdRefreshCombo.currentText))
+            }
+            Button {
+                text: "Disable"
+                onClicked: settingsRoot.configureVirtualDisplay(false, parseInt(vdRefreshCombo.currentText))
+            }
         }
 
         // Decoder Type

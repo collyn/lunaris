@@ -258,6 +258,20 @@ pub enum SignalingMessage {
         gpu_info: Option<String>,
         host_os: Option<String>,
     },
+    // Virtual display (host high-refresh output) control
+    ConfigureVirtualDisplay {
+        target_id: String,
+        enable: bool,
+        width: u32,
+        height: u32,
+        refresh_hz: u32,
+    },
+    VirtualDisplayConfigured {
+        target_id: String,
+        success: bool,
+        message: String,
+        displays: Vec<DisplayInfoMsg>,
+    },
     EncoderStatus {
         target_id: String,
         encoder: String,

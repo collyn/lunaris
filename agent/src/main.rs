@@ -19,6 +19,7 @@ mod bridge;
 mod buffer;
 mod input;
 mod pairing;
+mod vdisplay;
 mod video;
 
 #[cfg(feature = "gui")]
@@ -621,6 +622,74 @@ pub async fn run_agent_loop(
                                 error!("Failed to send CapabilitiesResponse: {:?}", e);
                             } else {
                                 info!("[GetCapabilities] Response sent!");
+                            }
+                        }
+                        SignalingMessage::ConfigureVirtualDisplay { target_id, enable, width, height, refresh_hz } => {
+                            let output = config
+                                .virtual_display_output
+                                .clone()
+                                .unwrap_or_else(|| "DP-2".to_string());
+                            info!(
+                                "Received ConfigureVirtualDisplay: enable={} {}x{}@{}Hz output={}",
+                                enable, width, height, refresh_hz, output
+                            );
+                            let agent_tx_clone = agent_tx.clone();
+
+                            // 1. Enable/disable the virtual output via xrandr.
+                            let (success, message) = if enable {
+                                match vdisplay::enable(&output, width, height, refresh_hz) {
+                                    Ok(()) => (
+                                        true,
+                                        format!("Virtual display '{}' enabled at {}x{}@{}Hz", output, width, height, refresh_hz),
+                                    ),
+                                    Err(e) => (false, e),
+                                }
+                            } else {
+                                match vdisplay::disable(&output) {
+                                    Ok(()) => (true, format!("Virtual display '{}' disabled", output)),
+                                    Err(e) => (false, e),
+                                }
+                            };
+                            if success {
+                                info!("ConfigureVirtualDisplay: {}", message);
+                            } else {
+                                warn!("ConfigureVirtualDisplay failed: {}", message);
+                            }
+
+                            // 2. Re-enumerate displays so the client dropdown refreshes.
+                            let mut displays = Vec::new();
+                            match lunaris_media::capture::create_screen_capture() {
+                                Ok(cap) => {
+                                    if let Ok(display_list) = cap.list_displays().await {
+                                        for d in &display_list {
+                                            displays.push(common::DisplayInfoMsg {
+                                                id: d.id.clone(),
+                                                name: d.name.clone(),
+                                                width: d.width,
+                                                height: d.height,
+                                                refresh_rate: d.refresh_rate,
+                                                is_primary: d.is_primary,
+                                            });
+                                        }
+                                    }
+                                    tokio::task::spawn_blocking(move || drop(cap));
+                                }
+                                Err(e) => error!("Failed to create screen capture: {:?}", e),
+                            }
+                            // Fix up refresh labels (NvFBC reports a hardcoded 60Hz).
+                            vdisplay::enrich_refresh_rates(&mut displays);
+
+                            // 3. Reply.
+                            let resp = AgentMessage::Signaling(
+                                SignalingMessage::VirtualDisplayConfigured {
+                                    target_id,
+                                    success,
+                                    message,
+                                    displays,
+                                },
+                            );
+                            if let Err(e) = agent_tx_clone.send(resp) {
+                                error!("Failed to send VirtualDisplayConfigured: {:?}", e);
                             }
                         }
                         SignalingMessage::StopActiveStream { target_id } => {

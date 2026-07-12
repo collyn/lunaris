@@ -887,6 +887,18 @@ pub mod qobject {
         fn fetch_capabilities(self: Pin<&mut StreamBridge>, server: QString, token: QString, host_id: QString);
 
         #[qinvokable]
+        fn configure_virtual_display(
+            self: Pin<&mut StreamBridge>,
+            server: QString,
+            token: QString,
+            host_id: QString,
+            enable: bool,
+            width: i32,
+            height: i32,
+            refresh_hz: i32,
+        );
+
+        #[qinvokable]
         fn start_game_session(
             self: Pin<&mut StreamBridge>,
             server: QString,
@@ -1966,6 +1978,144 @@ impl qobject::StreamBridge {
                     eprintln!("fetch_capabilities: Timed out waiting for CapabilitiesResponse");
                 }
             }
+        });
+    }
+
+    pub fn configure_virtual_display(
+        self: Pin<&mut Self>,
+        server: QString,
+        token: QString,
+        host_id: QString,
+        enable: bool,
+        width: i32,
+        height: i32,
+        refresh_hz: i32,
+    ) {
+        let server_str = server.to_string();
+        let token_str = token.to_string();
+        let host_id_str = host_id.to_string();
+        let width = width.max(0) as u32;
+        let height = height.max(0) as u32;
+        let refresh_hz = refresh_hz.max(0) as u32;
+
+        let mut rust_obj = self.rust_mut();
+        let rt = rust_obj.get_or_init_runtime();
+
+        rt.spawn(async move {
+            let encoded_token: String =
+                url::form_urlencoded::byte_serialize(token_str.as_bytes()).collect();
+            let ws_url = format!(
+                "{}/ws/client?token={}",
+                server_str.replace("http", "ws"),
+                encoded_token
+            );
+
+            let (mut ws_stream, _) = match connect_async(&ws_url).await {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("configure_virtual_display: WebSocket connection failed: {}", e);
+                    return;
+                }
+            };
+
+            // 1. Send the configure command.
+            let cfg_msg = ClientMessage::Signaling(SignalingMessage::ConfigureVirtualDisplay {
+                target_id: host_id_str.clone(),
+                enable,
+                width,
+                height,
+                refresh_hz,
+            });
+            if let Ok(text) = serde_json::to_string(&cfg_msg) {
+                if let Err(e) = ws_stream.send(WsMessage::Text(text)).await {
+                    eprintln!("configure_virtual_display: send failed: {}", e);
+                    return;
+                }
+            }
+
+            // 2. Wait for the result.
+            let outcome = tokio::time::timeout(std::time::Duration::from_secs(8), async {
+                while let Some(msg_result) = ws_stream.next().await {
+                    if let Ok(WsMessage::Text(text)) = msg_result {
+                        if let Ok(common::ServerToClientMessage::Signaling(sig)) =
+                            serde_json::from_str::<common::ServerToClientMessage>(&text)
+                        {
+                            match sig {
+                                SignalingMessage::VirtualDisplayConfigured {
+                                    success,
+                                    message,
+                                    displays,
+                                    ..
+                                } => return Ok((success, message, displays)),
+                                SignalingMessage::Error { message } => return Err(message),
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+                Err("connection closed before VirtualDisplayConfigured".to_string())
+            })
+            .await;
+
+            match outcome {
+                Ok(Ok((success, message, displays))) => {
+                    eprintln!("configure_virtual_display: success={} msg={}", success, message);
+                    // Encoders don't change when toggling a display; re-query full
+                    // capabilities so the encoder list isn't cleared in the UI.
+                    let mut encoders_json = "[]".to_string();
+                    let mut gpu_info = String::new();
+                    let mut host_os = String::new();
+                    let get_caps = ClientMessage::Signaling(SignalingMessage::GetCapabilities {
+                        target_id: host_id_str.clone(),
+                    });
+                    if let Ok(text) = serde_json::to_string(&get_caps) {
+                        if ws_stream.send(WsMessage::Text(text)).await.is_ok() {
+                            let caps = tokio::time::timeout(
+                                std::time::Duration::from_secs(5),
+                                async {
+                                    while let Some(m) = ws_stream.next().await {
+                                        if let Ok(WsMessage::Text(t)) = m {
+                                            if let Ok(common::ServerToClientMessage::Signaling(
+                                                SignalingMessage::CapabilitiesResponse {
+                                                    encoders,
+                                                    gpu_info,
+                                                    host_os,
+                                                    ..
+                                                },
+                                            )) = serde_json::from_str::<common::ServerToClientMessage>(&t)
+                                            {
+                                                return Some((encoders, gpu_info, host_os));
+                                            }
+                                        }
+                                    }
+                                    None
+                                },
+                            )
+                            .await
+                            .ok()
+                            .flatten();
+                            if let Some((encoders, gi, ho)) = caps {
+                                encoders_json = serde_json::to_string(&encoders)
+                                    .unwrap_or_else(|_| "[]".to_string());
+                                gpu_info = gi.unwrap_or_default();
+                                host_os = ho.unwrap_or_default();
+                            }
+                        }
+                    }
+                    let displays_json =
+                        serde_json::to_string(&displays).unwrap_or_else(|_| "[]".to_string());
+                    *PENDING_CAPABILITIES.lock().unwrap() = Some(PendingCapabilities {
+                        displays_json,
+                        encoders_json,
+                        gpu_info,
+                        host_os,
+                    });
+                }
+                Ok(Err(e)) => eprintln!("configure_virtual_display error: {}", e),
+                Err(_) => eprintln!("configure_virtual_display: timed out"),
+            }
+
+            let _ = ws_stream.close(None).await;
         });
     }
 
