@@ -30,4 +30,5 @@ fn main() {
     println!("cargo:rerun-if-changed=qml/resources.qrc");
     println!("cargo:rerun-if-changed=src/agent_gui.cpp");
     println!("cargo:rerun-if-changed=src/agent_gui.h");
+    println!("cargo:rerun-if-changed=qml/icons/icon.png");
 }
