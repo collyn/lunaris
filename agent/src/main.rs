@@ -23,7 +23,7 @@ mod vdisplay;
 mod video;
 
 #[cfg(feature = "gui")]
-pub mod gui;
+pub mod agent_gui;
 
 pub static CONNECTED_TO_SERVER: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
@@ -186,13 +186,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 ))
                 .with(
                     tracing_subscriber::fmt::layer()
-                        .with_writer(gui::ChannelMakeWriter)
+                        .with_writer(agent_gui::ChannelMakeWriter)
                         .with_ansi(false),
                 )
                 .try_init();
 
             info!("Launching Lunaris Agent in Desktop GUI mode...");
-            gui::run_gui(args.minimized);
+            agent_gui::run_gui(args.minimized);
             return Ok(());
         }
     }
