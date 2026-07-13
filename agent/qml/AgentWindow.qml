@@ -163,7 +163,7 @@ ApplicationWindow {
                     anchors.fill: parent
                     anchors.margins: 16
                     spacing: 8
-                    Text { text: "STATUS"; font.pixelSize: 10; font.bold: true; color: cMuted; letterSpacing: 1 }
+                    Text { text: "STATUS"; font.pixelSize: 10; font.bold: true; color: cMuted }
 
                     RowLayout {
                         Rectangle {
@@ -192,7 +192,7 @@ ApplicationWindow {
                     anchors.fill: parent
                     anchors.margins: 16
                     spacing: 6
-                    Text { text: "CONFIGURATION"; font.pixelSize: 10; font.bold: true; color: cMuted; letterSpacing: 1 }
+                    Text { text: "CONFIGURATION"; font.pixelSize: 10; font.bold: true; color: cMuted }
 
                     RowLayout { Text { text: "Server"; color: cMuted; font.pixelSize: 11; Layout.preferredWidth: 50 }
                         TextField { id: fieldServerUrl; Layout.fillWidth: true; font.pixelSize: 11; color: cText
@@ -257,7 +257,7 @@ ApplicationWindow {
                     color: "transparent"
                     RowLayout {
                         anchors.fill: parent; anchors.leftMargin: 16; anchors.rightMargin: 8
-                        Text { text: "CONSOLE LOG"; font.pixelSize: 10; font.bold: true; color: cMuted; letterSpacing: 1 }
+                        Text { text: "CONSOLE LOG"; font.pixelSize: 10; font.bold: true; color: cMuted }
                         Item { Layout.fillWidth: true }
                         Text { text: consoleModel.count + " lines"; font.pixelSize: 10; color: cMuted }
                         ActionButton {
