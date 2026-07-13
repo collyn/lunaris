@@ -23,6 +23,9 @@ ApplicationWindow {
     // ── Bridge ──
     AgentBridge { id: bridge }
 
+    // Hidden helper for clipboard access
+    TextField { id: clipHelper; visible: false }
+
     // ── State ──
     property bool agentActive: false
     property bool agentConnected: false
@@ -94,7 +97,6 @@ ApplicationWindow {
         // Header row
         RowLayout {
             Layout.fillWidth: true; spacing: 10
-            Image { source: "qrc:/icons/icon.png"; Layout.preferredWidth: 28; Layout.preferredHeight: 28 }
             Text { text: "Lunaris Agent"; font.pixelSize: 16; font.bold: true; color: cText; Layout.fillWidth: true }
             Rectangle {
                 width: 10; height: 10; radius: 5
@@ -169,6 +171,19 @@ ApplicationWindow {
                 anchors.fill: parent; anchors.leftMargin: 10; anchors.rightMargin: 10
                 Text { text: window.showLog ? "Hide Log" : "Log (" + consoleModel.count + ")"; font.pixelSize: 11; color: cMuted; Layout.fillWidth: true }
                 Text { text: consoleModel.count + " lines"; font.pixelSize: 10; color: cMuted; visible: !window.showLog }
+                Rectangle {
+                    visible: window.showLog; width: copyLabel.contentWidth + 16; height: 20; radius: 4
+                    color: copyMa.containsMouse ? "#30363d" : "transparent"
+                    Text { id: copyLabel; anchors.centerIn: parent; text: "Copy"; font.pixelSize: 10; color: cAccent }
+                    MouseArea { id: copyMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                            var lines = []; for (var i = 0; i < consoleModel.count; i++) lines.push(consoleModel.get(i).text)
+                            clipHelper.text = lines.join("\n")
+                            clipHelper.selectAll()
+                            clipHelper.copy()
+                            clipHelper.text = ""
+                        } }
+                }
                 Rectangle {
                     visible: window.showLog; width: clearLabel.contentWidth + 16; height: 20; radius: 4
                     color: clearMa.containsMouse ? "#30363d" : "transparent"
