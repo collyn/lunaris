@@ -102,7 +102,7 @@ ApplicationWindow {
 
         // Config + status card
         Rectangle {
-            Layout.fillWidth: true; Layout.preferredHeight: 110
+            Layout.fillWidth: true; Layout.preferredHeight: 130
             color: cCard; border.color: cBorder; border.width: 1; radius: 8
             GridLayout {
                 anchors.fill: parent; anchors.margins: 14
@@ -114,7 +114,9 @@ ApplicationWindow {
                 Text { text: "Token"; color: cMuted; font.pixelSize: 11 }
                 TextField { id: fieldServerToken; Layout.fillWidth: true; echoMode: TextInput.Password; font.pixelSize: 11; color: cText
                     background: Rectangle { color: cField; border.color: cBorder; radius: 4 } }
-                Text { text: ""; font.pixelSize: 11 }
+                Text { text: "Name"; color: cMuted; font.pixelSize: 11 }
+                TextField { id: fieldAgentName; Layout.fillWidth: true; font.pixelSize: 11; color: cText
+                    background: Rectangle { color: cField; border.color: cBorder; radius: 4 } }
                 RowLayout {
                     CheckBox { id: cbAutostart }
                     Text { text: "Start on boot"; color: cMuted; font.pixelSize: 11 }
@@ -159,7 +161,7 @@ ApplicationWindow {
             border.width: 1
             RowLayout {
                 anchors.fill: parent; anchors.leftMargin: 10; anchors.rightMargin: 10
-                Text { text: window.showLog ? "▼ Log" : "▶ Log (" + consoleModel.count + ")"; font.pixelSize: 11; color: cMuted; Layout.fillWidth: true }
+                Text { text: window.showLog ? "Hide Log" : "Log (" + consoleModel.count + ")"; font.pixelSize: 11; color: cMuted; Layout.fillWidth: true }
                 Text { text: consoleModel.count + " lines"; font.pixelSize: 10; color: cMuted; visible: !window.showLog }
                 Text { text: "Clear"; font.pixelSize: 10; color: cAccent; visible: window.showLog
                     MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: { consoleModel.clear(); bridge.clearLogs() } } }
