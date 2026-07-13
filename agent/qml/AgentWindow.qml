@@ -7,12 +7,18 @@ import com.lunaris.agent 1.0
 ApplicationWindow {
     id: window
     width: 480
-    height: 320
+    height: 280
     visible: false
     title: "Lunaris Host Agent"
     color: "#0d1117"
     flags: Qt.Window | Qt.WindowCloseButtonHint | Qt.WindowMinimizeButtonHint
-    minimumWidth: 440; minimumHeight: 280
+    minimumWidth: 440; minimumHeight: 260
+
+    // Expand window when log is shown
+    onShowLogChanged: {
+        if (showLog) { window.minimumHeight = 500; window.height = Math.max(window.height, 520) }
+        else { window.minimumHeight = 260; window.height = 280 }
+    }
 
     // ── Bridge ──
     AgentBridge { id: bridge }
@@ -177,7 +183,7 @@ ApplicationWindow {
         // Console (hidden by default)
         Rectangle {
             visible: window.showLog
-            Layout.fillWidth: true; Layout.fillHeight: true
+            Layout.fillWidth: true; Layout.fillHeight: true; Layout.minimumHeight: 220
             color: "#010409"; border.color: cBorder; border.width: 1; radius: 6
             ListView {
                 id: consoleView
