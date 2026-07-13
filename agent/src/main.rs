@@ -556,36 +556,26 @@ pub async fn run_agent_loop(
                             info!("Received GetCapabilities request from target: {}", target_id);
                             let agent_tx_clone = agent_tx.clone();
 
-                            // 1. List displays (sync operation, blocks until NvFBC responds)
+                            // 1. List displays. Uses the lightweight enumeration
+                            // (NvFBC status only, no CUDA context) so opening the
+                            // client settings no longer allocates/leaks GPU memory.
                             let mut displays = Vec::new();
-                            match lunaris_media::capture::create_screen_capture() {
-                                Ok(cap) => {
-                                    match cap.list_displays().await {
-                                        Ok(display_list) => {
-                                            info!("[GetCapabilities] Discovered {} display(s)", display_list.len());
-                                            for d in &display_list {
-                                                info!("  Display: {} ({}) {}x{} @{}Hz primary={}", d.id, d.name, d.width, d.height, d.refresh_rate, d.is_primary);
-                                                displays.push(common::DisplayInfoMsg {
-                                                    id: d.id.clone(),
-                                                    name: d.name.clone(),
-                                                    width: d.width,
-                                                    height: d.height,
-                                                    refresh_rate: d.refresh_rate,
-                                                    is_primary: d.is_primary,
-                                                });
-                                            }
-                                        }
-                                        Err(e) => error!("Failed to list displays: {:?}", e),
+                            match lunaris_media::capture::list_displays_for_capabilities().await {
+                                Ok(display_list) => {
+                                    info!("[GetCapabilities] Discovered {} display(s)", display_list.len());
+                                    for d in &display_list {
+                                        info!("  Display: {} ({}) {}x{} @{}Hz primary={}", d.id, d.name, d.width, d.height, d.refresh_rate, d.is_primary);
+                                        displays.push(common::DisplayInfoMsg {
+                                            id: d.id.clone(),
+                                            name: d.name.clone(),
+                                            width: d.width,
+                                            height: d.height,
+                                            refresh_rate: d.refresh_rate,
+                                            is_primary: d.is_primary,
+                                        });
                                     }
-                                    // 2. Drop cap on blocking thread — NvfbcCapture::drop() joins a thread
-                                    info!("[GetCapabilities] Dropping capture on blocking thread...");
-                                    tokio::task::spawn_blocking(move || {
-                                        drop(cap);
-                                        info!("[GetCapabilities] Capture dropped");
-                                    });
-                                    // Don't await — let it drop in the background
                                 }
-                                Err(e) => error!("Failed to create screen capture: {:?}", e),
+                                Err(e) => error!("Failed to list displays: {:?}", e),
                             }
 
                             // 3. Query encoders (fast, non-blocking)
@@ -658,23 +648,20 @@ pub async fn run_agent_loop(
 
                             // 2. Re-enumerate displays so the client dropdown refreshes.
                             let mut displays = Vec::new();
-                            match lunaris_media::capture::create_screen_capture() {
-                                Ok(cap) => {
-                                    if let Ok(display_list) = cap.list_displays().await {
-                                        for d in &display_list {
-                                            displays.push(common::DisplayInfoMsg {
-                                                id: d.id.clone(),
-                                                name: d.name.clone(),
-                                                width: d.width,
-                                                height: d.height,
-                                                refresh_rate: d.refresh_rate,
-                                                is_primary: d.is_primary,
-                                            });
-                                        }
+                            match lunaris_media::capture::list_displays_for_capabilities().await {
+                                Ok(display_list) => {
+                                    for d in &display_list {
+                                        displays.push(common::DisplayInfoMsg {
+                                            id: d.id.clone(),
+                                            name: d.name.clone(),
+                                            width: d.width,
+                                            height: d.height,
+                                            refresh_rate: d.refresh_rate,
+                                            is_primary: d.is_primary,
+                                        });
                                     }
-                                    tokio::task::spawn_blocking(move || drop(cap));
                                 }
-                                Err(e) => error!("Failed to create screen capture: {:?}", e),
+                                Err(e) => error!("Failed to list displays: {:?}", e),
                             }
                             // Fix up refresh labels (NvFBC reports a hardcoded 60Hz).
                             vdisplay::enrich_refresh_rates(&mut displays);
