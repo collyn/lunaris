@@ -163,10 +163,15 @@ ApplicationWindow {
                 anchors.fill: parent; anchors.leftMargin: 10; anchors.rightMargin: 10
                 Text { text: window.showLog ? "Hide Log" : "Log (" + consoleModel.count + ")"; font.pixelSize: 11; color: cMuted; Layout.fillWidth: true }
                 Text { text: consoleModel.count + " lines"; font.pixelSize: 10; color: cMuted; visible: !window.showLog }
-                Text { text: "Clear"; font.pixelSize: 10; color: cAccent; visible: window.showLog
-                    MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: { consoleModel.clear(); bridge.clearLogs() } } }
-                MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: window.showLog = !window.showLog }
+                Rectangle {
+                    visible: window.showLog; width: clearLabel.contentWidth + 16; height: 20; radius: 4
+                    color: clearMa.containsMouse ? "#30363d" : "transparent"
+                    Text { id: clearLabel; anchors.centerIn: parent; text: "Clear"; font.pixelSize: 10; color: cAccent }
+                    MouseArea { id: clearMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                        onClicked: { consoleModel.clear(); bridge.clearLogs() } }
+                }
             }
+            MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: window.showLog = !window.showLog; z: -1 }
         }
 
         // Console (hidden by default)
