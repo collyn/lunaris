@@ -1400,13 +1400,34 @@ fn process_mouse_input_batch(
     input_rx: &mut mpsc::UnboundedReceiver<InputQueueItem>,
     injector: &lunaris_media::input::InputInjector,
 ) {
+    // Accumulate the net mouse delta and final absolute position across the
+    // entire batch, then inject once. This avoids flooding Windows' SendInput
+    // queue with hundreds of tiny per-event calls, which causes accumulating
+    // input lag during continuous window dragging.
+    let mut acc_dx: i32 = 0;
+    let mut acc_dy: i32 = 0;
+    let mut final_abs: Option<(i32, i32, i32, i32)> = None; // x, y, ref_w, ref_h
+    let mut had_events = false;
+
     let mut pending = Some(first);
     while let Ok(next) = input_rx.try_recv() {
         if let Some(current) = pending.take() {
             match coalesce_mouse_input(current, next) {
                 Ok(coalesced) => pending = Some(coalesced),
                 Err((current, next)) => {
-                    handle_inbound_packet(current.0, injector, &current.1);
+                    // Process non-move events immediately; accumulate moves.
+                    match current.0 {
+                        InboundPacket::MouseMove { delta_x, delta_y, .. } => {
+                            acc_dx = acc_dx.saturating_add(delta_x as i32);
+                            acc_dy = acc_dy.saturating_add(delta_y as i32);
+                            had_events = true;
+                        }
+                        InboundPacket::MousePosition { x, y, reference_width, reference_height, .. } => {
+                            final_abs = Some((x as i32, y as i32, reference_width as i32, reference_height as i32));
+                            had_events = true;
+                        }
+                        other => handle_inbound_packet(other, injector, &current.1),
+                    }
                     pending = Some(next);
                 }
             }
@@ -1415,8 +1436,27 @@ fn process_mouse_input_batch(
         }
     }
 
-    if let Some((packet, last_timestamp)) = pending {
-        handle_inbound_packet(packet, injector, &last_timestamp);
+    // Handle the last pending item
+    if let Some((packet, _timestamp)) = pending {
+        match packet {
+            InboundPacket::MouseMove { delta_x, delta_y, .. } => {
+                acc_dx = acc_dx.saturating_add(delta_x as i32);
+                acc_dy = acc_dy.saturating_add(delta_y as i32);
+                had_events = true;
+            }
+            InboundPacket::MousePosition { x, y, reference_width, reference_height, .. } => {
+                final_abs = Some((x as i32, y as i32, reference_width as i32, reference_height as i32));
+                had_events = true;
+            }
+            other => handle_inbound_packet(other, injector, &_timestamp),
+        }
+    }
+
+    // Inject accumulated move and final position as single calls
+    if let Some((x, y, rw, rh)) = final_abs {
+        injector.move_mouse_absolute(x, y, rw, rh);
+    } else if had_events && (acc_dx != 0 || acc_dy != 0) {
+        injector.move_mouse_relative(acc_dx, acc_dy);
     }
 }
 
