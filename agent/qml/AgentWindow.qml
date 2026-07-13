@@ -10,7 +10,7 @@ ApplicationWindow {
     height: 540
     visible: false
     title: "Lunaris Host Agent"
-    color: "#080c14"
+    color: "#0b0e17"
     flags: Qt.Window | Qt.WindowCloseButtonHint | Qt.WindowMinimizeButtonHint
 
     // ── Bridge ──
@@ -28,7 +28,7 @@ ApplicationWindow {
     Platform.SystemTrayIcon {
         id: trayIcon
         visible: true
-        icon.source: "qrc:/icon.png"
+        icon.source: "qrc:/icons/icon.png"
         tooltip: "Lunaris Host Agent"
         menu: Platform.Menu {
             Platform.MenuItem {
@@ -40,10 +40,7 @@ ApplicationWindow {
                 onTriggered: agentActive ? bridge.stopAgent() : bridge.startAgent()
             }
             Platform.MenuSeparator {}
-            Platform.MenuItem {
-                text: "Quit"
-                onTriggered: Qt.quit()
-            }
+            Platform.MenuItem { text: "Quit"; onTriggered: Qt.quit() }
         }
         onActivated: (reason) => {
             if (reason === Platform.SystemTrayIcon.Trigger) toggleWindow()
@@ -54,243 +51,249 @@ ApplicationWindow {
         if (window.visible) { window.hide() } else { window.show(); window.raise() }
     }
 
-    // ── Colors ──
-    readonly property color clrBg:       "#080c14"
-    readonly property color clrPanel:    "#0f1626"
-    readonly property color clrField:    "#172033"
-    readonly property color clrBorder:   Qt.rgba(1,1,1,0.07)
-    readonly property color clrText:     "#f1f5f9"
-    readonly property color clrMuted:    "#94a3b8"
-    readonly property color clrCyan:     "#00f0ff"
-    readonly property color clrPurple:   "#9d4edd"
-    readonly property color clrOnline:   "#00ff94"
-    readonly property color clrOffline:  "#ef4444"
-    readonly property color clrInfo:     "#a7f3d0"
-    readonly property color clrWarn:     "#fde047"
-    readonly property color clrError:    "#fca5a5"
-    readonly property color clrDebug:    "#94a3b8"
+    // ── Color palette (strings, not color — stored in ListModel safely) ──
+    readonly property string cBg:       "#0b0e17"
+    readonly property string cPanel:    "#111827"
+    readonly property string cField:    "#1a2236"
+    readonly property string cBorder:   "#1e293b"
+    readonly property string cAccent:   "#6366f1"
+    readonly property string cAccent2:  "#818cf8"
+    readonly property string cCyan:     "#22d3ee"
+    readonly property string cText:     "#f1f5f9"
+    readonly property string cMuted:    "#64748b"
+    readonly property string cOnline:   "#22c55e"
+    readonly property string cOffline:  "#ef4444"
+    readonly property string cWarn:     "#f59e0b"
+    readonly property string cLogInfo:  "#86efac"
+    readonly property string cLogWarn:  "#fde047"
+    readonly property string cLogError: "#fca5a5"
+    readonly property string cLogDebug: "#64748b"
 
     // ── Timers ──
     Timer { interval: 100;  running: true; repeat: true; onTriggered: bridge.pollLogs() }
     Timer { interval: 2000; running: true; repeat: true; onTriggered: bridge.pollStatus() }
     Timer { interval: 30000; running: true; repeat: true; onTriggered: bridge.checkForUpdates() }
 
-    // ── Main content ──
-    Rectangle {
-        anchors.fill: parent
-        anchors.margins: 24
+    // ── Component: panel card ──
+    component PanelCard : Rectangle {
+        color: cPanel
+        border.color: cBorder
+        border.width: 1
+        radius: 12
+    }
 
-        ColumnLayout {
-            anchors.fill: parent
+    // ── Component: action button ──
+    component ActionButton : Button {
+        id: btn
+        property color bgColor: cAccent
+        property color hoverColor: cAccent2
+        font.pixelSize: 12
+        font.bold: true
+        contentItem: Text {
+            text: btn.text
+            color: "#ffffff"
+            font: btn.font
+            horizontalAlignment: Text.AlignHCenter
+            verticalAlignment: Text.AlignVCenter
+        }
+        background: Rectangle {
+            color: btn.hovered ? btn.hoverColor : btn.bgColor
+            radius: 8
+            Behavior on color { ColorAnimation { duration: 150 } }
+        }
+    }
+
+    // ── Main content ──
+    ColumnLayout {
+        anchors.fill: parent
+        anchors.margins: 20
+        spacing: 12
+
+        // Update banner
+        Rectangle {
+            id: updateBanner
+            visible: window.updateVersion !== ""
+            Layout.fillWidth: true
+            height: 36
+            color: "#1e1345"
+            border.color: "#6366f1"
+            border.width: 1
+            radius: 8
+            RowLayout {
+                anchors.fill: parent; anchors.margins: 8
+                Text {
+                    text: "⬆ Update v" + window.updateVersion + " available"
+                    color: cText; font.pixelSize: 12
+                    Layout.fillWidth: true
+                }
+                ActionButton {
+                    text: "Download"; bgColor: "#6366f1"; hoverColor: "#818cf8"
+                    font.pixelSize: 11
+                    Layout.preferredWidth: 80; Layout.preferredHeight: 26
+                    onClicked: bridge.openUrl(window.updateUrl)
+                }
+            }
+        }
+
+        // Header
+        RowLayout {
+            Layout.fillWidth: true
+            Rectangle {
+                width: 32; height: 32; radius: 8; color: "#6366f1"
+                Text { anchors.centerIn: parent; text: "☾"; font.pixelSize: 18; color: "#fff" }
+            }
+            ColumnLayout {
+                Layout.fillWidth: true; spacing: 0
+                Text { text: "Lunaris Agent"; font.pixelSize: 16; font.bold: true; color: cText }
+                Text { text: "v" + Qt.application.version; font.pixelSize: 10; color: cMuted }
+            }
+            Item { Layout.fillWidth: true }
+        }
+
+        // Dashboard grid
+        RowLayout {
+            Layout.fillWidth: true
             spacing: 12
 
-            // Update banner
-            Rectangle {
-                id: updateBanner
-                visible: window.updateVersion !== ""
-                Layout.fillWidth: true
-                height: 36
-                color: Qt.rgba(0.94, 0.31, 0.65, 0.15) // purple-cyan blend
-                border.color: Qt.rgba(0, 0.94, 1, 0.2)
-                border.width: 1
-                radius: 8
-                RowLayout {
-                    anchors.fill: parent
-                    anchors.margins: 8
-                    Text {
-                        text: "Update available: v" + window.updateVersion
-                        color: clrText
-                        font.pixelSize: 12
-                        Layout.fillWidth: true
-                    }
-                    Button {
-                        text: "Update"
-                        onClicked: bridge.openUrl(window.updateUrl)
-                        contentItem: Text { text: "Update"; color: clrBg; font.bold: true; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-                        background: Rectangle { color: clrCyan; radius: 4 }
-                    }
-                }
-            }
-
-            // Header
-            Text {
-                text: "🌙  LUNARIS AGENT"
-                font.pixelSize: 18
-                font.bold: true
-                color: clrText
-            }
-
-            // Dashboard grid (Status + Config)
-            RowLayout {
-                Layout.fillWidth: true
-                spacing: 12
-
-                // ── Status panel ──
-                Rectangle {
-                    Layout.preferredWidth: (parent ? parent.width : 590) / 2 - 6
-                    height: 180
-                    color: clrPanel
-                    border.color: clrBorder
-                    border.width: 1
-                    radius: 10
-                    ColumnLayout {
-                        anchors.fill: parent
-                        anchors.margins: 14
-                        spacing: 8
-                        Text { text: "SYSTEM STATUS"; color: clrMuted; font.pixelSize: 10; font.bold: true }
-
-                        RowLayout {
-                            spacing: 8
-                            Rectangle {
-                                width: 10; height: 10; radius: 5
-                                color: window.agentConnected ? clrOnline : (window.agentActive ? "#ffb703" : clrOffline)
-                            }
-                            Text {
-                                text: window.agentConnected ? "Connected" : (window.agentActive ? "Connecting" : "Inactive")
-                                color: window.agentConnected ? clrOnline : (window.agentActive ? "#ffb703" : clrOffline)
-                                font.pixelSize: 13; font.bold: true
-                            }
-                        }
-
-                        Item { Layout.fillHeight: true }
-
-                        Text {
-                            text: "Agent ID: " + window.agentId
-                            color: clrMuted
-                            font.pixelSize: 10
-                            font.family: "Courier New"
-                        }
-                    }
-                }
-
-                // ── Config panel ──
-                Rectangle {
-                    Layout.fillWidth: true
-                    height: 180
-                    color: clrPanel
-                    border.color: clrBorder
-                    border.width: 1
-                    radius: 10
-                    ColumnLayout {
-                        anchors.fill: parent
-                        anchors.margins: 14
-                        spacing: 6
-                        Text { text: "CONFIGURATION"; color: clrMuted; font.pixelSize: 10; font.bold: true }
-
-                        RowLayout { Text { text: "Server URL"; color: clrMuted; font.pixelSize: 11; Layout.preferredWidth: 80 }
-                            TextField { id: fieldServerUrl; Layout.fillWidth: true; color: clrText; font.pixelSize: 11; background: Rectangle { color: clrField; border.color: clrBorder; radius: 4 } } }
-                        RowLayout { Text { text: "Token"; color: clrMuted; font.pixelSize: 11; Layout.preferredWidth: 80 }
-                            TextField { id: fieldServerToken; Layout.fillWidth: true; echoMode: TextInput.Password; color: clrText; font.pixelSize: 11; background: Rectangle { color: clrField; border.color: clrBorder; radius: 4 } } }
-                        RowLayout { Text { text: "Name"; color: clrMuted; font.pixelSize: 11; Layout.preferredWidth: 80 }
-                            TextField { id: fieldAgentName; Layout.fillWidth: true; color: clrText; font.pixelSize: 11; background: Rectangle { color: clrField; border.color: clrBorder; radius: 4 } } }
-
-                        CheckBox { id: cbAutostart; text: "Start on boot"; contentItem: Text { text: "Start on boot"; color: clrMuted; font.pixelSize: 11 } }
-                        CheckBox { id: cbCloseToTray; text: "Close to tray"; contentItem: Text { text: "Close to tray"; color: clrMuted; font.pixelSize: 11 }
-                            onCheckStateChanged: window.closeToTray = checked }
-                    }
-                }
-            }
-
-            // ── Action buttons ──
-            RowLayout {
-                Layout.fillWidth: true
-                spacing: 10
-
-                Button {
-                    id: btnToggle
-                    Layout.fillWidth: true
-                    text: window.agentActive ? "Stop Host Agent" : "Start Host Agent"
-                    onClicked: { if (agentActive) bridge.stopAgent(); else bridge.startAgent() }
-                    contentItem: Text { text: btnToggle.text; color: clrBg; font.bold: true; font.pixelSize: 12; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-                    background: Rectangle {
-                        color: window.agentActive ? clrOffline : clrCyan
-                        radius: 6
-                        gradient: Gradient {
-                            GradientStop { position: 0; color: window.agentActive ? clrOffline : clrCyan }
-                            GradientStop { position: 1; color: window.agentActive ? "#dc2626" : clrPurple }
-                        }
-                    }
-                }
-
-                Button {
-                    Layout.fillWidth: true
-                    text: "Save Config"
-                    onClicked: bridge.saveConfig(fieldServerUrl.text, fieldServerToken.text, cbAutostart.checked, cbCloseToTray.checked)
-                    contentItem: Text { text: "Save Config"; color: clrText; font.bold: true; font.pixelSize: 12; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-                    background: Rectangle { color: Qt.rgba(1,1,1,0.06); border.color: clrBorder; radius: 6 }
-                }
-
-                Button {
-                    text: "Import"
-                    onClicked: { bridge.importConfig(); bridge.loadConfig() }
-                    contentItem: Text { text: "Import"; color: clrText; font.bold: true; font.pixelSize: 12; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-                    background: Rectangle { color: Qt.rgba(1,1,1,0.06); border.color: clrBorder; radius: 6 }
-                }
-            }
-
-            // ── Console ──
-            Rectangle {
-                Layout.fillWidth: true
-                Layout.fillHeight: true
-                color: "#050710"
-                border.color: clrBorder
-                radius: 10
-
+            // ── Status card ──
+            PanelCard {
+                Layout.preferredWidth: (parent.width - 12) / 2
+                Layout.preferredHeight: 150
                 ColumnLayout {
                     anchors.fill: parent
-                    spacing: 0
+                    anchors.margins: 16
+                    spacing: 8
+                    Text { text: "STATUS"; font.pixelSize: 10; font.bold: true; color: cMuted; letterSpacing: 1 }
 
-                    // Console header
-                    Rectangle {
-                        Layout.fillWidth: true; height: 28
-                        color: Qt.rgba(0.059, 0.086, 0.149, 0.6)
-                        radius: 10
-                        Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: parent.height - 10; color: parent.color }
-                        RowLayout {
-                            anchors.fill: parent; anchors.margins: 8
-                            Text { text: "CONSOLE OUTPUT"; color: clrMuted; font.pixelSize: 9; font.bold: true }
-                            Item { Layout.fillWidth: true }
-                            Button { text: "Clear"; onClicked: { consoleModel.clear(); bridge.clearLogs() }
-                                contentItem: Text { text: "Clear"; color: clrMuted; font.pixelSize: 9 } }
-                            Button { text: "Copy"; onClicked: {
-                                var lines = []; for (var i=0; i<consoleModel.count; i++) lines.push(consoleModel.get(i).text);
-                                clipboard.setText(lines.join("\n"))
-                            }
-                                contentItem: Text { text: "Copy"; color: clrMuted; font.pixelSize: 9 } }
+                    RowLayout {
+                        Rectangle {
+                            width: 12; height: 12; radius: 6
+                            color: window.agentConnected ? cOnline : (window.agentActive ? cWarn : cOffline)
+                        }
+                        Text {
+                            text: window.agentConnected ? "Connected" : (window.agentActive ? "Connecting..." : "Inactive")
+                            font.pixelSize: 14; font.bold: true
+                            color: window.agentConnected ? cOnline : (window.agentActive ? cWarn : cOffline)
                         }
                     }
 
-                    // Console log list
-                    ListView {
-                        id: consoleView
-                        Layout.fillWidth: true
-                        Layout.fillHeight: true
-                        clip: true
-                        model: ListModel { id: consoleModel }
-                        delegate: Text {
-                            text: model.text
-                            color: model.color
-                            font.family: "Courier New"
-                            font.pixelSize: 10
-                            width: consoleView.width - 24
-                            x: 12
-                            wrapMode: Text.WrapAnywhere
-                        }
-                        ScrollBar.vertical: ScrollBar {}
-                        onCountChanged: { if (count > 0) positionViewAtEnd() }
+                    Item { Layout.fillHeight: true }
+
+                    Rectangle { Layout.fillWidth: true; height: 1; color: cBorder }
+                    Text { text: window.agentId; font.pixelSize: 10; color: cMuted; font.family: "Courier New" }
+                }
+            }
+
+            // ── Config card ──
+            PanelCard {
+                Layout.fillWidth: true
+                Layout.preferredHeight: 150
+                ColumnLayout {
+                    anchors.fill: parent
+                    anchors.margins: 16
+                    spacing: 6
+                    Text { text: "CONFIGURATION"; font.pixelSize: 10; font.bold: true; color: cMuted; letterSpacing: 1 }
+
+                    RowLayout { Text { text: "Server"; color: cMuted; font.pixelSize: 11; Layout.preferredWidth: 50 }
+                        TextField { id: fieldServerUrl; Layout.fillWidth: true; font.pixelSize: 11; color: cText
+                            background: Rectangle { color: cField; border.color: cBorder; radius: 6 } } }
+                    RowLayout { Text { text: "Token"; color: cMuted; font.pixelSize: 11; Layout.preferredWidth: 50 }
+                        TextField { id: fieldServerToken; Layout.fillWidth: true; echoMode: TextInput.Password; font.pixelSize: 11; color: cText
+                            background: Rectangle { color: cField; border.color: cBorder; radius: 6 } } }
+                    RowLayout { Text { text: "Name"; color: cMuted; font.pixelSize: 11; Layout.preferredWidth: 50 }
+                        TextField { id: fieldAgentName; Layout.fillWidth: true; font.pixelSize: 11; color: cText
+                            background: Rectangle { color: cField; border.color: cBorder; radius: 6 } } }
+
+                    RowLayout {
+                        CheckBox { id: cbAutostart; checked: false }
+                        Text { text: "Start on boot"; color: cMuted; font.pixelSize: 11 }
+                        Item { Layout.fillWidth: true }
+                        CheckBox { id: cbCloseToTray; checked: false; onCheckStateChanged: window.closeToTray = checked }
+                        Text { text: "Minimize to tray"; color: cMuted; font.pixelSize: 11 }
                     }
                 }
             }
         }
-    }
 
-    // Clipboard helper
-    property var clipboard: null
-    Component.onCompleted: {
-        clipboard = Qt.createQmlObject("import QtQml; QtObject { function setText(t) {} }", window)
-        // Load initial config
-        bridge.loadConfig()
-        window.show()
+        // ── Action buttons ──
+        RowLayout {
+            Layout.fillWidth: true
+            spacing: 10
+
+            ActionButton {
+                id: btnToggle
+                Layout.fillWidth: true; Layout.preferredHeight: 38
+                text: window.agentActive ? "■ Stop Agent" : "▶ Start Agent"
+                bgColor: window.agentActive ? "#ef4444" : "#22c55e"
+                hoverColor: window.agentActive ? "#f87171" : "#4ade80"
+                onClicked: { if (agentActive) bridge.stopAgent(); else bridge.startAgent() }
+            }
+            ActionButton {
+                Layout.fillWidth: true; Layout.preferredHeight: 38
+                text: "Save Config"
+                bgColor: cField; hoverColor: "#1e293b"
+                onClicked: bridge.saveConfig(fieldServerUrl.text, fieldServerToken.text, cbAutostart.checked, cbCloseToTray.checked)
+            }
+            ActionButton {
+                Layout.preferredWidth: 90; Layout.preferredHeight: 38
+                text: "Import"
+                bgColor: cField; hoverColor: "#1e293b"
+                onClicked: { bridge.importConfig(); bridge.loadConfig() }
+            }
+        }
+
+        // ── Console ──
+        PanelCard {
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+
+            ColumnLayout {
+                anchors.fill: parent
+                spacing: 0
+
+                // Console toolbar
+                Rectangle {
+                    Layout.fillWidth: true; height: 32
+                    color: "transparent"
+                    RowLayout {
+                        anchors.fill: parent; anchors.leftMargin: 16; anchors.rightMargin: 8
+                        Text { text: "CONSOLE LOG"; font.pixelSize: 10; font.bold: true; color: cMuted; letterSpacing: 1 }
+                        Item { Layout.fillWidth: true }
+                        Text { text: consoleModel.count + " lines"; font.pixelSize: 10; color: cMuted }
+                        ActionButton {
+                            text: "Clear"; bgColor: "transparent"; hoverColor: "#1e293b"
+                            font.pixelSize: 10; Layout.preferredWidth: 50; Layout.preferredHeight: 24
+                            onClicked: { consoleModel.clear(); bridge.clearLogs() }
+                        }
+                    }
+                }
+                Rectangle { Layout.fillWidth: true; height: 1; color: cBorder }
+
+                // Log list
+                ListView {
+                    id: consoleView
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    clip: true
+                    cacheBuffer: 1000
+                    model: ListModel { id: consoleModel }
+                    delegate: Text {
+                        text: model.text
+                        // Convert hex color string to QColor explicitly
+                        color: Qt.color(model.colorStr)
+                        font.family: "Courier New"
+                        font.pixelSize: 10
+                        lineHeight: 1.4
+                        leftPadding: 16
+                        rightPadding: 16
+                        width: consoleView.width
+                        wrapMode: Text.WrapAnywhere
+                    }
+                    ScrollBar.vertical: ScrollBar {}
+                    onCountChanged: { if (count > 0) positionViewAtEnd() }
+                }
+            }
+        }
     }
 
     // ── Signal handlers ──
@@ -301,11 +304,11 @@ ApplicationWindow {
         }
         function onLogMessage(msg) {
             var m = msg.toString ? msg.toString() : String(msg)
-            var clr = clrDebug
-            if (m.indexOf("INFO") >= 0 || m.indexOf("info") >= 0) clr = clrInfo
-            else if (m.indexOf("WARN") >= 0 || m.indexOf("warn") >= 0) clr = clrWarn
-            else if (m.indexOf("ERROR") >= 0 || m.indexOf("error") >= 0) clr = clrError
-            consoleModel.append({text: m, color: clr})
+            var clr = cLogDebug
+            if (m.indexOf("INFO") >= 0 || m.indexOf("info") >= 0) clr = cLogInfo
+            else if (m.indexOf("WARN") >= 0 || m.indexOf("warn") >= 0) clr = cLogWarn
+            else if (m.indexOf("ERROR") >= 0 || m.indexOf("error") >= 0) clr = cLogError
+            consoleModel.append({text: m, colorStr: clr})
             if (consoleModel.count > 500) consoleModel.remove(0)
         }
         function onConfigLoaded(serverUrl, serverToken, agentName, clientUniqueId, autostart, closeToTray) {
@@ -315,11 +318,16 @@ ApplicationWindow {
             window.closeToTray = closeToTray
         }
         function onUpdateAvailable(version, url) { window.updateVersion = version; window.updateUrl = url }
-        function onConfigSaved(success, errorMsg) { if (!success) consoleModel.append({text: "[ERROR] " + errorMsg, color: clrError}) }
-        function onImportCompleted(success, errorMsg) { if (!success) consoleModel.append({text: "[ERROR] " + errorMsg, color: clrError}) }
+        function onConfigSaved(success, errorMsg) { if (!success) consoleModel.append({text: "[ERROR] " + errorMsg, colorStr: cLogError}) }
+        function onImportCompleted(success, errorMsg) { if (!success) consoleModel.append({text: "[ERROR] " + errorMsg, colorStr: cLogError}) }
     }
 
     onClosing: (close) => {
         if (window.closeToTray) { close.accepted = false; window.hide() }
+    }
+
+    Component.onCompleted: {
+        bridge.loadConfig()
+        window.show()
     }
 }
