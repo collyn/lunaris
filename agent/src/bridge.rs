@@ -489,14 +489,17 @@ pub async fn setup_bridge_session(
                     // buffer settles. For realtime desktop streaming, avoid collapsing 1080p60
                     // into sub-megabit mode unless several low samples arrive after warmup.
                     let realtime_floor = if stream_fps >= 50 && resolution_width >= 1920 {
-                        6_000
+                        12_000
                     } else if stream_fps >= 50 {
-                        3_000
+                        6_000
                     } else {
-                        1_500
+                        2_000
                     };
+                    // Use stream_bitrate / 2 as the floor (was / 3) to keep quality
+                    // acceptable during high-motion scenes. The previous floor let
+                    // REMB drop too low during window dragging, causing visible lag.
                     let bitrate_floor = stream_bitrate
-                        .min((stream_bitrate / 3).max(realtime_floor).max(1_000));
+                        .min((stream_bitrate / 2).max(realtime_floor).max(2_000));
                     let clamped_bitrate_kbps = estimated_bitrate_kbps.clamp(bitrate_floor, stream_bitrate);
                     let now = Instant::now();
                     if now.duration_since(remb_started) < Duration::from_secs(5)
@@ -523,9 +526,13 @@ pub async fn setup_bridge_session(
                         low_remb_samples = 0;
                     }
 
-                    // Rate-limit bitrate changes: only apply if value changed AND at least 2 seconds since last change.
-                    // Rapid bitrate oscillation destabilizes hardware encoders and can cause video corruption.
-                    if clamped_bitrate_kbps != last_bitrate_kbps && now.duration_since(last_bitrate_change).as_secs() >= 2 {
+                    // Rate-limit bitrate changes: only apply if value changed AND at
+                    // least 1 second since last change. Rapid bitrate oscillation
+                    // destabilizes hardware encoders, but a 2 s cooldown was too slow
+                    // to recover from REMB dips during high-motion scenes.
+                    if clamped_bitrate_kbps != last_bitrate_kbps
+                        && now.duration_since(last_bitrate_change).as_millis() >= 1000
+                    {
                         info!(
                             "REMB bitrate change: {} kbps -> {} kbps (estimated={} kbps, floor={}, max={})",
                             last_bitrate_kbps, clamped_bitrate_kbps, estimated_bitrate_kbps, bitrate_floor, stream_bitrate
