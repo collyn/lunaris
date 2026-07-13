@@ -3,7 +3,6 @@
   --bg-primary: #080c14;
   --bg-secondary: #0f1626;
   --bg-tertiary: #172033;
-  --bg-glass: rgba(15, 22, 38, 0.7);
   --border-color: rgba(255, 255, 255, 0.07);
   --border-hover: rgba(0, 240, 255, 0.3);
   
@@ -21,8 +20,7 @@
   --error-color: #ef4444;
   --success-color: #00ff94;
   
-  --shadow-glow: 0 0 20px rgba(0, 240, 255, 0.15);
-  --shadow-card: 0 10px 30px rgba(0, 0, 0, 0.4);
+  --shadow-glow: 0 0 8px rgba(0, 240, 255, 0.15);
 }
 
 * {
@@ -44,42 +42,45 @@ body {
   position: relative;
 }
 
-/* Background Gradients & Glow Orbs */
+/* Background glow orbs — removed `filter: blur(120px)` because GPU-blur
+   on large elements keeps the WebView2 compositor active continuously even
+   when nothing changes, causing idle CPU drain on Windows. The visual effect
+   is preserved with a softer radial gradient. */
 .glow-orb {
   position: absolute;
   width: 400px;
   height: 400px;
   border-radius: 50%;
-  filter: blur(120px);
   z-index: 0;
-  opacity: 0.12;
+  opacity: 0.08;
   pointer-events: none;
 }
 
 .bg-glow-blue {
   top: -10%;
   left: -10%;
-  background: radial-gradient(circle, var(--accent-cyan) 0%, transparent 70%);
+  background: radial-gradient(circle, rgba(0, 240, 255, 0.3) 0%, transparent 70%);
 }
 
 .bg-glow-purple {
   bottom: -10%;
   right: -10%;
-  background: radial-gradient(circle, var(--accent-purple) 0%, transparent 70%);
+  background: radial-gradient(circle, rgba(157, 78, 221, 0.3) 0%, transparent 70%);
 }
 
 .app-container {
   width: 640px;
   height: 540px;
   padding: 24px;
-  background: var(--bg-glass);
+  /* Use an opaque background instead of bg-glass + backdrop-filter: blur().
+     backdrop-filter forces the WebView2 compositor to blur the entire window
+     every frame, which is the #1 source of idle GPU/CPU drain on Windows. */
+  background: var(--bg-secondary);
   border: 1px solid var(--border-color);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
   border-radius: 16px;
   display: flex;
   flex-direction: column;
-  box-shadow: var(--shadow-card), 0 0 40px rgba(0, 240, 255, 0.05);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
   position: relative;
   z-index: 1;
 }
@@ -103,8 +104,10 @@ body {
 .logo-icon {
   font-size: 22px;
   color: var(--accent-cyan);
-  text-shadow: 0 0 10px rgba(0, 240, 255, 0.4);
-  animation: pulse-glow 2s infinite ease-in-out;
+  /* Static text-shadow instead of a CSS animation (pulse-glow).
+     Continuous keyframe animations keep the compositor repainting
+     even when the window is idle, burning CPU for no reason. */
+  text-shadow: 0 0 12px rgba(0, 240, 255, 0.5);
 }
 
 .title {
@@ -290,12 +293,12 @@ input:-webkit-autofill:active {
 .btn-primary {
   background: linear-gradient(135deg, var(--accent-cyan), var(--accent-purple));
   color: #080c14;
-  box-shadow: 0 4px 14px rgba(0, 240, 255, 0.2);
+  box-shadow: 0 2px 8px rgba(0, 240, 255, 0.15);
 }
 
 .btn-primary:hover {
   transform: translateY(-2px);
-  box-shadow: 0 6px 20px rgba(0, 240, 255, 0.35);
+  box-shadow: 0 4px 12px rgba(0, 240, 255, 0.25);
   filter: brightness(1.1);
 }
 
@@ -322,12 +325,12 @@ input:-webkit-autofill:active {
 .btn-danger {
   background: linear-gradient(135deg, var(--error-color), #dc2626);
   color: #fff;
-  box-shadow: 0 4px 14px rgba(239, 68, 68, 0.2);
+  box-shadow: 0 2px 8px rgba(239, 68, 68, 0.15);
 }
 
 .btn-danger:hover {
   transform: translateY(-2px);
-  box-shadow: 0 6px 20px rgba(239, 68, 68, 0.35);
+  box-shadow: 0 4px 12px rgba(239, 68, 68, 0.25);
   filter: brightness(1.1);
 }
 
@@ -427,16 +430,7 @@ input:-webkit-autofill:active {
 .log-debug { color: #94a3b8; }
 
 /* Animations */
-@keyframes pulse-glow {
-  0%, 100% {
-    opacity: 0.7;
-    text-shadow: 0 0 10px rgba(0, 240, 255, 0.3);
-  }
-  50% {
-    opacity: 1;
-    text-shadow: 0 0 20px rgba(0, 240, 255, 0.7);
-  }
-}
+/* (pulse-glow keyframes removed — continuous animation was an idle-CPU drain) */
 
 /* Update Notification Banner */
 .update-banner {

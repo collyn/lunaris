@@ -28,13 +28,16 @@ document.addEventListener('DOMContentLoaded', () => {
 
   let isAgentRunning = false;
 
-  // Append a message to the console output
+  // Append a message to the console output.
+  // Keeps only the last MAX_LOG_LINES to prevent unbounded DOM growth (and the
+  // resulting WebView2 layout-engine CPU drain) during multi-hour agent sessions.
+  const MAX_LOG_LINES = 500;
   function appendLog(message) {
     if (!message) return;
-    
+
     const line = document.createElement('div');
     line.className = 'log-line';
-    
+
     // Parse level to add styling class
     if (message.includes('INFO') || message.includes('info')) {
       line.classList.add('log-info');
@@ -45,10 +48,15 @@ document.addEventListener('DOMContentLoaded', () => {
     } else if (message.includes('DEBUG') || message.includes('debug')) {
       line.classList.add('log-debug');
     }
-    
+
     line.textContent = message;
     consoleOutput.appendChild(line);
-    
+
+    // Trim oldest lines when over the limit
+    while (consoleOutput.children.length > MAX_LOG_LINES) {
+      consoleOutput.removeChild(consoleOutput.firstChild);
+    }
+
     // Auto-scroll to bottom if scrolled near bottom
     const threshold = 40;
     const isNearBottom = consoleOutput.scrollHeight - consoleOutput.clientHeight - consoleOutput.scrollTop < threshold;
@@ -197,8 +205,10 @@ document.addEventListener('DOMContentLoaded', () => {
   loadConfig();
   pollStatus();
   
-  // Poll status every 1s
-  setInterval(pollStatus, 1000);
+  // Poll status every 2 s (was 1 s). The status changes infrequently and each
+  // poll crosses the JS↔Rust IPC bridge; halving the rate saves CPU without
+  // noticeable UX impact.
+  setInterval(pollStatus, 2000);
 
   // Check for updates
   async function checkForUpdates() {
