@@ -786,24 +786,40 @@ pub async fn setup_bridge_session(
         let injector = std::sync::Arc::new(injector);
         let injector_clone = injector.clone();
 
-        // Spawn separate task for mouse inputs
-        let input_task = tokio::spawn(async move {
-            info!("InputInjector: started mouse input processing task");
-            while let Some(first_packet) = input_rx.recv().await {
-                process_mouse_input_batch(first_packet, &mut input_rx, &injector);
-                injector.flush();
-            }
-            info!("InputInjector: stopped mouse input processing task");
+        // Spawn a DEDICATED OS THREAD for mouse inputs — tokio::spawn can
+        // starve the mouse task when the pipeline is CPU-heavy (e.g. encoding
+        // 60 fps high-motion), causing progressive input lag. A dedicated thread
+        // guarantees the OS scheduler gives mouse injection its own time slice.
+        let input_task = std::thread::Builder::new()
+            .name("lunaris-mouse-input".into())
+            .spawn(move || {
+                info!("InputInjector: started mouse input processing thread");
+                while let Some(first_packet) = input_rx.blocking_recv() {
+                    process_mouse_input_batch(first_packet, &mut input_rx, &injector);
+                    injector.flush();
+                }
+                info!("InputInjector: stopped mouse input processing thread");
+            })
+            .expect("Failed to spawn mouse input thread");
+        // Wrap in a no-op tokio task so the cleanup code still works
+        let input_task: tokio::task::JoinHandle<()> = tokio::spawn(async move {
+            let _ = input_task.join();
         });
         spawned_tasks.push(input_task);
 
-        // Spawn separate task for keyboard inputs
-        let key_input_task = tokio::spawn(async move {
-            info!("InputInjector: started keyboard input processing task");
-            while let Some((packet, last_timestamp)) = key_input_rx.recv().await {
-                handle_inbound_packet(packet, &injector_clone, &last_timestamp);
-            }
-            info!("InputInjector: stopped keyboard input processing task");
+        // Dedicated OS thread for keyboard — same reasoning as mouse.
+        let key_input_task = std::thread::Builder::new()
+            .name("lunaris-key-input".into())
+            .spawn(move || {
+                info!("InputInjector: started keyboard input processing thread");
+                while let Some((packet, last_timestamp)) = key_input_rx.blocking_recv() {
+                    handle_inbound_packet(packet, &injector_clone, &last_timestamp);
+                }
+                info!("InputInjector: stopped keyboard input processing thread");
+            })
+            .expect("Failed to spawn keyboard input thread");
+        let key_input_task: tokio::task::JoinHandle<()> = tokio::spawn(async move {
+            let _ = key_input_task.join();
         });
         spawned_tasks.push(key_input_task);
     } else {
@@ -1400,34 +1416,13 @@ fn process_mouse_input_batch(
     input_rx: &mut mpsc::UnboundedReceiver<InputQueueItem>,
     injector: &lunaris_media::input::InputInjector,
 ) {
-    // Accumulate the net mouse delta and final absolute position across the
-    // entire batch, then inject once. This avoids flooding Windows' SendInput
-    // queue with hundreds of tiny per-event calls, which causes accumulating
-    // input lag during continuous window dragging.
-    let mut acc_dx: i32 = 0;
-    let mut acc_dy: i32 = 0;
-    let mut final_abs: Option<(i32, i32, i32, i32)> = None; // x, y, ref_w, ref_h
-    let mut had_events = false;
-
     let mut pending = Some(first);
     while let Ok(next) = input_rx.try_recv() {
         if let Some(current) = pending.take() {
             match coalesce_mouse_input(current, next) {
                 Ok(coalesced) => pending = Some(coalesced),
                 Err((current, next)) => {
-                    // Process non-move events immediately; accumulate moves.
-                    match current.0 {
-                        InboundPacket::MouseMove { delta_x, delta_y, .. } => {
-                            acc_dx = acc_dx.saturating_add(delta_x as i32);
-                            acc_dy = acc_dy.saturating_add(delta_y as i32);
-                            had_events = true;
-                        }
-                        InboundPacket::MousePosition { x, y, reference_width, reference_height, .. } => {
-                            final_abs = Some((x as i32, y as i32, reference_width as i32, reference_height as i32));
-                            had_events = true;
-                        }
-                        other => handle_inbound_packet(other, injector, &current.1),
-                    }
+                    handle_inbound_packet(current.0, injector, &current.1);
                     pending = Some(next);
                 }
             }
@@ -1436,27 +1431,8 @@ fn process_mouse_input_batch(
         }
     }
 
-    // Handle the last pending item
-    if let Some((packet, _timestamp)) = pending {
-        match packet {
-            InboundPacket::MouseMove { delta_x, delta_y, .. } => {
-                acc_dx = acc_dx.saturating_add(delta_x as i32);
-                acc_dy = acc_dy.saturating_add(delta_y as i32);
-                had_events = true;
-            }
-            InboundPacket::MousePosition { x, y, reference_width, reference_height, .. } => {
-                final_abs = Some((x as i32, y as i32, reference_width as i32, reference_height as i32));
-                had_events = true;
-            }
-            other => handle_inbound_packet(other, injector, &_timestamp),
-        }
-    }
-
-    // Inject accumulated move and final position as single calls
-    if let Some((x, y, rw, rh)) = final_abs {
-        injector.move_mouse_absolute(x, y, rw, rh);
-    } else if had_events && (acc_dx != 0 || acc_dy != 0) {
-        injector.move_mouse_relative(acc_dx, acc_dy);
+    if let Some((packet, last_timestamp)) = pending {
+        handle_inbound_packet(packet, injector, &last_timestamp);
     }
 }
 
