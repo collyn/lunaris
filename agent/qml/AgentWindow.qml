@@ -11,7 +11,7 @@ ApplicationWindow {
     visible: false
     title: "Lunaris Host Agent"
     color: "#0d1117"
-    flags: Qt.Window | Qt.WindowCloseButtonHint | Qt.WindowMinimizeButtonHint
+    flags: Qt.Window
     minimumWidth: 440; minimumHeight: 260
 
     // Expand window when log is shown
