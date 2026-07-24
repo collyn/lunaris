@@ -4,7 +4,7 @@ use clap::Parser;
 use futures_util::{SinkExt, StreamExt};
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
-use tokio_tungstenite::connect_async;
+use tokio_tungstenite::connect_async_tls_with_config;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 use tracing::{debug, error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -312,7 +312,20 @@ pub async fn run_agent_loop(
     };
 
     info!("Connecting to signaling server at: {}", server_ws_url);
-    let (ws_stream, _) = connect_async(server_ws_url).await?;
+    // Build a TLS connector that accepts self-signed certificates.
+    // The signaling server typically uses a self-signed cert for local/LAN use.
+    let tls_connector = native_tls::TlsConnector::builder()
+        .danger_accept_invalid_certs(true)
+        .build()
+        .map_err(|e| anyhow::anyhow!("Failed to build TLS connector: {}", e))?;
+    let connector = tokio_tungstenite::Connector::NativeTls(tls_connector);
+
+    let (ws_stream, _) = connect_async_tls_with_config(
+        server_ws_url,
+        None,
+        false,
+        Some(connector),
+    ).await?;
     info!("Connected to signaling server!");
     CONNECTED_TO_SERVER.store(true, std::sync::atomic::Ordering::SeqCst);
 

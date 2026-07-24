@@ -14,6 +14,7 @@ bitflags = "2"
 
 tokio = { version = "1.0", features = ["full"] }
 tokio-tungstenite = { version = "0.21", features = ["native-tls", "rustls-tls-native-roots"] }
+native-tls = "0.2"
 webrtc = "0.17.1"
 wtransport = { version = "0.7.1", features = ["self-signed"] }
 uuid = { version = "1.0", features = ["v4"] }
