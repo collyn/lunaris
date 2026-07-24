@@ -2933,7 +2933,7 @@ checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
 [[package]]
 name = "lunaris-media"
 version = "0.1.0"
-source = "git+https://github.com/collyn/lunaris-media.git#d5ffb69befbd926bcf81fb481a1c1b705d6b8987"
+source = "git+https://github.com/collyn/lunaris-media.git#40af0321427a521e02ffb3118b6bbd4a6c8435ce"
 dependencies = [
  "ashpd",
  "async-trait",
