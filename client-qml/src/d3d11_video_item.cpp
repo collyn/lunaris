@@ -18,7 +18,8 @@ std::atomic_bool g_d3d11RenderFailed{false};
 bool g_d3d11StreamActive = false;
 D3D11VideoItem *g_activeItem = nullptr;
 
-void markD3d11Failed(const char *reason) {
+// Only called from the Direct3D11 code paths (Q_OS_WIN).
+[[maybe_unused]] void markD3d11Failed(const char *reason) {
     g_d3d11RenderFailed.store(true, std::memory_order_release);
     std::cerr << "Lunaris: D3D11 renderer disabled: " << reason << std::endl;
     if (g_activeItem) {

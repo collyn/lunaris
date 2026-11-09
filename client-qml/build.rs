@@ -89,7 +89,8 @@ fn main() {
 
         match moc_status {
             Ok(status) if status.success() => {
-                println!("cargo:warning=Successfully ran moc on {}", header);
+                // Informational only — `cargo:warning` would surface it as a build warning.
+                eprintln!("Successfully ran moc on {}", header);
                 moc_cpp_files.push(moc_cpp);
             }
             _ => {
