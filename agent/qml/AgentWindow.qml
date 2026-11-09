@@ -43,13 +43,19 @@ ApplicationWindow {
         tooltip: "Lunaris Host Agent"
         menu: Platform.Menu {
             Platform.MenuItem { text: window.visible ? "Hide" : "Show"; onTriggered: toggleWindow() }
-            Platform.MenuItem { text: agentActive ? "Stop" : "Start"; onTriggered: agentActive ? bridge.stopAgent() : bridge.startAgent() }
+            Platform.MenuItem { text: agentActive ? "Stop" : "Start"; onTriggered: agentActive ? bridge.stopAgent() : saveAndStart() }
             Platform.MenuSeparator {}
             Platform.MenuItem { text: "Quit"; onTriggered: Qt.quit() }
         }
         onActivated: (reason) => { if (reason === Platform.SystemTrayIcon.Trigger) toggleWindow() }
     }
     function toggleWindow() { if (window.visible) { window.hide() } else { window.show(); window.raise() } }
+    // Start always uses what is in the form: persist it first, otherwise the
+    // agent connects with the previously saved server URL / token.
+    function saveAndStart() {
+        bridge.saveConfig(fieldServerUrl.text, fieldServerToken.text, cbAutostart.checked, cbCloseToTray.checked)
+        bridge.startAgent()
+    }
 
     // ── Colors ──
     readonly property string cBg:       "#0d1117"
@@ -143,7 +149,7 @@ ApplicationWindow {
                 color: window.agentActive ? "#f85149" : "#238636"
                 Text { anchors.centerIn: parent; text: window.agentActive ? "Stop" : "Start"; font.pixelSize: 12; font.bold: true; color: "#fff" }
                 MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor
-                    onClicked: { if (agentActive) bridge.stopAgent(); else bridge.startAgent() } }
+                    onClicked: { if (agentActive) bridge.stopAgent(); else saveAndStart() } }
             }
             Rectangle {
                 Layout.fillWidth: true; height: 34; radius: 6
