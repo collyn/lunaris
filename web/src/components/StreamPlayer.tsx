@@ -273,6 +273,12 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   const [draftEncoder, setDraftEncoder] = useState<string>(activeEncoder);
   const [draftDisplay, setDraftDisplay] = useState<string>(activeDisplay);
   const [draftVirtualDisplay, setDraftVirtualDisplay] = useState<boolean>(activeVirtualDisplay);
+  // Chroma subsampling: '420' (default, every encoder) or '444' (sharper
+  // coloured text; H.264 High 4:4:4 via NVENC or x264 on the host).
+  const [activeChroma, setActiveChroma] = useState<'420' | '444'>(() => localStorage.getItem('lunaris_stream_chroma') === '444' ? '444' : '420');
+  const [draftChroma, setDraftChroma] = useState<'420' | '444'>(activeChroma);
+  // 4:4:4 is only negotiated as H.264 High 4:4:4 Predictive (profile-level-id f4…).
+  const sessionCodec = (codec: string) => (activeChroma === '444' ? 'h264' : codec);
   const [availableEncoders, setAvailableEncoders] = useState<string[]>([]);
   const [agentGpuInfo, setAgentGpuInfo] = useState<string>('');
   const [agentHostOs, setAgentHostOs] = useState<string>('unknown');
@@ -528,8 +534,9 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       setDraftEncoder(activeEncoder);
       setDraftDisplay(activeDisplay);
       setDraftVirtualDisplay(activeVirtualDisplay);
+      setDraftChroma(activeChroma);
     }
-  }, [showSettingsModal, activeResolution, activeFps, activeBitrate, activeCodec, mouseQueueLimit, useNativeClient, activeInputProtocol, useCanvasRenderer, activeEncoder, activeDisplay, activeVirtualDisplay]);
+  }, [showSettingsModal, activeResolution, activeFps, activeBitrate, activeCodec, mouseQueueLimit, useNativeClient, activeInputProtocol, useCanvasRenderer, activeEncoder, activeDisplay, activeVirtualDisplay, activeChroma]);
   const [hideLocalCursor, setHideLocalCursor] = useState<boolean>(() => localStorage.getItem('lunaris_stream_hide_cursor') !== 'false');
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
   const [isHeaderVisible, setIsHeaderVisible] = useState<boolean>(true);
@@ -1109,7 +1116,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     }
 
     // Resolve the requested codec once before creating SDP and RequestSession.
-    const codecDecision = getCodecDecision(activeCodec);
+    const codecDecision = getCodecDecision(sessionCodec(activeCodec));
     const resolvedCodec = codecDecision.resolved;
     addLog(`Codec decision: requested=${codecDecision.requested.toUpperCase()}, resolved=${resolvedCodec.toUpperCase()} (${codecSupportSummary()})`);
     if (codecDecision.fellBack) {
@@ -1179,11 +1186,12 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
               app_id: selectedAppId,
               encoder: activeEncoder !== 'auto' ? activeEncoder : undefined,
               display_id: activeDisplay !== 'default' ? activeDisplay : undefined,
-              virtual_display: activeVirtualDisplay ? true : undefined
+              virtual_display: activeVirtualDisplay ? true : undefined,
+              chroma: activeChroma === '444' ? '444' : undefined
             }
           }
         }));
-        addLog(`Sent RequestSession command for app ${selectedAppId} (res: ${activeResolution}, fps: ${activeFps}, bitrate: ${activeBitrate}Kbps, codec: ${resolvedCodec}).`);
+        addLog(`Sent RequestSession command for app ${selectedAppId} (res: ${activeResolution}, fps: ${activeFps}, bitrate: ${activeBitrate}Kbps, codec: ${resolvedCodec}, chroma: ${activeChroma}).`);
       }
     };
 
@@ -1322,7 +1330,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       cleanup();
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hostId, activeResolution, activeCodec, token, hostName, selectedAppId, useNativeClient, activeInputProtocol, useCanvasRenderer, activeEncoder, activeDisplay, activeVirtualDisplay]);
+  }, [hostId, activeResolution, activeCodec, token, hostName, selectedAppId, useNativeClient, activeInputProtocol, useCanvasRenderer, activeEncoder, activeDisplay, activeVirtualDisplay, activeChroma]);
 
   // Fetch display/encoder capabilities from agent when host is selected (before stream starts)
   useEffect(() => {
@@ -2148,7 +2156,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     // Apply codec preference filter using setCodecPreferences.
     // This ensures Chrome's SDP answer only includes the negotiated codec,
     // preventing profile-level-id mismatches when multiple H264 variants exist.
-    const codecForSession = getCodecDecision(activeCodec).resolved;
+    const codecForSession = getCodecDecision(sessionCodec(activeCodec)).resolved;
     try {
       const transceivers = pc.getTransceivers();
       const videoTransceiver = transceivers.find(t => t.receiver.track.kind === 'video');
@@ -3863,6 +3871,13 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
                     Use Canvas Renderer {typeof (window as any).MediaStreamTrackProcessor === 'undefined' ? "(Unsupported by browser)" : isIOSOrSafari ? "(Disabled on iOS/Safari due to WebKit limits)" : "(Highly recommended - zero latency & no stutter)"}
                   </label>
                 </div>
+                <div className="settings-group full-width">
+                  <label htmlFor="chromaSubsampling">Chroma (colour detail)</label>
+                  <select id="chromaSubsampling" value={draftChroma} onChange={(e) => setDraftChroma(e.target.value === '444' ? '444' : '420')}>
+                    <option value="420">4:2:0 — default, lowest bandwidth</option>
+                    <option value="444">4:4:4 — sharp coloured text (H.264, host NVENC or CPU)</option>
+                  </select>
+                </div>
                 <div className="settings-checkbox-group">
                   <input
                     type="checkbox"
@@ -3924,6 +3939,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
                     setDraftEncoder(activeEncoder);
                     setDraftDisplay(activeDisplay);
                     setDraftVirtualDisplay(activeVirtualDisplay);
+                    setDraftChroma(activeChroma);
                     setShowSettingsModal(false);
                   }}
                   className="btn-secondary"
@@ -3943,6 +3959,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
                     setActiveEncoder(draftEncoder);
                     setActiveDisplay(draftDisplay);
                     setActiveVirtualDisplay(draftVirtualDisplay);
+                    setActiveChroma(draftChroma);
                     
                     localStorage.setItem('lunaris_stream_res', draftResolution);
                     localStorage.setItem('lunaris_stream_fps', String(draftFps));
@@ -3955,6 +3972,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
                     localStorage.setItem('lunaris_stream_encoder', draftEncoder);
                     localStorage.setItem('lunaris_stream_display', draftDisplay);
                     localStorage.setItem('lunaris_stream_virtual_display', String(draftVirtualDisplay));
+                    localStorage.setItem('lunaris_stream_chroma', draftChroma);
                     
                     setShowSettingsModal(false);
                     addLog(`Applied settings: res=${draftResolution}, fps=${draftFps}, bitrate=${draftBitrate}Kbps, codec=${draftCodec}, mouseQueueLimit=${draftMouseQueueLimit}B, useNative=${draftUseNativeClient}, inputProtocol=${draftInputProtocol}, useCanvasRenderer=${draftUseCanvasRenderer}, encoder=${draftEncoder}, display=${draftDisplay}, virtualDisplay=${draftVirtualDisplay}`);
@@ -4266,6 +4284,13 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
                   Use Canvas Renderer {typeof (window as any).MediaStreamTrackProcessor === 'undefined' ? "(Unsupported by browser)" : isIOSOrSafari ? "(Disabled on iOS/Safari due to WebKit limits)" : "(Highly recommended - zero latency & no stutter)"}
                 </label>
               </div>
+              <div className="settings-group full-width">
+                <label htmlFor="chromaSubsampling">Chroma (colour detail)</label>
+                <select id="chromaSubsampling" value={draftChroma} onChange={(e) => setDraftChroma(e.target.value === '444' ? '444' : '420')}>
+                  <option value="420">4:2:0 — default, lowest bandwidth</option>
+                  <option value="444">4:4:4 — sharp coloured text (H.264, host NVENC or CPU)</option>
+                </select>
+              </div>
               <div className="settings-checkbox-group">
                 <input 
                   type="checkbox" 
@@ -4311,6 +4336,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
                   setDraftEncoder(activeEncoder);
                   setDraftDisplay(activeDisplay);
                   setDraftVirtualDisplay(activeVirtualDisplay);
+                  setDraftChroma(activeChroma);
                   setShowSettingsModal(false);
                 }} 
                 className="btn-secondary"
@@ -4331,6 +4357,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
                   localStorage.setItem('lunaris_stream_encoder', draftEncoder);
                   localStorage.setItem('lunaris_stream_display', draftDisplay);
                   localStorage.setItem('lunaris_stream_virtual_display', String(draftVirtualDisplay));
+                  localStorage.setItem('lunaris_stream_chroma', draftChroma);
                   
                   // Check if settings requiring reconnect changed
                   const reconnectNeeded = 
@@ -4341,7 +4368,8 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
                     draftUseCanvasRenderer !== useCanvasRenderer ||
                     draftEncoder !== activeEncoder ||
                     draftDisplay !== activeDisplay ||
-                    draftVirtualDisplay !== activeVirtualDisplay;
+                    draftVirtualDisplay !== activeVirtualDisplay ||
+                    draftChroma !== activeChroma;
 
                   setMouseQueueLimit(draftMouseQueueLimit);
 
@@ -4359,6 +4387,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
                     setActiveEncoder(draftEncoder);
                     setActiveDisplay(draftDisplay);
                     setActiveVirtualDisplay(draftVirtualDisplay);
+                    setActiveChroma(draftChroma);
                     
                     // Reset states for connection indicator
                     setStatus("Connecting...");

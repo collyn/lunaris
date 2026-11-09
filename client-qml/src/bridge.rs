@@ -4181,6 +4181,8 @@ async fn run_webrtc_client_task(
         encoder,
         display_id,
         virtual_display: if virtual_display { Some(true) } else { None },
+        // The native client keeps 4:2:0 for now (decoder paths are NV12-only).
+        chroma: None,
     });
     outbox_tx.send(req_msg)?;
 

@@ -389,11 +389,12 @@ pub async fn run_agent_loop(
                             encoder,
                             display_id,
                             virtual_display,
+                            chroma,
                             ice_servers,
                         } => {
                             info!(
-                                "Incoming session request from client: {} codec={:?} encoder={:?} res={:?}x{:?} fps={:?} bitrate={:?} display={:?} virtual_display={:?}",
-                                client_id, codec, encoder, width, height, fps, bitrate, display_id, virtual_display
+                                "Incoming session request from client: {} codec={:?} encoder={:?} res={:?}x{:?} fps={:?} bitrate={:?} display={:?} virtual_display={:?} chroma={:?}",
+                                client_id, codec, encoder, width, height, fps, bitrate, display_id, virtual_display, chroma
                             );
 
                             // Clean up previous active session
@@ -434,6 +435,7 @@ pub async fn run_agent_loop(
                                 encoder,
                                 display_id,
                                 virtual_display,
+                                chroma.as_deref() == Some("444"),
                                 ice_servers,
                             )
                             .await
@@ -500,7 +502,11 @@ pub async fn run_agent_loop(
                             let lock = active_session.lock().await;
                             if let Some(session) = lock.as_ref() {
                                 // Force Level 4.2 in SDP Answer to prevent browser decoder from silently rejecting Level 4.0/4.2 AMF GPU streams.
-                                let forced_sdp = sdp.sdp.replace("profile-level-id=42001f", "profile-level-id=42002a");
+                                let forced_sdp = sdp
+                                    .sdp
+                                    .replace("profile-level-id=42001f", "profile-level-id=42002a")
+                                    // Same for H.264 High 4:4:4 (YUV 4:4:4 sessions).
+                                    .replace("profile-level-id=f4001f", "profile-level-id=f4002a");
                                 match RTCSessionDescription::answer(forced_sdp) {
                                     Ok(rtc_sdp) => {
                                         if let Err(e) = session

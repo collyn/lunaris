@@ -186,6 +186,7 @@ pub async fn setup_bridge_session(
     encoder: Option<String>,
     display_id: Option<String>,
     virtual_display: Option<bool>,
+    yuv444: bool,
     ice_servers: Option<Vec<common::RtcIceServer>>,
 ) -> Result<Arc<BridgeSession>> {
     info!("Media library active: host cursor visible by default (toggle with Ctrl+Alt+Shift+N)");
@@ -209,7 +210,7 @@ pub async fn setup_bridge_session(
     let mut codec_str = requested_codec.clone();
 
     info!(
-        "Session media request: client={} res={}x{} fps={} bitrate={}kbps codec={} encoder={} display={} virtual_display={}",
+        "Session media request: client={} res={}x{} fps={} bitrate={}kbps codec={} encoder={} display={} virtual_display={} yuv444={}",
         client_id,
         resolution_width,
         resolution_height,
@@ -218,7 +219,8 @@ pub async fn setup_bridge_session(
         requested_codec,
         encoder.as_deref().unwrap_or("auto"),
         display_id.as_deref().unwrap_or("default"),
-        virtual_display.unwrap_or(false)
+        virtual_display.unwrap_or(false),
+        yuv444
     );
 
     // Resolve codec settings before registering WebRTC codecs. The SDP offer
@@ -235,6 +237,18 @@ pub async fn setup_bridge_session(
         info!("H.265 requested but host doesn't support it, falling back to H.264");
         codec_str = "h264".to_string();
     }
+    // YUV 4:4:4 is offered as H.264 High 4:4:4 Predictive (browsers decode
+    // profile-level-id f4…; HEVC/AV1 4:4:4 are not available here).
+    if yuv444 && codec_str != "h264" {
+        info!("YUV 4:4:4 requested with {} — switching to H.264 High 4:4:4", codec_str);
+        codec_str = "h264".to_string();
+    }
+    // Level 4.2 (0x2a) covers 1080p60; 0xf4 = High 4:4:4 Predictive.
+    let h264_fmtp = if yuv444 {
+        "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=f4002a"
+    } else {
+        "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42002a"
+    };
 
     // 1. Setup WebRTC PeerConnection
     let mut api_settings = SettingEngine::default();
@@ -296,9 +310,7 @@ pub async fn setup_bridge_session(
                     mime_type: MIME_TYPE_H264.to_string(),
                     clock_rate: 90000,
                     channels: 0,
-                    sdp_fmtp_line:
-                        "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42002a"
-                            .to_string(),
+                    sdp_fmtp_line: h264_fmtp.to_string(),
                     rtcp_feedback: video_rtcp_feedback,
                 },
                 payload_type: 96,
@@ -398,7 +410,7 @@ pub async fn setup_bridge_session(
         ),
         _ => (
             MIME_TYPE_H264.to_string(),
-            "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42002a".to_string(),
+            h264_fmtp.to_string(),
             96,
             VideoPayloader::H264(H264Payloader::default()),
         ),
@@ -762,6 +774,7 @@ pub async fn setup_bridge_session(
         pixel_format: lunaris_media::types::PixelFormat::NV12,
         preferred_encoder: encoder.clone(),
         virtual_display: virtual_display.unwrap_or(false),
+        yuv444,
     };
 
     let (pipeline, mut media_event_rx, pipeline_cmd_tx) =

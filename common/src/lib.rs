@@ -198,6 +198,9 @@ pub enum SignalingMessage {
         encoder: Option<String>,
         display_id: Option<String>,
         virtual_display: Option<bool>,
+        /// Chroma subsampling: "420" (default) or "444".
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        chroma: Option<String>,
     },
     // Server notifying agent about session request
     IncomingSession {
@@ -211,6 +214,9 @@ pub enum SignalingMessage {
         encoder: Option<String>,
         display_id: Option<String>,
         virtual_display: Option<bool>,
+        /// Chroma subsampling requested by the client: "420" (default) or "444".
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        chroma: Option<String>,
         ice_servers: Option<Vec<RtcIceServer>>,
     },
     // SDP / ICE Exchange
