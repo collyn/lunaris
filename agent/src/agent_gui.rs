@@ -4,7 +4,7 @@ use std::pin::Pin;
 use std::sync::atomic::Ordering;
 
 use cxx_qt::CxxQtType;
-use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QString, QUrl};
+use cxx_qt_lib::{QQmlApplicationEngine, QString, QUrl};
 
 use crate::pairing::{load_config, save_config as save_config_file, AgentConfig, import_config_file};
 use crate::{run_agent_loop, AGENT_ACTIVE, CONNECTED_TO_SERVER, LAST_ERROR};
@@ -72,6 +72,10 @@ pub mod qobject {
         unsafe fn open_url_helper(url: &QString);
         #[rust_name = "pick_import_file"]
         unsafe fn pick_import_file() -> QString;
+        #[rust_name = "create_widgets_application"]
+        unsafe fn create_widgets_application();
+        #[rust_name = "exec_widgets_application"]
+        unsafe fn exec_widgets_application() -> i32;
     }
 
     unsafe extern "RustQt" {
@@ -519,8 +523,8 @@ pub fn run_gui(minimized: bool) {
         }
     });
 
-    // Create Qt application and load QML
-    let mut app = QGuiApplication::new();
+    // Create the Qt application (QtWidgets flavour, see agent_gui.h) and load QML.
+    unsafe { qobject::create_widgets_application() };
     let mut engine = QQmlApplicationEngine::new();
 
     if let Some(engine_mut) = engine.as_mut() {
@@ -528,10 +532,8 @@ pub fn run_gui(minimized: bool) {
         engine_mut.load(&qurl);
     }
 
-    if let Some(app_mut) = app.as_mut() {
-        let _ = minimized; // QML handles initial visibility
-        app_mut.exec();
-    }
+    let _ = minimized; // QML handles initial visibility
+    unsafe { qobject::exec_widgets_application() };
 }
 
 // ---------------------------------------------------------------------------
