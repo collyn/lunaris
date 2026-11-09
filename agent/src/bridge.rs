@@ -823,7 +823,11 @@ pub async fn setup_bridge_session(
         });
         spawned_tasks.push(key_input_task);
     } else {
-        error!("InputInjector: failed to initialize X11 input injector");
+        error!(
+            "InputInjector: no input backend available — remote mouse/keyboard disabled. \
+             On Wayland this needs write access to /dev/uinput (udev rule or the 'input' group); \
+             on X11 it also needs a reachable DISPLAY with the XTest extension"
+        );
     }
 
     let start_time = Instant::now();

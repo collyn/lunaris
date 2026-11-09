@@ -115,6 +115,25 @@ cd web && npm install && npm run dev
 | `RUST_LOG` | `info,server=debug` | Log level configuration |
 | `LUNARIS_TOKEN` | *(auto-generated)* | Token for agent-to-server authentication |
 
+### Linux Host (X11 and Wayland)
+
+Remote input uses virtual devices on `/dev/uinput` (like Sunshine), which works on X11 and every Wayland compositor. Grant access once:
+
+```bash
+sudo scripts/linux-host/setup-host.sh                         # udev rule + load uinput
+sudo scripts/linux-host/setup-host.sh --kms target/release/agent  # optional: KMS capture
+sudo scripts/linux-host/setup-host.sh --uninstall
+```
+
+On Wayland the screen is captured through the XDG desktop portal + PipeWire. The first session asks which monitor to share; the choice is remembered (`~/.config/lunaris/screencast-token`). Frames stay on the GPU end to end (DMA-BUF → VAAPI) when encoding with VAAPI on the GPU that drives the displays.
+
+| Variable | Default | Description |
+|---|---|---|
+| `LUNARIS_RENDER_NODE` | *(auto: display GPU)* | Render node for VAAPI/EGL, e.g. `/dev/dri/renderD129` |
+| `LUNARIS_PIPEWIRE_ZERO_COPY` | `1` | `0` reads frames back to the CPU in the capture thread |
+| `LUNARIS_CAPTURE` | *(auto)* | `kms` uses KMS capture on Wayland (needs `--kms` setup above) |
+| `LUNARIS_EMBED_HOST_CURSOR` | `0` | `1` draws the cursor into the video instead of the client overlay |
+
 ## Project Structure
 
 ```

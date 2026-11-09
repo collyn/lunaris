@@ -1,0 +1,6 @@
+# Lunaris host agent: virtual keyboard/mouse through /dev/uinput.
+#
+# TAG+="uaccess" grants the user logged in on the local seat access via ACL,
+# so no group membership (and no re-login) is needed. GROUP="input" keeps
+# headless/service setups working for members of the 'input' group.
+KERNEL=="uinput", SUBSYSTEM=="misc", OPTIONS+="static_node=uinput", GROUP="input", MODE="0660", TAG+="uaccess"
