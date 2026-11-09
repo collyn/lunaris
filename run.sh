@@ -55,8 +55,15 @@ build_rust() {
 }
 
 build_all() {
-    build_web
-    build_rust
+    if ! build_web; then
+        echo "[Web] Build FAILED." >&2
+        exit 1
+    fi
+    if ! build_rust; then
+        echo "[Rust] Build FAILED (see errors above)." >&2
+        echo "       Host-only build (server + agent): cargo build --release -p server -p agent" >&2
+        exit 1
+    fi
     echo "=================================================="
     echo " All Release Builds Completed Successfully!      "
     echo "=================================================="
