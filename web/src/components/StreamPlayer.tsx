@@ -103,6 +103,15 @@ interface StreamPlayerProps {
   appId?: number | null;
 }
 
+/** True for focused elements that take typed text (inputs, textareas, contenteditable). */
+const isTextEntryElement = (el: Element | null): boolean => {
+  if (!el) return false;
+  if (el.tagName === 'TEXTAREA' || (el as HTMLElement).isContentEditable) return true;
+  if (el.tagName !== 'INPUT') return false;
+  const type = ((el as HTMLInputElement).type || 'text').toLowerCase();
+  return ['text', 'search', 'email', 'password', 'number', 'url', 'tel'].includes(type);
+};
+
 const KEY_TO_VK: Record<string, number> = {
   "Backspace": 8, "Tab": 9, "Enter": 13, "ShiftLeft": 16, "ShiftRight": 16,
   "ControlLeft": 17, "ControlRight": 17, "AltLeft": 18, "AltRight": 18,
@@ -1477,14 +1486,10 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     if (status !== "Streaming") return;
 
     const handleGlobalKeyDown = (e: KeyboardEvent) => {
-      const activeEl = document.activeElement;
-      if (
-        activeEl &&
-        (activeEl.tagName === 'INPUT' ||
-         activeEl.tagName === 'SELECT' ||
-         activeEl.tagName === 'TEXTAREA' ||
-         (activeEl as HTMLElement).isContentEditable)
-      ) {
+      // Only real text-entry fields keep the keyboard. Dropdowns/checkboxes
+      // (e.g. the FPS selector in the stream toolbar) stay focused after a
+      // change; treating them as text fields used to swallow every key.
+      if (isTextEntryElement(document.activeElement)) {
         return;
       }
 
@@ -1526,14 +1531,10 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     };
 
     const handleGlobalKeyUp = (e: KeyboardEvent) => {
-      const activeEl = document.activeElement;
-      if (
-        activeEl &&
-        (activeEl.tagName === 'INPUT' ||
-         activeEl.tagName === 'SELECT' ||
-         activeEl.tagName === 'TEXTAREA' ||
-         (activeEl as HTMLElement).isContentEditable)
-      ) {
+      // Only real text-entry fields keep the keyboard. Dropdowns/checkboxes
+      // (e.g. the FPS selector in the stream toolbar) stay focused after a
+      // change; treating them as text fields used to swallow every key.
+      if (isTextEntryElement(document.activeElement)) {
         return;
       }
 
@@ -3611,6 +3612,15 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
 
     // Prevent context menu from right clicks
     e.preventDefault();
+    // preventDefault() on mousedown also stops the browser from moving focus,
+    // so a settings control used before (e.g. the FPS dropdown) would keep it
+    // and swallow the keyboard. Clicking into the stream releases it.
+    if (isDown) {
+      const focused = document.activeElement as HTMLElement | null;
+      if (focused && focused !== document.body && typeof focused.blur === 'function') {
+        focused.blur();
+      }
+    }
 
     hostCursorMouseDownRef.current = isDown ? true : e.buttons !== 0;
     const hostCursor = hostCursorPosRef.current;
