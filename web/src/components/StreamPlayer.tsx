@@ -3765,6 +3765,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
                     <option value={144}>144 FPS</option>
                     <option value={120}>120 FPS</option>
                     <option value={90}>90 FPS</option>
+                    <option value={75}>75 FPS</option>
                     <option value={60}>60 FPS</option>
                     <option value={30}>30 FPS</option>
                   </select>
@@ -4135,6 +4136,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
                   <option value={144}>144 FPS</option>
                   <option value={120}>120 FPS</option>
                   <option value={90}>90 FPS</option>
+                  <option value={75}>75 FPS</option>
                   <option value={60}>60 FPS</option>
                   <option value={30}>30 FPS</option>
                 </select>
@@ -4468,6 +4470,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
           <option value={144}>144 FPS</option>
           <option value={120}>120 FPS</option>
           <option value={90}>90 FPS</option>
+          <option value={75}>75 FPS</option>
           <option value={60}>60 FPS</option>
           <option value={30}>30 FPS</option>
         </select>
