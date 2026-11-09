@@ -61,6 +61,8 @@ squashfs-root/
 # Claude/agent directory (except skill files)
 .claude/*
 !.claude/skills/
+# GitNexus skills are generated per machine by `gitnexus analyze`
+.claude/skills/gitnexus/
 
 # Scratch/playground files (except workspace projects)
 /scratch/*
