@@ -68,3 +68,4 @@ squashfs-root/
 /scratch/*
 !/scratch/test_arboard/
 !/scratch/test_arboard_persistence/
+build-dir/

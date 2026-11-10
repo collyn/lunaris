@@ -1,0 +1,101 @@
+# Build environment for the portable Lunaris agent AppImage.
+#
+# Ubuntu 22.04 base → the AppImage needs glibc >= 2.35 (Ubuntu 22.04+, Debian 12+,
+# Fedora 36+, Arch, openSUSE Tumbleweed, Mint 21+ ...).
+#
+# Everything bundled is LGPL or permissive — no GPL, no "nonfree":
+#   Qt 6.8 LTS (LGPLv3, dynamically linked)        FFmpeg 8 (LGPLv2.1+, shared)
+#   libva (MIT)   oneVPL dispatcher (MIT)   nv-codec-headers (MIT)
+#   SVT-AV1 (BSD-3-Clause-Clear + AOM royalty-free patent license)
+FROM docker.io/library/ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential clang libclang-dev cmake meson ninja-build nasm pkg-config \
+        curl ca-certificates git file patchelf xz-utils python3-pip \
+        libdrm-dev libx11-dev libx11-xcb-dev libxcb1-dev libxcb-dri3-dev libxext-dev \
+        libxfixes-dev libxtst-dev libxrandr-dev libxdamage-dev libwayland-dev \
+        libegl-dev libgl-dev libgbm-dev \
+        libpipewire-0.3-dev libspa-0.2-dev libasound2-dev libopus-dev libssl-dev \
+        libudev-dev libdbus-1-dev \
+        libfontconfig1 libfreetype6 libxkbcommon0 libxkbcommon-x11-0 libxcb-cursor0 \
+        libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 \
+        libxcb-shape0 libxcb-xinerama0 libxcb-xkb1 libglib2.0-0 libgl1 libegl1 \
+    && rm -rf /var/lib/apt/lists/*
+
+ARG PREFIX=/opt/deps
+ENV PKG_CONFIG_PATH=${PREFIX}/lib/pkgconfig:${PREFIX}/lib/x86_64-linux-gnu/pkgconfig \
+    LD_LIBRARY_PATH=${PREFIX}/lib:${PREFIX}/lib/x86_64-linux-gnu
+WORKDIR /build
+
+# libva — newer than the distro copy so it can load every distro's (newer) drivers.
+ARG LIBVA_VERSION=2.22.0
+RUN git clone --depth 1 -b ${LIBVA_VERSION} https://github.com/intel/libva.git \
+    && cd libva && meson setup build --prefix=${PREFIX} --libdir=lib -Dwith_x11=yes -Dwith_wayland=yes \
+       -Dwith_glx=no -Ddriverdir=/usr/lib/x86_64-linux-gnu/dri:/usr/lib64/dri:/usr/lib/dri \
+    && ninja -C build install && install -Dm644 COPYING ${PREFIX}/share/licenses/libva/COPYING && cd .. && rm -rf libva
+
+# NVENC/CUDA headers (FFmpeg loads the NVIDIA libraries at runtime).
+ARG NVCODEC_VERSION=n12.2.72.0
+RUN git clone --depth 1 -b ${NVCODEC_VERSION} https://github.com/FFmpeg/nv-codec-headers.git \
+    && make -C nv-codec-headers PREFIX=${PREFIX} install \
+    && install -Dm644 nv-codec-headers/README ${PREFIX}/share/licenses/nv-codec-headers/README \
+    && sed -n "1,30p" nv-codec-headers/include/ffnvcodec/nvEncodeAPI.h > ${PREFIX}/share/licenses/nv-codec-headers/LICENSE-header.txt \
+    && rm -rf nv-codec-headers
+
+# Intel QSV dispatcher (loads the system's oneVPL/MediaSDK runtime).
+ARG VPL_VERSION=v2.14.0
+RUN git clone --depth 1 -b ${VPL_VERSION} https://github.com/intel/libvpl.git \
+    && cmake -S libvpl -B libvpl/build -G Ninja -DCMAKE_INSTALL_PREFIX=${PREFIX} \
+       -DCMAKE_INSTALL_LIBDIR=lib -DBUILD_TESTS=OFF -DBUILD_EXAMPLES=OFF -DINSTALL_EXAMPLES=OFF \
+    && ninja -C libvpl/build install && install -Dm644 libvpl/LICENSE ${PREFIX}/share/licenses/libvpl/LICENSE && rm -rf libvpl
+
+# SVT-AV1: royalty-free software AV1 encoder (static, folded into libavcodec).
+ARG SVTAV1_VERSION=v2.3.0
+RUN git clone --depth 1 -b ${SVTAV1_VERSION} https://gitlab.com/AOMediaCodec/SVT-AV1.git \
+    && cmake -S SVT-AV1 -B SVT-AV1/build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+       -DCMAKE_INSTALL_PREFIX=${PREFIX} -DCMAKE_INSTALL_LIBDIR=lib -DBUILD_SHARED_LIBS=OFF \
+       -DBUILD_APPS=OFF -DBUILD_DEC=OFF -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+    && ninja -C SVT-AV1/build install \
+    && install -Dm644 SVT-AV1/LICENSE.md ${PREFIX}/share/licenses/svt-av1/LICENSE.md \
+    && install -Dm644 SVT-AV1/PATENTS.md ${PREFIX}/share/licenses/svt-av1/PATENTS.md && rm -rf SVT-AV1
+
+# FFmpeg 8, LGPL, only what the agent uses: hardware encoders + SVT-AV1 + swscale.
+ARG FFMPEG_VERSION=n8.0
+RUN git clone --depth 1 -b ${FFMPEG_VERSION} https://github.com/FFmpeg/FFmpeg.git \
+    && cd FFmpeg && ./configure --prefix=${PREFIX} --libdir=${PREFIX}/lib \
+       --enable-shared --disable-static --disable-programs --disable-doc --disable-debug \
+       --disable-autodetect --disable-everything \
+       --enable-vaapi --enable-libdrm --enable-ffnvcodec --enable-nvenc --enable-cuda \
+       --enable-libvpl --enable-libsvtav1 \
+       --enable-encoder=h264_vaapi,hevc_vaapi,av1_vaapi,h264_nvenc,hevc_nvenc,av1_nvenc,h264_qsv,hevc_qsv,av1_qsv,libsvtav1 \
+       --enable-parser=h264,hevc,av1 --enable-bsf=h264_metadata,hevc_metadata,av1_metadata,extract_extradata,dump_extradata \
+       --enable-filter=scale,format,hwupload,hwdownload,hwmap,scale_vaapi \
+    && make -j"$(nproc)" && make install \
+    && install -Dm644 COPYING.LGPLv2.1 ${PREFIX}/share/licenses/ffmpeg/COPYING.LGPLv2.1 && install -Dm644 LICENSE.md ${PREFIX}/share/licenses/ffmpeg/LICENSE.md \
+    && ./ffbuild/version.sh . > ${PREFIX}/share/licenses/ffmpeg/VERSION 2>/dev/null; cd .. && rm -rf FFmpeg
+
+# Qt 6.8 LTS from the official LGPL binaries.
+ARG QT_VERSION=6.8.3
+RUN pip3 install --no-cache-dir aqtinstall \
+    && aqt install-qt linux desktop ${QT_VERSION} linux_gcc_64 -O /opt/Qt \
+    && rm -rf /opt/Qt/${QT_VERSION}/gcc_64/doc /opt/Qt/${QT_VERSION}/gcc_64/examples
+ENV QTDIR=/opt/Qt/${QT_VERSION}/gcc_64
+ENV QMAKE=${QTDIR}/bin/qmake PATH=${QTDIR}/bin:$PATH \
+    LD_LIBRARY_PATH=${QTDIR}/lib:${PREFIX}/lib:${PREFIX}/lib/x86_64-linux-gnu
+
+# linuxdeploy + Qt plugin (run extracted: no FUSE inside containers).
+RUN cd /opt && for t in linuxdeploy-x86_64 linuxdeploy-plugin-qt-x86_64; do \
+        repo=$( [ "$t" = linuxdeploy-x86_64 ] && echo linuxdeploy || echo linuxdeploy-plugin-qt ); \
+        curl -fsSLo $t.AppImage https://github.com/linuxdeploy/$repo/releases/download/continuous/$t.AppImage \
+        && chmod +x $t.AppImage && ./$t.AppImage --appimage-extract >/dev/null \
+        && mv squashfs-root $t && rm $t.AppImage \
+        && printf '#!/bin/sh\nexec /opt/%s/AppRun "$@"\n' $t > /usr/local/bin/$t \
+        && chmod +x /usr/local/bin/$t; \
+    done
+
+ARG RUST_TOOLCHAIN=nightly-2026-04-17
+ENV RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo PATH=/opt/cargo/bin:$PATH
+RUN curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain ${RUST_TOOLCHAIN} \
+    && chmod -R a+rwX /opt/rustup /opt/cargo
+WORKDIR /src

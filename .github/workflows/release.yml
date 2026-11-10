@@ -6,6 +6,7 @@ on:
       - main
     paths:
       - '.github/workflows/release.yml'
+      - 'scripts/packaging/**'
     tags:
       - 'v*'
   workflow_dispatch:
@@ -36,22 +37,6 @@ jobs:
             libswresample-dev libopus-dev qt6-base-dev qt6-declarative-dev qt6-multimedia-dev libgl1-mesa-dev \
             libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
             libavfilter-dev libavdevice-dev libpostproc-dev libpipewire-0.3-dev
-          
-          # Create dummy libnvidia-fbc.so with all required symbols for the linker in CI
-          cat << 'EOF' > nvidia_fbc_dummy.c
-          int NvFBCGetStatus() { return 0; }
-          int NvFBCDestroyCaptureSession() { return 0; }
-          int NvFBCToSysGrabFrame() { return 0; }
-          int NvFBCToCudaGrabFrame() { return 0; }
-          int NvFBCDestroyHandle() { return 0; }
-          int NvFBCCreateHandle() { return 0; }
-          int NvFBCCreateCaptureSession() { return 0; }
-          int NvFBCToCudaSetUp() { return 0; }
-          int NvFBCToSysSetUp() { return 0; }
-          const char* NvFBCGetLastErrorStr() { return ""; }
-          EOF
-          gcc -shared -o libnvidia-fbc.so nvidia_fbc_dummy.c
-          sudo mv libnvidia-fbc.so /usr/lib/
 
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@v1
@@ -103,11 +88,45 @@ jobs:
           name: client-qml-linux
           path: build-dir/client-qml-x86_64.AppImage
 
-      - name: Upload Agent Artifact
+  build-agent-appimage:
+    name: Build Linux Agent (AppImage)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Ubuntu 22.04 + Qt 6.8 + LGPL FFmpeg/SVT-AV1/libva/oneVPL. The layers are
+      # cached, so only the agent itself is rebuilt on most runs.
+      - name: Build packaging image
+        uses: docker/build-push-action@v6
+        with:
+          context: scripts/packaging
+          file: scripts/packaging/Containerfile.appimage
+          tags: localhost/lunaris-appimage-build:22.04
+          load: true
+          cache-from: type=gha,scope=agent-appimage
+          cache-to: type=gha,mode=max,scope=agent-appimage
+
+      - name: Cache cargo registry and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            build-dir/cargo-cache
+            build-dir/target-appimage
+          key: agent-appimage-${{ hashFiles('Cargo.lock', 'scripts/packaging/Containerfile.appimage') }}
+          restore-keys: agent-appimage-
+
+      - name: Build AppImage
+        run: CONTAINER=docker ./scripts/packaging/build-agent-appimage.sh
+
+      - name: Upload Agent AppImage
         uses: actions/upload-artifact@v4
         with:
-          name: agent-linux
-          path: target/release/agent
+          name: agent-linux-appimage
+          path: dist/Lunaris-Agent-*-x86_64.AppImage
 
   build-windows:
     name: Build Windows
@@ -262,7 +281,7 @@ jobs:
 
   release:
     name: Create Release
-    needs: [build-linux, build-windows]
+    needs: [build-linux, build-agent-appimage, build-windows]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
     steps:
@@ -307,10 +326,10 @@ jobs:
 
 
 
-      - name: Download Linux Agent Artifact
+      - name: Download Linux Agent AppImage
         uses: actions/download-artifact@v4
         with:
-          name: agent-linux
+          name: agent-linux-appimage
           path: ./artifacts/linux-agent
 
       - name: Download Windows Agent Artifact
@@ -335,7 +354,7 @@ jobs:
           mv ./artifacts/linux-server/lunaris-server-linux.tar.gz ./release-files/
           mv ./artifacts/linux-client-desktop/client-desktop-x86_64.AppImage ./release-files/lunaris-client-desktop-linux.AppImage
           mv ./artifacts/linux-client-qml/client-qml-x86_64.AppImage ./release-files/lunaris-client-qml-linux.AppImage
-          mv ./artifacts/linux-agent/agent ./release-files/lunaris-agent-linux
+          mv ./artifacts/linux-agent/Lunaris-Agent-*-x86_64.AppImage ./release-files/lunaris-agent-linux-x86_64.AppImage
 
           # Windows
           mv ./artifacts/windows-server/lunaris-server-windows.zip ./release-files/
@@ -357,7 +376,7 @@ jobs:
             release-files/lunaris-server-linux.tar.gz
             release-files/lunaris-client-desktop-linux.AppImage
             release-files/lunaris-client-qml-linux.AppImage
-            release-files/lunaris-agent-linux
+            release-files/lunaris-agent-linux-x86_64.AppImage
             release-files/lunaris-server-windows.zip
             release-files/lunaris-client-desktop-windows.zip
             release-files/lunaris-client-qml-windows.zip
