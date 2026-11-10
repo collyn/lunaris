@@ -105,6 +105,19 @@ RUN cd /opt && for t in linuxdeploy-x86_64 linuxdeploy-plugin-qt-x86_64; do \
         && chmod +x /usr/local/bin/$t; \
     done
 
+# PipeWire 1.0 headers + libpipewire to compile against: the pipewire/libspa
+# crates need newer SPA headers than Ubuntu 22.04's 0.3.48. Build-time only —
+# the AppImage excludes libpipewire and uses the host's at runtime.
+ARG PIPEWIRE_VERSION=1.0.7
+RUN for i in 1 2 3 4 5; do apt-get -o Acquire::Retries=5 update \
+        && apt-get -o Acquire::Retries=5 install -y --no-install-recommends libglib2.0-dev && break; \
+        echo "apt failed, retrying"; sleep 30; done \
+    && rm -rf /var/lib/apt/lists/* \
+    && git clone --depth 1 -b ${PIPEWIRE_VERSION} https://gitlab.freedesktop.org/pipewire/pipewire.git \
+    && meson setup pipewire/build pipewire --prefix=${PREFIX} --libdir=lib -Dauto_features=disabled \
+       -Dsession-managers=[] -Dexamples=disabled -Dtests=disabled -Dman=disabled -Ddocs=disabled \
+    && ninja -C pipewire/build install && rm -rf pipewire
+
 ARG RUST_TOOLCHAIN=nightly-2026-04-17
 ENV RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo PATH=/opt/cargo/bin:$PATH
 RUN curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain ${RUST_TOOLCHAIN} \
