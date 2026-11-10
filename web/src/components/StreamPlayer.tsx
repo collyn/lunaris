@@ -103,6 +103,34 @@ interface StreamPlayerProps {
   appId?: number | null;
 }
 
+/**
+ * Build a CSS `cursor` value from the host cursor bitmap so the client OS
+ * draws the host-shaped pointer as a hardware cursor (native smoothness),
+ * instead of a DOM element moved from JavaScript on every mousemove.
+ * Returns null when the image cannot be used (browsers cap CSS cursors at
+ * 128x128).
+ */
+const hostCursorImageToCss = (image: HostCursorImagePayload): string | null => {
+  if (image.width <= 0 || image.height <= 0 || image.width > 128 || image.height > 128) return null;
+  try {
+    const binary = atob(image.rgba);
+    if (binary.length !== image.width * image.height * 4) return null;
+    const bytes = new Uint8ClampedArray(binary.length);
+    for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+    const canvas = document.createElement('canvas');
+    canvas.width = image.width;
+    canvas.height = image.height;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return null;
+    ctx.putImageData(new ImageData(bytes, image.width, image.height), 0, 0);
+    const hx = Math.max(0, Math.min(image.width - 1, Math.round(image.hotspotX)));
+    const hy = Math.max(0, Math.min(image.height - 1, Math.round(image.hotspotY)));
+    return `url("${canvas.toDataURL('image/png')}") ${hx} ${hy}, default`;
+  } catch {
+    return null;
+  }
+};
+
 /** True for focused elements that take typed text (inputs, textareas, contenteditable). */
 const isTextEntryElement = (el: Element | null): boolean => {
   if (!el) return false;
@@ -232,6 +260,11 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   const [canvasKey, setCanvasKey] = useState<number>(0);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [isPointerLocked, setIsPointerLocked] = useState<boolean>(false);
+  // Host-shaped CSS cursor (see hostCursorImageToCss). When set, the OS draws
+  // the pointer instead of the JavaScript-driven DOM cursor.
+  const [hostCssCursor, setHostCssCursor] = useState<string | null>(null);
+  const hostCssCursorRef = useRef<string | null>(null);
+  const hostCssCursorNativeRef = useRef<boolean>(false);
   const [appList, setAppList] = useState<{ id: number; title: string; icon_base64?: string | null }[] | null>(null);
   const [currentGameId, setCurrentGameId] = useState<number>(0);
   const [selectedAppId, setSelectedAppId] = useState<number | null>(appId ?? null);
@@ -1897,6 +1930,23 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     return null;
   };
 
+  const updateHostCssCursor = (kind: HostCursorKind, image: HostCursorImagePayload | null) => {
+    let css: string | null;
+    if (image) {
+      css = hostCursorImageToCss(image);
+      hostCssCursorNativeRef.current = css !== null;
+    } else if (hostCssCursorNativeRef.current) {
+      return; // shape unchanged; the last native image still applies
+    } else {
+      const asset = HOST_CURSOR_ASSETS[kind];
+      css = `url("${asset.src}") ${asset.hotspotX} ${asset.hotspotY}, default`;
+    }
+    if (css !== hostCssCursorRef.current) {
+      hostCssCursorRef.current = css;
+      setHostCssCursor(css);
+    }
+  };
+
   const applyNativeCursorImage = (
     imageEl: HTMLImageElement | null,
     metricsRef: React.MutableRefObject<HostCursorImageMetrics | null>,
@@ -1953,6 +2003,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       if (!Number.isFinite(x) || !Number.isFinite(y)) return;
 
       applyNativeCursorImage(localCursorImageRef.current, localCursorImageMetricsRef, kind, image);
+      updateHostCssCursor(kind, image);
 
       const localPredictionFresh = performance.now() - lastHostCursorLocalPredictionAtRef.current < 140;
       // Always keep the reference position current so that future syncs
@@ -2049,6 +2100,9 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
           hostCursorImageMetricsRef.current = null;
           localCursorImageMetricsRef.current = null;
           hasNativeCursorImageRef.current = false;
+          hostCssCursorRef.current = null;
+          hostCssCursorNativeRef.current = false;
+          setHostCssCursor(null);
           if (hostCursorImageRef.current) {
             hostCursorImageRef.current.removeAttribute('src');
             hostCursorImageRef.current.style.width = '32px';
@@ -2720,9 +2774,15 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     const shouldShowTrackpad = touchModeRef.current === 'trackpad'
       && status === 'Streaming'
       && !isHardwareMouseActiveRef.current;
+    // While the OS draws the host-shaped CSS cursor (unlocked pointer, non-
+    // Windows host) the JavaScript-driven DOM cursor is not needed.
+    const osDrawsHostCursor = hostCssCursorRef.current !== null
+      && agentHostOs !== "windows"
+      && !isPointerLockedRef.current;
     const shouldShowHardwarePrediction = status === 'Streaming'
       && isHardwareMouseActiveRef.current
-      && (hideLocalCursor || shouldUseWindowsPrediction);
+      && (hideLocalCursor || shouldUseWindowsPrediction)
+      && !osDrawsHostCursor;
 
     if (!shouldShowTrackpad && !shouldShowHardwarePrediction) {
       cursorEl.style.display = 'none';
@@ -3713,7 +3773,16 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   };
 
   const isStreaming = status === "Streaming";
-  const streamCursorStyle = isStreaming && (hideLocalCursor || agentHostOs === "windows") ? "none" : "default";
+  // Hardware-drawn host cursor when possible (smooth as a native pointer);
+  // otherwise hide the OS cursor and draw the DOM cursor as before.
+  const useOsHostCursor = isStreaming
+    && hideLocalCursor
+    && agentHostOs !== "windows"
+    && !isPointerLocked
+    && hostCssCursor !== null;
+  const streamCursorStyle = useOsHostCursor
+    ? hostCssCursor!
+    : isStreaming && (hideLocalCursor || agentHostOs === "windows") ? "none" : "default";
 
   if (selectedAppId === null) {
     return (
