@@ -131,6 +131,9 @@ fn main() {
             }
             cc.include("src");
             cc.include(&out_dir);
+            // Shown in the UI through Qt.application.version.
+            let version = std::env::var("CARGO_PKG_VERSION").unwrap_or_default();
+            cc.define("LUNARIS_VERSION", Some(format!("\"{}\"", version).as_str()));
             if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux") {
                 println!("cargo:rustc-link-lib=EGL");
             }

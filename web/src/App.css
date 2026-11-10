@@ -3135,10 +3135,10 @@ code, kbd, pre, .host-id, .code-block { font-family: var(--font-mono); }
 .brand-logo {
   width: 28px;
   height: 28px;
-  border-radius: 8px;
+  border-radius: 0;
+  background: none;
   box-shadow: none;
 }
-.brand-logo svg { width: 16px; height: 16px; }
 .brand-name {
   font-size: 15px;
   font-weight: 600;
@@ -3476,4 +3476,12 @@ button, input, select, textarea { font-family: inherit; }
   border-color: var(--accent);
   box-shadow: var(--ring);
   outline: none;
+}
+
+/* Shared app icon (assets/brand/lunaris.svg) on the sign-in card */
+.auth-logo {
+  display: block;
+  margin: 0 auto 14px;
+  width: 48px;
+  height: 48px;
 }

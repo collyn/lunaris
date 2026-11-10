@@ -380,7 +380,7 @@ Rectangle {
                         border.color: Theme.border
                         anchors.verticalCenter: parent.verticalCenter
                         Text {
-                            text: "v0.1.0"
+                            text: Qt.application.version !== "" ? "v" + Qt.application.version : ""
                             color: Theme.textMuted
                             font.pixelSize: 10
                             font.bold: true

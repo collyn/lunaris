@@ -418,6 +418,9 @@ QApplication *g_widgets_app = nullptr;
 void create_widgets_application() {
     if (!g_widgets_app) {
         g_widgets_app = new QApplication(g_app_argc, g_app_argv);
+#ifdef LUNARIS_VERSION
+        QCoreApplication::setApplicationVersion(QStringLiteral(LUNARIS_VERSION));
+#endif
 #if defined(Q_OS_LINUX)
         // KDE's platform theme switches Qt Quick Controls to "org.kde.desktop"
         // as soon as a QApplication exists; that style breaks our custom

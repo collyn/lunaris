@@ -634,11 +634,7 @@ function App() {
       {/* Header bar */}
       <header className="navbar">
         <div className="nav-brand">
-          <div className="brand-logo">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
-              <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z" />
-            </svg>
-          </div>
+          <img className="brand-logo" src="/favicon.svg" alt="" width={28} height={28} />
           <span className="brand-name">Lunaris</span>
         </div>
         <div className="nav-actions">
@@ -688,6 +684,7 @@ function App() {
           <div className="auth-card-wrapper">
             <div className="auth-card">
               <div className="auth-header">
+                <img className="auth-logo" src="/favicon.svg" alt="Lunaris" width={48} height={48} />
                 <h2>Welcome Back</h2>
                 <p>Access your remote desktop network</p>
               </div>
