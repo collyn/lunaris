@@ -63,7 +63,41 @@ The entire system is written in **Rust** and **TypeScript/React**, optimized for
 
 ## Getting Started
 
-### Prerequisites
+### Install the server
+
+The server is a single file: accounts, host directory, signaling and the web
+client (embedded). Download it from the
+[latest release](https://github.com/collyn/lunaris/releases/latest).
+
+**Linux** (static binary, any distro, x86_64 or ARM64):
+
+```bash
+curl -L https://github.com/collyn/lunaris/releases/latest/download/lunaris-server-linux-x86_64.tar.gz | tar xz
+sudo ./lunaris-server-linux-x86_64/lunaris-server install        # optional: --port 9000
+```
+
+`install` copies the binary to `/usr/local/bin`, creates the `lunaris-server`
+systemd service (starts at boot, restarts on failure), keeps data in
+`/var/lib/lunaris` and settings in `/etc/lunaris/server.env`, then prints the
+web address, the **initial admin password** and the agent token.
+`lunaris-server status` / `uninstall [--purge]` manage it afterwards.
+
+**Windows**: unzip `lunaris-server-windows-x86_64.zip` and run
+`lunaris-server.exe install` from an Administrator prompt (Windows service,
+firewall rule, data in `%ProgramData%\Lunaris`).
+
+**Docker**:
+
+```bash
+docker compose up -d          # or: docker build -t lunaris-server . && docker run -d -p 8090:8090 -v lunaris-data:/data lunaris-server
+docker logs lunaris-server    # initial admin password and agent token
+```
+
+Then open `http://<server>:8090`, sign in as `admin` with the printed password
+and change it. Running `lunaris-server` without a command starts it in the
+foreground instead.
+
+### Prerequisites (building from source)
 
 - **Rust** 1.75+ (with `cargo`)
 - **Node.js** 20+ and npm
@@ -110,10 +144,12 @@ cd web && npm install && npm run dev
 
 | Variable | Default | Description |
 |---|---|---|
-| `DATABASE_URL` | `sqlite://lunaris.db` | SQLite database path |
-| `SERVER_PORT` | `8080` | API server port |
-| `RUST_LOG` | `info,server=debug` | Log level configuration |
+| `SERVER_PORT` | `8090` | HTTP port (web client, API, WebSocket signaling) |
+| `LUNARIS_DATA_DIR` | working directory | Database, agent token and initial admin password (`/var/lib/lunaris` for the service, `/data` in Docker) |
 | `LUNARIS_TOKEN` | *(auto-generated)* | Token for agent-to-server authentication |
+| `LUNARIS_ADMIN_PASSWORD` | *(random)* | Initial `admin` password — first start only |
+| `DATABASE_URL` | `sqlite://<data dir>/lunaris.db` | SQLite database path |
+| `RUST_LOG` | `info,server=debug` | Log level configuration |
 
 ### Linux Host (X11 and Wayland)
 

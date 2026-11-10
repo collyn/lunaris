@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   lunaris-server:
     build:
@@ -8,16 +6,18 @@ services:
     container_name: lunaris-server
     restart: unless-stopped
     ports:
-      - "8080:8080"
+      - "8090:8090"
     volumes:
-      - lunaris-data:/app/data
+      # Database, agent token and the initial admin password live here.
+      - lunaris-data:/data
     environment:
-      - SERVER_PORT=8080
-      - RUST_LOG=info,server=debug
-      # You can pre-configure the secure token for connecting agents here
+      - SERVER_PORT=8090
+      - RUST_LOG=info
+      # Initial admin password (first start only). When unset a random one is
+      # generated: see `docker logs lunaris-server` or /data/initial_admin_password.txt.
+      # - LUNARIS_ADMIN_PASSWORD=change-me
+      # Token agents use to register (generated on first start when unset):
       # - LUNARIS_TOKEN=your_secure_agent_token_here
-      # You can override DATABASE_URL if you want to use a different database file name
-      # - DATABASE_URL=sqlite:///app/data/my_custom_lunaris.db
 
 volumes:
   lunaris-data:

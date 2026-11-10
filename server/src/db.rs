@@ -5,7 +5,13 @@ use sqlx::{
 use std::fs;
 use std::str::FromStr;
 
-pub async fn init_db(database_url: &str) -> Result<SqlitePool, sqlx::Error> {
+/// Opens (and migrates) the database. On first start it creates the `admin`
+/// account with a random password (or `LUNARIS_ADMIN_PASSWORD`), written to
+/// `admin_password_file`.
+pub async fn init_db(
+    database_url: &str,
+    admin_password_file: &std::path::Path,
+) -> Result<SqlitePool, sqlx::Error> {
     // If it's a file database, ensure parent directories exist
     if database_url.starts_with("sqlite://") {
         let path = database_url.trim_start_matches("sqlite://");
@@ -166,14 +172,24 @@ pub async fn init_db(database_url: &str) -> Result<SqlitePool, sqlx::Error> {
     if user_count.0 == 0 {
         use crate::auth::hash_password;
         let admin_id = uuid::Uuid::new_v4().to_string();
-        let hashed = hash_password("admin123")
+        let password = std::env::var("LUNARIS_ADMIN_PASSWORD")
+            .ok()
+            .filter(|p| !p.trim().is_empty())
+            .unwrap_or_else(|| uuid::Uuid::new_v4().simple().to_string()[..20].to_string());
+        let hashed = hash_password(&password)
             .map_err(|e| sqlx::Error::Protocol(format!("Hash error: {}", e)))?;
         sqlx::query("INSERT INTO users (id, username, password_hash, role, is_active, created_at) VALUES (?, 'admin', ?, 'admin', 1, datetime('now'))")
             .bind(&admin_id)
             .bind(&hashed)
             .execute(&pool)
             .await?;
-        tracing::info!("Created default admin user (username: admin, password: admin123)");
+        if let Err(e) = crate::paths::write_private(admin_password_file, &format!("{password}\n")) {
+            tracing::error!("Cannot save the admin password to {:?}: {}", admin_password_file, e);
+        }
+        tracing::info!("==================================================");
+        tracing::info!(" Created admin account: admin / {}", password);
+        tracing::info!(" (saved to {:?}; change it after signing in)", admin_password_file);
+        tracing::info!("==================================================");
     }
 
     Ok(pool)

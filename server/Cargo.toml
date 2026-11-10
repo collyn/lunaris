@@ -28,5 +28,13 @@ thiserror = "1.0"
 bytes = "1.0"
 num-derive = "0.4"
 num-traits = "0.2"
+# The web UI (web/dist) is embedded so the server ships as a single file.
+rust-embed = { version = "8", features = ["mime-guess"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-service = "0.7"
 
 

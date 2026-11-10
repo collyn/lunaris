@@ -1,0 +1,20 @@
+# Build outputs
+target/
+build-dir/
+dist/
+**/node_modules/
+web/dist/
+
+# Local state and secrets — never bake these into an image
+*.db
+*.db-*
+server_token.txt
+agent_config*.json
+*.pem
+.env
+
+# Tooling
+.git/
+.github/
+.claude/
+.gitnexus/

@@ -7,6 +7,8 @@ on:
     paths:
       - '.github/workflows/release.yml'
       - 'scripts/packaging/**'
+      - 'server/**'
+      - 'Dockerfile'
     tags:
       - 'v*'
   workflow_dispatch:
@@ -55,19 +57,6 @@ jobs:
       - name: Build Rust Workspace
         run: cargo build --release --workspace
 
-      - name: Package Server and Web
-        run: |
-          mkdir -p lunaris-server/web
-          cp target/release/server lunaris-server/
-          cp -r web/dist lunaris-server/web/dist
-          tar -czf lunaris-server-linux.tar.gz -C lunaris-server .
-
-      - name: Upload Server Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: server-linux
-          path: lunaris-server-linux.tar.gz
-
       - name: Install packaging tools
         run: sudo apt-get install -y patchelf
 
@@ -87,6 +76,94 @@ jobs:
         with:
           name: client-qml-linux
           path: build-dir/client-qml-x86_64.AppImage
+
+  build-server-linux:
+    name: Build Linux Server (static)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: web/package-lock.json
+
+      # The server embeds web/dist, so build the web client first.
+      - name: Build Web Frontend
+        run: |
+          cd web
+          npm ci
+          npm run build
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: nightly-2026-04-17
+          targets: x86_64-unknown-linux-musl,aarch64-unknown-linux-musl
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: server-musl
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.13.0
+
+      - name: Install cargo-zigbuild
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-zigbuild
+
+      # Fully static musl binaries: run on any Linux distro, x86_64 and ARM64.
+      - name: Build and package
+        run: |
+          for arch in x86_64 aarch64; do
+            cargo zigbuild --release --locked -p server --target $arch-unknown-linux-musl
+            dir=lunaris-server-linux-$arch
+            mkdir -p $dir
+            cp target/$arch-unknown-linux-musl/release/server $dir/lunaris-server
+            cp LICENSE $dir/
+            tar -czf $dir.tar.gz $dir
+          done
+          file lunaris-server-linux-*/lunaris-server
+
+      - name: Upload Server Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: server-linux
+          path: lunaris-server-linux-*.tar.gz
+
+  build-server-docker:
+    name: Build Server Docker image
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image (not pushed)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          tags: lunaris-server:ci
+          load: true
+          cache-from: type=gha,scope=server-docker
+          cache-to: type=gha,mode=max,scope=server-docker
+
+      - name: Smoke test
+        run: |
+          docker run -d --name lunaris -p 8090:8090 lunaris-server:ci
+          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:8090/ >/dev/null && break; sleep 1; done
+          curl -fsS http://127.0.0.1:8090/ | grep -q '<div id="root">'
+          docker exec lunaris test -s /data/initial_admin_password.txt
+          docker logs lunaris 2>&1 | tail -20
 
   build-agent-appimage:
     name: Build Linux Agent (AppImage)
@@ -230,19 +307,20 @@ jobs:
         run: cargo build --release --workspace
         shell: pwsh
 
-      - name: Package Server and Web
+      - name: Package Server
         run: |
-          New-Item -ItemType Directory -Force -Path lunaris-server/web
-          Copy-Item target/release/server.exe -Destination lunaris-server/
-          Copy-Item -Recurse web/dist -Destination lunaris-server/web/dist
-          Compress-Archive -Path lunaris-server/* -DestinationPath lunaris-server-windows.zip
+          # The web client is embedded in the executable.
+          New-Item -ItemType Directory -Force -Path lunaris-server
+          Copy-Item target/release/server.exe -Destination lunaris-server/lunaris-server.exe
+          Copy-Item LICENSE -Destination lunaris-server/
+          Compress-Archive -Path lunaris-server/* -DestinationPath lunaris-server-windows-x86_64.zip
         shell: pwsh
 
       - name: Upload Server Artifact
         uses: actions/upload-artifact@v4
         with:
           name: server-windows
-          path: lunaris-server-windows.zip
+          path: lunaris-server-windows-x86_64.zip
 
       - name: Package Client Desktop and Agent
         run: |
@@ -297,7 +375,7 @@ jobs:
 
   release:
     name: Create Release
-    needs: [build-linux, build-agent-appimage, build-windows]
+    needs: [build-linux, build-server-linux, build-server-docker, build-agent-appimage, build-windows]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
     steps:
@@ -367,13 +445,13 @@ jobs:
           mkdir -p release-files
 
           # Linux
-          mv ./artifacts/linux-server/lunaris-server-linux.tar.gz ./release-files/
+          mv ./artifacts/linux-server/lunaris-server-linux-*.tar.gz ./release-files/
           mv ./artifacts/linux-client-desktop/client-desktop-x86_64.AppImage ./release-files/lunaris-client-desktop-linux.AppImage
           mv ./artifacts/linux-client-qml/client-qml-x86_64.AppImage ./release-files/lunaris-client-qml-linux.AppImage
           mv ./artifacts/linux-agent/Lunaris-Agent-*-x86_64.AppImage ./release-files/lunaris-agent-linux-x86_64.AppImage
 
           # Windows
-          mv ./artifacts/windows-server/lunaris-server-windows.zip ./release-files/
+          mv ./artifacts/windows-server/lunaris-server-windows-x86_64.zip ./release-files/
           mv ./artifacts/windows-client-desktop/lunaris-client-desktop-windows.zip ./release-files/
           mv ./artifacts/windows-client-qml/lunaris-client-qml-windows.zip ./release-files/
           mv ./artifacts/windows-agent/lunaris-agent-windows.zip ./release-files/
@@ -389,11 +467,12 @@ jobs:
           draft: false
           prerelease: false
           files: |
-            release-files/lunaris-server-linux.tar.gz
+            release-files/lunaris-server-linux-x86_64.tar.gz
+            release-files/lunaris-server-linux-aarch64.tar.gz
             release-files/lunaris-client-desktop-linux.AppImage
             release-files/lunaris-client-qml-linux.AppImage
             release-files/lunaris-agent-linux-x86_64.AppImage
-            release-files/lunaris-server-windows.zip
+            release-files/lunaris-server-windows-x86_64.zip
             release-files/lunaris-client-desktop-windows.zip
             release-files/lunaris-client-qml-windows.zip
             release-files/lunaris-agent-windows.zip

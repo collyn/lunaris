@@ -18,6 +18,9 @@ pub mod bridge;
 pub mod buffer;
 mod db;
 pub mod input;
+mod paths;
+mod service;
+mod web;
 
 pub mod signaling;
 pub mod video;
@@ -85,7 +88,8 @@ fn get_or_generate_agent_token() -> String {
         }
     }
 
-    let token_file = std::path::Path::new("server_token.txt");
+    let token_file = paths::data_file("server_token.txt");
+    let token_file = token_file.as_path();
     if token_file.exists() {
         if let Ok(token) = std::fs::read_to_string(token_file) {
             let trimmed = token.trim();
@@ -98,7 +102,7 @@ fn get_or_generate_agent_token() -> String {
     // Generate a random token based on UUID
     let generated = uuid::Uuid::new_v4().to_string().replace("-", "")[..16].to_string();
 
-    if let Err(e) = std::fs::write(token_file, &generated) {
+    if let Err(e) = paths::write_private(token_file, &generated) {
         error!("Failed to write server_token.txt: {:?}", e);
     }
 
@@ -108,6 +112,9 @@ fn get_or_generate_agent_token() -> String {
 fn find_database_url() -> String {
     if let Ok(url) = std::env::var("DATABASE_URL") {
         return url;
+    }
+    if let Some(dir) = paths::data_dir() {
+        return format!("sqlite://{}", dir.join("lunaris.db").to_string_lossy());
     }
 
     // Default to "sqlite://lunaris.db"
@@ -128,20 +135,111 @@ fn find_database_url() -> String {
     "sqlite://lunaris.db".to_string()
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Init logger
-    tracing_subscriber::registry()
-        .with(tracing_subscriber::EnvFilter::new(
-            std::env::var("RUST_LOG").unwrap_or_else(|_| "info,server=debug,webrtc_sctp=off".into()),
-        ))
-        .with(tracing_subscriber::fmt::layer())
-        .init();
+const USAGE: &str = "\
+Lunaris server — accounts, host directory, signaling and the web client.
 
+Usage: lunaris-server [command]
+
+Commands:
+  run                         Run in the foreground (default)
+  install [--port <port>]     Install and start as a system service
+                              (systemd on Linux, Windows service on Windows)
+  uninstall [--purge]         Remove the service (--purge also deletes data)
+  status                      Show the service status
+  help, version
+
+Environment: SERVER_PORT (default 8090), LUNARIS_DATA_DIR (database, token,
+initial admin password; default: working directory), LUNARIS_TOKEN,
+LUNARIS_ADMIN_PASSWORD (first start only), DATABASE_URL, RUST_LOG.
+";
+
+fn main() -> std::process::ExitCode {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let rest = args.get(1..).unwrap_or(&[]);
+    let result: Result<(), String> = match args.first().map(String::as_str) {
+        None | Some("run") => run_foreground(),
+        Some("install") => service::install(rest),
+        Some("uninstall") => service::uninstall(rest),
+        Some("status") => service::status(),
+        #[cfg(windows)]
+        Some("service") => service::run_dispatcher(),
+        Some("help" | "-h" | "--help") => {
+            print!("{USAGE}");
+            Ok(())
+        }
+        Some("version" | "-V" | "--version") => {
+            println!("lunaris-server {}", env!("CARGO_PKG_VERSION"));
+            Ok(())
+        }
+        Some(other) => Err(format!("unknown command: {other}\n\n{USAGE}")),
+    };
+    match result {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
+/// Sets up logging to stderr, or to `log_file` (the Windows service has no console).
+pub(crate) fn init_logging(log_file: Option<&std::path::Path>) {
+    let filter = tracing_subscriber::EnvFilter::new(
+        std::env::var("RUST_LOG").unwrap_or_else(|_| "info,server=debug,webrtc_sctp=off".into()),
+    );
+    let file = log_file.and_then(|p| {
+        std::fs::OpenOptions::new().create(true).append(true).open(p).ok()
+    });
+    match file {
+        Some(f) => tracing_subscriber::registry()
+            .with(filter)
+            .with(
+                tracing_subscriber::fmt::layer()
+                    .with_ansi(false)
+                    .with_writer(std::sync::Mutex::new(f)),
+            )
+            .init(),
+        None => tracing_subscriber::registry()
+            .with(filter)
+            .with(tracing_subscriber::fmt::layer())
+            .init(),
+    }
+}
+
+fn run_foreground() -> Result<(), String> {
+    init_logging(None);
+    let rt = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
+    rt.block_on(run_server(shutdown_signal()))
+        .map_err(|e| e.to_string())
+}
+
+/// Ctrl+C, or SIGTERM from systemd / docker stop.
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        let mut term =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                .expect("install SIGTERM handler");
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            _ = term.recv() => {}
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
+    info!("Shutting down");
+}
+
+/// Runs the server until `shutdown` completes.
+pub(crate) async fn run_server(
+    shutdown: impl std::future::Future<Output = ()> + Send + 'static,
+) -> Result<(), Box<dyn std::error::Error>> {
     let database_url = find_database_url();
 
     info!("Initializing SQLite database: {}", database_url);
-    let pool = init_db(&database_url).await?;
+    let pool = init_db(&database_url, &paths::data_file("initial_admin_password.txt")).await?;
 
     let agent_token = get_or_generate_agent_token();
     info!("==================================================");
@@ -198,18 +296,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let serve_react =
             ServeDir::new(path).not_found_service(ServeFile::new(path.join("index.html")));
         app = app.fallback_service(serve_react);
+    } else if web::is_embedded() {
+        info!("Serving the embedded React client");
+        app = app.fallback(web::serve);
     } else {
-        error!("Directory 'web/dist' not found! Build the React client via 'npm run build' inside the 'web' directory.");
+        error!("No web client: 'web/dist' not found and none embedded. Build it with 'npm run build' in 'web/'.");
     }
 
     let app = app.layer(cors).with_state(signaling_state);
 
-    let port = std::env::var("SERVER_PORT").unwrap_or_else(|_| "8080".to_string());
+    let port = std::env::var("SERVER_PORT").unwrap_or_else(|_| "8090".to_string());
     let addr = format!("0.0.0.0:{}", port);
     let listener = tokio::net::TcpListener::bind(&addr).await?;
 
     info!("Lunaris Server running on http://{}", addr);
-    axum::serve(listener, app).await?;
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown)
+        .await?;
 
     Ok(())
 }
