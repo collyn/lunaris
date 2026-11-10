@@ -38,6 +38,12 @@ The exact build recipe (versions and FFmpeg `configure` flags) is
 | AMF and nv-codec-headers (headers only) | MIT | https://github.com/GPUOpen-LibrariesAndSDKs/AMF, https://github.com/FFmpeg/nv-codec-headers |
 | opus, OpenSSL (from vcpkg) | BSD-3-Clause / Apache-2.0 | https://github.com/microsoft/vcpkg |
 
+## Cursor images
+
+The remote-cursor images of the web and desktop clients are the Bibata
+Modern Classic cursors (GPL-3.0, https://github.com/ful1e5/Bibata_Cursor);
+see `assets/cursors/README.md`.
+
 ## Hardware encoders and drivers
 
 Hardware encoders (VAAPI, NVENC, AMF, Quick Sync) and NvFBC run in the GPU

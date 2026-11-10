@@ -56,18 +56,19 @@ type HostCursorImageMetrics = {
   kind: HostCursorKind;
 };
 
+// Bibata Modern Classic (GPL-3.0), see assets/cursors/README.md.
 const HOST_CURSOR_ASSETS: Record<HostCursorKind, { src: string; hotspotX: number; hotspotY: number }> = {
-  arrow: { src: '/cursors/windows-aero-arrow.png', hotspotX: 0, hotspotY: 0 },
-  ibeam: { src: '/cursors/windows-aero-ibeam.png', hotspotX: 16, hotspotY: 16 },
-  hand: { src: '/cursors/windows-aero-hand.png', hotspotX: 6, hotspotY: 1 },
-  cross: { src: '/cursors/windows-aero-cross.png', hotspotX: 16, hotspotY: 16 },
-  move: { src: '/cursors/windows-aero-move.png', hotspotX: 16, hotspotY: 16 },
-  resize_ns: { src: '/cursors/windows-aero-resize-ns.png', hotspotX: 16, hotspotY: 16 },
-  resize_ew: { src: '/cursors/windows-aero-resize-ew.png', hotspotX: 16, hotspotY: 16 },
-  resize_nesw: { src: '/cursors/windows-aero-resize-nesw.png', hotspotX: 16, hotspotY: 16 },
-  resize_nwse: { src: '/cursors/windows-aero-resize-nwse.png', hotspotX: 16, hotspotY: 16 },
-  unavailable: { src: '/cursors/windows-aero-unavailable.png', hotspotX: 16, hotspotY: 16 },
-  unknown: { src: '/cursors/windows-aero-arrow.png', hotspotX: 0, hotspotY: 0 },
+  arrow: { src: '/cursors/arrow.svg', hotspotX: 7, hotspotY: 2 },
+  ibeam: { src: '/cursors/ibeam.svg', hotspotX: 16, hotspotY: 16 },
+  hand: { src: '/cursors/hand.svg', hotspotX: 14, hotspotY: 2 },
+  cross: { src: '/cursors/cross.svg', hotspotX: 16, hotspotY: 16 },
+  move: { src: '/cursors/move.svg', hotspotX: 16, hotspotY: 16 },
+  resize_ns: { src: '/cursors/resize-ns.svg', hotspotX: 16, hotspotY: 16 },
+  resize_ew: { src: '/cursors/resize-ew.svg', hotspotX: 16, hotspotY: 16 },
+  resize_nesw: { src: '/cursors/resize-nesw.svg', hotspotX: 16, hotspotY: 16 },
+  resize_nwse: { src: '/cursors/resize-nwse.svg', hotspotX: 16, hotspotY: 16 },
+  unavailable: { src: '/cursors/unavailable.svg', hotspotX: 16, hotspotY: 16 },
+  unknown: { src: '/cursors/arrow.svg', hotspotX: 7, hotspotY: 2 },
 };
 
 const normalizeHostCursorKind = (kind: unknown): HostCursorKind => {
@@ -2703,7 +2704,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
         imageEl.src = cursorAsset.src;
         imageEl.style.width = '32px';
         imageEl.style.height = '32px';
-        imageEl.style.filter = 'drop-shadow(0 0 1px rgba(0,0,0,0.95)) drop-shadow(0 0 2px rgb(var(--ink-rgb) / 0.85))';
+        imageEl.style.filter = 'none'; // the cursors carry their own white outline
       }
       cursorMetrics = {
         hotspotX: cursorAsset.hotspotX,
@@ -2859,7 +2860,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
         imageEl.src = cursorAsset.src;
         imageEl.style.width = '32px';
         imageEl.style.height = '32px';
-        imageEl.style.filter = 'drop-shadow(0 0 1px rgba(0,0,0,0.95)) drop-shadow(0 0 2px rgb(var(--ink-rgb) / 0.85))';
+        imageEl.style.filter = 'none'; // the cursors carry their own white outline
       }
       cursorMetrics = {
         hotspotX: cursorAsset.hotspotX,

@@ -3,6 +3,7 @@
 #include <QByteArray>
 #include <QCursor>
 #include <QPixmap>
+#include <QQuickWindow>
 #include <QtQml>
 
 HostCursor::HostCursor(QObject *parent) : QObject(parent) {}
@@ -75,11 +76,15 @@ void HostCursor::apply() {
         m_pixmap = loaded;
         m_loadedSource = m_source;
     }
-    QPixmap pixmap = m_pixmap;
+    // Render at the screen's pixel density (the bundled cursors are 64 px
+    // for a 32 px cursor) so the cursor stays sharp on HiDPI screens.
+    const qreal dpr = m_target->window() ? m_target->window()->devicePixelRatio() : 1.0;
     const int w = qMax(1, m_width), h = qMax(1, m_height);
-    if (pixmap.width() != w || pixmap.height() != h) {
-        pixmap = pixmap.scaled(w, h, Qt::KeepAspectRatio, Qt::FastTransformation);
+    const QSize device(qRound(w * dpr), qRound(h * dpr));
+    QPixmap pixmap = m_pixmap;
+    if (pixmap.size() != device) {
+        pixmap = pixmap.scaled(device, Qt::KeepAspectRatio, Qt::SmoothTransformation);
     }
-    m_target->setCursor(QCursor(pixmap, qBound(0, m_hotX, pixmap.width() - 1),
-                                qBound(0, m_hotY, pixmap.height() - 1)));
+    pixmap.setDevicePixelRatio(dpr);
+    m_target->setCursor(QCursor(pixmap, qBound(0, m_hotX, w - 1), qBound(0, m_hotY, h - 1)));
 }

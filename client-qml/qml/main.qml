@@ -174,14 +174,11 @@ ApplicationWindow {
         return allowed[kind] ? kind : "arrow";
     }
 
+    // Bibata Modern Classic, rendered at 64 px from assets/cursors/*.svg.
     function cursorAssetName(kind) {
         var normalized = normalizeCursorKind(kind);
         if (normalized === "unknown") normalized = "arrow";
-        if (normalized === "resize_ns") return "windows-aero-resize-ns.png";
-        if (normalized === "resize_ew") return "windows-aero-resize-ew.png";
-        if (normalized === "resize_nesw") return "windows-aero-resize-nesw.png";
-        if (normalized === "resize_nwse") return "windows-aero-resize-nwse.png";
-        return "windows-aero-" + normalized + ".png";
+        return normalized.replace("_", "-") + ".png";
     }
 
     function cursorSourceForKind(kind) {
@@ -195,16 +192,16 @@ ApplicationWindow {
     function cursorHotspotX(kind) {
         if (window.hasMatchingNativeCursor(kind)) return window.nativeCursorHotspotX;
         var normalized = normalizeCursorKind(kind);
-        if (normalized === "arrow" || normalized === "unknown") return 0;
-        if (normalized === "hand") return 6;
+        if (normalized === "arrow" || normalized === "unknown") return 7;
+        if (normalized === "hand") return 14;
         return 16;
     }
 
     function cursorHotspotY(kind) {
         if (window.hasMatchingNativeCursor(kind)) return window.nativeCursorHotspotY;
         var normalized = normalizeCursorKind(kind);
-        if (normalized === "arrow" || normalized === "unknown") return 0;
-        if (normalized === "hand") return 1;
+        if (normalized === "arrow" || normalized === "unknown") return 2;
+        if (normalized === "hand") return 2;
         return 16;
     }
 
@@ -723,34 +720,13 @@ ApplicationWindow {
             hotspotY: window.cursorHotspotY(window.hostCursorKind)
         }
 
-        // Dark outline glow for the Aero cursor — the white cursor assets
-        // are invisible on light backgrounds (e.g. text inputs) without
-        // an outline.  We use a soft radial gradient rectangle instead of
-        // Qt5Compat.GraphicalEffects (which may not be installed) to
-        // approximate the CSS drop-shadow() filter from the web client.
-        Rectangle {
-            id: hostCursorGlow
-            visible: hostCursorOverlay.visible && !window.hasMatchingNativeCursor(window.hostCursorKind)
-            x: hostCursorOverlay.x - 6
-            y: hostCursorOverlay.y - 6
-            width: hostCursorOverlay.width + 12
-            height: hostCursorOverlay.height + 12
-            radius: Math.min(width, height) / 2
-            gradient: Gradient {
-                GradientStop { position: 0.0; color: "#55000000" }
-                GradientStop { position: 0.6; color: "#22000000" }
-                GradientStop { position: 1.0; color: "transparent" }
-            }
-            z: 199
-        }
-
         Image {
             id: hostCursorOverlay
             source: window.hasMatchingNativeCursor(window.hostCursorKind) ? window.nativeCursorSource : window.cursorSourceForKind(window.hostCursorKind)
             width: window.hasMatchingNativeCursor(window.hostCursorKind) ? window.nativeCursorWidth : 32
             height: window.hasMatchingNativeCursor(window.hostCursorKind) ? window.nativeCursorHeight : 32
             fillMode: Image.PreserveAspectFit
-            smooth: false
+            smooth: true
             mipmap: false
             cache: false
             asynchronous: false
