@@ -6,7 +6,7 @@ import QtQuick.Shapes
 Rectangle {
     id: dashboardRoot
     anchors.fill: parent
-    color: "#0a0b10"
+    color: Theme.bg
 
     // Exposed properties/signals
     property string token: ""
@@ -135,28 +135,6 @@ Rectangle {
 
 
 
-    // Soft fading decorative orbs matching React Web ambient glow
-    Item {
-        id: blueOrb
-        x: -150; y: -150
-        width: 500; height: 500
-        z: 0
-        Rectangle { anchors.centerIn: parent; width: 500; height: 500; radius: 250; color: Qt.rgba(0/255, 240/255, 255/255, 0.005) }
-        Rectangle { anchors.centerIn: parent; width: 400; height: 400; radius: 200; color: Qt.rgba(0/255, 240/255, 255/255, 0.01) }
-        Rectangle { anchors.centerIn: parent; width: 300; height: 300; radius: 150; color: Qt.rgba(0/255, 240/255, 255/255, 0.025) }
-        Rectangle { anchors.centerIn: parent; width: 200; height: 200; radius: 100; color: Qt.rgba(0/255, 240/255, 255/255, 0.04) }
-    }
-    Item {
-        id: purpleOrb
-        x: parent.width - 350; y: parent.height - 350
-        width: 600; height: 600
-        z: 0
-        Rectangle { anchors.centerIn: parent; width: 600; height: 600; radius: 300; color: Qt.rgba(99/255, 102/255, 241/255, 0.005) }
-        Rectangle { anchors.centerIn: parent; width: 480; height: 480; radius: 240; color: Qt.rgba(99/255, 102/255, 241/255, 0.01) }
-        Rectangle { anchors.centerIn: parent; width: 360; height: 360; radius: 180; color: Qt.rgba(99/255, 102/255, 241/255, 0.025) }
-        Rectangle { anchors.centerIn: parent; width: 240; height: 240; radius: 120; color: Qt.rgba(99/255, 102/255, 241/255, 0.04) }
-    }
-
     // Main layout switcher: Login Page or Dashboard Page
     Loader {
         id: viewLoader
@@ -183,8 +161,8 @@ Rectangle {
                 width: 420
                 height: 440
                 radius: 20
-                color: Qt.rgba(15/255, 22/255, 38/255, 0.8)
-                border.color: Qt.rgba(255/255, 255/255, 255/255, 0.08)
+                color: Theme.surfaceA(0.8)
+                border.color: Theme.ink(0.08)
                 border.width: 1
 
                 Behavior on height {
@@ -199,17 +177,17 @@ Rectangle {
 
                     // Logo Title
                     Text {
-                        text: "L U N A R I S"
-                        font.pixelSize: 28
-                        font.bold: true
-                        color: "#00f0ff"
+                        text: "Welcome back"
+                        font.pixelSize: 22
+                        font.weight: Font.DemiBold
+                        color: Theme.textStrong
                         anchors.horizontalCenter: parent.horizontalCenter
                     }
 
                     Text {
-                        text: "Sign in to connect to hosts"
-                        font.pixelSize: 12
-                        color: "#94a3b8"
+                        text: "Access your remote desktop network"
+                        font.pixelSize: 13
+                        color: Theme.textMuted
                         anchors.horizontalCenter: parent.horizontalCenter
                     }
 
@@ -224,14 +202,14 @@ Rectangle {
                         Column {
                             width: parent.width
                             spacing: 6
-                            Text { text: "Signaling Server Host"; color: "#cbd5e1"; font.pixelSize: 11; font.bold: true }
+                            Text { text: "Signaling Server Host"; color: Theme.textMuted; font.pixelSize: 12; font.weight: Font.Medium }
                             Rectangle {
-                                width: parent.width; height: 38; color: "#0f172a"; radius: 8; border.color: serverInput.activeFocus ? "#00f0ff" : Qt.rgba(255, 255, 255, 0.08)
+                                width: parent.width; height: 38; color: Theme.surface; radius: Theme.radiusSm; border.color: serverInput.activeFocus ? Theme.accent : Theme.borderStrong
                                 border.width: 1
                                 TextInput {
                                     id: serverInput
                                     anchors.fill: parent; anchors.margins: 10
-                                    color: "#ffffff"; font.pixelSize: 13
+                                    color: Theme.textStrong; font.pixelSize: 13
                                     text: "http://127.0.0.1:8080"
                                     verticalAlignment: Text.AlignVCenter
                                     selectByMouse: true
@@ -247,14 +225,14 @@ Rectangle {
                         Column {
                             width: parent.width
                             spacing: 6
-                            Text { text: "Username"; color: "#cbd5e1"; font.pixelSize: 11; font.bold: true }
+                            Text { text: "Username"; color: Theme.textMuted; font.pixelSize: 12; font.weight: Font.Medium }
                             Rectangle {
-                                width: parent.width; height: 38; color: "#0f172a"; radius: 8; border.color: usernameInput.activeFocus ? "#00f0ff" : Qt.rgba(255, 255, 255, 0.08)
+                                width: parent.width; height: 38; color: Theme.surface; radius: Theme.radiusSm; border.color: usernameInput.activeFocus ? Theme.accent : Theme.borderStrong
                                 border.width: 1
                                 TextInput {
                                     id: usernameInput
                                     anchors.fill: parent; anchors.margins: 10
-                                    color: "#ffffff"; font.pixelSize: 13
+                                    color: Theme.textStrong; font.pixelSize: 13
                                     text: ""
                                     verticalAlignment: Text.AlignVCenter
                                     selectByMouse: true
@@ -270,14 +248,14 @@ Rectangle {
                         Column {
                             width: parent.width
                             spacing: 6
-                            Text { text: "Password"; color: "#cbd5e1"; font.pixelSize: 11; font.bold: true }
+                            Text { text: "Password"; color: Theme.textMuted; font.pixelSize: 12; font.weight: Font.Medium }
                             Rectangle {
-                                width: parent.width; height: 38; color: "#0f172a"; radius: 8; border.color: passwordInput.activeFocus ? "#00f0ff" : Qt.rgba(255, 255, 255, 0.08)
+                                width: parent.width; height: 38; color: Theme.surface; radius: Theme.radiusSm; border.color: passwordInput.activeFocus ? Theme.accent : Theme.borderStrong
                                 border.width: 1
                                 TextInput {
                                     id: passwordInput
                                     anchors.fill: parent; anchors.margins: 10
-                                    color: "#ffffff"; font.pixelSize: 13
+                                    color: Theme.textStrong; font.pixelSize: 13
                                     text: ""
                                     echoMode: TextInput.Password
                                     verticalAlignment: Text.AlignVCenter
@@ -322,18 +300,17 @@ Rectangle {
                         background: Rectangle {
                             implicitHeight: 40
                             radius: 8
-                            color: submitButton.hovered ? "#00e0ff" : "#00f0ff"
+                            color: submitButton.hovered ? Theme.accentHover : Theme.accent
                             opacity: dashboardRoot.authLoading ? 0.6 : 1.0
                         }
 
                         contentItem: Item {
                             anchors.fill: parent
                             Text {
-                                text: dashboardRoot.authLoading ? "Authenticating..." : "LOGIN"
-                                color: "#000000"
-                                font.bold: true
+                                text: dashboardRoot.authLoading ? "Signing in..." : "Sign in"
+                                color: Theme.textOnAccent
+                                font.weight: Font.DemiBold
                                 font.pixelSize: 13
-                                font.letterSpacing: 1
                                 anchors.centerIn: parent
                             }
                         }
@@ -360,8 +337,8 @@ Rectangle {
                 anchors.left: parent.left
                 anchors.right: parent.right
                 anchors.top: parent.top
-                color: "#0a0b12"
-                border.color: Qt.rgba(255/255, 255/255, 255/255, 0.03)
+                color: Theme.bg
+                border.color: Theme.ink(0.03)
                 border.width: 1
 
                 // Allow dragging the window by holding and dragging the navbar
@@ -381,27 +358,30 @@ Rectangle {
                     anchors.verticalCenter: parent.verticalCenter
                     spacing: 12
 
-                    Text {
-                        text: "$"
-                        font.pixelSize: 22
-                        font.bold: true
-                        color: "#00f0ff"
+                    Image {
+                        source: "icon.png"
+                        width: 26; height: 26
+                        sourceSize.width: 52; sourceSize.height: 52
+                        smooth: true
+                        anchors.verticalCenter: parent.verticalCenter
                     }
 
                     Text {
                         text: "Lunaris"
-                        font.pixelSize: 18
-                        font.bold: true
-                        color: "#ffffff"
+                        font.pixelSize: 15
+                        font.weight: Font.DemiBold
+                        color: Theme.textStrong
+                        anchors.verticalCenter: parent.verticalCenter
                     }
 
                     Rectangle {
                         width: 52; height: 18; radius: 9
-                        color: Qt.rgba(0/255, 240/255, 255/255, 0.15)
+                        color: Theme.surface2
+                        border.color: Theme.border
                         anchors.verticalCenter: parent.verticalCenter
                         Text {
                             text: "v0.1.0"
-                            color: "#00f0ff"
+                            color: Theme.textMuted
                             font.pixelSize: 10
                             font.bold: true
                             anchors.centerIn: parent
@@ -416,41 +396,44 @@ Rectangle {
                     anchors.verticalCenter: parent.verticalCenter
                     spacing: 20
 
-                    // SERVER Info
+                    // Theme toggle: system -> light -> dark
+                    Button {
+                        id: themeBtn
+                        anchors.verticalCenter: parent.verticalCenter
+                        hoverEnabled: true
+                        onClicked: Theme.mode = Theme.mode === "system" ? "light" : (Theme.mode === "light" ? "dark" : "system")
+                        ToolTip.visible: hovered
+                        ToolTip.text: "Theme: " + Theme.mode
+                        background: Rectangle {
+                            implicitWidth: 32; implicitHeight: 32; radius: Theme.radiusSm
+                            color: themeBtn.hovered ? Theme.surface2 : "transparent"
+                            border.color: Theme.border; border.width: 1
+                        }
+                        contentItem: Text {
+                            text: Theme.mode === "light" ? "\u2600" : (Theme.mode === "dark" ? "\u263E" : "A")
+                            color: Theme.textMuted
+                            font.pixelSize: 14
+                            horizontalAlignment: Text.AlignHCenter
+                            verticalAlignment: Text.AlignVCenter
+                        }
+                    }
+
+                    // Signed-in user and server
                     Column {
                         anchors.verticalCenter: parent.verticalCenter
-                        spacing: 2
+                        spacing: 1
                         Text {
-                            text: "SERVER:"
-                            font.pixelSize: 9
-                            font.bold: true
-                            color: "#64748b"
+                            text: dashboardRoot.username
+                            font.pixelSize: 13
+                            font.weight: Font.DemiBold
+                            color: Theme.textStrong
                             anchors.right: parent.right
                         }
                         Text {
                             text: dashboardRoot.serverUrl
-                            font.pixelSize: 12
-                            font.bold: true
-                            color: "#00f0ff"
-                        }
-                    }
-
-                    // USER Info
-                    Column {
-                        anchors.verticalCenter: parent.verticalCenter
-                        spacing: 2
-                        Text {
-                            text: "USER:"
-                            font.pixelSize: 9
-                            font.bold: true
-                            color: "#64748b"
+                            font.pixelSize: 11
+                            color: Theme.textSubtle
                             anchors.right: parent.right
-                        }
-                        Text {
-                            text: dashboardRoot.username
-                            font.pixelSize: 12
-                            font.bold: true
-                            color: "#ffffff"
                         }
                     }
 
@@ -468,7 +451,7 @@ Rectangle {
                         background: Rectangle {
                             implicitWidth: 32; implicitHeight: 32; radius: 6
                             color: logoutBtn.hovered ? Qt.rgba(239/255, 68/255, 68/255, 0.1) : "transparent"
-                            border.color: logoutBtn.hovered ? "#ef4444" : Qt.rgba(255,255,255,0.08)
+                            border.color: logoutBtn.hovered ? "#ef4444" : Theme.ink(0.08)
                             border.width: 1
                         }
                         contentItem: Item {
@@ -479,19 +462,19 @@ Rectangle {
                                 anchors.centerIn: parent
                                 Rectangle {
                                     x: 1; y: 1; width: 10; height: 14; radius: 1.5
-                                    color: "transparent"; border.color: logoutBtn.hovered ? "#ef4444" : "#cbd5e1"; border.width: 1.5
+                                    color: "transparent"; border.color: logoutBtn.hovered ? "#ef4444" : Theme.text; border.width: 1.5
                                 }
                                 Rectangle {
-                                    x: 10; y: 3.5; width: 2; height: 9; color: "#0a0b12"
+                                    x: 10; y: 3.5; width: 2; height: 9; color: Theme.bg
                                 }
                                 Rectangle {
-                                    x: 6; y: 7.25; width: 8; height: 1.5; color: logoutBtn.hovered ? "#ef4444" : "#cbd5e1"
+                                    x: 6; y: 7.25; width: 8; height: 1.5; color: logoutBtn.hovered ? "#ef4444" : Theme.text
                                 }
                                 Rectangle {
-                                    x: 10; y: 4.5; width: 1.5; height: 4.5; rotation: 45; color: logoutBtn.hovered ? "#ef4444" : "#cbd5e1"; antialiasing: true
+                                    x: 10; y: 4.5; width: 1.5; height: 4.5; rotation: 45; color: logoutBtn.hovered ? "#ef4444" : Theme.text; antialiasing: true
                                 }
                                 Rectangle {
-                                    x: 10; y: 7; width: 1.5; height: 4.5; rotation: -45; color: logoutBtn.hovered ? "#ef4444" : "#cbd5e1"; antialiasing: true
+                                    x: 10; y: 7; width: 1.5; height: 4.5; rotation: -45; color: logoutBtn.hovered ? "#ef4444" : Theme.text; antialiasing: true
                                 }
                             }
                         }
@@ -541,12 +524,12 @@ Rectangle {
                         text: "Device Directory"
                         font.pixelSize: 24
                         font.bold: true
-                        color: "#ffffff"
+                        color: Theme.textStrong
                     }
                     Text {
                         text: "Manage and connect to active remote agent streams"
                         font.pixelSize: 13
-                        color: "#64748b"
+                        color: Theme.textSubtle
                     }
                 }
 
@@ -564,13 +547,13 @@ Rectangle {
                         }
                         background: Rectangle {
                             implicitWidth: 120; implicitHeight: 38; radius: 8
-                            color: syncBtn.hovered ? Qt.rgba(255,255,255,0.05) : "transparent"
-                            border.color: syncBtn.hovered ? "#00f0ff" : Qt.rgba(255,255,255,0.15)
+                            color: syncBtn.hovered ? Theme.ink(0.05) : "transparent"
+                            border.color: syncBtn.hovered ? Theme.accentFg : Theme.ink(0.15)
                             border.width: 1
                         }
                         contentItem: Text {
                             text: "Sync Devices"
-                            color: "#cbd5e1"
+                            color: Theme.text
                             font.bold: true
                             font.pixelSize: 13
                             horizontalAlignment: Text.AlignHCenter
@@ -604,7 +587,7 @@ Rectangle {
                         width: 260
                         height: 180
 
-                        property bool isHostHovered: cardMouseArea.containsMouse || gearBtn.hovered || deleteBtn.hovered
+                        property bool isHostHovered: cardMouseArea.containsMouse || gearBtn.hovered || deleteBtn.hovered || connectBtn.hovered
 
                         // Static background click handler to avoid hover-translation flicker
                         MouseArea {
@@ -627,26 +610,11 @@ Rectangle {
                             width: 240
                             height: 160
                             radius: 14
-                            color: Qt.rgba(15/255, 22/255, 38/255, 0.8)
-                            border.color: isHostHovered ? Qt.rgba(0, 240/255, 255/255, 0.3) : Qt.rgba(255, 255, 255, 0.08)
+                            color: Theme.surface
+                            border.color: isHostHovered ? Theme.borderStrong : Theme.border
                             border.width: 1
 
-                            y: isHostHovered ? -4 : 0
-                            Behavior on y { NumberAnimation { duration: 150; easing.type: Easing.OutCubic } }
                             Behavior on border.color { ColorAnimation { duration: 150 } }
-
-                            // Center-fade horizontal gradient glowing top edge matching React
-                            Rectangle {
-                                width: parent.width; height: 3
-                                anchors.top: parent.top
-                                radius: 3
-                                gradient: Gradient {
-                                    orientation: Gradient.Horizontal
-                                    GradientStop { position: 0.0; color: "transparent" }
-                                    GradientStop { position: 0.5; color: modelData.status === "Online" ? "#00f0ff" : (modelData.status === "Busy" ? "#f59e0b" : "#ef4444") }
-                                    GradientStop { position: 1.0; color: "transparent" }
-                                }
-                            }
 
                             // Device Card content
                             Item {
@@ -665,7 +633,7 @@ Rectangle {
                                         text: modelData.name
                                         font.pixelSize: 18
                                         font.bold: true
-                                        color: "#ffffff"
+                                        color: Theme.textStrong
                                         elide: Text.ElideRight
                                         width: parent.width
                                     }
@@ -673,7 +641,7 @@ Rectangle {
                                         text: "ID: " + modelData.id.substring(0, 8) + "..."
                                         font.pixelSize: 11
                                         font.family: "monospace"
-                                        color: "#64748b"
+                                        color: Theme.textSubtle
                                     }
                                 }
 
@@ -682,7 +650,7 @@ Rectangle {
                                     width: parent.width; height: 1
                                     anchors.top: hostInfo.bottom
                                     anchors.topMargin: 8
-                                    color: Qt.rgba(255, 255, 255, 0.03)
+                                    color: Theme.ink(0.03)
                                 }
 
                                 // Detail rows inside standard border-bracket body
@@ -695,13 +663,13 @@ Rectangle {
 
                                     Row {
                                         width: parent.width
-                                        Text { text: "IP Address"; font.pixelSize: 11; color: "#64748b"; width: 80 }
-                                        Text { text: modelData.ip_address || "Connected via Agent"; font.pixelSize: 11; font.bold: true; font.family: "monospace"; color: "#cbd5e1" }
+                                        Text { text: "IP Address"; font.pixelSize: 11; color: Theme.textSubtle; width: 80 }
+                                        Text { text: modelData.ip_address || "Connected via Agent"; font.pixelSize: 11; font.bold: true; font.family: "monospace"; color: Theme.text }
                                     }
 
                                     Row {
                                         width: parent.width
-                                        Text { text: "Status"; font.pixelSize: 11; color: "#64748b"; width: 80 }
+                                        Text { text: "Status"; font.pixelSize: 11; color: Theme.textSubtle; width: 80 }
                                         Row {
                                             spacing: 6
                                             Rectangle {
@@ -716,6 +684,33 @@ Rectangle {
                                                 color: modelData.status === "Online" ? "#22c55e" : (modelData.status === "Busy" ? "#f59e0b" : "#ef4444")
                                             }
                                         }
+                                    }
+                                }
+
+                                // Primary action (matches the web client's "Connect")
+                                Button {
+                                    id: connectBtn
+                                    visible: modelData.status === "Online"
+                                    anchors.left: parent.left
+                                    anchors.bottom: parent.bottom
+                                    z: 10
+                                    onClicked: {
+                                        dashboardRoot.selectedHost = modelData;
+                                        dashboardRoot.appsLoading = true;
+                                        dashboardRoot.appsList = [];
+                                        bridge.fetchApps(modelData.id);
+                                    }
+                                    background: Rectangle {
+                                        implicitWidth: 84; implicitHeight: 32; radius: Theme.radiusSm
+                                        color: connectBtn.hovered ? Theme.accentHover : Theme.accent
+                                    }
+                                    contentItem: Text {
+                                        text: "Connect"
+                                        color: Theme.textOnAccent
+                                        font.pixelSize: 13
+                                        font.weight: Font.DemiBold
+                                        horizontalAlignment: Text.AlignHCenter
+                                        verticalAlignment: Text.AlignVCenter
                                     }
                                 }
 
@@ -756,8 +751,8 @@ Rectangle {
                                         }
                                         background: Rectangle {
                                             implicitWidth: 32; implicitHeight: 32; radius: 6
-                                            color: gearBtn.hovered ? Qt.rgba(0/255, 240/255, 255/255, 0.1) : "transparent"
-                                            border.color: gearBtn.hovered ? "#00f0ff" : "transparent"
+                                            color: gearBtn.hovered ? Theme.accentA(0.1) : "transparent"
+                                            border.color: gearBtn.hovered ? Theme.accentFg : "transparent"
                                             border.width: 1
                                         }
                                         contentItem: Item {
@@ -767,17 +762,17 @@ Rectangle {
                                                 anchors.centerIn: parent
                                                 Rectangle {
                                                     anchors.centerIn: parent; width: 10; height: 10; radius: 5
-                                                    color: "transparent"; border.color: gearBtn.hovered ? "#00f0ff" : "#cbd5e1"; border.width: 1.8
+                                                    color: "transparent"; border.color: gearBtn.hovered ? Theme.accentFg : Theme.text; border.width: 1.8
                                                 }
                                                 Repeater {
                                                     model: 8
                                                     Rectangle {
                                                         anchors.centerIn: parent; width: 2.2; height: 13.5
-                                                        color: gearBtn.hovered ? "#00f0ff" : "#cbd5e1"; rotation: index * 45; antialiasing: true
+                                                        color: gearBtn.hovered ? Theme.accent : Theme.text; rotation: index * 45; antialiasing: true
                                                     }
                                                 }
                                                 Rectangle {
-                                                    anchors.centerIn: parent; width: 6.4; height: 6.4; radius: 3.2; color: "#0f172a"
+                                                    anchors.centerIn: parent; width: 6.4; height: 6.4; radius: 3.2; color: Theme.surface
                                                 }
                                             }
                                         }
@@ -803,16 +798,16 @@ Rectangle {
                                                 Rectangle {
                                                     x: 4; y: 5; width: 8; height: 9; radius: 1
                                                     color: "transparent"
-                                                    border.color: deleteBtn.hovered ? "#ef4444" : "#cbd5e1"
+                                                    border.color: deleteBtn.hovered ? "#ef4444" : Theme.text
                                                     border.width: 1.4
                                                 }
                                                 Rectangle {
                                                     x: 3; y: 3; width: 10; height: 1.5; radius: 0.75
-                                                    color: deleteBtn.hovered ? "#ef4444" : "#cbd5e1"
+                                                    color: deleteBtn.hovered ? "#ef4444" : Theme.text
                                                 }
-                                                Rectangle { x: 6; y: 1.5; width: 4; height: 1.4; radius: 0.7; color: deleteBtn.hovered ? "#ef4444" : "#cbd5e1" }
-                                                Rectangle { x: 6.2; y: 7; width: 1.2; height: 5; radius: 0.6; color: deleteBtn.hovered ? "#ef4444" : "#cbd5e1" }
-                                                Rectangle { x: 9; y: 7; width: 1.2; height: 5; radius: 0.6; color: deleteBtn.hovered ? "#ef4444" : "#cbd5e1" }
+                                                Rectangle { x: 6; y: 1.5; width: 4; height: 1.4; radius: 0.7; color: deleteBtn.hovered ? "#ef4444" : Theme.text }
+                                                Rectangle { x: 6.2; y: 7; width: 1.2; height: 5; radius: 0.6; color: deleteBtn.hovered ? "#ef4444" : Theme.text }
+                                                Rectangle { x: 9; y: 7; width: 1.2; height: 5; radius: 0.6; color: deleteBtn.hovered ? "#ef4444" : Theme.text }
                                             }
                                         }
                                     }
@@ -829,8 +824,8 @@ Rectangle {
                 anchors.centerIn: parent
                 visible: dashboardRoot.hostsList.length === 0 && !dashboardRoot.hostsLoading
                 spacing: 16
-                Text { text: "No agents connected yet"; font.pixelSize: 16; font.bold: true; color: "#94a3b8"; anchors.horizontalCenter: parent.horizontalCenter }
-                Text { text: "Agents will appear here automatically once registered"; font.pixelSize: 12; color: "#64748b"; anchors.horizontalCenter: parent.horizontalCenter }
+                Text { text: "No agents connected yet"; font.pixelSize: 16; font.bold: true; color: Theme.textMuted; anchors.horizontalCenter: parent.horizontalCenter }
+                Text { text: "Agents will appear here automatically once registered"; font.pixelSize: 12; color: Theme.textSubtle; anchors.horizontalCenter: parent.horizontalCenter }
             }
         }
     }
@@ -860,8 +855,8 @@ Rectangle {
                     }
                     background: Rectangle {
                         implicitWidth: 36; implicitHeight: 36; radius: 18
-                        color: backBtn.hovered ? Qt.rgba(0, 240/255, 255/255, 0.1) : "transparent"
-                        border.color: backBtn.hovered ? "#00f0ff" : "transparent"
+                        color: backBtn.hovered ? Theme.accentA(0.1) : "transparent"
+                        border.color: backBtn.hovered ? Theme.accentFg : "transparent"
                         border.width: 1
                         Behavior on color { ColorAnimation { duration: 150 } }
                         Behavior on border.color { ColorAnimation { duration: 150 } }
@@ -873,7 +868,7 @@ Rectangle {
                             anchors.centerIn: parent
                             width: 8; height: 12
                             
-                            property color arrowColor: backBtn.hovered ? "#00f0ff" : "#cbd5e1"
+                            property color arrowColor: backBtn.hovered ? Theme.accentFg : Theme.text
                             
                             ShapePath {
                                 strokeColor: backArrow.arrowColor
@@ -896,9 +891,9 @@ Rectangle {
                     anchors.verticalCenter: backBtn.verticalCenter
                     Row {
                         spacing: 6
-                        Text { text: "Device Directory"; font.pixelSize: 12; color: "#64748b" }
-                        Text { text: "/"; font.pixelSize: 12; color: "#64748b" }
-                        Text { text: dashboardRoot.selectedHost.name; font.pixelSize: 12; font.bold: true; color: "#00f0ff" }
+                        Text { text: "Device Directory"; font.pixelSize: 12; color: Theme.textSubtle }
+                        Text { text: "/"; font.pixelSize: 12; color: Theme.textSubtle }
+                        Text { text: dashboardRoot.selectedHost.name; font.pixelSize: 12; font.bold: true; color: Theme.accentFg }
                     }
                 }
             }
@@ -908,7 +903,7 @@ Rectangle {
                 text: "Applications Directory"
                 font.pixelSize: 22
                 font.bold: true
-                color: "#ffffff"
+                color: Theme.textStrong
                 anchors.top: backHeader.bottom
                 anchors.topMargin: 12
             }
@@ -917,7 +912,7 @@ Rectangle {
                 id: appsSubtitle
                 text: "Select and stream apps from " + dashboardRoot.selectedHost.name
                 font.pixelSize: 12
-                color: "#64748b"
+                color: Theme.textSubtle
                 anchors.top: appsTitle.bottom
                 anchors.topMargin: 4
             }
@@ -979,40 +974,35 @@ Rectangle {
                             id: appCard
                             width: 180
                             height: 250
-                            radius: 20
+                            radius: Theme.radiusLg
                             clip: true
-                            color: "#0d0f17"
-                            border.color: isCardHovered ? "#00f0ff" : Qt.rgba(255, 255, 255, 0.08)
-                            border.width: isCardHovered ? 1.5 : 1
+                            color: isCardHovered ? Theme.surface2 : Theme.surface
+                            Behavior on color { ColorAnimation { duration: 120 } }
 
-                            // y-axis lift animation on hover
-                            y: isCardHovered ? -4 : 0
-                            Behavior on y { NumberAnimation { duration: 150; easing.type: Easing.OutCubic } }
-                            Behavior on border.color { ColorAnimation { duration: 150 } }
-
-                            // Fallback gradient background
+                            // Border drawn on top so cover images never hide it
                             Rectangle {
                                 anchors.fill: parent
-                                gradient: Gradient {
-                                    GradientStop { position: 0.0; color: "#0d0f17" }
-                                    GradientStop { position: 1.0; color: "#181b26" }
-                                }
-                                visible: !modelData.icon_base64
+                                radius: parent.radius
+                                color: "transparent"
+                                border.color: isCardHovered ? Theme.accentFg : Theme.border
+                                border.width: 1
+                                z: 20
+                                Behavior on border.color { ColorAnimation { duration: 120 } }
                             }
 
                             // Base64 cover image if exists
                             Image {
                                 anchors.fill: parent
                                 fillMode: Image.PreserveAspectCrop
-                                visible: modelData.icon_base64 && modelData.icon_base64.length > 0
+                                visible: !!modelData.icon_base64
                                 source: modelData.icon_base64 ? "data:image/png;base64," + modelData.icon_base64 : ""
                             }
 
                             // Glassmorphic overlay for cover images on hover
                             Rectangle {
                                 anchors.fill: parent
-                                color: Qt.rgba(10/255, 12/255, 20/255, 0.75)
-                                visible: modelData.icon_base64 && modelData.icon_base64.length > 0
+                                color: Theme.surfaceA(0.75)
+                                visible: !!modelData.icon_base64
                                 opacity: isCardHovered ? 1.0 : 0.0
                                 z: 4
                                 Behavior on opacity { NumberAnimation { duration: 200 } }
@@ -1030,8 +1020,8 @@ Rectangle {
                                     id: monitorScreen
                                     width: 82; height: 52; radius: 7
                                     color: "transparent"
-                                    border.color: Qt.rgba(255, 255, 255, 0.12)
-                                    border.width: 3.5
+                                    border.color: Theme.ink(0.22)
+                                    border.width: 3
                                     anchors.centerIn: parent
                                 }
 
@@ -1039,7 +1029,7 @@ Rectangle {
                                 Rectangle {
                                     id: monitorStand
                                     width: 14; height: 12
-                                    color: Qt.rgba(255, 255, 255, 0.12)
+                                    color: Theme.ink(0.22)
                                     anchors.top: monitorScreen.bottom
                                     anchors.horizontalCenter: monitorScreen.horizontalCenter
                                 }
@@ -1047,8 +1037,8 @@ Rectangle {
                                 // Monitor Base
                                 Rectangle {
                                     id: monitorBase
-                                    width: 36; height: 3.5; radius: 1
-                                    color: Qt.rgba(255, 255, 255, 0.12)
+                                    width: 36; height: 3; radius: 1
+                                    color: Theme.ink(0.22)
                                     anchors.top: monitorStand.bottom
                                     anchors.horizontalCenter: monitorScreen.horizontalCenter
                                 }
@@ -1059,8 +1049,8 @@ Rectangle {
                                 id: titleText
                                 text: modelData.title
                                 font.pixelSize: 14
-                                font.bold: true
-                                color: "#ffffff"
+                                font.weight: Font.DemiBold
+                                color: Theme.textStrong
                                 anchors.bottom: parent.bottom
                                 anchors.bottomMargin: 24
                                 anchors.horizontalCenter: parent.horizontalCenter
@@ -1069,22 +1059,6 @@ Rectangle {
                                 horizontalAlignment: Text.AlignHCenter
                                 width: parent.width - 30
                                 wrapMode: Text.Wrap
-                            }
-
-                            // Watermark Text (uppercase behind title)
-                            Text {
-                                id: watermarkText
-                                text: modelData.title ? modelData.title.toUpperCase() : ""
-                                font.pixelSize: 28
-                                font.bold: true
-                                font.letterSpacing: 2
-                                color: Qt.rgba(255, 255, 255, 0.03)
-                                anchors.centerIn: titleText
-                                z: 3
-                                visible: !modelData.icon_base64 || isCardHovered
-                                horizontalAlignment: Text.AlignHCenter
-                                width: parent.width - 20
-                                elide: Text.ElideRight
                             }
 
                             // Play Button (Just the play triangle in the center, circle border/background removed)
@@ -1106,7 +1080,7 @@ Rectangle {
                                     width: 24; height: 24
                                     antialiasing: true
                                     
-                                    property color triangleColor: playMouse.containsMouse ? "#00f0ff" : "#ffffff"
+                                    property color triangleColor: playMouse.containsMouse ? Theme.accentFg : Theme.textStrong
                                     onTriangleColorChanged: requestPaint()
 
                                     onPaint: {
@@ -1158,7 +1132,7 @@ Rectangle {
                 anchors.centerIn: parent
                 visible: dashboardRoot.appsList.length === 0 && !dashboardRoot.appsLoading
                 spacing: 12
-                Text { text: "No games/apps available"; font.pixelSize: 14; color: "#94a3b8"; anchors.horizontalCenter: parent.horizontalCenter }
+                Text { text: "No games/apps available"; font.pixelSize: 14; color: Theme.textMuted; anchors.horizontalCenter: parent.horizontalCenter }
             }
         }
     }
@@ -1168,7 +1142,7 @@ Rectangle {
         anchors.fill: parent
         z: 1001
         visible: dashboardRoot.pendingDeleteHost !== null
-        color: Qt.rgba(4/255, 6/255, 10/255, 0.78)
+        color: Theme.surfaceA(0.78)
 
         MouseArea {
             anchors.fill: parent
@@ -1181,8 +1155,8 @@ Rectangle {
             height: 190
             anchors.centerIn: parent
             radius: 14
-            color: "#0f1626"
-            border.color: Qt.rgba(255, 255, 255, 0.10)
+            color: Theme.surface
+            border.color: Theme.ink(0.10)
             border.width: 1
 
             MouseArea { anchors.fill: parent }
@@ -1218,14 +1192,14 @@ Rectangle {
 
                 Text {
                     text: "Delete Host"
-                    color: "#ffffff"
+                    color: Theme.textStrong
                     font.pixelSize: 18
                     font.bold: true
                 }
                 Text {
                     width: parent.width
                     wrapMode: Text.Wrap
-                    color: "#cbd5e1"
+                    color: Theme.text
                     font.pixelSize: 13
                     lineHeight: 1.25
                     text: dashboardRoot.pendingDeleteHost
@@ -1247,11 +1221,11 @@ Rectangle {
                     onClicked: dashboardRoot.pendingDeleteHost = null
                     background: Rectangle {
                         implicitWidth: 96; implicitHeight: 36; radius: 8
-                        color: cancelDeleteBtn.hovered ? Qt.rgba(255, 255, 255, 0.05) : "transparent"
-                        border.color: Qt.rgba(255, 255, 255, 0.16)
+                        color: cancelDeleteBtn.hovered ? Theme.ink(0.05) : "transparent"
+                        border.color: Theme.ink(0.16)
                         border.width: 1
                     }
-                    contentItem: Text { text: cancelDeleteBtn.text; color: cancelDeleteBtn.hovered ? "#ffffff" : "#cbd5e1"; font.bold: true; font.pixelSize: 13; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                    contentItem: Text { text: cancelDeleteBtn.text; color: cancelDeleteBtn.hovered ? Theme.textStrong : Theme.text; font.bold: true; font.pixelSize: 13; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                 }
 
                 Button {
@@ -1270,7 +1244,7 @@ Rectangle {
                         border.color: Qt.rgba(239/255, 68/255, 68/255, 0.35)
                         border.width: 1
                     }
-                    contentItem: Text { text: confirmDeleteBtn.text; color: "#ffffff"; font.bold: true; font.pixelSize: 13; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                    contentItem: Text { text: confirmDeleteBtn.text; color: Theme.textStrong; font.bold: true; font.pixelSize: 13; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                 }
             }
         }

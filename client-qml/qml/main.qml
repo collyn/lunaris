@@ -12,7 +12,7 @@ ApplicationWindow {
     visible: false
     flags: Qt.Window
     title: "Lunaris Player Client"
-    color: window.isStreamMode ? "#000000" : "#0a0b10"
+    color: window.isStreamMode ? "#000000" : Theme.bg
 
     property bool exitRequested: false
 
@@ -119,6 +119,8 @@ ApplicationWindow {
     property int maxQueueLag: 0
     property string connectionType: "P2P (Direct)"
     property string activeEncoderName: "Unknown"
+    property string activeDisplayId: ""
+    property string activeDisplayName: ""
     property string activeEncoderHw: "Unknown"
     property string agentGpuInfo: "Unknown"
     property string requestedEncoder: "auto"
@@ -770,8 +772,8 @@ ApplicationWindow {
         width: 280
         height: 416
         radius: 16
-        color: Qt.rgba(20/255, 20/255, 20/255, 0.6)
-        border.color: Qt.rgba(255/255, 255/255, 255/255, 0.08)
+        color: Theme.live.surfaceA(0.6)
+        border.color: Theme.live.ink(0.08)
         border.width: 1
 
         Column {
@@ -784,12 +786,12 @@ ApplicationWindow {
                 font.pixelSize: 10
                 font.bold: true
                 font.letterSpacing: 1.5
-                color: "#94a3b8"
+                color: Theme.live.textMuted
             }
 
             Rectangle {
                 height: 1
-                color: Qt.rgba(255/255, 255/255, 255/255, 0.08)
+                color: Theme.live.ink(0.08)
                 anchors.left: parent.left
                 anchors.right: parent.right
             }
@@ -798,63 +800,63 @@ ApplicationWindow {
                 height: 16
                 anchors.left: parent.left
                 anchors.right: parent.right
-                Text { text: "Ping (RTT)"; color: "#94a3b8"; font.pixelSize: 11; font.bold: true; anchors.left: parent.left }
-                Text { text: window.pingMs.toFixed(1) + " ms"; color: "#ffffff"; font.pixelSize: 11; font.bold: true; anchors.right: parent.right }
+                Text { text: "Ping (RTT)"; color: Theme.live.textMuted; font.pixelSize: 11; font.bold: true; anchors.left: parent.left }
+                Text { text: window.pingMs.toFixed(1) + " ms"; color: Theme.live.textStrong; font.pixelSize: 11; font.bold: true; anchors.right: parent.right }
             }
 
             Item {
                 height: 16
                 anchors.left: parent.left
                 anchors.right: parent.right
-                Text { text: "Decode Latency"; color: "#94a3b8"; font.pixelSize: 11; font.bold: true; anchors.left: parent.left }
-                Text { text: window.decodeLatencyMs.toFixed(1) + " ms"; color: "#ffffff"; font.pixelSize: 11; font.bold: true; anchors.right: parent.right }
+                Text { text: "Decode Latency"; color: Theme.live.textMuted; font.pixelSize: 11; font.bold: true; anchors.left: parent.left }
+                Text { text: window.decodeLatencyMs.toFixed(1) + " ms"; color: Theme.live.textStrong; font.pixelSize: 11; font.bold: true; anchors.right: parent.right }
             }
 
             Item {
                 height: 16
                 anchors.left: parent.left
                 anchors.right: parent.right
-                Text { text: "FPS"; color: "#94a3b8"; font.pixelSize: 11; font.bold: true; anchors.left: parent.left }
-                Text { text: window.fps.toFixed(0); color: "#ffffff"; font.pixelSize: 11; font.bold: true; anchors.right: parent.right }
+                Text { text: "FPS"; color: Theme.live.textMuted; font.pixelSize: 11; font.bold: true; anchors.left: parent.left }
+                Text { text: window.fps.toFixed(0); color: Theme.live.textStrong; font.pixelSize: 11; font.bold: true; anchors.right: parent.right }
             }
 
             Item {
                 height: 16
                 anchors.left: parent.left
                 anchors.right: parent.right
-                Text { text: "Bitrate"; color: "#94a3b8"; font.pixelSize: 11; font.bold: true; anchors.left: parent.left }
-                Text { text: window.bitrateKbps.toFixed(0) + " Kbps"; color: "#ffffff"; font.pixelSize: 11; font.bold: true; anchors.right: parent.right }
+                Text { text: "Bitrate"; color: Theme.live.textMuted; font.pixelSize: 11; font.bold: true; anchors.left: parent.left }
+                Text { text: window.bitrateKbps.toFixed(0) + " Kbps"; color: Theme.live.textStrong; font.pixelSize: 11; font.bold: true; anchors.right: parent.right }
             }
 
             Item {
                 height: 16
                 anchors.left: parent.left
                 anchors.right: parent.right
-                Text { text: "Requested Codec"; color: "#94a3b8"; font.pixelSize: 11; font.bold: true; anchors.left: parent.left }
-                Text { text: window.requestedCodec.toUpperCase(); color: "#ffffff"; font.pixelSize: 11; font.bold: true; anchors.right: parent.right }
+                Text { text: "Requested Codec"; color: Theme.live.textMuted; font.pixelSize: 11; font.bold: true; anchors.left: parent.left }
+                Text { text: window.requestedCodec.toUpperCase(); color: Theme.live.textStrong; font.pixelSize: 11; font.bold: true; anchors.right: parent.right }
             }
 
             Item {
                 height: 16
                 anchors.left: parent.left
                 anchors.right: parent.right
-                Text { text: "Negotiated Codec"; color: "#94a3b8"; font.pixelSize: 11; font.bold: true; anchors.left: parent.left }
-                Text { text: window.activeCodec.toUpperCase(); color: "#ffffff"; font.pixelSize: 11; font.bold: true; anchors.right: parent.right }
+                Text { text: "Negotiated Codec"; color: Theme.live.textMuted; font.pixelSize: 11; font.bold: true; anchors.left: parent.left }
+                Text { text: window.activeCodec.toUpperCase(); color: Theme.live.textStrong; font.pixelSize: 11; font.bold: true; anchors.right: parent.right }
             }
 
             Item {
                 height: 16
                 anchors.left: parent.left
                 anchors.right: parent.right
-                Text { text: "Decode"; color: "#94a3b8"; font.pixelSize: 11; font.bold: true; anchors.left: parent.left }
-                Text { text: window.activeDecodeBackend; color: "#ffffff"; font.pixelSize: 11; font.bold: true; anchors.right: parent.right; elide: Text.ElideLeft; width: 165; horizontalAlignment: Text.AlignRight }
+                Text { text: "Decode"; color: Theme.live.textMuted; font.pixelSize: 11; font.bold: true; anchors.left: parent.left }
+                Text { text: window.activeDecodeBackend; color: Theme.live.textStrong; font.pixelSize: 11; font.bold: true; anchors.right: parent.right; elide: Text.ElideLeft; width: 165; horizontalAlignment: Text.AlignRight }
             }
 
             Item {
                 height: 16
                 anchors.left: parent.left
                 anchors.right: parent.right
-                Text { text: "Present"; color: "#94a3b8"; font.pixelSize: 11; font.bold: true; anchors.left: parent.left }
+                Text { text: "Present"; color: Theme.live.textMuted; font.pixelSize: 11; font.bold: true; anchors.left: parent.left }
                 Text { text: window.activePresentBackend; color: window.activePresentBackend.indexOf("CPU") === -1 ? "#4ade80" : "#fb923c"; font.pixelSize: 11; font.bold: true; anchors.right: parent.right; elide: Text.ElideLeft; width: 165; horizontalAlignment: Text.AlignRight }
             }
 
@@ -862,7 +864,7 @@ ApplicationWindow {
                 height: 16
                 anchors.left: parent.left
                 anchors.right: parent.right
-                Text { text: "GPU Decode"; color: "#94a3b8"; font.pixelSize: 11; font.bold: true; anchors.left: parent.left }
+                Text { text: "GPU Decode"; color: Theme.live.textMuted; font.pixelSize: 11; font.bold: true; anchors.left: parent.left }
                 Text { text: window.gpuDecodeEnabled ? "Enabled" : "Disabled"; color: window.gpuDecodeEnabled ? "#4ade80" : "#fb923c"; font.pixelSize: 11; font.bold: true; anchors.right: parent.right }
             }
 
@@ -870,7 +872,7 @@ ApplicationWindow {
                 height: 16
                 anchors.left: parent.left
                 anchors.right: parent.right
-                Text { text: "Fallback"; color: "#94a3b8"; font.pixelSize: 11; font.bold: true; anchors.left: parent.left }
+                Text { text: "Fallback"; color: Theme.live.textMuted; font.pixelSize: 11; font.bold: true; anchors.left: parent.left }
                 Text { text: window.decodeFallbackReason; color: window.decodeFallbackReason === "None" ? "#4ade80" : "#fb923c"; font.pixelSize: 11; font.bold: true; anchors.right: parent.right; elide: Text.ElideLeft; width: 165; horizontalAlignment: Text.AlignRight }
             }
 
@@ -878,47 +880,47 @@ ApplicationWindow {
                 height: 16
                 anchors.left: parent.left
                 anchors.right: parent.right
-                Text { text: "Encoder"; color: "#94a3b8"; font.pixelSize: 11; font.bold: true; anchors.left: parent.left }
-                Text { text: window.activeEncoderName + " (" + window.activeEncoderHw + ")"; color: "#ffffff"; font.pixelSize: 11; font.bold: true; anchors.right: parent.right; elide: Text.ElideLeft; width: 150; horizontalAlignment: Text.AlignRight }
+                Text { text: "Encoder"; color: Theme.live.textMuted; font.pixelSize: 11; font.bold: true; anchors.left: parent.left }
+                Text { text: window.activeEncoderName + " (" + window.activeEncoderHw + ")"; color: Theme.live.textStrong; font.pixelSize: 11; font.bold: true; anchors.right: parent.right; elide: Text.ElideLeft; width: 150; horizontalAlignment: Text.AlignRight }
             }
 
             Item {
                 height: 16
                 anchors.left: parent.left
                 anchors.right: parent.right
-                Text { text: "GPU"; color: "#94a3b8"; font.pixelSize: 11; font.bold: true; anchors.left: parent.left }
-                Text { text: window.agentGpuInfo; color: "#ffffff"; font.pixelSize: 11; font.bold: true; anchors.right: parent.right; elide: Text.ElideLeft; width: 170; horizontalAlignment: Text.AlignRight }
+                Text { text: "GPU"; color: Theme.live.textMuted; font.pixelSize: 11; font.bold: true; anchors.left: parent.left }
+                Text { text: window.agentGpuInfo; color: Theme.live.textStrong; font.pixelSize: 11; font.bold: true; anchors.right: parent.right; elide: Text.ElideLeft; width: 170; horizontalAlignment: Text.AlignRight }
             }
 
             Item {
                 height: 16
                 anchors.left: parent.left
                 anchors.right: parent.right
-                Text { text: "Host OS"; color: "#94a3b8"; font.pixelSize: 11; font.bold: true; anchors.left: parent.left }
-                Text { text: window.agentHostOs; color: "#ffffff"; font.pixelSize: 11; font.bold: true; anchors.right: parent.right }
+                Text { text: "Host OS"; color: Theme.live.textMuted; font.pixelSize: 11; font.bold: true; anchors.left: parent.left }
+                Text { text: window.agentHostOs; color: Theme.live.textStrong; font.pixelSize: 11; font.bold: true; anchors.right: parent.right }
             }
 
             Item {
                 height: 16
                 anchors.left: parent.left
                 anchors.right: parent.right
-                Text { text: "Requested Encoder"; color: "#94a3b8"; font.pixelSize: 11; font.bold: true; anchors.left: parent.left }
-                Text { text: window.requestedEncoder; color: "#ffffff"; font.pixelSize: 11; font.bold: true; anchors.right: parent.right }
+                Text { text: "Requested Encoder"; color: Theme.live.textMuted; font.pixelSize: 11; font.bold: true; anchors.left: parent.left }
+                Text { text: window.requestedEncoder; color: Theme.live.textStrong; font.pixelSize: 11; font.bold: true; anchors.right: parent.right }
             }
 
             Item {
                 height: 16
                 anchors.left: parent.left
                 anchors.right: parent.right
-                Text { text: "Input Protocol"; color: "#94a3b8"; font.pixelSize: 11; font.bold: true; anchors.left: parent.left }
-                Text { text: window.activeInputProtocol.toUpperCase(); color: window.activeInputProtocol === "webtransport" ? "#4ade80" : "#38bdf8"; font.pixelSize: 11; font.bold: true; anchors.right: parent.right }
+                Text { text: "Input Protocol"; color: Theme.live.textMuted; font.pixelSize: 11; font.bold: true; anchors.left: parent.left }
+                Text { text: window.activeInputProtocol.toUpperCase(); color: window.activeInputProtocol === "webtransport" ? "#4ade80" : Theme.live.accentFg; font.pixelSize: 11; font.bold: true; anchors.right: parent.right }
             }
 
             Item {
                 height: 16
                 anchors.left: parent.left
                 anchors.right: parent.right
-                Text { text: "Packet Loss"; color: "#94a3b8"; font.pixelSize: 11; font.bold: true; anchors.left: parent.left }
+                Text { text: "Packet Loss"; color: Theme.live.textMuted; font.pixelSize: 11; font.bold: true; anchors.left: parent.left }
                 Text { text: window.packetLossEvents + " events / " + window.packetsLost + " pkts"; color: window.packetLossEvents > 0 ? "#fb923c" : "#4ade80"; font.pixelSize: 11; font.bold: true; anchors.right: parent.right }
             }
 
@@ -926,7 +928,7 @@ ApplicationWindow {
                 height: 16
                 anchors.left: parent.left
                 anchors.right: parent.right
-                Text { text: "Queue Lag"; color: "#94a3b8"; font.pixelSize: 11; font.bold: true; anchors.left: parent.left }
+                Text { text: "Queue Lag"; color: Theme.live.textMuted; font.pixelSize: 11; font.bold: true; anchors.left: parent.left }
                 Text { text: window.queueLagEvents + " events / max " + window.maxQueueLag; color: window.queueLagEvents > 0 ? "#fb923c" : "#4ade80"; font.pixelSize: 11; font.bold: true; anchors.right: parent.right }
             }
 
@@ -934,7 +936,7 @@ ApplicationWindow {
                 height: 16
                 anchors.left: parent.left
                 anchors.right: parent.right
-                Text { text: "Network Path"; color: "#94a3b8"; font.pixelSize: 11; font.bold: true; anchors.left: parent.left }
+                Text { text: "Network Path"; color: Theme.live.textMuted; font.pixelSize: 11; font.bold: true; anchors.left: parent.left }
                 Text { text: window.connectionType; color: window.connectionType === "P2P (Direct)" ? "#4ade80" : "#fb923c"; font.pixelSize: 11; font.bold: true; anchors.right: parent.right }
             }
         }
@@ -950,8 +952,8 @@ ApplicationWindow {
         height: 24
         radius: 12
         
-        color: triggerMouseArea.containsMouse ? Qt.rgba(15/255, 22/255, 38/255, 0.8) : Qt.rgba(0, 0, 0, 0.05)
-        border.color: triggerMouseArea.containsMouse ? Qt.rgba(0, 240/255, 255/255, 0.35) : Qt.rgba(255/255, 255/255, 255/255, 0.04)
+        color: triggerMouseArea.containsMouse ? Theme.live.surfaceA(0.8) : Qt.rgba(0, 0, 0, 0.05)
+        border.color: triggerMouseArea.containsMouse ? Theme.live.accentA(0.35) : Theme.live.ink(0.04)
         border.width: 1
         visible: !menuBar.active && !window.isPointerLocked
         
@@ -982,7 +984,7 @@ ApplicationWindow {
             text: "▼ MENU"
             font.pixelSize: 9
             font.bold: true
-            color: triggerMouseArea.containsMouse ? "#00f0ff" : Qt.rgba(255/255, 255/255, 255/255, 0.25)
+            color: triggerMouseArea.containsMouse ? Theme.live.accentFg : Theme.live.ink(0.25)
             
             Behavior on color {
                 ColorAnimation { duration: 150 }
@@ -1079,8 +1081,8 @@ ApplicationWindow {
         width: 320
         height: 36
         radius: 6
-        color: Qt.rgba(15/255, 23/255, 42/255, 0.9)
-        border.color: "#818cf8"
+        color: Theme.live.surfaceA(0.9)
+        border.color: Theme.live.accentFg
         border.width: 1
         visible: window.isPointerLocked && !window.isEscHeld && window.showLockBanner
 
@@ -1088,7 +1090,7 @@ ApplicationWindow {
             anchors.centerIn: parent
             text: "Mouse Locked. Hold ESC to release."
             font.pixelSize: 11
-            color: "#f1f5f9"
+            color: Theme.live.textStrong
         }
     }
 
@@ -1101,8 +1103,8 @@ ApplicationWindow {
         width: 280
         height: 52
         radius: 10
-        color: Qt.rgba(15/255, 22/255, 38/255, 0.92)
-        border.color: Qt.rgba(0, 240/255, 255/255, 0.35)
+        color: Theme.live.surfaceA(0.92)
+        border.color: Theme.live.accentA(0.35)
         border.width: 1.2
         visible: window.isEscHeld && window.isPointerLocked
         z: 99999
@@ -1115,14 +1117,14 @@ ApplicationWindow {
                 text: "Holding ESC to unlock cursor..."
                 font.pixelSize: 11
                 font.bold: true
-                color: "#f1f5f9"
+                color: Theme.live.textStrong
                 anchors.horizontalCenter: parent.horizontalCenter
             }
 
             Rectangle {
                 width: 240
                 height: 4
-                color: Qt.rgba(1, 1, 1, 0.12)
+                color: Theme.live.ink(0.12)
                 radius: 2
                 anchors.horizontalCenter: parent.horizontalCenter
 
@@ -1130,7 +1132,7 @@ ApplicationWindow {
                     id: progressBarInner
                     width: 0
                     height: parent.height
-                    color: "#00f0ff"
+                    color: Theme.live.accent
                     radius: 2
 
                     Behavior on width {
@@ -1158,8 +1160,8 @@ ApplicationWindow {
         anchors.left: parent.left
         anchors.right: parent.right
         height: 40
-        color: Qt.rgba(20/255, 30/255, 55/255, 0.95)
-        border.color: Qt.rgba(0/255, 240/255, 255/255, 0.3)
+        color: Theme.live.surfaceA(0.95)
+        border.color: Theme.live.accentA(0.3)
         border.width: 1
         z: 9999
 
@@ -1169,7 +1171,7 @@ ApplicationWindow {
             
             Text {
                 text: "A new version of Lunaris Client (" + window.latestVersion + ") is available!"
-                color: "#f1f5f9"
+                color: Theme.live.textStrong
                 font.pixelSize: 13
                 font.bold: true
                 anchors.verticalCenter: parent.verticalCenter
@@ -1178,13 +1180,13 @@ ApplicationWindow {
             Rectangle {
                 width: 90
                 height: 26
-                color: "#00f0ff"
+                color: Theme.live.accent
                 radius: 4
                 anchors.verticalCenter: parent.verticalCenter
                 
                 Text {
                     text: "Update Now"
-                    color: "#080c14"
+                    color: Theme.live.bg
                     font.pixelSize: 11
                     font.bold: true
                     anchors.centerIn: parent
@@ -1202,7 +1204,7 @@ ApplicationWindow {
             // Close button
             Text {
                 text: "✕"
-                color: "#94a3b8"
+                color: Theme.live.textMuted
                 font.pixelSize: 14
                 anchors.verticalCenter: parent.verticalCenter
                 

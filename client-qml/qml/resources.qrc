@@ -1,5 +1,7 @@
 <!DOCTYPE RCC><RCC version="1.0">
 <qresource prefix="/">
+    <file>qmldir</file>
+    <file>Theme.qml</file>
     <file>main.qml</file>
     <file>LunarisMenuBar.qml</file>
     <file>LunarisComboBox.qml</file>

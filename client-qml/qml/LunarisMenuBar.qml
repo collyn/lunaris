@@ -84,13 +84,13 @@ Item {
         delay: 500
         contentItem: Text {
             text: controlToolTip.text
-            color: "#ffffff"
+            color: Theme.live.textStrong
             font.pixelSize: 11
             font.bold: true
         }
         background: Rectangle {
-            color: Qt.rgba(24/255, 24/255, 27/255, 0.95)
-            border.color: Qt.rgba(255/255, 255/255, 255/255, 0.15)
+            color: Theme.live.surfaceA(0.95)
+            border.color: Theme.live.ink(0.15)
             border.width: 1
             radius: 6
         }
@@ -256,8 +256,8 @@ Item {
     Rectangle {
         anchors.fill: parent
         radius: 24
-        color: Qt.rgba(20/255, 20/255, 20/255, 0.9)
-        border.color: Qt.rgba(255/255, 255/255, 255/255, 0.08)
+        color: Theme.live.surfaceA(0.9)
+        border.color: Theme.live.ink(0.08)
         border.width: 1
 
         // Drag handle for moving the window
@@ -288,7 +288,7 @@ Item {
                 LunarisToolTip { text: "Exit Stream" }
                 background: Rectangle {
                     anchors.fill: parent
-                    color: backButton.hovered ? Qt.rgba(1, 1, 1, 0.08) : "transparent"
+                    color: backButton.hovered ? Theme.live.ink(0.08) : "transparent"
                     radius: 14
                 }
                 contentItem: Canvas {
@@ -299,7 +299,7 @@ Item {
                     onPaint: {
                         var ctx = backIcon.getContext("2d");
                         ctx.reset();
-                        ctx.strokeStyle = "#f1f5f9";
+                        ctx.strokeStyle = Theme.live.text;
                         ctx.lineWidth = 1.8;
                         ctx.lineCap = "round";
                         ctx.lineJoin = "round";
@@ -398,7 +398,7 @@ Item {
             Rectangle {
                 width: 1
                 height: 18
-                color: Qt.rgba(1, 1, 1, 0.12)
+                color: Theme.live.ink(0.12)
                 anchors.verticalCenter: parent.verticalCenter
             }
 
@@ -412,7 +412,7 @@ Item {
                 LunarisToolTip { text: menuContainer.isPointerLocked ? "Unlock Mouse Cursor" : "Lock Mouse Cursor to Window" }
                 background: Rectangle {
                     anchors.fill: parent
-                    color: lockButton.hovered ? Qt.rgba(1, 1, 1, 0.12) : (menuContainer.isPointerLocked ? Qt.rgba(1, 1, 1, 0.08) : "transparent")
+                    color: lockButton.hovered ? Theme.live.ink(0.12) : (menuContainer.isPointerLocked ? Theme.live.ink(0.08) : "transparent")
                     radius: 14
                 }
                 contentItem: Canvas {
@@ -432,7 +432,7 @@ Item {
                     onPaint: {
                         var ctx = lockIcon.getContext("2d");
                         ctx.reset();
-                        ctx.strokeStyle = "#f1f5f9";
+                        ctx.strokeStyle = Theme.live.text;
                         ctx.lineWidth = 1.8;
                         ctx.lineCap = "round";
                         ctx.lineJoin = "round";
@@ -476,7 +476,7 @@ Item {
                 LunarisToolTip { text: menuContainer.hideLocalCursor ? "Show Local Cursor" : "Hide Local Cursor" }
                 background: Rectangle {
                     anchors.fill: parent
-                    color: eyeButton.hovered ? Qt.rgba(1, 1, 1, 0.12) : (menuContainer.hideLocalCursor ? Qt.rgba(1, 1, 1, 0.08) : "transparent")
+                    color: eyeButton.hovered ? Theme.live.ink(0.12) : (menuContainer.hideLocalCursor ? Theme.live.ink(0.08) : "transparent")
                     radius: 14
                 }
                 contentItem: Canvas {
@@ -496,7 +496,7 @@ Item {
                     onPaint: {
                         var ctx = eyeIcon.getContext("2d");
                         ctx.reset();
-                        ctx.strokeStyle = "#f1f5f9";
+                        ctx.strokeStyle = Theme.live.text;
                         ctx.lineWidth = 1.8;
                         ctx.lineCap = "round";
                         ctx.lineJoin = "round";
@@ -511,7 +511,7 @@ Item {
                         // Draw pupil
                         ctx.beginPath();
                         ctx.arc(14, 14, 2.2, 0, 2 * Math.PI);
-                        ctx.fillStyle = "#f1f5f9";
+                        ctx.fillStyle = Theme.live.text;
                         ctx.fill();
                         
                         // Draw slash if hidden
@@ -539,7 +539,7 @@ Item {
                 LunarisToolTip { text: menuContainer.showStats ? "Hide Performance Stats" : "Show Performance Stats" }
                 background: Rectangle {
                     anchors.fill: parent
-                    color: statsButton.hovered ? Qt.rgba(1, 1, 1, 0.12) : (menuContainer.showStats ? Qt.rgba(1, 1, 1, 0.08) : "transparent")
+                    color: statsButton.hovered ? Theme.live.ink(0.12) : (menuContainer.showStats ? Theme.live.ink(0.08) : "transparent")
                     radius: 14
                 }
                 contentItem: Canvas {
@@ -559,7 +559,7 @@ Item {
                     onPaint: {
                         var ctx = statsIcon.getContext("2d");
                         ctx.reset();
-                        ctx.fillStyle = "#f1f5f9";
+                        ctx.fillStyle = Theme.live.text;
                         
                         // Draw 3 vertical bars
                         ctx.fillRect(8, 16, 2.5, 6);
@@ -583,7 +583,7 @@ Item {
                 LunarisToolTip { text: menuContainer.isPinned ? "Unpin Menu (Auto-hide)" : "Pin Menu (Always show)" }
                 background: Rectangle {
                     anchors.fill: parent
-                    color: pinButton.hovered ? Qt.rgba(1, 1, 1, 0.12) : (menuContainer.isPinned ? Qt.rgba(1, 1, 1, 0.08) : "transparent")
+                    color: pinButton.hovered ? Theme.live.ink(0.12) : (menuContainer.isPinned ? Theme.live.ink(0.08) : "transparent")
                     radius: 14
                 }
                 contentItem: Canvas {
@@ -594,7 +594,7 @@ Item {
                     onPaint: {
                         var ctx = pinIcon.getContext("2d");
                         ctx.reset();
-                        ctx.strokeStyle = "#f1f5f9";
+                        ctx.strokeStyle = Theme.live.text;
                         ctx.lineWidth = 1.8;
                         ctx.lineCap = "round";
                         ctx.lineJoin = "round";
@@ -639,7 +639,7 @@ Item {
                 LunarisToolTip { text: "Minimize Window" }
                 background: Rectangle {
                     anchors.fill: parent
-                    color: minimizeButton.hovered ? Qt.rgba(1, 1, 1, 0.08) : "transparent"
+                    color: minimizeButton.hovered ? Theme.live.ink(0.08) : "transparent"
                     radius: 14
                 }
                 contentItem: Canvas {
@@ -650,7 +650,7 @@ Item {
                     onPaint: {
                         var ctx = minimizeIcon.getContext("2d");
                         ctx.reset();
-                        ctx.strokeStyle = "#f1f5f9";
+                        ctx.strokeStyle = Theme.live.text;
                         ctx.lineWidth = 1.8;
                         ctx.lineCap = "round";
                         ctx.beginPath();
@@ -674,7 +674,7 @@ Item {
                 LunarisToolTip { text: (menuContainer.Window.window && menuContainer.Window.window.visibility === Window.FullScreen) ? "Exit Fullscreen" : "Enter Fullscreen" }
                 background: Rectangle {
                     anchors.fill: parent
-                    color: restoreButton.hovered ? Qt.rgba(1, 1, 1, 0.08) : "transparent"
+                    color: restoreButton.hovered ? Theme.live.ink(0.08) : "transparent"
                     radius: 14
                 }
                 contentItem: Canvas {
@@ -694,7 +694,7 @@ Item {
                     onPaint: {
                         var ctx = restoreIcon.getContext("2d");
                         ctx.reset();
-                        ctx.strokeStyle = "#f1f5f9";
+                        ctx.strokeStyle = Theme.live.text;
                         ctx.lineWidth = 1.8;
                         ctx.lineJoin = "miter";
                         
@@ -731,7 +731,7 @@ Item {
                 LunarisToolTip { text: "Collapse Menu" }
                 background: Rectangle {
                     anchors.fill: parent
-                    color: collapseButton.hovered ? Qt.rgba(1, 1, 1, 0.08) : "transparent"
+                    color: collapseButton.hovered ? Theme.live.ink(0.08) : "transparent"
                     radius: 14
                 }
                 contentItem: Canvas {
@@ -742,7 +742,7 @@ Item {
                     onPaint: {
                         var ctx = collapseIcon.getContext("2d");
                         ctx.reset();
-                        ctx.strokeStyle = "#f1f5f9";
+                        ctx.strokeStyle = Theme.live.text;
                         ctx.lineWidth = 1.8;
                         ctx.lineCap = "round";
                         ctx.lineJoin = "round";

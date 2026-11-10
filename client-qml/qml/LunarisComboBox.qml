@@ -13,7 +13,7 @@ ComboBox {
         height: 28
         contentItem: Text {
             text: modelData
-            color: "#f1f5f9"
+            color: Theme.live.textStrong
             font.pixelSize: 11
             font.bold: true
             elide: Text.ElideRight
@@ -21,7 +21,7 @@ ComboBox {
             horizontalAlignment: Text.AlignHCenter
         }
         background: Rectangle {
-            color: hovered ? Qt.rgba(1, 1, 1, 0.08) : "transparent"
+            color: hovered ? Theme.live.ink(0.08) : "transparent"
             radius: 6
         }
     }
@@ -41,7 +41,7 @@ ComboBox {
             ctx.lineTo(width, 0);
             ctx.lineTo(width / 2, height);
             ctx.closePath();
-            ctx.fillStyle = "#94a3b8";
+            ctx.fillStyle = Theme.live.textMuted;
             ctx.fill();
         }
     }
@@ -52,14 +52,14 @@ ComboBox {
         text: control.displayText
         font.pixelSize: 11
         font.bold: true
-        color: "#f1f5f9"
+        color: Theme.live.textStrong
         verticalAlignment: Text.AlignVCenter
         horizontalAlignment: Text.AlignLeft
         elide: Text.ElideRight
     }
 
     background: Rectangle {
-        color: control.hovered ? Qt.rgba(1, 1, 1, 0.12) : Qt.rgba(1, 1, 1, 0.06)
+        color: control.hovered ? Theme.live.ink(0.12) : Theme.live.ink(0.06)
         border.color: "transparent"
         radius: 8
     }
@@ -80,8 +80,8 @@ ComboBox {
         }
 
         background: Rectangle {
-            color: "#18181b"
-            border.color: Qt.rgba(1, 1, 1, 0.08)
+            color: Theme.live.surface2
+            border.color: Theme.live.ink(0.08)
             border.width: 1
             radius: 8
         }
