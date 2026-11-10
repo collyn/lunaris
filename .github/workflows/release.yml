@@ -252,9 +252,37 @@ jobs:
           name: agent-linux-appimage
           path: dist/Lunaris-Agent-*-x86_64.AppImage
 
+  build-ffmpeg-windows:
+    name: Build FFmpeg for Windows (trimmed)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Cache FFmpeg build
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: ffmpeg-windows
+          key: ffmpeg-windows-${{ hashFiles('scripts/packaging/windows/build-ffmpeg-mingw.sh') }}
+
+      - name: Cross-compile with mingw-w64
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential mingw-w64 nasm meson ninja-build cmake
+          bash scripts/packaging/windows/build-ffmpeg-mingw.sh ffmpeg-windows
+
+      - name: Upload FFmpeg
+        uses: actions/upload-artifact@v4
+        with:
+          name: ffmpeg-windows
+          path: ffmpeg-windows
+
   build-windows:
     name: Build Windows
     runs-on: windows-2022
+    needs: build-ffmpeg-windows
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -285,16 +313,16 @@ jobs:
           vcpkg install opus:x64-windows openssl:x64-windows
         shell: pwsh
 
-      # FFmpeg comes from BtbN's GPL shared builds (with x264), pinned to 8.1:
-      # ffmpeg-next 8.x does not support FFmpeg 9 (what vcpkg ships now), and a
-      # prebuilt zip is much faster than compiling FFmpeg through vcpkg.
-      - name: Install FFmpeg 8.1 (GPL, shared)
-        run: |
-          $url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n8.1-latest-win64-gpl-shared-8.1.zip"
-          Invoke-WebRequest -Uri $url -OutFile ffmpeg.zip
-          Expand-Archive ffmpeg.zip -DestinationPath ffmpeg-extract
-          Move-Item (Get-ChildItem ffmpeg-extract -Directory | Select-Object -First 1).FullName C:\ffmpeg
-          Add-Content -Path $env:GITHUB_PATH -Value "C:\ffmpeg\bin"
+      # Trimmed FFmpeg 8.1 cross-compiled by the build-ffmpeg-windows job
+      # (only the codecs Lunaris uses; x264/SVT-AV1/dav1d inside the DLLs).
+      - name: Download FFmpeg
+        uses: actions/download-artifact@v4
+        with:
+          name: ffmpeg-windows
+          path: C:\ffmpeg
+
+      - name: Add FFmpeg to PATH
+        run: Add-Content -Path $env:GITHUB_PATH -Value "C:\ffmpeg\bin"
         shell: pwsh
 
       - name: Install pkg-config

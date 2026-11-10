@@ -51,7 +51,7 @@ clone https://gitlab.com/AOMediaCodec/SVT-AV1.git "$SVTAV1_VERSION" svtav1
 cmake -S svtav1 -B svtav1/build -G Ninja -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_INSTALL_PREFIX="$PREFIX" -DCMAKE_INSTALL_LIBDIR=lib -DBUILD_SHARED_LIBS=OFF \
     -DBUILD_APPS=OFF -DBUILD_DEC=OFF -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
-    -DSVT_AV1_LTO=OFF -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF -DCMAKE_C_FLAGS=-fno-lto >/dev/null
+    -DSVT_AV1_LTO=OFF -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_C_FLAGS=-fno-lto >/dev/null
 ninja -C svtav1/build install >/dev/null
 install -Dm644 svtav1/LICENSE.md "$LIC/svt-av1/LICENSE.md"
 install -Dm644 svtav1/PATENTS.md "$LIC/svt-av1/PATENTS.md"
@@ -67,13 +67,13 @@ echo "== oneVPL dispatcher $VPL_VERSION"
 clone https://github.com/intel/libvpl.git "$VPL_VERSION" vpl
 cmake -S vpl -B vpl/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$PREFIX" \
     -DCMAKE_INSTALL_LIBDIR=lib -DBUILD_SHARED_LIBS=OFF -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
-    -DBUILD_TESTS=OFF -DBUILD_EXAMPLES=OFF -DINSTALL_EXAMPLES=OFF >/dev/null
+    -DBUILD_TESTS=OFF -DBUILD_EXAMPLES=OFF -DINSTALL_EXAMPLES=OFF -DCMAKE_POLICY_VERSION_MINIMUM=3.5 >/dev/null
 ninja -C vpl/build install >/dev/null
 install -Dm644 vpl/LICENSE "$LIC/libvpl/LICENSE"
 
 echo "== FFmpeg $FFMPEG_VERSION"
 clone https://github.com/FFmpeg/FFmpeg.git "$FFMPEG_VERSION" ffmpeg
-(cd ffmpeg && ./configure --prefix="$PREFIX" --libdir="$PREFIX/lib" \
+(cd ffmpeg && exec ./configure --prefix="$PREFIX" --libdir="$PREFIX/lib" \
     --enable-static --disable-shared --enable-pic --pkg-config-flags=--static \
     --disable-programs --disable-doc --disable-debug --disable-autodetect --disable-everything \
     --enable-gpl --enable-pthreads \
@@ -86,7 +86,9 @@ clone https://github.com/FFmpeg/FFmpeg.git "$FFMPEG_VERSION" ffmpeg
     --enable-bsf=extract_extradata,dump_extradata,h264_metadata,hevc_metadata,av1_metadata,h264_mp4toannexb,hevc_mp4toannexb \
     --enable-filter=scale,format,hwupload,hwdownload,hwmap,scale_vaapi \
     --extra-libs="-lpthread -lm" >/dev/null \
-    && make -j"$JOBS" >/dev/null && make install >/dev/null)
+) || { echo "FFmpeg configure failed:"; tail -n 40 ffmpeg/ffbuild/config.log; exit 1; }
+make -C ffmpeg -j"$JOBS" >/dev/null
+make -C ffmpeg install >/dev/null
 install -Dm644 ffmpeg/COPYING.GPLv2 "$LIC/ffmpeg/COPYING.GPLv2"
 install -Dm644 ffmpeg/LICENSE.md "$LIC/ffmpeg/LICENSE.md"
 
