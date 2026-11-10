@@ -132,6 +132,10 @@ struct Args {
 
     #[arg(long)]
     minimized: bool,
+
+    /// Try to open each encoder at 1920x1080@60 and print which ones work, then exit
+    #[arg(long)]
+    probe_encoders: bool,
 }
 
 #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
@@ -145,9 +149,38 @@ pub extern "C" fn __cpu_indicator_init() -> i32 {
     0
 }
 
+/// `--probe-encoders`: open each codec's encoder for real and report it.
+fn probe_encoders() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let _ = tracing_subscriber::registry()
+        .with(tracing_subscriber::EnvFilter::new(
+            std::env::var("RUST_LOG").unwrap_or_else(|_| "off,ffmpeg=warn,lunaris_media=error".into()),
+        ))
+        .with(tracing_subscriber::fmt::layer())
+        .try_init();
+    #[cfg(not(target_os = "windows"))]
+    for codec in [
+        lunaris_media::VideoCodec::H264,
+        lunaris_media::VideoCodec::H265,
+        lunaris_media::VideoCodec::AV1,
+    ] {
+        match lunaris_media::encode::probe_encoder(codec, 1920, 1080, 60) {
+            Some(e) => println!("{:?}: {} ({:?})", codec, e.name, e.hw_type),
+            None => println!("{:?}: no working encoder", codec),
+        }
+    }
+    #[cfg(target_os = "windows")]
+    for e in lunaris_media::encode::list_available_encoders() {
+        println!("{} ({:?}): {:?}", e.name, e.hw_type, e.supported_codecs);
+    }
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let args = Args::parse();
+    if args.probe_encoders {
+        return probe_encoders();
+    }
     crate::pairing::set_config_path(args.config.clone());
     let config_path = crate::pairing::config_path().to_string();
 

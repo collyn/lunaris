@@ -174,6 +174,53 @@ fn codec_supported_for_realtime(
     }
 }
 
+/// Whether a hardware encoder for `codec` actually opens on this machine at
+/// this size. FFmpeg listing e.g. `hevc_vaapi` does not mean the driver
+/// accepts it (Intel iHD can refuse it), and offering such a codec ends in a
+/// black stream. The result is cached per codec and size. Windows uses its
+/// native encoders and keeps the listing-based check.
+async fn hardware_encoder_opens(
+    codec: lunaris_media::VideoCodec,
+    width: u32,
+    height: u32,
+    fps: u32,
+) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        let _ = (codec, width, height, fps);
+        true
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        use std::collections::HashMap;
+        use std::sync::{Mutex, OnceLock};
+        static CACHE: OnceLock<Mutex<HashMap<String, bool>>> = OnceLock::new();
+        let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+        let key = format!("{:?}-{}x{}", codec, width, height);
+        if let Some(ok) = cache.lock().unwrap().get(&key) {
+            return *ok;
+        }
+        let probed = tokio::task::spawn_blocking(move || {
+            lunaris_media::encode::probe_encoder(codec, width, height, fps)
+        })
+        .await
+        .ok()
+        .flatten();
+        let ok = probed
+            .as_ref()
+            .is_some_and(|e| e.hw_type != lunaris_media::HwAccelType::Software);
+        info!(
+            "Encoder probe {:?} {}x{}: {}",
+            codec,
+            width,
+            height,
+            probed.map(|e| format!("{} ({:?})", e.name, e.hw_type)).unwrap_or_else(|| "none".into())
+        );
+        cache.lock().unwrap().insert(key, ok);
+        ok
+    }
+}
+
 pub async fn setup_bridge_session(
     agent_config: AgentConfig,
     client_id: String,
@@ -227,8 +274,14 @@ pub async fn setup_bridge_session(
     // must only advertise the codec the host can actually encode; otherwise
     // the answer can select H.265 while the RTP track is configured for H.264.
     let encoders = lunaris_media::encode::list_available_encoders();
-    let hevc_supported = codec_supported_for_realtime(&encoders, lunaris_media::VideoCodec::H265);
-    let av1_supported = codec_supported_for_realtime(&encoders, lunaris_media::VideoCodec::AV1);
+    // Listed encoders are only candidates; for the requested codec also check
+    // that a hardware encoder really opens, or the session would stay black.
+    let hevc_supported = codec_supported_for_realtime(&encoders, lunaris_media::VideoCodec::H265)
+        && (codec_str != "h265"
+            || hardware_encoder_opens(lunaris_media::VideoCodec::H265, resolution_width, resolution_height, stream_fps).await);
+    let av1_supported = codec_supported_for_realtime(&encoders, lunaris_media::VideoCodec::AV1)
+        && (codec_str != "av1"
+            || hardware_encoder_opens(lunaris_media::VideoCodec::AV1, resolution_width, resolution_height, stream_fps).await);
     if codec_str == "av1" && !av1_supported {
         info!("AV1 requested but host doesn't support it, falling back to H.264");
         codec_str = "h264".to_string();
