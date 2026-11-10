@@ -4333,6 +4333,14 @@ async fn run_webrtc_client_task(
                                 );
                             }
 
+                            // A new offer (agent restarted the session) replaces the
+                            // previous connection: close it, or its ICE agent keeps
+                            // checking and competing with the new one.
+                            if let Some(old_pc) = peer_connection.take() {
+                                println!("New SDP offer: closing the previous peer connection");
+                                let _ = old_pc.close().await;
+                            }
+
                             let pc = match setup_peer_connection(
                                 ice_servers,
                                 outbox_tx.clone(),
@@ -4421,6 +4429,13 @@ async fn run_webrtc_client_task(
                             tokio::spawn(async move {
                                 loop {
                                     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                                    // Stop with the connection: holding `pc_clone` forever
+                                    // would keep a replaced connection alive.
+                                    if pc_clone.connection_state()
+                                        == webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState::Closed
+                                    {
+                                        break;
+                                    }
                                     let stats = pc_clone.get_stats().await;
 
                                     let mut conn_type = "P2P (Direct)".to_string();
