@@ -1025,7 +1025,10 @@ body {
   border: 1px solid rgb(var(--ink-rgb) / 0.08);
   border-radius: 9999px;
   height: 44px;
-  width: auto;
+  /* left:50% leaves only half the viewport for a shrink-to-fit width, so
+     Firefox wrapped the bar narrower than its content (icons spilled out of
+     the pill). Size it to its content explicitly. */
+  width: max-content;
   min-width: auto;
   max-width: 98%;
   z-index: 100;
@@ -1099,6 +1102,7 @@ body {
   background-color: rgb(var(--ink-rgb) / 0.05);
 }
 
+.stream-header-bar > .stream-action-btn, .stream-header-bar > .stream-menu-separator { flex-shrink: 0; }
 .stream-action-btn.active {
   color: var(--accent-cyan);
   background-color: rgb(var(--accent-rgb) / 0.15);
@@ -3387,7 +3391,10 @@ code, kbd, pre, .host-id, .code-block { font-family: var(--font-mono); }
   border-radius: var(--radius-sm);
   /* A <select> is as wide as its longest option (e.g. "WebTransport
      (Unsupported)" in Firefox, long display names): cap it in the toolbar. */
-  flex: 0 0 auto;
+  /* ...and let them shrink before the icon buttons do, so the buttons
+     always stay inside the bar. */
+  flex: 0 1 auto;
+  min-width: 3.25rem;
   width: auto;
   max-width: 9.5rem;
   overflow: hidden;
