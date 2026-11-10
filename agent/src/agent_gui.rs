@@ -111,6 +111,17 @@ pub mod qobject {
         #[qsignal]
         fn config_saved(self: Pin<&mut AgentBridge>, success: bool, error_msg: QString);
 
+        /// Direct connections: on/off, port, access password and this
+        /// computer's addresses (one per line).
+        #[qsignal]
+        fn direct_config_loaded(
+            self: Pin<&mut AgentBridge>,
+            enabled: bool,
+            port: i32,
+            password: QString,
+            addresses: QString,
+        );
+
         #[qsignal]
         fn import_completed(self: Pin<&mut AgentBridge>, success: bool, error_msg: QString);
 
@@ -129,6 +140,15 @@ pub mod qobject {
 
         #[qinvokable]
         fn import_config(self: Pin<&mut AgentBridge>);
+
+        #[qinvokable]
+        fn load_direct_config(self: Pin<&mut AgentBridge>);
+
+        #[qinvokable]
+        fn set_direct_enabled(self: Pin<&mut AgentBridge>, enabled: bool);
+
+        #[qinvokable]
+        fn regenerate_direct_password(self: Pin<&mut AgentBridge>);
 
         #[qinvokable]
         fn start_agent(self: Pin<&mut AgentBridge>);
@@ -262,6 +282,51 @@ impl qobject::AgentBridge {
                 QString::from(&format!("Failed to save config: {}", e)),
             ),
         }
+    }
+
+    pub fn load_direct_config(mut self: Pin<&mut Self>) {
+        let config = load_config(crate::pairing::config_path()).unwrap_or_else(|_| make_default_config());
+        self.as_mut().emit_direct_config(&config);
+    }
+
+    pub fn set_direct_enabled(mut self: Pin<&mut Self>, enabled: bool) {
+        let mut config = load_config(crate::pairing::config_path()).unwrap_or_else(|_| make_default_config());
+        config.direct_enabled = enabled;
+        if enabled {
+            crate::pairing::ensure_direct_password(&mut config);
+        }
+        self.as_mut().save_direct_config(config);
+    }
+
+    pub fn regenerate_direct_password(mut self: Pin<&mut Self>) {
+        let mut config = load_config(crate::pairing::config_path()).unwrap_or_else(|_| make_default_config());
+        config.direct_password = crate::pairing::generate_direct_password();
+        self.as_mut().save_direct_config(config);
+    }
+
+    fn save_direct_config(mut self: Pin<&mut Self>, config: AgentConfig) {
+        match save_config_file(&config, crate::pairing::config_path()) {
+            Ok(()) => self.as_mut().emit_direct_config(&config),
+            Err(e) => self.as_mut().config_saved(
+                false,
+                QString::from(&format!("Failed to save config: {}", e)),
+            ),
+        }
+    }
+
+    fn emit_direct_config(mut self: Pin<&mut Self>, config: &AgentConfig) {
+        let addresses = {
+            let mut rust_obj = self.as_mut().rust_mut();
+            rust_obj
+                .get_or_init_runtime()
+                .block_on(crate::direct::local_addresses())
+        };
+        self.as_mut().direct_config_loaded(
+            config.direct_enabled,
+            config.direct_port as i32,
+            QString::from(&config.direct_password),
+            QString::from(&addresses.join("\n")),
+        );
     }
 
     pub fn import_config(mut self: Pin<&mut Self>) {

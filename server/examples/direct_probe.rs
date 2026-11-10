@@ -127,6 +127,13 @@ async fn main() -> Result<()> {
         _ => vec![],
     })))?;
 
+    // PROBE_QUERY_ONLY=1: stop here, like a client that only looked at the
+    // display list (used to check it doesn't end another client's session).
+    if std::env::var("PROBE_QUERY_ONLY").is_ok() {
+        println!("ALL PASSED (queries only)");
+        return Ok(());
+    }
+
     // 4. Session: offer from the agent, answer from us, ICE both ways.
     let mut media = MediaEngine::default();
     for (mime, fmtp, pt) in [
@@ -239,7 +246,12 @@ async fn main() -> Result<()> {
     // Remote candidates, and the agent's EncoderStatus, until the deadline.
     let deadline = Instant::now() + Duration::from_secs(seconds);
     let mut encoder_status = None;
+    let mut next_report = Instant::now() + Duration::from_secs(2);
     while Instant::now() < deadline {
+        if Instant::now() >= next_report {
+            println!("      t={:>2}s packets={}", t_session.elapsed().as_secs(), packets.load(Ordering::Relaxed));
+            next_report += Duration::from_secs(2);
+        }
         if let Ok(Some(msg)) = tokio::time::timeout(Duration::from_millis(200), in_rx.recv()).await {
             match msg {
                 SignalingMessage::IceCandidate { candidate, .. } => {

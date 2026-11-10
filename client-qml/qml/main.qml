@@ -502,6 +502,20 @@ ApplicationWindow {
             }
         }
 
+        onStreamFailed: (message) => {
+            console.log("Stream failed: " + message);
+            bridge.stopStream();
+            if (bridge.hasConnectionArgs()) {
+                // Launched for one stream (deep link): nothing to go back to.
+                window.exitRequested = true;
+                Qt.quit();
+                return;
+            }
+            window.isStreamMode = false;
+            dashboardView.authError = message;
+            dashboardView.forceActiveFocus();
+        }
+
         onCapabilitiesUpdated: (displaysJson, encodersJson, gpuInfo, hostOs) => {
             dashboardView.settingsModal.updateCapabilities(displaysJson, encodersJson);
         }

@@ -19,6 +19,29 @@ Rectangle {
     property bool isLoggedIn: false
     property string authError: ""
     property bool authLoading: false
+    // Login screen shows "connect directly by IP" instead of the server sign-in.
+    property bool directMode: false
+
+    // Direct connection (no server): the agent's address ("host" or
+    // "host:port", default port 8091) and its access password.
+    function connectDirect(address, password) {
+        var addr = address.trim().replace(/^wss?:\/\//, "").replace(/^https?:\/\//, "").replace(/\/.*$/, "");
+        if (addr.length === 0 || password.trim().length === 0) {
+            dashboardRoot.authError = "Enter the computer's address and its access password";
+            return;
+        }
+        // Add the default port unless one is given ("[v6]:port" or "host:port").
+        var hasPort = addr.charAt(0) === "[" ? addr.indexOf("]:") !== -1 : addr.indexOf(":") !== -1;
+        if (!hasPort) addr = addr + ":8091";
+        dashboardRoot.authError = "";
+        bridge.saveDirectTarget(addr, password.trim());
+        dashboardRoot.startSessionRequested(
+            "ws://" + addr, password.trim(), "direct", addr, 0,
+            dashboardRoot.configRes, dashboardRoot.configFps, dashboardRoot.configCodec,
+            dashboardRoot.configBitrate, dashboardRoot.configQueueLimit, dashboardRoot.configDisableCuda,
+            dashboardRoot.configRenderBackend, dashboardRoot.configInputProtocol,
+            dashboardRoot.configEncoder, dashboardRoot.configDisplay, dashboardRoot.configVirtualDisplay);
+    }
 
 
     property var hostsList: []
@@ -159,7 +182,7 @@ Rectangle {
             Rectangle {
                 anchors.centerIn: parent
                 width: 420
-                height: 440
+                height: (dashboardRoot.directMode ? 420 : 480) + (dashboardRoot.authError !== "" ? 24 : 0)
                 radius: 20
                 color: Theme.surfaceA(0.8)
                 border.color: Theme.ink(0.08)
@@ -177,7 +200,7 @@ Rectangle {
 
                     // Logo Title
                     Text {
-                        text: "Welcome back"
+                        text: dashboardRoot.directMode ? "Connect directly" : "Welcome back"
                         font.pixelSize: 22
                         font.weight: Font.DemiBold
                         color: Theme.textStrong
@@ -185,7 +208,7 @@ Rectangle {
                     }
 
                     Text {
-                        text: "Access your remote desktop network"
+                        text: dashboardRoot.directMode ? "To a computer on your network or VPN, no server needed" : "Access your remote desktop network"
                         font.pixelSize: 13
                         color: Theme.textMuted
                         anchors.horizontalCenter: parent.horizontalCenter
@@ -193,8 +216,67 @@ Rectangle {
 
                     Item { width: 1; height: 10 } // Spacer
 
+                    // Direct connection inputs
+                    Column {
+                        visible: dashboardRoot.directMode
+                        width: parent.width
+                        spacing: 12
+
+                        Column {
+                            width: parent.width
+                            spacing: 6
+                            Text { text: "Computer address"; color: Theme.textMuted; font.pixelSize: 12; font.weight: Font.Medium }
+                            Rectangle {
+                                width: parent.width; height: 38; color: Theme.surface; radius: Theme.radiusSm; border.color: directAddressInput.activeFocus ? Theme.accent : Theme.borderStrong
+                                border.width: 1
+                                TextInput {
+                                    id: directAddressInput
+                                    anchors.fill: parent; anchors.margins: 10
+                                    color: Theme.textStrong; font.pixelSize: 13
+                                    text: bridge.savedDirectAddress()
+                                    verticalAlignment: Text.AlignVCenter
+                                    selectByMouse: true
+                                    activeFocusOnTab: true
+                                    KeyNavigation.tab: directPasswordInput
+                                    Keys.onReturnPressed: directButton.clicked()
+                                    Keys.onEnterPressed: directButton.clicked()
+                                    Text {
+                                        anchors.fill: parent; verticalAlignment: Text.AlignVCenter
+                                        visible: parent.text.length === 0
+                                        text: "192.168.1.20 or 192.168.1.20:8091"
+                                        color: Theme.textSubtle; font.pixelSize: 13
+                                    }
+                                }
+                            }
+                        }
+
+                        Column {
+                            width: parent.width
+                            spacing: 6
+                            Text { text: "Access password (shown in the agent window)"; color: Theme.textMuted; font.pixelSize: 12; font.weight: Font.Medium }
+                            Rectangle {
+                                width: parent.width; height: 38; color: Theme.surface; radius: Theme.radiusSm; border.color: directPasswordInput.activeFocus ? Theme.accent : Theme.borderStrong
+                                border.width: 1
+                                TextInput {
+                                    id: directPasswordInput
+                                    anchors.fill: parent; anchors.margins: 10
+                                    color: Theme.textStrong; font.pixelSize: 13
+                                    text: bridge.savedDirectPassword()
+                                    echoMode: TextInput.Password
+                                    verticalAlignment: Text.AlignVCenter
+                                    selectByMouse: true
+                                    activeFocusOnTab: true
+                                    KeyNavigation.tab: directAddressInput
+                                    Keys.onReturnPressed: directButton.clicked()
+                                    Keys.onEnterPressed: directButton.clicked()
+                                }
+                            }
+                        }
+                    }
+
                     // Inputs
                     Column {
+                        visible: !dashboardRoot.directMode
                         width: parent.width
                         spacing: 12
 
@@ -282,9 +364,33 @@ Rectangle {
                         visible: text.length > 0
                     }
 
+                    // Direct connect button
+                    Button {
+                        id: directButton
+                        visible: dashboardRoot.directMode
+                        width: parent.width
+                        onClicked: dashboardRoot.connectDirect(directAddressInput.text, directPasswordInput.text)
+                        background: Rectangle {
+                            implicitHeight: 40
+                            radius: 8
+                            color: directButton.hovered ? Theme.accentHover : Theme.accent
+                        }
+                        contentItem: Item {
+                            anchors.fill: parent
+                            Text {
+                                text: "Connect"
+                                color: Theme.textOnAccent
+                                font.weight: Font.DemiBold
+                                font.pixelSize: 13
+                                anchors.centerIn: parent
+                            }
+                        }
+                    }
+
                     // Submit Button
                     Button {
                         id: submitButton
+                        visible: !dashboardRoot.directMode
                         width: parent.width
                         enabled: !dashboardRoot.authLoading
                         onClicked: {
@@ -312,6 +418,26 @@ Rectangle {
                                 font.weight: Font.DemiBold
                                 font.pixelSize: 13
                                 anchors.centerIn: parent
+                            }
+                        }
+                    }
+
+                    // Switch between server sign-in and direct connection
+                    Text {
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        text: dashboardRoot.directMode ? "Sign in to a Lunaris server instead" : "Connect directly by IP address"
+                        color: modeSwitchMa.containsMouse ? Theme.accentFg : Theme.textMuted
+                        font.pixelSize: 12
+                        font.underline: modeSwitchMa.containsMouse
+                        MouseArea {
+                            id: modeSwitchMa
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                                dashboardRoot.authError = "";
+                                dashboardRoot.directMode = !dashboardRoot.directMode;
+                                if (dashboardRoot.directMode) directAddressInput.forceActiveFocus(); else serverInput.forceActiveFocus();
                             }
                         }
                     }

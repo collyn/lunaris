@@ -333,6 +333,59 @@ fn clear_settings() {
     let _ = std::fs::remove_file(path);
 }
 
+/// The last direct connection (no server), remembered like the login.
+#[derive(serde::Serialize, serde::Deserialize, Default)]
+struct DirectTarget {
+    address: String,
+    password: String,
+}
+
+fn direct_target_path() -> std::path::PathBuf {
+    get_config_path().with_file_name("direct_connection.json")
+}
+
+fn load_direct_target() -> Option<DirectTarget> {
+    serde_json::from_str(&std::fs::read_to_string(direct_target_path()).ok()?).ok()
+}
+
+fn save_direct_target_file(target: &DirectTarget) {
+    let path = direct_target_path();
+    if let Ok(data) = serde_json::to_string_pretty(target) {
+        if std::fs::write(&path, data).is_ok() {
+            // Holds an access password: owner-only.
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+            }
+        }
+    }
+}
+
+/// Why the stream couldn't start, set by the stream task and reported to QML
+/// by `poll_stats` (`stream_failed`), which leaves the stream view.
+pub static STREAM_ERROR: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// A message for the user from a stream task error.
+fn describe_stream_error(e: &anyhow::Error) -> String {
+    use tokio_tungstenite::tungstenite::Error as WsError;
+    if let Some(ws) = e.downcast_ref::<WsError>() {
+        match ws {
+            WsError::Http(resp) => {
+                return match resp.status().as_u16() {
+                    401 => "Wrong password or sign-in expired (401).".to_string(),
+                    429 => "Too many wrong passwords: try again in a minute.".to_string(),
+                    404 => "That address is not a Lunaris server or agent (404).".to_string(),
+                    code => format!("The connection was refused (HTTP {}).", code),
+                };
+            }
+            WsError::Io(io) => return format!("Could not reach the computer: {}.", io),
+            _ => {}
+        }
+    }
+    format!("Connection failed: {}", e)
+}
+
 pub static LOCAL_AGENT_CHILD: std::sync::Mutex<Option<std::process::Child>> =
     std::sync::Mutex::new(None);
 
@@ -771,6 +824,10 @@ pub mod qobject {
         #[qsignal]
         fn deeplink_received(self: Pin<&mut StreamBridge>, url: QString);
 
+        /// The stream could not start or ended with an error (message for the user).
+        #[qsignal]
+        fn stream_failed(self: Pin<&mut StreamBridge>, message: QString);
+
         #[qinvokable]
         unsafe fn set_video_sink(self: Pin<&mut StreamBridge>, sink: *mut QVideoSink);
 
@@ -949,6 +1006,16 @@ pub mod qobject {
         #[qinvokable]
         fn get_local_hostname(self: Pin<&mut StreamBridge>) -> QString;
 
+        /// Last direct connection (address "host:port" and password), "" if none.
+        #[qinvokable]
+        fn saved_direct_address(self: Pin<&mut StreamBridge>) -> QString;
+
+        #[qinvokable]
+        fn saved_direct_password(self: Pin<&mut StreamBridge>) -> QString;
+
+        #[qinvokable]
+        fn save_direct_target(self: Pin<&mut StreamBridge>, address: QString, password: QString);
+
         #[qinvokable]
         fn is_autostart_enabled(self: Pin<&mut StreamBridge>) -> bool;
 
@@ -1077,6 +1144,7 @@ impl qobject::StreamBridge {
             .await
             {
                 eprintln!("Error in WebRTC client task: {:?}", e);
+                *STREAM_ERROR.lock().unwrap() = Some(describe_stream_error(&e));
             }
         });
 
@@ -1277,6 +1345,11 @@ impl qobject::StreamBridge {
     }
 
     pub fn poll_stats(mut self: Pin<&mut Self>) {
+        let failure = STREAM_ERROR.lock().unwrap().take();
+        if let Some(message) = failure {
+            self.as_mut().stream_failed(QString::from(&message));
+            return;
+        }
         let stats = { STREAM_STATS.lock().unwrap().clone() };
         if let Some(s) = stats {
             let requested_codec_qstring = cxx_qt_lib::QString::from(&s.requested_codec);
@@ -2466,6 +2539,21 @@ impl qobject::StreamBridge {
         } else {
             false
         }
+    }
+
+    pub fn saved_direct_address(self: Pin<&mut Self>) -> QString {
+        QString::from(&load_direct_target().map(|t| t.address).unwrap_or_default())
+    }
+
+    pub fn saved_direct_password(self: Pin<&mut Self>) -> QString {
+        QString::from(&load_direct_target().map(|t| t.password).unwrap_or_default())
+    }
+
+    pub fn save_direct_target(self: Pin<&mut Self>, address: QString, password: QString) {
+        save_direct_target_file(&DirectTarget {
+            address: address.to_string(),
+            password: password.to_string(),
+        });
     }
 
     pub fn get_local_hostname(self: Pin<&mut Self>) -> QString {
@@ -4004,10 +4092,11 @@ async fn run_webrtc_client_task(
     input_senders: Arc<Mutex<Option<super::input::InputSenders>>>,
     active_decoder: Arc<Mutex<Option<std::thread::JoinHandle<()>>>>,
 ) -> Result<(), anyhow::Error> {
+    let encoded_token: String = url::form_urlencoded::byte_serialize(token.as_bytes()).collect();
     let ws_url = format!(
         "{}/ws/client?token={}",
         server_url.replace("http", "ws"),
-        token
+        encoded_token
     );
     // Never log ws_url itself: it carries the session token.
     println!("Connecting to signaling server at: {}/ws/client", server_url.replace("http", "ws"));
@@ -4604,6 +4693,11 @@ async fn run_webrtc_client_task(
                     SignalingMessage::EndSession { .. } => {
                         println!("Stream session ended by remote host.");
                         break;
+                    }
+                    SignalingMessage::Error { message } if peer_connection.is_none() => {
+                        // e.g. "No agent connected" or the agent could not
+                        // start capture/encoding: nothing will stream.
+                        return Err(anyhow::anyhow!(message));
                     }
                     _ => {}
                 },

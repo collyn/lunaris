@@ -454,7 +454,8 @@ async fn connect_server_once(
         )
     };
 
-    info!("Connecting to signaling server at: {}", server_ws_url);
+    // Never log server_ws_url itself: it carries the agent token.
+    debug!("Connecting to signaling server at {}", base_ws_url);
     // Build a TLS connector that accepts self-signed certificates.
     // The signaling server typically uses a self-signed cert for local/LAN use.
     let tls_connector = native_tls::TlsConnector::builder()

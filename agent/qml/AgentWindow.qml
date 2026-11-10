@@ -15,7 +15,7 @@ ApplicationWindow {
     color: Theme.bg
     flags: Qt.Window
 
-    readonly property int baseHeight: 560
+    readonly property int baseHeight: directEnabled ? 760 : 640
 
     // Grow the window while the activity log is open.
     onShowLogChanged: {
@@ -40,9 +40,16 @@ ApplicationWindow {
     property bool showLog: false
     property string notice: ""
     property bool noticeError: false
+    // Direct connections (clients connect to this computer, no server)
+    property bool directEnabled: false
+    property int directPort: 8091
+    property string directPassword: ""
+    property var directAddresses: []
 
-    readonly property string statusText: agentConnected ? "Online" : (agentActive ? "Connecting…" : "Offline")
-    readonly property color statusColor: agentConnected ? Theme.success : (agentActive ? Theme.warning : Theme.textSubtle)
+    readonly property string statusText: agentConnected ? "Online"
+        : (agentActive ? (directEnabled ? "Ready for direct connections" : "Connecting…") : "Offline")
+    readonly property color statusColor: (agentConnected || (agentActive && directEnabled)) ? Theme.success
+        : (agentActive ? Theme.warning : Theme.textSubtle)
 
     // ── Tray ──
     Platform.SystemTrayIcon {
@@ -65,6 +72,8 @@ ApplicationWindow {
     // Start always uses what is in the form: persist it first, otherwise the
     // agent connects with the previously saved server URL / token.
     function saveAndStart() { saveForm(); bridge.startAgent() }
+    // Direct-connection settings apply when sharing (re)starts.
+    function restartIfSharing() { if (window.agentActive) { bridge.stopAgent(); restartTimer.restart() } }
     function copyText(t) { clipHelper.text = t; clipHelper.selectAll(); clipHelper.copy(); clipHelper.text = "" }
     function flash(msg, isError) { window.notice = msg; window.noticeError = isError; noticeTimer.restart() }
 
@@ -73,6 +82,8 @@ ApplicationWindow {
     Timer { interval: 2000; running: true; repeat: true; onTriggered: bridge.pollStatus() }
     Timer { interval: 3600000; running: true; repeat: true; onTriggered: bridge.checkForUpdates() }
     Timer { id: noticeTimer; interval: 3500; onTriggered: window.notice = "" }
+    // Give the stopped agent a moment to release the direct-connection port.
+    Timer { id: restartTimer; interval: 800; onTriggered: bridge.startAgent() }
 
     // ── Reusable pieces ──
     component Card: Rectangle {
@@ -258,6 +269,76 @@ ApplicationWindow {
             }
         }
 
+        // Direct connections
+        Card {
+            Layout.fillWidth: true
+            implicitHeight: directCol.implicitHeight + 28
+            ColumnLayout {
+                id: directCol
+                anchors.fill: parent; anchors.margins: 14
+                spacing: 8
+                SectionLabel { text: "DIRECT CONNECTION" }
+                Toggle {
+                    id: cbDirect
+                    text: "Allow direct connections (no server needed)"
+                    checked: window.directEnabled
+                    onToggled: { bridge.setDirectEnabled(checked); restartIfSharing() }
+                }
+                Text {
+                    visible: !window.directEnabled
+                    Layout.fillWidth: true
+                    wrapMode: Text.Wrap
+                    text: "Clients on your network or VPN connect with this computer's address and a password."
+                    color: Theme.textMuted; font.pixelSize: 12
+                }
+                ColumnLayout {
+                    visible: window.directEnabled
+                    Layout.fillWidth: true
+                    spacing: 4
+                    Text { text: "Address"; color: Theme.text; font.pixelSize: 12 }
+                    Repeater {
+                        model: window.directAddresses
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 8
+                            Text {
+                                text: modelData + ":" + window.directPort
+                                color: Theme.textStrong; font.pixelSize: 13; font.family: "monospace"
+                                Layout.fillWidth: true; elide: Text.ElideRight
+                            }
+                            LinkButton { text: "Copy"; onClicked: { copyText(modelData + ":" + window.directPort); flash("Address copied", false) } }
+                        }
+                    }
+                    Text {
+                        visible: window.directAddresses.length === 0
+                        text: "No network address found"
+                        color: Theme.textMuted; font.pixelSize: 12
+                    }
+                    Text { text: "Password"; color: Theme.text; font.pixelSize: 12; Layout.topMargin: 4 }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 8
+                        Text {
+                            text: showDirectPassword.checked ? window.directPassword : "••••-••••-••••"
+                            color: Theme.textStrong; font.pixelSize: 13; font.family: "monospace"
+                            Layout.fillWidth: true
+                        }
+                        LinkButton {
+                            id: showDirectPassword
+                            property bool checked: false
+                            text: checked ? "Hide" : "Show"
+                            onClicked: checked = !checked
+                        }
+                        LinkButton { text: "Copy"; onClicked: { copyText(window.directPassword); flash("Password copied", false) } }
+                        LinkButton {
+                            text: "New"
+                            onClicked: { bridge.regenerateDirectPassword(); restartIfSharing(); flash("New password set", false) }
+                        }
+                    }
+                }
+            }
+        }
+
         // Options
         ColumnLayout {
             Layout.fillWidth: true
@@ -370,8 +451,12 @@ ApplicationWindow {
             if (success) flash("Configuration imported", false); else if (error !== "") flash("Import failed: " + error, true)
         }
         function onUpdateAvailable(version, url) { window.updateVersion = version; window.updateUrl = url }
+        function onDirectConfigLoaded(enabled, port, password, addresses) {
+            window.directEnabled = enabled; window.directPort = port; window.directPassword = password
+            var a = addresses.toString(); window.directAddresses = a === "" ? [] : a.split("\n")
+        }
     }
 
     onClosing: (close) => { if (window.closeToTray) { close.accepted = false; window.hide() } }
-    Component.onCompleted: { bridge.loadConfig(); window.show() }
+    Component.onCompleted: { bridge.loadConfig(); bridge.loadDirectConfig(); window.show() }
 }

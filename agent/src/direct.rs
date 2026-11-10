@@ -29,6 +29,7 @@ use crate::hub::{from_direct_client, Hub};
 const MAX_FAILED_LOGINS: u32 = 5;
 const LOCKOUT: Duration = Duration::from_secs(60);
 const PING_INTERVAL: Duration = Duration::from_secs(15);
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Wrong-password attempts per client address: (count, time of the last one).
 #[derive(Default)]
@@ -115,6 +116,13 @@ pub async fn local_addresses() -> Vec<String> {
         .get_interfaces()
         .await
         .iter()
+        // Container/VM bridges and tunnels to them are no use to a client.
+        .filter(|iface| {
+            let name = iface.name();
+            !["docker", "br-", "veth", "virbr", "lxcbr", "lxdbr", "podman", "cni", "vmnet", "vboxnet"]
+                .iter()
+                .any(|prefix| name.starts_with(prefix))
+        })
         .flat_map(|iface| iface.addrs().iter().map(|net| net.addr()).collect::<Vec<_>>())
         .filter_map(|addr| match addr {
             IpAddr::V4(v4) if !v4.is_loopback() && !v4.is_link_local() && !v4.is_unspecified() => {
@@ -186,7 +194,20 @@ async fn handle_connection(
         *error.status_mut() = status;
         Err(error)
     };
-    let handshake = tokio_tungstenite::accept_hdr_async(stream, callback).await;
+    // A connection that never completes the handshake (plain HTTP, a stalled
+    // client) must not hold a socket forever.
+    let handshake = match tokio::time::timeout(
+        HANDSHAKE_TIMEOUT,
+        tokio_tungstenite::accept_hdr_async(stream, callback),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => {
+            debug!("Direct connection from {} timed out during the handshake", ip);
+            return Ok(());
+        }
+    };
     let ws = match handshake {
         Ok(ws) => ws,
         Err(e) => {
