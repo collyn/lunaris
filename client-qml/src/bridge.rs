@@ -796,7 +796,7 @@ pub mod qobject {
         fn send_mouse_click(self: Pin<&mut StreamBridge>, button: i32, is_down: bool);
 
         #[qinvokable]
-        fn send_mouse_wheel(self: Pin<&mut StreamBridge>, delta: i32);
+        fn send_mouse_wheel(self: Pin<&mut StreamBridge>, angle_x: i32, angle_y: i32);
 
         #[qinvokable]
         fn send_key_event(self: Pin<&mut StreamBridge>, key: i32, modifiers: i32, is_down: bool);
@@ -1152,11 +1152,11 @@ impl qobject::StreamBridge {
         }
     }
 
-    pub fn send_mouse_wheel(self: Pin<&mut Self>, delta: i32) {
+    pub fn send_mouse_wheel(self: Pin<&mut Self>, angle_x: i32, angle_y: i32) {
         let binding = self.as_ref();
         let senders = binding.rust().input_senders.lock().unwrap();
         if let Some(ref s) = *senders {
-            super::input::handle_mouse_wheel(delta, s);
+            super::input::handle_mouse_wheel(angle_x, angle_y, s);
         }
     }
 

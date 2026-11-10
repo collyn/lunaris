@@ -180,17 +180,54 @@ pub fn handle_mouse_click(button: i32, is_down: bool, senders: &InputSenders) {
     }
 }
 
-pub fn handle_mouse_wheel(delta: i32, senders: &InputSenders) {
-    let mut buf = vec![0u8; 3];
-    buf[0] = 4; // Type 4: Scroll Event
-    buf[1] = 0;
-    buf[2] = ((delta / 120) as i8) as u8; // Normal delta is 120 per click
+/// Wheel deltas not yet sent, in Qt angle units (120 = one notch).
+static WHEEL_REMAINDER: std::sync::Mutex<(i32, i32)> = std::sync::Mutex::new((0, 0));
+
+/// Turns accumulated Qt wheel deltas into whole notches. Touchpads (two-finger
+/// scrolling) report many small deltas (a few units each); dividing each one by
+/// 120 on its own always gave 0, so touchpad scrolling did nothing.
+fn take_wheel_notches(remainder: &mut (i32, i32), angle_x: i32, angle_y: i32) -> (i32, i32) {
+    remainder.0 += angle_x;
+    remainder.1 += angle_y;
+    let notches = (remainder.0 / 120, remainder.1 / 120);
+    remainder.0 -= notches.0 * 120;
+    remainder.1 -= notches.1 * 120;
+    notches
+}
+
+/// `angle_x`/`angle_y` are QWheelEvent::angleDelta (positive y = away from
+/// the user, positive x = to the left).
+pub fn handle_mouse_wheel(angle_x: i32, angle_y: i32, senders: &InputSenders) {
+    let (notches_x, notches_y) = {
+        let mut remainder = WHEEL_REMAINDER.lock().unwrap();
+        take_wheel_notches(&mut remainder, angle_x, angle_y)
+    };
+    if notches_x == 0 && notches_y == 0 {
+        return;
+    }
+    // Type 4 scroll packet: [4, dx, dy] in notches; the agent scrolls right
+    // for dx > 0 and up for dy > 0 (the web client sends the same).
+    let dx = (-notches_x).clamp(-127, 127) as i8;
+    let dy = notches_y.clamp(-127, 127) as i8;
+    let buf = vec![4u8, dx as u8, dy as u8];
     let _ = senders.mouse_rel.send(Bytes::from(buf));
 }
 
 #[cfg(test)]
 mod tests {
-    use super::map_qt_key_to_vk;
+    use super::{map_qt_key_to_vk, take_wheel_notches};
+
+    #[test]
+    fn touchpad_deltas_add_up_to_notches() {
+        let mut rem = (0, 0);
+        let mut total = 0;
+        for _ in 0..24 {
+            total += take_wheel_notches(&mut rem, 0, 15).1; // small touchpad steps
+        }
+        assert_eq!(total, 3);
+        assert_eq!(take_wheel_notches(&mut rem, 0, -120), (0, -1));
+        assert_eq!(take_wheel_notches(&mut rem, 240, 0), (2, 0));
+    }
 
     const SHIFT: i32 = 0x0200_0000;
     const KEYPAD: i32 = 0x2000_0000;

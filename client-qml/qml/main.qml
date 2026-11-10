@@ -697,7 +697,7 @@ ApplicationWindow {
 
             onWheel: (wheel) => {
                 if (!window.isPointerLocked) {
-                    bridge.sendMouseWheel(wheel.angleDelta.y);
+                    bridge.sendMouseWheel(wheel.angleDelta.x, wheel.angleDelta.y);
                 }
             }
 

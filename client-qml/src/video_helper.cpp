@@ -366,6 +366,7 @@ protected:
             QWheelEvent* we = static_cast<QWheelEvent*>(event);
             QMetaObject::invokeMethod(g_streamBridge, "sendMouseWheel",
                                       Qt::DirectConnection,
+                                      Q_ARG(::std::int32_t, we->angleDelta().x()),
                                       Q_ARG(::std::int32_t, we->angleDelta().y()));
             return true;
         }
