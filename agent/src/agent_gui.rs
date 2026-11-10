@@ -205,7 +205,7 @@ fn make_default_config() -> AgentConfig {
         client_private_key: String::new(),
         client_certificate: String::new(),
         server_certificate: String::new(),
-        server_url: "ws://127.0.0.1:8080".to_string(),
+        server_url: "ws://127.0.0.1:8090".to_string(),
         server_token: String::new(),
         webtransport_port: 55200,
         autostart: false,

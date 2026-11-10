@@ -210,7 +210,7 @@ Rectangle {
                                     id: serverInput
                                     anchors.fill: parent; anchors.margins: 10
                                     color: Theme.textStrong; font.pixelSize: 13
-                                    text: "http://127.0.0.1:8080"
+                                    text: "http://127.0.0.1:8090"
                                     verticalAlignment: Text.AlignVCenter
                                     selectByMouse: true
                                     activeFocusOnTab: true

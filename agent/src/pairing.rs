@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 
 fn default_server_url() -> String {
-    "ws://127.0.0.1:8080".to_string()
+    "ws://127.0.0.1:8090".to_string()
 }
 
 fn default_webtransport_port() -> u16 {

@@ -6,10 +6,10 @@ const getBackendHost = () => {
     return savedHost.replace(/^(https?:\/\/)?/, '').replace(/\/$/, '');
   }
   if (window.location.port === '5173' || window.location.port === '3000') {
-    return `${window.location.hostname}:8080`;
+    return `${window.location.hostname}:8090`;
   }
   if (window.location.hostname === 'tauri.localhost' || window.location.protocol.startsWith('tauri')) {
-    return 'localhost:8080';
+    return 'localhost:8090';
   }
   return window.location.host;
 };
