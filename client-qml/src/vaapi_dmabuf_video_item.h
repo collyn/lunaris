@@ -29,6 +29,7 @@ protected:
     QSGNode *updatePaintNode(QSGNode *oldNode, UpdatePaintNodeData *data) override;
 
 private slots:
+    void handleSceneGraphInvalidated();
     void handleWindowChanged(QQuickWindow *win);
     void renderNative();
 

@@ -162,7 +162,18 @@ void VaapiDmabufVideoItem::registerTypes() {
 void VaapiDmabufVideoItem::handleWindowChanged(QQuickWindow *win) {
     if (win) {
         connect(win, &QQuickWindow::beforeRenderPassRecording, this, &VaapiDmabufVideoItem::renderNative, Qt::DirectConnection);
+        // Free the GL objects while their context is still current (render
+        // thread). By the time the item is destroyed at exit the context is
+        // gone, and g_gl would point into it.
+        connect(win, &QQuickWindow::sceneGraphInvalidated, this, &VaapiDmabufVideoItem::handleSceneGraphInvalidated, Qt::DirectConnection);
     }
+}
+
+void VaapiDmabufVideoItem::handleSceneGraphInvalidated() {
+    QMutexLocker locker(&m_mutex);
+    cleanupGlResources();
+    // The functions belong to the context that is going away.
+    g_gl = nullptr;
 }
 
 QSGNode *VaapiDmabufVideoItem::updatePaintNode(QSGNode *oldNode, UpdatePaintNodeData *) {
@@ -283,6 +294,19 @@ void VaapiDmabufVideoItem::cleanupFrameLocked() {
 }
 
 void VaapiDmabufVideoItem::cleanupGlResources() {
+    // GL/EGL calls need the item's context to be current: true on the render
+    // thread (sceneGraphInvalidated), not in the destructor at shutdown, where
+    // the objects die with the context anyway.
+    if (!QOpenGLContext::currentContext()) {
+        m_yImage = nullptr;
+        m_uvImage = nullptr;
+        m_haveImportedFrame = false;
+        m_yTexture = 0;
+        m_uvTexture = 0;
+        m_vbo = 0;
+        m_texturesInitialized = false;
+        return;
+    }
     cleanupFrameLocked();
     if (g_gl) {
         if (m_yTexture) g_gl->glDeleteTextures(1, &m_yTexture);
