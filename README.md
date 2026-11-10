@@ -224,4 +224,8 @@ Lunaris stands on the shoulders of several excellent open-source projects. Speci
 
 ## License
 
-GPLv3 — See [LICENSE](LICENSE) for details.
+Lunaris is licensed under the **GNU General Public License v3.0 or later** (`GPL-3.0-or-later`) — see [LICENSE](LICENSE).
+Releases before this change were published under the MIT licence.
+
+Prebuilt packages bundle third-party components (Qt, FFmpeg, x264, …); see
+[`scripts/packaging/THIRD-PARTY-NOTICES.md`](scripts/packaging/THIRD-PARTY-NOTICES.md).

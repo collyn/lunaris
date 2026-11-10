@@ -3,10 +3,10 @@
 # Ubuntu 22.04 base → the AppImage needs glibc >= 2.35 (Ubuntu 22.04+, Debian 12+,
 # Fedora 36+, Arch, openSUSE Tumbleweed, Mint 21+ ...).
 #
-# Everything bundled is LGPL or permissive — no GPL, no "nonfree":
-#   Qt 6.8 LTS (LGPLv3, dynamically linked)        FFmpeg 8 (LGPLv2.1+, shared)
+# Lunaris is GPL-3.0-or-later; everything bundled is compatible, nothing "nonfree":
+#   Qt 6.8 LTS (LGPLv3, dynamically linked)   FFmpeg 8.1 (GPL build, shared)
+#   x264 (GPLv2+)   SVT-AV1 (BSD-3-Clause-Clear + AOM royalty-free patents)
 #   libva (MIT)   oneVPL dispatcher (MIT)   nv-codec-headers (MIT)
-#   SVT-AV1 (BSD-3-Clause-Clear + AOM royalty-free patent license)
 FROM docker.io/library/ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -61,19 +61,29 @@ RUN git clone --depth 1 -b ${SVTAV1_VERSION} https://gitlab.com/AOMediaCodec/SVT
     && install -Dm644 SVT-AV1/LICENSE.md ${PREFIX}/share/licenses/svt-av1/LICENSE.md \
     && install -Dm644 SVT-AV1/PATENTS.md ${PREFIX}/share/licenses/svt-av1/PATENTS.md && rm -rf SVT-AV1
 
-# FFmpeg 8, LGPL, only what the agent uses: hardware encoders + SVT-AV1 + swscale.
-ARG FFMPEG_VERSION=n8.0
+# x264: software H.264 fallback for hosts without a usable hardware encoder
+# (H.264 is the one codec every browser decodes). Static, folded into libavcodec.
+ARG X264_BRANCH=stable
+RUN git clone --depth 1 -b ${X264_BRANCH} https://code.videolan.org/videolan/x264.git \
+    && cd x264 && ./configure --prefix=${PREFIX} --enable-static --enable-pic --disable-cli \
+    && make -j"$(nproc)" && make install \
+    && install -Dm644 COPYING ${PREFIX}/share/licenses/x264/COPYING \
+    && git rev-parse HEAD > ${PREFIX}/share/licenses/x264/VERSION && cd .. && rm -rf x264
+
+# FFmpeg 8.1 (GPL because of x264), only what the agent uses: hardware encoders,
+# x264, SVT-AV1 and swscale.
+ARG FFMPEG_VERSION=n8.1
 RUN git clone --depth 1 -b ${FFMPEG_VERSION} https://github.com/FFmpeg/FFmpeg.git \
     && cd FFmpeg && ./configure --prefix=${PREFIX} --libdir=${PREFIX}/lib \
        --enable-shared --disable-static --disable-programs --disable-doc --disable-debug \
        --disable-autodetect --disable-everything \
        --enable-vaapi --enable-libdrm --enable-ffnvcodec --enable-nvenc --enable-cuda \
-       --enable-libvpl --enable-libsvtav1 \
-       --enable-encoder=h264_vaapi,hevc_vaapi,av1_vaapi,h264_nvenc,hevc_nvenc,av1_nvenc,h264_qsv,hevc_qsv,av1_qsv,libsvtav1 \
+       --enable-gpl --enable-libx264 --enable-libvpl --enable-libsvtav1 \
+       --enable-encoder=h264_vaapi,hevc_vaapi,av1_vaapi,h264_nvenc,hevc_nvenc,av1_nvenc,h264_qsv,hevc_qsv,av1_qsv,libx264,libsvtav1 \
        --enable-parser=h264,hevc,av1 --enable-bsf=h264_metadata,hevc_metadata,av1_metadata,extract_extradata,dump_extradata \
        --enable-filter=scale,format,hwupload,hwdownload,hwmap,scale_vaapi \
     && make -j"$(nproc)" && make install \
-    && install -Dm644 COPYING.LGPLv2.1 ${PREFIX}/share/licenses/ffmpeg/COPYING.LGPLv2.1 && install -Dm644 LICENSE.md ${PREFIX}/share/licenses/ffmpeg/LICENSE.md \
+    && install -Dm644 COPYING.GPLv2 ${PREFIX}/share/licenses/ffmpeg/COPYING.GPLv2 && install -Dm644 COPYING.LGPLv2.1 ${PREFIX}/share/licenses/ffmpeg/COPYING.LGPLv2.1 && install -Dm644 LICENSE.md ${PREFIX}/share/licenses/ffmpeg/LICENSE.md \
     && ./ffbuild/version.sh . > ${PREFIX}/share/licenses/ffmpeg/VERSION 2>/dev/null; cd .. && rm -rf FFmpeg
 
 # Qt 6.8 LTS from the official LGPL binaries.

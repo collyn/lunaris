@@ -35,9 +35,11 @@ install -Dm755 "$ROOT/scripts/linux-host/setup-host.sh" "$SHARE/setup-host.sh"
 install -Dm644 "$ROOT/scripts/linux-host/60-lunaris-input.rules" "$SHARE/60-lunaris-input.rules"
 install -Dm644 "$ROOT/scripts/linux-host/60-lunaris.conf" "$SHARE/60-lunaris.conf"
 
-# Third-party licences (LGPL requires shipping the texts + where to get sources).
+# Lunaris' own licence plus the third-party licence texts (GPL/LGPL require
+# shipping them, together with where to get the corresponding source).
 LIC="$APPDIR/usr/share/licenses"
 mkdir -p "$LIC"
+install -Dm644 "$ROOT/LICENSE" "$LIC/lunaris/LICENSE"
 cp -r "$DEPS/share/licenses/." "$LIC/"
 install -Dm644 "$QTDIR/../../Licenses/LICENSE.LGPL3" "$LIC/qt/LICENSE.LGPL3" 2>/dev/null \
     || find "$QTDIR/.." -maxdepth 3 -iname 'LICENSE.LGPL*' -exec install -Dm644 {} "$LIC/qt/" \; -quit 2>/dev/null || true

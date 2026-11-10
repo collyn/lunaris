@@ -2,6 +2,7 @@
 name = "client-desktop"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 
 [dependencies]
 client-qml = { path = "../client-qml" }

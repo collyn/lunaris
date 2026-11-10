@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Build the portable Lunaris agent AppImage (runs on glibc >= 2.35 distros).
 #
-# The build happens inside an Ubuntu 22.04 container with Qt 6.8 (LGPL) and a
-# trimmed LGPL FFmpeg — see Containerfile.appimage. Output: dist/Lunaris-Agent-*.AppImage
+# The build happens inside an Ubuntu 22.04 container with Qt 6.8 and a trimmed
+# FFmpeg 8.1 (+ x264, SVT-AV1) — see Containerfile.appimage.
+# Output: dist/Lunaris-Agent-*.AppImage
 #
 # Env: CONTAINER=docker       use docker instead of podman
 #      PODMAN_ROOT=<dir>      podman storage/temp location (when / is short on space)

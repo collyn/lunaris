@@ -98,7 +98,7 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # Ubuntu 22.04 + Qt 6.8 + LGPL FFmpeg/SVT-AV1/libva/oneVPL. The layers are
+      # Ubuntu 22.04 + Qt 6.8 + FFmpeg/x264/SVT-AV1/libva/oneVPL. The layers are
       # cached, so only the agent itself is rebuilt on most runs.
       - name: Build packaging image
         uses: docker/build-push-action@v6
@@ -161,12 +161,12 @@ jobs:
           vcpkg install opus:x64-windows openssl:x64-windows
         shell: pwsh
 
-      # FFmpeg comes from BtbN's LGPL shared builds, pinned to the 8.1 branch:
+      # FFmpeg comes from BtbN's GPL shared builds (with x264), pinned to 8.1:
       # ffmpeg-next 8.x does not support FFmpeg 9 (what vcpkg ships now), and a
       # prebuilt zip is much faster than compiling FFmpeg through vcpkg.
-      - name: Install FFmpeg 8.1 (LGPL, shared)
+      - name: Install FFmpeg 8.1 (GPL, shared)
         run: |
-          $url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n8.1-latest-win64-lgpl-shared-8.1.zip"
+          $url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n8.1-latest-win64-gpl-shared-8.1.zip"
           Invoke-WebRequest -Uri $url -OutFile ffmpeg.zip
           Expand-Archive ffmpeg.zip -DestinationPath ffmpeg-extract
           Move-Item (Get-ChildItem ffmpeg-extract -Directory | Select-Object -First 1).FullName C:\ffmpeg
@@ -251,6 +251,7 @@ jobs:
           & "${env:QT_ROOT_DIR}/bin/windeployqt.exe" --qmldir client-qml/qml --no-translations --compiler-runtime lunaris-client-desktop/client-desktop.exe
           Copy-Item "C:/vcpkg/installed/x64-windows/bin/*.dll" -Destination lunaris-client-desktop/
           Copy-Item "C:/ffmpeg/bin/*.dll" -Destination lunaris-client-desktop/
+          Copy-Item LICENSE, scripts/packaging/THIRD-PARTY-NOTICES.md -Destination lunaris-client-desktop/
           Compress-Archive -Path lunaris-client-desktop/* -DestinationPath lunaris-client-desktop-windows.zip
           
           # Package QML Client separately (rename binary and bundle as client-qml)
@@ -266,6 +267,7 @@ jobs:
           Copy-Item target/release/agent.exe -Destination lunaris-agent/
           Copy-Item "C:/vcpkg/installed/x64-windows/bin/*.dll" -Destination lunaris-agent/
           Copy-Item "C:/ffmpeg/bin/*.dll" -Destination lunaris-agent/
+          Copy-Item LICENSE, scripts/packaging/THIRD-PARTY-NOTICES.md -Destination lunaris-agent/
           Compress-Archive -Path lunaris-agent/* -DestinationPath lunaris-agent-windows.zip
         shell: pwsh
 
