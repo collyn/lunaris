@@ -100,6 +100,11 @@ ApplicationWindow {
     property bool isPointerLocked: false
     property bool showStats: false
     property bool hideLocalCursor: true
+    // Outside pointer lock the host cursor is shown as the real OS cursor
+    // (HostCursor below): the compositor moves it at input rate, while a
+    // QML Image only follows at the scene graph's frame rate and trails.
+    readonly property bool useHostHardwareCursor: window.isStreamMode
+        && window.hideLocalCursor && !window.isPointerLocked
     property bool ignoreMenuHover: false
     property bool autostartEnabled: false
     property bool closeToTray: true
@@ -656,7 +661,10 @@ ApplicationWindow {
             anchors.fill: parent
             hoverEnabled: true
             acceptedButtons: Qt.LeftButton | Qt.MiddleButton | Qt.RightButton
-            cursorShape: (window.isPointerLocked || window.hideLocalCursor || window.shouldHidePredictedCursor()) ? Qt.BlankCursor : window.qtCursorShape(window.hostCursorKind)
+            // While HostCursor drives this item's cursor, keep the binding
+            // constant so it never overwrites the pixmap cursor.
+            cursorShape: window.useHostHardwareCursor ? Qt.ArrowCursor
+                : (window.isPointerLocked || window.hideLocalCursor || window.shouldHidePredictedCursor()) ? Qt.BlankCursor : window.qtCursorShape(window.hostCursorKind)
 
             onPositionChanged: (mouse) => {
                 if (mouse.y >= 50 && window.ignoreMenuHover) {
@@ -704,6 +712,17 @@ ApplicationWindow {
             }
         }
 
+        HostCursor {
+            target: streamMouseArea
+            active: window.useHostHardwareCursor
+            hidden: !window.localCursorVisible || window.shouldHidePredictedCursor()
+            source: window.hasMatchingNativeCursor(window.hostCursorKind) ? window.nativeCursorSource : window.cursorSourceForKind(window.hostCursorKind)
+            cursorWidth: window.hasMatchingNativeCursor(window.hostCursorKind) ? window.nativeCursorWidth : 32
+            cursorHeight: window.hasMatchingNativeCursor(window.hostCursorKind) ? window.nativeCursorHeight : 32
+            hotspotX: window.cursorHotspotX(window.hostCursorKind)
+            hotspotY: window.cursorHotspotY(window.hostCursorKind)
+        }
+
         // Dark outline glow for the Aero cursor — the white cursor assets
         // are invisible on light backgrounds (e.g. text inputs) without
         // an outline.  We use a soft radial gradient rectangle instead of
@@ -737,6 +756,7 @@ ApplicationWindow {
             asynchronous: false
             visible: window.isStreamMode
                 && window.hideLocalCursor
+                && window.isPointerLocked
                 && window.localCursorVisible
                 && !window.shouldHidePredictedCursor()
             x: videoContainer.x + Math.max(0, Math.min(videoContainer.width, window.localCursorVisualX)) - window.cursorHotspotX(window.hostCursorKind)

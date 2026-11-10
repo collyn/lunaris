@@ -1,5 +1,6 @@
 #include "gpu_video_item.h"
 #include <QQuickWindow>
+#include "host_cursor.h"
 #include <QOpenGLContext>
 #include <QOpenGLFunctions>
 #include <QRunnable>
@@ -720,6 +721,7 @@ extern "C" void deliver_cuda_frame(uint64_t cuda_ctx, uint64_t y_ptr, int y_stri
 
 extern "C" void register_gpu_video_item_type() {
     GpuVideoItem::registerTypes();
+    HostCursor::registerTypes();
 }
 
 extern "C" bool cuda_gl_render_failed() {
