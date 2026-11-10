@@ -109,6 +109,8 @@ fn main() {
         .qt_module("Quick")
         .qt_module("Multimedia")
         .qt_module("OpenGL")
+        .qt_module("Widgets")
+        .qt_module("QuickControls2")
         // Define the QML module with URI matching the import in QML
         .qml_module(QmlModule {
             uri: "com.lunaris.client",

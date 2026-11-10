@@ -587,6 +587,12 @@ pub mod qobject {
             height: i32,
         );
 
+        #[rust_name = "create_widgets_application"]
+        fn create_widgets_application();
+
+        #[rust_name = "exec_widgets_application"]
+        fn exec_widgets_application() -> i32;
+
         #[rust_name = "register_gpu_video_item_type"]
         fn register_gpu_video_item_type();
 
@@ -1761,7 +1767,8 @@ impl qobject::StreamBridge {
                 server_str.replace("http", "ws"),
                 encoded_token
             );
-            println!("fetch_apps connecting to ws at: {}", ws_url);
+            // Never log ws_url itself: it carries the session token.
+            println!("fetch_apps connecting to ws at: {}/ws/client", server_str.replace("http", "ws"));
 
             let connect_result = connect_async(&ws_url).await;
             let (mut ws_stream, _) = match connect_result {
@@ -3756,23 +3763,28 @@ async fn setup_peer_connection(
                 *active_decoder_inner.lock().unwrap() = Some(thread_handle);
             } else if mime == "audio/opus" {
                 println!("Starting audio receiver for: {}", mime);
-                if let Some(audio_tx) = super::audio::setup_audio() {
-                    let mut decoder = match opus::Decoder::new(48000, opus::Channels::Stereo) {
-                        Ok(d) => d,
-                        Err(e) => {
-                            eprintln!("Failed to create Opus decoder: {:?}", e);
-                            return;
-                        }
-                    };
-                    let mut pcm_output = vec![0.0f32; 1920 * 2];
-                    
-                    while let Ok((rtp_packet, _)) = track_clone.read_rtp().await {
-                        if let Ok(num_samples) = decoder.decode_float(&rtp_packet.payload, &mut pcm_output, false) {
-                            let stereo_samples = pcm_output[..num_samples * 2].to_vec();
-                            let _ = audio_tx.send(stereo_samples);
+                // Read audio on its own task: webrtc-rs waits for this on_track
+                // handler to return before dispatching the next track, so a read
+                // loop here would starve the video track (black screen).
+                tokio::spawn(async move {
+                    if let Some(audio_tx) = super::audio::setup_audio() {
+                        let mut decoder = match opus::Decoder::new(48000, opus::Channels::Stereo) {
+                            Ok(d) => d,
+                            Err(e) => {
+                                eprintln!("Failed to create Opus decoder: {:?}", e);
+                                return;
+                            }
+                        };
+                        let mut pcm_output = vec![0.0f32; 1920 * 2];
+
+                        while let Ok((rtp_packet, _)) = track_clone.read_rtp().await {
+                            if let Ok(num_samples) = decoder.decode_float(&rtp_packet.payload, &mut pcm_output, false) {
+                                let stereo_samples = pcm_output[..num_samples * 2].to_vec();
+                                let _ = audio_tx.send(stereo_samples);
+                            }
                         }
                     }
-                }
+                });
             }
         })
     }));
@@ -3924,7 +3936,8 @@ async fn run_webrtc_client_task(
         server_url.replace("http", "ws"),
         token
     );
-    println!("Connecting to signaling server at: {}", ws_url);
+    // Never log ws_url itself: it carries the session token.
+    println!("Connecting to signaling server at: {}/ws/client", server_url.replace("http", "ws"));
 
     let (ws_stream, _) = connect_async(url::Url::parse(&ws_url)?).await?;
     let (mut ws_write, mut ws_read) = ws_stream.split();

@@ -4,6 +4,8 @@
 #include <QtMultimedia/QVideoFrameFormat>
 #include <QCursor>
 #include <QGuiApplication>
+#include <QApplication>
+#include <QQuickStyle>
 #include <QWindow>
 #include <QEvent>
 #include <QMouseEvent>
@@ -403,4 +405,30 @@ void set_pointer_locked_helper(bool locked) {
 #endif
         g_pendingWarps = 0;
     }
+}
+
+namespace {
+// QApplication keeps references to argc/argv for its whole lifetime.
+int g_app_argc = 1;
+char g_app_arg0[] = "lunaris-client";
+char *g_app_argv[] = {g_app_arg0, nullptr};
+QApplication *g_widgets_app = nullptr;
+}
+
+void create_widgets_application() {
+    if (!g_widgets_app) {
+        g_widgets_app = new QApplication(g_app_argc, g_app_argv);
+#if defined(Q_OS_LINUX)
+        // KDE's platform theme switches Qt Quick Controls to "org.kde.desktop"
+        // as soon as a QApplication exists; that style breaks our custom
+        // controls. Keep Qt's stock Linux default unless the user chose one.
+        if (qEnvironmentVariableIsEmpty("QT_QUICK_CONTROLS_STYLE")) {
+            QQuickStyle::setStyle(QStringLiteral("Fusion"));
+        }
+#endif
+    }
+}
+
+int exec_widgets_application() {
+    return QApplication::exec();
 }

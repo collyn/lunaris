@@ -17,3 +17,10 @@ void set_keyboard_grab_helper(bool grab);
 
 void register_bridge_instance(StreamBridge* bridge);
 void set_pointer_locked_helper(bool locked);
+
+// Creates the process-wide QApplication. A QtWidgets application (not just
+// QGuiApplication) is required because Qt.labs.platform's SystemTrayIcon/Menu
+// fall back to QtWidgets implementations on desktops like KDE, and creating
+// those without a QApplication aborts the process.
+void create_widgets_application();
+int exec_widgets_application();

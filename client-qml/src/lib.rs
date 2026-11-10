@@ -4,7 +4,7 @@ use tracing::{error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use url::Url;
 
-use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QUrl};
+use cxx_qt_lib::{QQmlApplicationEngine, QUrl};
 
 pub mod audio;
 pub mod bridge;
@@ -494,7 +494,9 @@ pub fn run() {
 
     let parsed_args = parse_args();
     if let Some(args) = parsed_args {
-        info!("App configurations loaded: {:?}", args);
+        let mut shown = args.clone();
+        shown.token = "<redacted>".to_string();
+        info!("App configurations loaded: {:?}", shown);
         if APP_ARGS.set(args).is_err() {
             error!("Failed to set static APP_ARGS configuration OnceLock.");
             std::process::exit(1);
@@ -626,8 +628,9 @@ pub fn run() {
         }
     }
 
-    // 1. Create QGuiApplication
-    let mut app = QGuiApplication::new();
+    // 1. Create the Qt application. It must be a QApplication (QtWidgets):
+    // the tray icon/menu from Qt.labs.platform fall back to widgets on KDE.
+    bridge::qobject::create_widgets_application();
 
     // Register our custom QML video rendering item
     bridge::qobject::register_gpu_video_item_type();
@@ -645,12 +648,7 @@ pub fn run() {
     }
 
     // 4. Exec event loop
-    if let Some(app_mut) = app.as_mut() {
-        app_mut.exec();
-    } else {
-        error!("Failed to execute QGuiApplication event loop.");
-        std::process::exit(1);
-    }
+    bridge::qobject::exec_widgets_application();
 
     // Clean up local agent if running
     bridge::stop_local_agent();

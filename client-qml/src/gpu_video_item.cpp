@@ -502,6 +502,10 @@ void GpuVideoItem::cleanupCudaGL(bool skipCuda) {
 
 void GpuVideoItem::renderNative() {
     if (!g_cudaSupported) return;
+    // Once CUDA-GL has failed for this stream the decoder falls back to
+    // CPU/QVideoSink; don't retry (and re-log) the failing setup every frame.
+    // set_cuda_stream_active(true) clears the flag for the next stream.
+    if (g_cudaRenderFailed.load(std::memory_order_acquire)) return;
     if (!QOpenGLContext::currentContext()) {
         if (m_cudaActive) setCudaActive(false);
         return;
