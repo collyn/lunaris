@@ -32,6 +32,6 @@ ENV SERVER_PORT=8090 \
     LUNARIS_DATA_DIR=/data \
     RUST_LOG=info
 VOLUME /data
-EXPOSE 8090
+EXPOSE 8090 3478/udp 49160-49260/udp
 ENTRYPOINT ["/usr/local/bin/lunaris-server"]
 CMD ["run"]

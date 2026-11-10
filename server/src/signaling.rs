@@ -1,7 +1,8 @@
 use axum::{
     extract::{
+        connect_info::Connected,
         ws::{Message, WebSocket, WebSocketUpgrade},
-        Query, State,
+        ConnectInfo, Query, State,
     },
     http::StatusCode,
     response::IntoResponse,
@@ -14,6 +15,7 @@ use futures_util::{SinkExt, StreamExt};
 use sqlx::SqlitePool;
 use std::{
     collections::HashMap,
+    net::{IpAddr, SocketAddr},
     sync::{Arc, RwLock},
 };
 use tokio::sync::mpsc;
@@ -24,8 +26,30 @@ use crate::auth::verify_jwt;
 use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 
+/// Both ends of an HTTP/WebSocket connection: the local address is the server
+/// address that peer uses, which is where it can reach the TURN relay.
+#[derive(Clone, Copy, Debug)]
+pub struct ConnAddrs {
+    pub local: Option<SocketAddr>,
+    pub remote: SocketAddr,
+}
+
+impl Connected<axum::serve::IncomingStream<'_>> for ConnAddrs {
+    fn connect_info(target: axum::serve::IncomingStream<'_>) -> Self {
+        ConnAddrs {
+            local: target.local_addr().ok(),
+            remote: target.remote_addr(),
+        }
+    }
+}
+
 pub struct SignalingState {
     pub db: SqlitePool,
+    /// Built-in TURN relay (None when disabled).
+    pub turn: Option<Arc<crate::turn::TurnService>>,
+    // agent_id / client conn_id -> server address that peer connected to
+    pub agent_local_ips: RwLock<HashMap<String, IpAddr>>,
+    pub client_local_ips: RwLock<HashMap<String, IpAddr>>,
     pub agent_token: String,
     // agent_id -> sender to agent WS
     pub agents: RwLock<HashMap<String, mpsc::UnboundedSender<ServerToAgentMessage>>>,
@@ -42,9 +66,12 @@ pub struct SignalingState {
 }
 
 impl SignalingState {
-    pub fn new(db: SqlitePool, agent_token: String) -> Self {
+    pub fn new(db: SqlitePool, agent_token: String, turn: Option<Arc<crate::turn::TurnService>>) -> Self {
         Self {
             db,
+            turn,
+            agent_local_ips: RwLock::new(HashMap::new()),
+            client_local_ips: RwLock::new(HashMap::new()),
             agent_token,
             agents: RwLock::new(HashMap::new()),
             clients: RwLock::new(HashMap::new()),
@@ -83,6 +110,29 @@ impl SignalingState {
         .bind(codec_support.map(|c| c as i64))
         .execute(&self.db)
         .await;
+    }
+
+    /// ICE servers for an agent: the configured ones plus the built-in relay
+    /// at the address the agent reaches the server on.
+    pub async fn ice_servers_for_agent(&self, agent_id: &str) -> Vec<common::RtcIceServer> {
+        let mut servers = self.fetch_ice_servers().await;
+        if let Some(turn) = &self.turn {
+            let agent_ip = self.agent_local_ips.read().unwrap().get(agent_id).copied();
+            servers.extend(turn.ice_server_for(agent_ip, None));
+        }
+        servers
+    }
+
+    /// ICE servers for a client connection; falls back to the agent's
+    /// address for the relay when the client came in on loopback.
+    pub async fn ice_servers_for_client(&self, conn_id: &str, agent_id: &str) -> Vec<common::RtcIceServer> {
+        let mut servers = self.fetch_ice_servers().await;
+        if let Some(turn) = &self.turn {
+            let client_ip = self.client_local_ips.read().unwrap().get(conn_id).copied();
+            let agent_ip = self.agent_local_ips.read().unwrap().get(agent_id).copied();
+            servers.extend(turn.ice_server_for(client_ip, agent_ip));
+        }
+        servers
     }
 
     pub async fn fetch_ice_servers(&self) -> Vec<common::RtcIceServer> {
@@ -143,6 +193,7 @@ pub struct ClientParams {
 pub async fn agent_ws_handler(
     ws: WebSocketUpgrade,
     Query(params): Query<AgentParams>,
+    ConnectInfo(addrs): ConnectInfo<ConnAddrs>,
     State(state): State<Arc<SignalingState>>,
 ) -> impl IntoResponse {
     let incoming_token = params.token.as_deref().unwrap_or("").trim();
@@ -154,18 +205,25 @@ pub async fn agent_ws_handler(
         return StatusCode::UNAUTHORIZED.into_response();
     }
 
+    if let Some(local) = addrs.local {
+        state.agent_local_ips.write().unwrap().insert(params.id.clone(), local.ip());
+    }
     ws.on_upgrade(move |socket| handle_agent_socket(socket, params, state))
 }
 
 pub async fn client_ws_handler(
     ws: WebSocketUpgrade,
     Query(params): Query<ClientParams>,
+    ConnectInfo(addrs): ConnectInfo<ConnAddrs>,
     State(state): State<Arc<SignalingState>>,
 ) -> impl IntoResponse {
     // Verify token before upgrading if possible, or inside connection.
     // Let's do it inside for simplicity with standard ws URL connection.
     match verify_jwt(&params.token) {
-        Ok(claims) => ws.on_upgrade(move |socket| handle_client_socket(socket, claims.sub, state)),
+        Ok(claims) => {
+            let local_ip = addrs.local.map(|a| a.ip());
+            ws.on_upgrade(move |socket| handle_client_socket(socket, claims.sub, local_ip, state))
+        }
         Err(_) => StatusCode::UNAUTHORIZED.into_response(),
     }
 }
@@ -313,7 +371,12 @@ async fn handle_agent_socket(socket: WebSocket, params: AgentParams, state: Arc<
 }
 
 // --- Client Connection Handler ---
-async fn handle_client_socket(socket: WebSocket, client_id: String, state: Arc<SignalingState>) {
+async fn handle_client_socket(
+    socket: WebSocket,
+    client_id: String,
+    local_ip: Option<IpAddr>,
+    state: Arc<SignalingState>,
+) {
     let (mut ws_sender, mut ws_receiver) = socket.split();
     let (tx, mut rx) = mpsc::unbounded_channel::<ServerToClientMessage>();
     let conn_id = Uuid::new_v4();
@@ -327,6 +390,9 @@ async fn handle_client_socket(socket: WebSocket, client_id: String, state: Arc<S
             .write()
             .unwrap()
             .insert(conn_id_str.clone(), client_id.clone());
+    }
+    if let Some(ip) = local_ip {
+        state.client_local_ips.write().unwrap().insert(conn_id_str.clone(), ip);
     }
     info!("Client WebSocket connected: {} (conn: {})", client_id, conn_id_str);
 
@@ -408,6 +474,7 @@ async fn handle_client_socket(socket: WebSocket, client_id: String, state: Arc<S
     // Remove this specific connection
     state.clients.write().unwrap().remove(&conn_id_str);
     state.client_connections.write().unwrap().remove(&conn_id_str);
+    state.client_local_ips.write().unwrap().remove(&conn_id_str);
 
     // Only clean up session if this was the last connection for this client
     let has_other_connections = {
@@ -462,7 +529,7 @@ async fn handle_agent_signaling(sig: SignalingMessage, agent_id: &str, state: Ar
         } => {
             let client_tx_opt = state.clients.read().unwrap().get(&target_id).cloned();
             if let Some(client_tx) = client_tx_opt {
-                let ice_servers = state.fetch_ice_servers().await;
+                let ice_servers = state.ice_servers_for_client(&target_id, agent_id).await;
                 let _ = client_tx.send(ServerToClientMessage::Signaling(SignalingMessage::Sdp {
                     target_id: agent_id.to_string(),
                     sdp,
@@ -639,7 +706,7 @@ async fn handle_client_signaling(
             };
 
             if let Some(agent_tx) = agent_tx_opt {
-                let ice_servers = state.fetch_ice_servers().await;
+                let ice_servers = state.ice_servers_for_agent(&host_id).await;
                 let incoming_msg =
                     ServerToAgentMessage::Signaling(SignalingMessage::IncomingSession {
                         client_id: conn_id.to_string(),

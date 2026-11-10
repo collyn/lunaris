@@ -115,6 +115,16 @@ on every distro. They also install the uinput udev rule needed for remote
 keyboard/mouse. (`.rpm` and Arch packages are prepared in `scripts/packaging/`
 and will be published once the PipeWire bindings are updated.)
 
+### Connect directly, without a server
+
+On a LAN, a VPN or through a forwarded port, a client can connect straight to
+the agent. In the agent window tick **Allow direct connections**: it shows this
+computer's addresses (port 8091) and an access password. In the desktop client
+choose **Connect directly by IP address** on the sign-in screen and enter them.
+Headless agents: `lunaris-agent --cli --direct` prints the same (`--direct-port`
+changes the port). Only the signaling uses this connection (plain WebSocket, so
+keep it to trusted networks); video and input stay end-to-end encrypted WebRTC.
+
 ### Prerequisites (building from source)
 
 - **Rust** 1.75+ (with `cargo`)
@@ -168,6 +178,10 @@ cd web && npm install && npm run dev
 | `LUNARIS_ADMIN_PASSWORD` | *(random)* | Initial `admin` password — first start only |
 | `DATABASE_URL` | `sqlite://<data dir>/lunaris.db` | SQLite database path |
 | `RUST_LOG` | `info,server=debug` | Log level configuration |
+| `LUNARIS_TURN` | on | Built-in TURN relay (`0` disables it). Lets WebRTC connect through the server when the two sides can't reach each other directly |
+| `LUNARIS_TURN_PORT` | `3478` | TURN listening port (UDP) |
+| `LUNARIS_TURN_RELAY_PORTS` | `49160-49260` | UDP ports used for relayed streams (open them in the firewall together with the TURN port) |
+| `LUNARIS_TURN_PUBLIC_IP` | *(local addresses)* | Address to advertise when the server is behind 1:1 NAT, e.g. a cloud VM |
 
 ### Linux Host (X11 and Wayland)
 
@@ -265,7 +279,8 @@ Web Client                    Central Server                  Host Agent
 - [x] Host agent with Tauri GUI
 - [x] Qt6/QML desktop client with hardware video decoding
 - [x] lunaris-media native capture and encoding backend
-- [ ] Production-ready NAT traversal (STUN/TURN)
+- [x] NAT traversal: STUN plus a built-in TURN relay in the server
+- [x] Direct connections to an agent without a server
 - [ ] File transfer via WebRTC Data Channel
 - [ ] Bidirectional clipboard sync
 - [ ] Multi-monitor support

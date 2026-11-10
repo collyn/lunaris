@@ -7,6 +7,9 @@ services:
     restart: unless-stopped
     ports:
       - "8090:8090"
+      # Built-in TURN relay (needs LUNARIS_TURN_PUBLIC_IP below)
+      - "3478:3478/udp"
+      - "49160-49260:49160-49260/udp"
     volumes:
       # Database, agent token and the initial admin password live here.
       - lunaris-data:/data
@@ -18,6 +21,11 @@ services:
       # - LUNARIS_ADMIN_PASSWORD=change-me
       # Token agents use to register (generated on first start when unset):
       # - LUNARIS_TOKEN=your_secure_agent_token_here
+      # This host's LAN or public address, for the built-in TURN relay that
+      # connects clients and agents which can't reach each other directly.
+      # Without it the relay stays off (the container's own address is
+      # unreachable from outside).
+      # - LUNARIS_TURN_PUBLIC_IP=192.168.1.10
 
 volumes:
   lunaris-data:

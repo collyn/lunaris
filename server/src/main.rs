@@ -20,6 +20,7 @@ mod db;
 pub mod input;
 mod paths;
 mod service;
+mod turn;
 mod web;
 
 pub mod signaling;
@@ -246,7 +247,8 @@ pub(crate) async fn run_server(
     info!(" [Security] Agent Connection Token: {}", agent_token);
     info!("==================================================");
 
-    let signaling_state = Arc::new(SignalingState::new(pool.clone(), agent_token));
+    let turn = turn::TurnService::start_from_env().await;
+    let signaling_state = Arc::new(SignalingState::new(pool.clone(), agent_token, turn));
 
     // Configure CORS
     let cors = CorsLayer::new()
@@ -310,8 +312,11 @@ pub(crate) async fn run_server(
     let listener = tokio::net::TcpListener::bind(&addr).await?;
 
     info!("Lunaris Server running on http://{}", addr);
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown)
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<signaling::ConnAddrs>(),
+    )
+    .with_graceful_shutdown(shutdown)
         .await?;
 
     Ok(())
