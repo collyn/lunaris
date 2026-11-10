@@ -4612,7 +4612,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
         >
           <option value="webrtc">WebRTC</option>
           <option value="webtransport" disabled={typeof (window as any).WebTransport === 'undefined'}>
-            WebTransport {typeof (window as any).WebTransport === 'undefined' ? "(Unsupported)" : ""}
+            WebTransport
           </option>
         </select>
 
@@ -4623,10 +4623,10 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
           className="stream-select"
           title="Display"
         >
-          <option value="default">Default Display</option>
+          <option value="default">Display</option>
           {availableDisplays.map(d => (
-            <option key={d.id} value={d.id}>
-              {d.name} ({d.width}x{d.height}){d.is_primary ? ' ★' : ''}
+            <option key={d.id} value={d.id} title={`${d.name} (${d.width}x${d.height})`}>
+              {d.name}{d.is_primary ? ' ★' : ''}
             </option>
           ))}
         </select>

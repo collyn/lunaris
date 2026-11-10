@@ -3385,6 +3385,14 @@ code, kbd, pre, .host-id, .code-block { font-family: var(--font-mono); }
   background: var(--surface-2);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
+  /* A <select> is as wide as its longest option (e.g. "WebTransport
+     (Unsupported)" in Firefox, long display names): cap it in the toolbar. */
+  flex: 0 0 auto;
+  width: auto;
+  max-width: 9.5rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .stream-action-btn.active { background: rgb(var(--accent-rgb) / 0.16); color: var(--accent-fg); }
 
