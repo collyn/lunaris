@@ -32,6 +32,48 @@ pub struct AgentConfig {
     /// Connector name of the forced high-refresh "virtual" display (default "DP-2").
     #[serde(default)]
     pub virtual_display_output: Option<String>,
+    /// Direct connections: clients connect straight to this agent at
+    /// `ws://<address>:<direct_port>` with `direct_password`, without a
+    /// Lunaris server (LAN, VPN or a forwarded port).
+    #[serde(default)]
+    pub direct_enabled: bool,
+    #[serde(default = "default_direct_port")]
+    pub direct_port: u16,
+    #[serde(default)]
+    pub direct_password: String,
+}
+
+pub fn default_direct_port() -> u16 {
+    8091
+}
+
+/// A new access password like "k7wq-3mzp-x9tr" (unambiguous lowercase letters
+/// and digits, ~62 bits of entropy).
+pub fn generate_direct_password() -> String {
+    const ALPHABET: &[u8] = b"abcdefghjkmnpqrstuvwxyz23456789";
+    let bytes = *uuid::Uuid::new_v4().as_bytes();
+    let chars: Vec<char> = bytes
+        .iter()
+        .take(12)
+        .map(|b| ALPHABET[*b as usize % ALPHABET.len()] as char)
+        .collect();
+    format!(
+        "{}-{}-{}",
+        chars[0..4].iter().collect::<String>(),
+        chars[4..8].iter().collect::<String>(),
+        chars[8..12].iter().collect::<String>()
+    )
+}
+
+/// Gives the config a direct-access password when it has none; returns
+/// whether it changed (so the caller can save it).
+pub fn ensure_direct_password(config: &mut AgentConfig) -> bool {
+    if config.direct_password.trim().is_empty() {
+        config.direct_password = generate_direct_password();
+        true
+    } else {
+        false
+    }
 }
 
 

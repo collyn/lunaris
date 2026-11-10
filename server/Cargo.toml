@@ -38,3 +38,8 @@ libc = "0.2"
 windows-service = "0.7"
 
 
+
+[dev-dependencies]
+# examples/direct_probe.rs (end-to-end test of an agent's direct connections)
+tokio-tungstenite = "0.21"
+urlencoding = "2.1"

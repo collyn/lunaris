@@ -7,7 +7,7 @@ use cxx_qt::CxxQtType;
 use cxx_qt_lib::{QQmlApplicationEngine, QString, QUrl};
 
 use crate::pairing::{load_config, save_config as save_config_file, AgentConfig, import_config_file};
-use crate::{run_agent_loop, AGENT_ACTIVE, CONNECTED_TO_SERVER, LAST_ERROR};
+use crate::{run_agent, AGENT_ACTIVE, CONNECTED_TO_SERVER, LAST_ERROR};
 
 // ---------------------------------------------------------------------------
 // Log channel (identical to the old gui.rs — consumed by main.rs)
@@ -211,6 +211,9 @@ fn make_default_config() -> AgentConfig {
         autostart: false,
         close_to_tray: false,
         virtual_display_output: None,
+        direct_enabled: false,
+        direct_port: crate::pairing::default_direct_port(),
+        direct_password: String::new(),
     }
 }
 
@@ -310,11 +313,7 @@ impl qobject::AgentBridge {
                 _ = rx => {
                     log::info!("Host Agent loop stopped via GUI command.");
                 }
-                res = run_agent_loop(
-                    config,
-                    name,
-                    crate::pairing::config_path().to_string(),
-                ) => {
+                res = run_agent(config, name) => {
                     if let Err(e) = res {
                         let err_str = format!("Agent loop error: {:?}", e);
                         log::error!("{}", err_str);
