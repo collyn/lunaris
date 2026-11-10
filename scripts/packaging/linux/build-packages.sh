@@ -38,13 +38,13 @@ install_deps() {
             ca-certificates python3 file rpm-build \
             libva-devel libdrm-devel pipewire-devel alsa-lib-devel opus-devel openssl-devel \
             libX11-devel libXtst-devel libXfixes-devel libXext-devel libXrandr-devel \
-            mesa-libEGL-devel mesa-libGL-devel mesa-libgbm-devel systemd-devel dbus-devel \
+            mesa-libEGL-devel mesa-libGL-devel mesa-libgbm-devel systemd-devel dbus-devel glib2-devel \
             qt6-qtbase-devel qt6-qtbase-private-devel qt6-qtdeclarative-devel qt6-qtmultimedia-devel
         ;;
     arch)
         pacman -Syu --noconfirm --needed base-devel rust clang cmake meson ninja nasm git pkgconf \
             qt6-base qt6-declarative qt6-multimedia pipewire libpipewire libva libdrm opus \
-            alsa-lib openssl libx11 libxtst libxfixes libxext libxrandr mesa
+            alsa-lib openssl libx11 libxtst libxfixes libxext libxrandr mesa dbus glib2
         ;;
     *) echo "unknown format: $FORMAT (deb|rpm|arch)" >&2; exit 1 ;;
     esac
@@ -66,8 +66,21 @@ build_ffmpeg() {
     fi
 }
 
+# Fedora/Arch ship PipeWire headers newer than the pipewire/libspa crates
+# support; compile against PipeWire 1.0 (runtime still uses the system lib).
+build_pipewire_dev() {
+    if [[ -f "$FFMPEG_PREFIX/pipewire/lib/pkgconfig/libpipewire-0.3.pc" ]]; then
+        echo "Using cached PipeWire 1.0 development files"
+    else
+        bash scripts/packaging/build-pipewire-dev.sh "$FFMPEG_PREFIX/pipewire"
+    fi
+}
+
 build_binaries() {
     export PKG_CONFIG_PATH="$FFMPEG_PREFIX/lib/pkgconfig" QMAKE=/usr/bin/qmake6
+    if [[ "$FORMAT" == rpm ]]; then
+        PKG_CONFIG_PATH="$FFMPEG_PREFIX/pipewire/lib/pkgconfig:$PKG_CONFIG_PATH"
+    fi
     cargo build --release --locked -p agent --features static-ffmpeg --target-dir "$TARGET"
     cargo build --release --locked -p client-desktop --features static-ffmpeg --target-dir "$TARGET"
     for b in agent client-desktop; do
@@ -84,7 +97,7 @@ deb)
     bash scripts/packaging/linux/make-deb.sh "$TARGET" "$OUT" "$FFMPEG_PREFIX"
     ;;
 rpm)
-    install_rust; build_ffmpeg; build_binaries
+    install_rust; build_ffmpeg; build_pipewire_dev; build_binaries
     bash scripts/packaging/linux/make-rpm.sh "$TARGET" "$OUT" "$FFMPEG_PREFIX"
     ;;
 arch)

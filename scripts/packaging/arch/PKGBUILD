@@ -13,7 +13,7 @@ pkgdesc="Low-latency remote desktop"
 arch=(x86_64)
 url="https://github.com/collyn/lunaris"
 license=(GPL-3.0-or-later)
-makedepends=(rust clang cmake meson ninja nasm git pkgconf
+makedepends=(rust clang cmake meson ninja nasm git pkgconf dbus glib2
              qt6-base qt6-declarative qt6-multimedia
              pipewire libpipewire libva libdrm opus alsa-lib openssl
              libx11 libxtst libxfixes libxext libxrandr mesa)
@@ -33,7 +33,9 @@ build() {
   cd "$pkgbase-$pkgver"
   export CARGO_HOME="$srcdir/cargo-home"
   bash scripts/packaging/build-ffmpeg-static.sh "$srcdir/ffmpeg"
-  export PKG_CONFIG_PATH="$srcdir/ffmpeg/lib/pkgconfig" QMAKE=/usr/bin/qmake6
+  # The pipewire/libspa crates need PipeWire 1.0 headers (runtime uses Arch's).
+  bash scripts/packaging/build-pipewire-dev.sh "$srcdir/pipewire-dev"
+  export PKG_CONFIG_PATH="$srcdir/pipewire-dev/lib/pkgconfig:$srcdir/ffmpeg/lib/pkgconfig" QMAKE=/usr/bin/qmake6
   cargo build --release --frozen -p agent --features static-ffmpeg
   cargo build --release --frozen -p client-desktop --features static-ffmpeg
 }
