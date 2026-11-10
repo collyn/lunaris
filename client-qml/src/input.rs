@@ -1,36 +1,84 @@
 use bytes::Bytes;
 
-pub fn map_qt_key_to_vk(key: i32) -> u16 {
-    // Alphanumeric keys and symbols in the ASCII range
-    if key >= 0x20 && key <= 0x7e {
-        return key as u16;
+/// Qt's KeypadModifier: the key is on the numeric keypad.
+const QT_KEYPAD_MODIFIER: i32 = 0x2000_0000;
+
+/// Maps a Qt key code to the Windows virtual-key code of the physical key on a
+/// US keyboard, which is what the agent injects (the web client does the same
+/// from `KeyboardEvent.code`). Qt reports the produced character, so shifted
+/// symbols map back to their unshifted key; the Shift modifier is still held
+/// on the host, which then types the symbol itself.
+pub fn map_qt_key_to_vk(key: i32, modifiers_mask: i32) -> u16 {
+    if (modifiers_mask & QT_KEYPAD_MODIFIER) != 0 {
+        let vk = match key {
+            k @ 0x30..=0x39 => Some(96 + (k - 0x30) as u16), // Numpad0..9
+            0x2a => Some(106),                               // Numpad *
+            0x2b => Some(107),                               // Numpad +
+            0x2d => Some(109),                               // Numpad -
+            0x2e | 0x2c => Some(110),                        // Numpad decimal
+            0x2f => Some(111),                               // Numpad /
+            _ => None, // Enter and the NumLock-off navigation keys below
+        };
+        if let Some(vk) = vk {
+            return vk;
+        }
     }
 
     match key {
-        0x01000003 => 8,               // Backspace
-        0x01000001 => 9,               // Tab
-        0x01000004 | 0x01000005 => 13, // Return / Enter
-        0x01000020 => 16,              // Shift
-        0x01000021 => 17,              // Control
-        0x01000023 => 18,              // Alt
-        0x01000008 => 19,              // Pause
-        0x01000024 => 20,              // CapsLock
-        0x01000000 => 27,              // Escape
-        0x01000016 => 33,              // PageUp
-        0x01000017 => 34,              // PageDown
-        0x01000011 => 35,              // End
-        0x01000010 => 36,              // Home
-        0x01000012 => 37,              // Left
-        0x01000013 => 38,              // Up
-        0x01000014 => 39,              // Right
-        0x01000015 => 40,              // Down
-        0x01000009 => 44,              // PrintScreen
-        0x01000006 => 45,              // Insert
-        0x01000007 => 46,              // Delete
-        0x01000022 => 91,              // Meta (Windows / Command key)
+        0x20 => 32,                       // Space
+        k @ 0x30..=0x39 => k as u16,      // 0..9
+        k @ 0x41..=0x5a => k as u16,      // A..Z
+        0x29 => 0x30,                     // ) on 0
+        0x21 => 0x31,                     // ! on 1
+        0x40 => 0x32,                     // @ on 2
+        0x23 => 0x33,                     // # on 3
+        0x24 => 0x34,                     // $ on 4
+        0x25 => 0x35,                     // % on 5
+        0x5e => 0x36,                     // ^ on 6
+        0x26 => 0x37,                     // & on 7
+        0x2a => 0x38,                     // * on 8
+        0x28 => 0x39,                     // ( on 9
+        0x3b | 0x3a => 186,               // ; :
+        0x3d | 0x2b => 187,               // = +
+        0x2c | 0x3c => 188,               // , <
+        0x2d | 0x5f => 189,               // - _
+        0x2e | 0x3e => 190,               // . >
+        0x2f | 0x3f => 191,               // / ?
+        0x60 | 0x7e => 192,               // ` ~
+        0x5b | 0x7b => 219,               // [ {
+        0x5c | 0x7c => 220,               // \ |
+        0x5d | 0x7d => 221,               // ] }
+        0x27 | 0x22 => 222,               // ' "
 
-        // F1 to F12
-        k if k >= 0x01000030 && k <= 0x0100003b => (112 + (k - 0x01000030)) as u16,
+        0x01000003 => 8,                  // Backspace
+        0x01000001 | 0x01000002 => 9,     // Tab / Backtab (Shift+Tab)
+        0x0100000b => 12,                 // Clear (keypad 5 without NumLock)
+        0x01000004 | 0x01000005 => 13,    // Return / Enter
+        0x01000020 => 16,                 // Shift
+        0x01000021 => 17,                 // Control
+        0x01000023 | 0x01001103 => 18,    // Alt / AltGr
+        0x01000008 => 19,                 // Pause
+        0x01000024 => 20,                 // CapsLock
+        0x01000000 => 27,                 // Escape
+        0x01000016 => 33,                 // PageUp
+        0x01000017 => 34,                 // PageDown
+        0x01000011 => 35,                 // End
+        0x01000010 => 36,                 // Home
+        0x01000012 => 37,                 // Left
+        0x01000013 => 38,                 // Up
+        0x01000014 => 39,                 // Right
+        0x01000015 => 40,                 // Down
+        0x01000009 => 44,                 // PrintScreen
+        0x01000006 => 45,                 // Insert
+        0x01000007 => 46,                 // Delete
+        0x01000022 | 0x01000053 => 91,    // Meta / Super_L (Windows / Command key)
+        0x01000054 => 92,                 // Super_R
+        0x01000055 => 93,                 // Menu (context menu key)
+        0x01000025 => 144,                // NumLock
+        0x01000026 => 145,                // ScrollLock
+
+        // F1 to F24
+        k @ 0x01000030..=0x01000047 => (112 + (k - 0x01000030)) as u16,
         _ => 0,
     }
 }
@@ -44,7 +92,7 @@ pub struct InputSenders {
 }
 
 pub fn handle_key_event(key: i32, modifiers_mask: i32, is_down: bool, senders: &InputSenders) {
-    let vk = map_qt_key_to_vk(key);
+    let vk = map_qt_key_to_vk(key, modifiers_mask);
     if vk > 0 {
         let mut modifiers = 0u8;
         // Qt modifiers mapping:
@@ -138,4 +186,32 @@ pub fn handle_mouse_wheel(delta: i32, senders: &InputSenders) {
     buf[1] = 0;
     buf[2] = ((delta / 120) as i8) as u8; // Normal delta is 120 per click
     let _ = senders.mouse_rel.send(Bytes::from(buf));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::map_qt_key_to_vk;
+
+    const SHIFT: i32 = 0x0200_0000;
+    const KEYPAD: i32 = 0x2000_0000;
+
+    #[test]
+    fn symbols_map_to_their_physical_key() {
+        assert_eq!(map_qt_key_to_vk(0x2d, 0), 189); // - (was Insert)
+        assert_eq!(map_qt_key_to_vk(0x2e, 0), 190); // . (was Delete)
+        assert_eq!(map_qt_key_to_vk(0x21, SHIFT), 0x31); // ! is Shift+1 (was PageUp)
+        assert_eq!(map_qt_key_to_vk(0x40, SHIFT), 0x32); // @
+        assert_eq!(map_qt_key_to_vk(0x7b, SHIFT), 219); // {
+        assert_eq!(map_qt_key_to_vk(0x22, SHIFT), 222); // "
+        assert_eq!(map_qt_key_to_vk(0x41, 0), 0x41); // A
+        assert_eq!(map_qt_key_to_vk(0x01000002, SHIFT), 9); // Backtab
+    }
+
+    #[test]
+    fn keypad_keys() {
+        assert_eq!(map_qt_key_to_vk(0x37, KEYPAD), 103); // Numpad7
+        assert_eq!(map_qt_key_to_vk(0x2d, KEYPAD), 109); // Numpad -
+        assert_eq!(map_qt_key_to_vk(0x01000005, KEYPAD), 13); // Numpad Enter
+        assert_eq!(map_qt_key_to_vk(0x01000010, KEYPAD), 36); // Home (NumLock off)
+    }
 }
