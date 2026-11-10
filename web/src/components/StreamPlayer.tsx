@@ -2684,7 +2684,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
         imageEl.src = cursorAsset.src;
         imageEl.style.width = '32px';
         imageEl.style.height = '32px';
-        imageEl.style.filter = 'drop-shadow(0 0 1px rgba(0,0,0,0.95)) drop-shadow(0 0 2px rgba(255,255,255,0.85))';
+        imageEl.style.filter = 'drop-shadow(0 0 1px rgba(0,0,0,0.95)) drop-shadow(0 0 2px rgb(var(--ink-rgb) / 0.85))';
       }
       cursorMetrics = {
         hotspotX: cursorAsset.hotspotX,
@@ -2840,7 +2840,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
         imageEl.src = cursorAsset.src;
         imageEl.style.width = '32px';
         imageEl.style.height = '32px';
-        imageEl.style.filter = 'drop-shadow(0 0 1px rgba(0,0,0,0.95)) drop-shadow(0 0 2px rgba(255,255,255,0.85))';
+        imageEl.style.filter = 'drop-shadow(0 0 1px rgba(0,0,0,0.95)) drop-shadow(0 0 2px rgb(var(--ink-rgb) / 0.85))';
       }
       cursorMetrics = {
         hotspotX: cursorAsset.hotspotX,
@@ -3787,13 +3787,11 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   if (selectedAppId === null) {
     return (
       <div className="stream-container" style={{ display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
-        <div className="glow-orb bg-glow-blue"></div>
-        <div className="glow-orb bg-glow-purple"></div>
 
         {/* Header/Navbar */}
-        <header className="navbar" style={{ position: 'static', background: 'transparent', borderBottom: '1px solid rgba(255, 255, 255, 0.05)' }}>
+        <header className="navbar" style={{ position: 'static', background: 'transparent', borderBottom: '1px solid rgb(var(--ink-rgb) / 0.05)' }}>
           <div className="nav-brand">
-            <button onClick={onBack} className="btn-secondary stream-back-btn" title="Leave" style={{ marginRight: '0.5rem', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)' }}>
+            <button onClick={onBack} className="btn-secondary stream-back-btn" title="Leave" style={{ marginRight: '0.5rem', background: 'rgb(var(--ink-rgb) / 0.03)', border: '1px solid rgb(var(--ink-rgb) / 0.08)' }}>
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                 <path d="M19 12H5M12 19l-7-7 7-7" />
               </svg>
@@ -3802,7 +3800,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
             <span className="badge-tech">APPS</span>
           </div>
           <div className="nav-user-panel">
-            <button onClick={() => setShowSettingsModal(true)} className="btn-secondary" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)', padding: '0.5rem 1rem', borderRadius: '8px', fontSize: '0.85rem' }}>
+            <button onClick={() => setShowSettingsModal(true)} className="btn-secondary" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', background: 'rgb(var(--ink-rgb) / 0.03)', border: '1px solid rgb(var(--ink-rgb) / 0.08)', padding: '0.5rem 1rem', borderRadius: '8px', fontSize: '0.85rem' }}>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <circle cx="12" cy="12" r="3" />
                 <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06-.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l.06-.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
@@ -4071,7 +4069,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
           <div className="app-selection-card" style={{ maxWidth: '900px', width: '100%', zIndex: 10, background: 'var(--bg-glass)', border: '1px solid var(--border-color)', borderRadius: '24px', padding: '2.5rem', boxShadow: 'var(--shadow-card)', backdropFilter: 'blur(20px)' }}>
             
             <div style={{ textAlign: 'center', marginBottom: '2.5rem' }}>
-              <h2 style={{ fontSize: '2.25rem', fontWeight: 800, background: 'linear-gradient(to right, #ffffff, #a5b4fc)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', letterSpacing: '-0.5px', marginBottom: '0.5rem' }}>
+              <h2 style={{ fontSize: '1.75rem', fontWeight: 650, color: 'var(--text-strong)', letterSpacing: '-0.02em', marginBottom: '0.5rem' }}>
                 Select App to Stream
               </h2>
               <p style={{ color: 'var(--text-muted)', fontSize: '1.05rem' }}>
@@ -4182,7 +4180,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   }
 
   return (
-    <div className="stream-container" ref={containerRef}>
+    <div className="stream-container is-live" ref={containerRef}>
       {/* Settings Modal Overlay */}
       {showSettingsModal && (
         <div className="stream-settings-overlay" style={{ zIndex: 200 }}>
@@ -4919,7 +4917,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
             userSelect: 'none',
           }}>
             <span style={{
-              color: '#ccc',
+              color: 'var(--text-muted)',
               fontSize: '12px',
               fontFamily: 'system-ui, sans-serif',
               whiteSpace: 'nowrap',
@@ -4927,7 +4925,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
             <div style={{
               width: '80px',
               height: '4px',
-              background: 'rgba(255,255,255,0.2)',
+              background: 'rgb(var(--ink-rgb) / 0.2)',
               borderRadius: '2px',
               overflow: 'hidden',
             }}>

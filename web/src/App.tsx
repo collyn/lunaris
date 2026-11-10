@@ -97,6 +97,24 @@ const getBackendProtocol = () => {
   };
 };
 
+type ThemeChoice = 'system' | 'light' | 'dark';
+
+/** Apply the theme to <html>: no attribute means "follow the OS". */
+const applyTheme = (choice: ThemeChoice) => {
+  const root = document.documentElement;
+  if (choice === 'system') root.removeAttribute('data-theme');
+  else root.setAttribute('data-theme', choice);
+};
+
+const readThemeChoice = (): ThemeChoice => {
+  try {
+    const v = localStorage.getItem('lunaris_theme');
+    return v === 'light' || v === 'dark' ? v : 'system';
+  } catch {
+    return 'system';
+  }
+};
+
 function App() {
   const [token, setToken] = useState<string | null>(localStorage.getItem('lunaris_token'));
   const [username, setUsername] = useState<string | null>(localStorage.getItem('lunaris_username'));
@@ -152,6 +170,13 @@ function App() {
   const [authServerHost, setAuthServerHost] = useState<string>(() => getCurrentBrowserServerUrl());
   const [authError, setAuthError] = useState<string | null>(null);
   const [authLoading, setAuthLoading] = useState<boolean>(false);
+  const [theme, setTheme] = useState<ThemeChoice>(readThemeChoice);
+  useEffect(() => {
+    applyTheme(theme);
+    try { localStorage.setItem('lunaris_theme', theme); } catch { /* storage unavailable */ }
+  }, [theme]);
+  const nextTheme: Record<ThemeChoice, ThemeChoice> = { system: 'light', light: 'dark', dark: 'system' };
+  const themeLabel: Record<ThemeChoice, string> = { system: 'Theme: system', light: 'Theme: light', dark: 'Theme: dark' };
 
   // Admin State
   const [userRole, setUserRole] = useState<string | null>(localStorage.getItem('lunaris_role'));
@@ -605,8 +630,6 @@ function App() {
   return (
     <div className="app-layout">
       {/* Background decoration elements */}
-      <div className="glow-orb bg-glow-blue"></div>
-      <div className="glow-orb bg-glow-purple"></div>
 
       {/* Header bar */}
       <header className="navbar">
@@ -618,18 +641,35 @@ function App() {
           </div>
           <span className="brand-name">Lunaris</span>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+        <div className="nav-actions">
+          <button
+            type="button"
+            className="icon-btn"
+            onClick={() => setTheme(nextTheme[theme])}
+            title={themeLabel[theme]}
+            aria-label={themeLabel[theme]}
+          >
+            {theme === 'light' ? (
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+                <circle cx="12" cy="12" r="4" /><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41" />
+              </svg>
+            ) : theme === 'dark' ? (
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z" />
+              </svg>
+            ) : (
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <rect x="2" y="3" width="20" height="14" rx="2" /><path d="M8 21h8M12 17v4" />
+              </svg>
+            )}
+          </button>
           {token && username && (
             <div className="nav-user-panel">
-              <div className="user-info" style={{ alignItems: 'flex-end' }}>
-                <span className="user-label">SERVER:</span>
-                <span className="username" style={{ fontSize: '0.85rem', color: 'var(--accent-cyan)' }}>
+              <div className="nav-user-text">
+                <span className="nav-username">{username}</span>
+                <span className="nav-server">
                   {localStorage.getItem('lunaris_server_host') || getCurrentBrowserServerUrl()}
                 </span>
-              </div>
-              <div className="user-info">
-                <span className="user-label">USER:</span>
-                <span className="username">{username}</span>
               </div>
               <button onClick={handleLogout} className="btn-logout" title="Log Out">
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -823,7 +863,6 @@ function App() {
                         <div className="apps-card-grid">
                           {viewingApps.map((app) => (
                             <div key={app.id} className="app-portrait-card">
-                              <div className="app-card-glow"></div>
 
                               {/* Box Art Cover */}
                               <div className="app-cover-wrapper">
@@ -982,98 +1021,46 @@ function App() {
                         </div>
                       </div>
 
-                      {/* Agent Setup & Connection Info Panel */}
-                      <div className="agent-setup-panel" style={{
-                        background: 'rgba(255, 255, 255, 0.02)',
-                        border: '1px solid rgba(255, 255, 255, 0.08)',
-                        borderRadius: '12px',
-                        padding: '1.25rem',
-                        marginBottom: '2rem',
-                        display: 'flex',
-                        flexDirection: 'column',
-                        gap: '1rem',
-                        position: 'relative',
-                        overflow: 'hidden',
-                        boxShadow: '0 8px 32px 0 rgba(0, 0, 0, 0.2)'
-                      }}>
-                        <div style={{
-                          position: 'absolute',
-                          top: 0,
-                          left: 0,
-                          width: '100%',
-                          height: '2px',
-                          background: 'linear-gradient(90deg, var(--accent-cyan, #00f0ff), var(--accent-purple, #ab3bf2))'
-                        }}></div>
-                        
-                        <div>
-                          <h3 style={{ margin: 0, fontSize: '1.1rem', fontWeight: 600, color: '#ffffff', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                            <span>🔑</span> Host Agent Setup Credentials
-                          </h3>
-                          <p style={{ margin: '0.25rem 0 0 0', fontSize: '0.85rem', color: 'var(--text-secondary, #94a3b8)' }}>
-                            Use these credentials to register and configure new Host Agents to stream to this server.
-                          </p>
-                        </div>
-
-                        <div style={{
-                          display: 'grid',
-                          gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
-                          gap: '1rem',
-                          marginTop: '0.25rem'
-                        }}>
-                          {/* Server URL */}
-                          <div style={{
-                            background: 'rgba(0, 0, 0, 0.2)',
-                            padding: '0.75rem 1rem',
-                            borderRadius: '8px',
-                            border: '1px solid rgba(255, 255, 255, 0.04)',
-                            display: 'flex',
-                            flexDirection: 'column',
-                            gap: '0.25rem'
-                          }}>
-                            <span style={{ fontSize: '0.7rem', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--accent-cyan, #00f0ff)' }}>Signaling Server URL</span>
-                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem' }}>
-                              <code style={{ fontFamily: 'monospace', fontSize: '0.85rem', color: '#e2e8f0', wordBreak: 'break-all' }}>
-                                {`ws://${getBackendHost()}`}
-                              </code>
+                      {/* Agent setup credentials — only needed when adding a host, so it is
+                          collapsed unless there are no hosts yet. */}
+                      <details className="setup-panel" open={!hostsLoading && hosts.length === 0}>
+                        <summary>
+                          <span className="setup-panel-title">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                              <path d="M12 5v14M5 12h14" />
+                            </svg>
+                            Add a host agent
+                          </span>
+                          <span className="setup-panel-hint">Server URL and connection token</span>
+                        </summary>
+                        <div className="setup-panel-grid">
+                          <div className="setup-field">
+                            <span className="setup-field-label">Signaling server URL</span>
+                            <div className="setup-field-row">
+                              <code>{`ws://${getBackendHost()}`}</code>
                               <button
+                                type="button"
+                                className="icon-btn"
                                 onClick={() => {
                                   navigator.clipboard.writeText(`ws://${getBackendHost()}`);
                                   alert("Server URL copied!");
                                 }}
-                                style={{
-                                  background: 'transparent',
-                                  border: 'none',
-                                  color: '#94a3b8',
-                                  cursor: 'pointer',
-                                  padding: '4px',
-                                  fontSize: '1rem',
-                                  display: 'flex',
-                                  alignItems: 'center',
-                                  justifyContent: 'center'
-                                }}
-                                title="Copy Server URL"
+                                title="Copy server URL"
+                                aria-label="Copy server URL"
                               >
-                                📋
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                                  <rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                                </svg>
                               </button>
                             </div>
                           </div>
-
-                          {/* Connection Token */}
-                          <div style={{
-                            background: 'rgba(0, 0, 0, 0.2)',
-                            padding: '0.75rem 1rem',
-                            borderRadius: '8px',
-                            border: '1px solid rgba(255, 255, 255, 0.04)',
-                            display: 'flex',
-                            flexDirection: 'column',
-                            gap: '0.25rem'
-                          }}>
-                            <span style={{ fontSize: '0.7rem', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--accent-purple, #ab3bf2)' }}>Agent Connection Token</span>
-                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem' }}>
-                              <code style={{ fontFamily: 'monospace', fontSize: '0.85rem', color: '#e2e8f0', wordBreak: 'break-all' }}>
-                                {agentToken || "Loading..."}
-                              </code>
+                          <div className="setup-field">
+                            <span className="setup-field-label">Agent connection token</span>
+                            <div className="setup-field-row">
+                              <code>{agentToken || "Loading..."}</code>
                               <button
+                                type="button"
+                                className="icon-btn"
                                 onClick={() => {
                                   if (agentToken) {
                                     navigator.clipboard.writeText(agentToken);
@@ -1081,26 +1068,17 @@ function App() {
                                   }
                                 }}
                                 disabled={!agentToken}
-                                style={{
-                                  background: 'transparent',
-                                  border: 'none',
-                                  color: '#94a3b8',
-                                  cursor: 'pointer',
-                                  padding: '4px',
-                                  fontSize: '1rem',
-                                  display: 'flex',
-                                  alignItems: 'center',
-                                  justifyContent: 'center',
-                                  opacity: agentToken ? 1 : 0.5
-                                }}
-                                title="Copy Connection Token"
+                                title="Copy connection token"
+                                aria-label="Copy connection token"
                               >
-                                📋
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                                  <rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                                </svg>
                               </button>
                             </div>
                           </div>
                         </div>
-                      </div>
+                      </details>
 
                       {hostsError && (
                         <div className="error-card">
@@ -1137,7 +1115,6 @@ function App() {
                                   }
                                 }}
                               >
-                                <div className="host-card-glow"></div>
                                 <div className="host-card-header">
                                   <div>
                                     <h3 className="host-name">{host.name}</h3>
@@ -1160,6 +1137,15 @@ function App() {
                                 </div>
 
                                 <div className="host-card-actions" onClick={(e) => e.stopPropagation()}>
+                                  {isOnline && (
+                                    <button
+                                      type="button"
+                                      className="btn-primary host-card-connect"
+                                      onClick={() => setViewingHost(host)}
+                                    >
+                                      Connect
+                                    </button>
+                                  )}
                                   <button
                                     type="button"
                                     className="host-action-btn"
