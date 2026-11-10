@@ -152,13 +152,25 @@ jobs:
         id: vcpkg-cache
         with:
           path: C:\vcpkg\installed
-          key: vcpkg-win-x64-ffmpeg-opus-openssl-v2
+          key: vcpkg-win-x64-opus-openssl-v3
 
       - name: Install C/C++ libraries via vcpkg
         if: steps.vcpkg-cache.outputs.cache-hit != 'true'
         run: |
           Add-Content -Path "C:\vcpkg\triplets\x64-windows.cmake" -Value "`nset(VCPKG_BUILD_TYPE release)"
-          vcpkg install ffmpeg:x64-windows opus:x64-windows openssl:x64-windows
+          vcpkg install opus:x64-windows openssl:x64-windows
+        shell: pwsh
+
+      # FFmpeg comes from BtbN's LGPL shared builds, pinned to the 8.1 branch:
+      # ffmpeg-next 8.x does not support FFmpeg 9 (what vcpkg ships now), and a
+      # prebuilt zip is much faster than compiling FFmpeg through vcpkg.
+      - name: Install FFmpeg 8.1 (LGPL, shared)
+        run: |
+          $url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n8.1-latest-win64-lgpl-shared-8.1.zip"
+          Invoke-WebRequest -Uri $url -OutFile ffmpeg.zip
+          Expand-Archive ffmpeg.zip -DestinationPath ffmpeg-extract
+          Move-Item (Get-ChildItem ffmpeg-extract -Directory | Select-Object -First 1).FullName C:\ffmpeg
+          Add-Content -Path $env:GITHUB_PATH -Value "C:\ffmpeg\bin"
         shell: pwsh
 
       - name: Install pkg-config
@@ -187,7 +199,7 @@ jobs:
         run: |
           echo "PKG_CONFIG_PATH=C:/vcpkg/installed/x64-windows/lib/pkgconfig" >> $GITHUB_ENV
           echo "VCPKG_ROOT=C:/vcpkg" >> $GITHUB_ENV
-          echo "FFMPEG_DIR=C:/vcpkg/installed/x64-windows" >> $GITHUB_ENV
+          echo "FFMPEG_DIR=C:/ffmpeg" >> $GITHUB_ENV
           echo "QMAKE=${QT_ROOT_DIR}/bin/qmake.exe" >> $GITHUB_ENV
         shell: bash
 
@@ -204,7 +216,7 @@ jobs:
           echo "PKG_CONFIG_PATH: $PKG_CONFIG_PATH"
           ls C:/vcpkg/installed/x64-windows/lib/pkgconfig/ || echo "Cannot list pkgconfig dir"
           echo "=== FFmpeg ==="
-          pkg-config --libs libavcodec 2>/dev/null || echo "libavcodec.pc not found"
+          ls C:/ffmpeg/lib | head -20
         shell: bash
 
       - name: Build Web Frontend
@@ -238,6 +250,7 @@ jobs:
           Copy-Item target/release/client-desktop.exe -Destination lunaris-client-desktop/
           & "${env:QT_ROOT_DIR}/bin/windeployqt.exe" --qmldir client-qml/qml --no-translations --compiler-runtime lunaris-client-desktop/client-desktop.exe
           Copy-Item "C:/vcpkg/installed/x64-windows/bin/*.dll" -Destination lunaris-client-desktop/
+          Copy-Item "C:/ffmpeg/bin/*.dll" -Destination lunaris-client-desktop/
           Compress-Archive -Path lunaris-client-desktop/* -DestinationPath lunaris-client-desktop-windows.zip
           
           # Package QML Client separately (rename binary and bundle as client-qml)
@@ -252,6 +265,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path lunaris-agent
           Copy-Item target/release/agent.exe -Destination lunaris-agent/
           Copy-Item "C:/vcpkg/installed/x64-windows/bin/*.dll" -Destination lunaris-agent/
+          Copy-Item "C:/ffmpeg/bin/*.dll" -Destination lunaris-agent/
           Compress-Archive -Path lunaris-agent/* -DestinationPath lunaris-agent-windows.zip
         shell: pwsh
 

@@ -10,7 +10,8 @@
 FROM docker.io/library/ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN for i in 1 2 3 4 5; do apt-get -o Acquire::Retries=5 update && break; echo "apt update failed, retrying"; sleep 30; done \
+    && apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
         build-essential clang libclang-dev cmake meson ninja-build nasm pkg-config \
         curl ca-certificates git file patchelf xz-utils python3-pip \
         libdrm-dev libx11-dev libx11-xcb-dev libxcb1-dev libxcb-dri3-dev libxext-dev \
