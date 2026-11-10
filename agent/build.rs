@@ -27,6 +27,8 @@ fn main() {
         .build();
 
     println!("cargo:rerun-if-changed=qml/AgentWindow.qml");
+    println!("cargo:rerun-if-changed=qml/Theme.qml");
+    println!("cargo:rerun-if-changed=qml/qmldir");
     println!("cargo:rerun-if-changed=qml/resources.qrc");
     println!("cargo:rerun-if-changed=src/agent_gui.cpp");
     println!("cargo:rerun-if-changed=src/agent_gui.h");

@@ -10,8 +10,11 @@ QtObject {
 
     // "system" | "light" | "dark"
     property string mode: "system"
-    readonly property bool dark: mode === "dark"
-        || (mode !== "light" && Qt.styleHints.colorScheme !== Qt.ColorScheme.Light)
+    // Qt.styleHints.colorScheme / Qt.ColorScheme only exist from Qt 6.5 on
+    // (Ubuntu 24.04 ships 6.4): without them, follow "system" as dark.
+    readonly property bool systemLight: Qt.ColorScheme !== undefined
+        && Qt.styleHints.colorScheme === Qt.ColorScheme.Light
+    readonly property bool dark: mode === "dark" || (mode !== "light" && !systemLight)
 
     readonly property color bg:          dark ? "#0a0a0c" : "#f6f6f7"
     readonly property color surface:     dark ? "#111114" : "#ffffff"
