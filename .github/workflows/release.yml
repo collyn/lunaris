@@ -10,6 +10,8 @@ on:
       - 'server/**'
       - 'Dockerfile'
       - 'agent/**'
+      - 'client-qml/**'
+      - 'client-desktop/**'
     tags:
       - 'v*'
   workflow_dispatch:
@@ -165,6 +167,50 @@ jobs:
           curl -fsS http://127.0.0.1:8090/ | grep -q '<div id="root">'
           docker exec lunaris test -s /data/initial_admin_password.txt
           docker logs lunaris 2>&1 | tail -20
+
+  build-linux-packages:
+    name: Linux packages (${{ matrix.format }})
+    runs-on: ubuntu-latest
+    container: ${{ matrix.image }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - format: deb
+            image: ubuntu:24.04
+          - format: rpm
+            image: fedora:44
+          - format: arch
+            image: archlinux:latest
+    steps:
+      # actions/checkout needs git in the container to produce a real clone
+      # (the Arch build uses `git archive`).
+      - name: Install git
+        run: |
+          case "${{ matrix.format }}" in
+            deb)  apt-get update && apt-get install -y git ca-certificates ;;
+            rpm)  dnf -y install git ;;
+            arch) pacman -Syu --noconfirm git ;;
+          esac
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Cache static FFmpeg
+        if: matrix.format != 'arch'
+        uses: actions/cache@v4
+        with:
+          path: /opt/lunaris-ffmpeg
+          key: ffmpeg-static-${{ matrix.format }}-${{ hashFiles('scripts/packaging/build-ffmpeg-static.sh') }}
+
+      - name: Build packages
+        run: bash scripts/packaging/linux/build-packages.sh ${{ matrix.format }} dist
+
+      - name: Upload packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-packages-${{ matrix.format }}
+          path: dist/*
 
   build-agent-appimage:
     name: Build Linux Agent (AppImage)
@@ -412,7 +458,7 @@ jobs:
 
   release:
     name: Create Release
-    needs: [build-linux, build-server-linux, build-server-docker, build-agent-appimage, build-windows]
+    needs: [build-linux, build-server-linux, build-server-docker, build-linux-packages, build-agent-appimage, build-windows]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
     steps:
@@ -457,6 +503,13 @@ jobs:
 
 
 
+      - name: Download Linux distro packages
+        uses: actions/download-artifact@v4
+        with:
+          pattern: linux-packages-*
+          merge-multiple: true
+          path: ./artifacts/linux-packages
+
       - name: Download Linux Agent AppImage
         uses: actions/download-artifact@v4
         with:
@@ -491,6 +544,7 @@ jobs:
           mv ./artifacts/linux-server/lunaris-server-linux-*.tar.gz ./release-files/
           mv ./artifacts/linux-client-desktop/client-desktop-x86_64.AppImage ./release-files/lunaris-client-desktop-linux.AppImage
           mv ./artifacts/linux-client-qml/client-qml-x86_64.AppImage ./release-files/lunaris-client-qml-linux.AppImage
+          mv ./artifacts/linux-packages/* ./release-files/
           mv ./artifacts/linux-agent/Lunaris-Agent-*-x86_64.AppImage ./release-files/lunaris-agent-linux-x86_64.AppImage
 
           # Windows
@@ -516,6 +570,9 @@ jobs:
             release-files/lunaris-client-desktop-linux.AppImage
             release-files/lunaris-client-qml-linux.AppImage
             release-files/lunaris-agent-linux-x86_64.AppImage
+            release-files/*.deb
+            release-files/*.rpm
+            release-files/*.pkg.tar.zst
             release-files/lunaris-server-windows-x86_64.zip
             release-files/lunaris-client-desktop-windows.zip
             release-files/lunaris-client-qml-windows.zip

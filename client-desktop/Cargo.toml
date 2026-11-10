@@ -6,3 +6,6 @@ license.workspace = true
 
 [dependencies]
 client-qml = { path = "../client-qml" }
+
+[features]
+static-ffmpeg = ["client-qml/static-ffmpeg"]

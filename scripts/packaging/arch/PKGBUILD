@@ -1,0 +1,63 @@
+# Maintainer: Lunaris <noreply@lunaris.invalid>
+#
+# Builds lunaris-agent and lunaris-client from the release source. FFmpeg is
+# built trimmed and linked statically (scripts/packaging/build-ffmpeg-static.sh);
+# Qt, PipeWire, libva and the rest come from Arch.
+# CI builds from a local tarball of the checkout with the same name as `source`.
+
+pkgbase=lunaris
+pkgname=(lunaris-agent lunaris-client)
+pkgver=0.1.11
+pkgrel=1
+pkgdesc="Low-latency remote desktop"
+arch=(x86_64)
+url="https://github.com/collyn/lunaris"
+license=(GPL-3.0-or-later)
+makedepends=(rust clang cmake meson ninja nasm git pkgconf
+             qt6-base qt6-declarative qt6-multimedia
+             pipewire libpipewire libva libdrm opus alsa-lib openssl
+             libx11 libxtst libxfixes libxext libxrandr mesa)
+options=(!lto !debug)
+source=("$pkgbase-$pkgver.tar.gz::https://github.com/collyn/lunaris/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+_common_depends=(gcc-libs glibc qt6-base qt6-declarative libva libdrm opus alsa-lib openssl)
+
+prepare() {
+  cd "$pkgbase-$pkgver"
+  export CARGO_HOME="$srcdir/cargo-home"
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+  cd "$pkgbase-$pkgver"
+  export CARGO_HOME="$srcdir/cargo-home"
+  bash scripts/packaging/build-ffmpeg-static.sh "$srcdir/ffmpeg"
+  export PKG_CONFIG_PATH="$srcdir/ffmpeg/lib/pkgconfig" QMAKE=/usr/bin/qmake6
+  cargo build --release --frozen -p agent --features static-ffmpeg
+  cargo build --release --frozen -p client-desktop --features static-ffmpeg
+}
+
+package_lunaris-agent() {
+  pkgdesc="Lunaris remote desktop host agent (screen sharing, remote input)"
+  depends=("${_common_depends[@]}" libpipewire libx11 libxtst libxfixes libxext)
+  optdepends=('xdg-desktop-portal: screen capture on Wayland'
+              'pipewire: screen capture on Wayland'
+              'libva-mesa-driver: VAAPI encoding on AMD'
+              'intel-media-driver: VAAPI/Quick Sync encoding on Intel'
+              'qt6-wayland: native Wayland window')
+  install=lunaris-agent.install
+  cd "$pkgbase-$pkgver"
+  bash scripts/packaging/linux/stage.sh agent target/release/agent "$pkgdir" "$srcdir/ffmpeg"
+}
+
+package_lunaris-client() {
+  pkgdesc="Lunaris remote desktop client"
+  depends=("${_common_depends[@]}" qt6-multimedia)
+  optdepends=('xdg-utils: open lunaris:// links'
+              'libva-mesa-driver: VAAPI decoding on AMD'
+              'intel-media-driver: VAAPI decoding on Intel'
+              'qt6-wayland: native Wayland window')
+  cd "$pkgbase-$pkgver"
+  bash scripts/packaging/linux/stage.sh client target/release/client-desktop "$pkgdir" "$srcdir/ffmpeg"
+}

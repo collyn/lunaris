@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Lunaris Client
+Comment=Connect to computers running the Lunaris agent
+Exec=lunaris-client %u
+Icon=lunaris-client
+Terminal=false
+Categories=Network;RemoteAccess;
+MimeType=x-scheme-handler/lunaris;

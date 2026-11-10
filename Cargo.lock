@@ -58,6 +58,7 @@ dependencies = [
  "cxx-qt-build",
  "cxx-qt-lib",
  "dirs",
+ "ffmpeg-sys-next",
  "futures-util",
  "hostname",
  "libc",

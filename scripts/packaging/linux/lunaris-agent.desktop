@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Lunaris Agent
+Comment=Share this computer's screen with Lunaris clients
+Exec=lunaris-agent
+Icon=lunaris-agent
+Terminal=false
+Categories=Network;RemoteAccess;

@@ -37,3 +37,7 @@ cxx-qt-lib = { version = "0.6", features = ["qt_gui", "qt_qml"] }
 
 [build-dependencies]
 cxx-qt-build = "0.6"
+
+[features]
+# Link FFmpeg statically (distro packages, see scripts/packaging/build-ffmpeg-static.sh).
+static-ffmpeg = ["ffmpeg-next/static"]

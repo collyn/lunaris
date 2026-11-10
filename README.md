@@ -97,6 +97,25 @@ Then open `http://<server>:8090`, sign in as `admin` with the printed password
 and change it. Running `lunaris-server` without a command starts it in the
 foreground instead.
 
+### Install the agent and the desktop client
+
+The **agent** runs on the computer you want to control; the **client** is the
+native viewer (any browser works as a client too). From the
+[latest release](https://github.com/collyn/lunaris/releases/latest):
+
+| System | Agent | Client |
+|---|---|---|
+| Ubuntu 24.04+, Debian 13+ | `sudo apt install ./lunaris-agent_<ver>_amd64.deb` | `sudo apt install ./lunaris-client_<ver>_amd64.deb` |
+| Fedora | `sudo dnf install ./lunaris-agent-<ver>-1.fc*.x86_64.rpm` | `sudo dnf install ./lunaris-client-<ver>-1.fc*.x86_64.rpm` |
+| Arch Linux | `sudo pacman -U lunaris-agent-<ver>-1-x86_64.pkg.tar.zst` (or build `scripts/packaging/arch/PKGBUILD`) | `sudo pacman -U lunaris-client-<ver>-1-x86_64.pkg.tar.zst` |
+| Other Linux (glibc 2.35+) | `lunaris-agent-linux-x86_64.AppImage`, run once with `--setup-host` | `lunaris-client-qml-linux.AppImage` |
+| Windows | `lunaris-agent-installer-windows.exe` | `lunaris-client-installer-windows.exe` |
+
+The distro packages use the system's Qt and PipeWire and carry their own small
+static FFmpeg (hardware encoders/decoders, x264, SVT-AV1), so they work the same
+on every distro — including Fedora without RPM Fusion. They also install the
+uinput udev rule needed for remote keyboard/mouse.
+
 ### Prerequisites (building from source)
 
 - **Rust** 1.75+ (with `cargo`)

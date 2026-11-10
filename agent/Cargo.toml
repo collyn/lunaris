@@ -7,10 +7,13 @@ license.workspace = true
 [features]
 default = ["gui"]
 gui = []
+# Link FFmpeg statically (distro packages, see scripts/packaging/build-ffmpeg-static.sh).
+static-ffmpeg = ["dep:ffmpeg-sys-next", "ffmpeg-sys-next/static"]
 
 [dependencies]
 common = { path = "../common" }
 lunaris-media = { git = "https://github.com/collyn/lunaris-media.git" }
+ffmpeg-sys-next = { version = "8.1", optional = true, default-features = false }
 bitflags = "2"
 
 tokio = { version = "1.0", features = ["full"] }

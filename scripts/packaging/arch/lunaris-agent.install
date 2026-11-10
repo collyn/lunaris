@@ -1,0 +1,7 @@
+post_install() {
+  modprobe uinput 2>/dev/null || true
+  udevadm control --reload-rules 2>/dev/null || true
+  udevadm trigger --subsystem-match=misc --sysname-match=uinput 2>/dev/null || true
+  echo "Remote keyboard/mouse use /dev/uinput (udev rule installed)."
+}
+post_upgrade() { post_install; }
