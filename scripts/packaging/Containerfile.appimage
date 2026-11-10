@@ -100,7 +100,7 @@ RUN cd /opt && for t in linuxdeploy-x86_64 linuxdeploy-plugin-qt-x86_64; do \
         repo=$( [ "$t" = linuxdeploy-x86_64 ] && echo linuxdeploy || echo linuxdeploy-plugin-qt ); \
         curl -fsSLo $t.AppImage https://github.com/linuxdeploy/$repo/releases/download/continuous/$t.AppImage \
         && chmod +x $t.AppImage && ./$t.AppImage --appimage-extract >/dev/null \
-        && mv squashfs-root $t && rm $t.AppImage \
+        && mv squashfs-root $t && rm $t.AppImage && chmod -R a+rX /opt/$t \
         && printf '#!/bin/sh\nexec /opt/%s/AppRun "$@"\n' $t > /usr/local/bin/$t \
         && chmod +x /usr/local/bin/$t; \
     done
