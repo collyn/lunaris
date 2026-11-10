@@ -195,7 +195,9 @@ Item {
 
         // Set Codec combobox
         var c = codec.toLowerCase();
-        if (c === "h264") {
+        if (c === "h264_444") {
+            codecComboBox.currentIndex = 3;
+        } else if (c === "h264") {
             codecComboBox.currentIndex = 0;
         } else if (c === "h265" || c === "hevc") {
             codecComboBox.currentIndex = 1;
@@ -236,7 +238,7 @@ Item {
         var bitrateMap = [2000, 5000, 8000, 10000, 15000, 20000, 30000, 50000, 75000, 100000, 150000];
         var selectedBitrate = bitrateMap[bitrateComboBox.currentIndex];
 
-        var codecMap = ["h264", "h265", "av1"];
+        var codecMap = ["h264", "h265", "av1", "h264_444"];
         var selectedCodec = codecMap[codecComboBox.currentIndex];
 
         var queueMap = [128, 256, 512, 1024];
@@ -357,10 +359,10 @@ Item {
             // Codec Dropdown
             LunarisComboBox {
                 id: codecComboBox
-                customWidth: 80
-                model: ["H264", "H265", "AV1"]
+                customWidth: 96
+                model: ["H264", "H265", "AV1", "H264 4:4:4"]
                 anchors.verticalCenter: parent.verticalCenter
-                LunarisToolTip { text: "Video Decoder Codec" }
+                LunarisToolTip { text: "Video codec (H264 4:4:4: sharp coloured text, decoded on the CPU)" }
                 onActivated: menuContainer.applyCurrentSettings()
             }
 

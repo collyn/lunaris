@@ -153,7 +153,9 @@ Rectangle {
         fpsInput.text = String(fpsVal);
 
         var codecLower = codec.toLowerCase();
-        if (codecLower.indexOf("264") !== -1) {
+        if (codecLower.indexOf("444") !== -1) {
+            codecCombo.currentIndex = 3;
+        } else if (codecLower.indexOf("264") !== -1) {
             codecCombo.currentIndex = 0;
         } else if (codecLower.indexOf("265") !== -1 || codecLower.indexOf("hevc") !== -1) {
             codecCombo.currentIndex = 1;
@@ -415,7 +417,9 @@ Rectangle {
         ComboBox {
             id: codecCombo
             width: 260
-            model: ["H264", "H265", "AV1"]
+            // "H264 4:4:4": full chroma for sharp coloured text (host NVENC or
+            // CPU encoder; decoded on the CPU here).
+            model: ["H264", "H265", "AV1", "H264 4:4:4"]
             currentIndex: 0
 
             delegate: ItemDelegate {
@@ -866,7 +870,7 @@ Rectangle {
                 if (fps < 1) fps = 1;
                 if (fps > 999) fps = 999;
 
-                var codec = codecCombo.currentText.toLowerCase()
+                var codec = ["h264", "h265", "av1", "h264_444"][codecCombo.currentIndex] || "h264"
                 var bitrate = Math.round(bitrateSlider.value)
 
                 var queueLimit = 256

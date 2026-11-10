@@ -12,6 +12,9 @@ void deliver_yuv_frame(QVideoSink* sink,
                        const uint8_t* v_data, int v_stride,
                        int width, int height);
 
+void deliver_bgrx_frame(QVideoSink* sink, const uint8_t* data, int stride,
+                        int width, int height);
+
 void warp_cursor_helper(int x, int y);
 void set_keyboard_grab_helper(bool grab);
 

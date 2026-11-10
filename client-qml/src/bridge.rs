@@ -107,47 +107,19 @@ pub fn render_backend_disables_cuda(render_backend: &str) -> bool {
     normalize_render_backend(render_backend, false) == RENDER_BACKEND_SOFTWARE
 }
 
+/// See `qt_opengl_scenegraph_available` in lib.rs: Qt 6 has OpenGL built into
+/// Qt Quick; only the "software" adaptation rules it out.
 fn qt_opengl_scenegraph_available_runtime() -> bool {
-    if std::env::var("LUNARIS_ASSUME_QT_OPENGL")
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+    !std::env::var("QT_QUICK_BACKEND")
+        .map(|v| v.eq_ignore_ascii_case("software"))
         .unwrap_or(false)
-    {
-        return true;
-    }
-
-    let mut roots = Vec::new();
-    if let Ok(path) = std::env::var("QT_PLUGIN_PATH") {
-        roots.extend(
-            path.split(':')
-                .filter(|p| !p.is_empty())
-                .map(std::path::PathBuf::from),
-        );
-    }
-    roots.push(std::path::PathBuf::from(
-        "/usr/lib/x86_64-linux-gnu/qt6/plugins",
-    ));
-    roots.push(std::path::PathBuf::from("/usr/lib/qt6/plugins"));
-    roots.push(std::path::PathBuf::from("/usr/local/lib/qt6/plugins"));
-
-    roots.iter().any(|root| {
-        let scenegraph = root.join("scenegraph");
-        [
-            scenegraph.join("libqsgopengl.so"),
-            scenegraph.join("libqsgopengladaptation.so"),
-            scenegraph.join("libqtquick2plugin.so"),
-        ]
-        .iter()
-        .any(|path| path.exists())
-    })
 }
 
 fn qt_opengl_scenegraph_active_runtime() -> bool {
     std::env::var("QSG_RHI_BACKEND")
         .map(|v| v.eq_ignore_ascii_case("opengl"))
         .unwrap_or(false)
-        && std::env::var("QT_QUICK_BACKEND")
-            .map(|v| v.eq_ignore_ascii_case("opengl"))
-            .unwrap_or(false)
+        && qt_opengl_scenegraph_available_runtime()
 }
 
 /// Validate that the user-chosen render backend can actually work.
@@ -560,6 +532,15 @@ pub mod qobject {
             u_stride: i32,
             v_data: *const u8,
             v_stride: i32,
+            width: i32,
+            height: i32,
+        );
+
+        #[rust_name = "deliver_bgrx_frame"]
+        unsafe fn deliver_bgrx_frame(
+            sink: *mut QVideoSink,
+            data: *const u8,
+            stride: i32,
             width: i32,
             height: i32,
         );
@@ -983,7 +964,7 @@ pub mod qobject {
 }
 
 use cxx_qt_lib::QString;
-use qobject::deliver_yuv_frame;
+use qobject::{deliver_bgrx_frame, deliver_yuv_frame};
 
 impl qobject::StreamBridge {
     pub unsafe fn set_video_sink(mut self: Pin<&mut Self>, sink: *mut qobject::QVideoSink) {
@@ -2713,6 +2694,25 @@ fn handle_host_cursor_message(data: &[u8]) {
     });
 }
 
+/// Splits the client's codec choice into the codec and chroma to request:
+/// "h264_444" -> ("h264", Some("444")), anything else -> (codec, None).
+fn split_chroma_codec(codec: &str) -> (String, Option<String>) {
+    let codec = codec.trim().to_ascii_lowercase();
+    match codec.as_str() {
+        "h264_444" | "h264-444" | "h264 4:4:4" => ("h264".to_string(), Some("444".to_string())),
+        _ => (codec, None),
+    }
+}
+
+/// True when the negotiated H.264 track is High 4:4:4 Predictive
+/// (profile_idc 244 = 0xf4), which VAAPI and NVDEC can't decode.
+fn is_h264_444_fmtp(fmtp: &str) -> bool {
+    fmtp.to_ascii_lowercase()
+        .split(';')
+        .filter_map(|kv| kv.trim().strip_prefix("profile-level-id="))
+        .any(|plid| plid.starts_with("f4"))
+}
+
 fn select_video_codec_for_offer(requested_codec: &str, offer_sdp: &str) -> String {
     let requested = requested_codec.trim().to_ascii_lowercase();
     let sdp = offer_sdp.to_ascii_lowercase();
@@ -2830,9 +2830,27 @@ async fn setup_peer_connection(
                         sdp_fmtp_line:
                             "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42002a"
                                 .to_string(),
-                        rtcp_feedback: video_rtcp_feedback,
+                        rtcp_feedback: video_rtcp_feedback.clone(),
                     },
                     payload_type: 96,
+                    ..Default::default()
+                },
+                RTPCodecType::Video,
+            )?;
+            // High 4:4:4 Predictive, offered by the agent for chroma=444
+            // sessions; without it the answer has no matching video codec.
+            media_engine.register_codec(
+                RTCRtpCodecParameters {
+                    capability: RTCRtpCodecCapability {
+                        mime_type: webrtc::api::media_engine::MIME_TYPE_H264.to_string(),
+                        clock_rate: 90000,
+                        channels: 0,
+                        sdp_fmtp_line:
+                            "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=f4002a"
+                                .to_string(),
+                        rtcp_feedback: video_rtcp_feedback,
+                    },
+                    payload_type: 97,
                     ..Default::default()
                 },
                 RTPCodecType::Video,
@@ -2955,7 +2973,14 @@ async fn setup_peer_connection(
                 } else {
                     (false, "Unknown".to_string())
                 };
-                let decoder = match super::decoder::HardwareDecoder::new(codec_type, disable_cuda) {
+                // H.264 4:4:4 has no GPU decoder (VAAPI/NVDEC): decode it in
+                // software straight away instead of failing over per frame.
+                let h264_444 = matches!(codec_type, super::decoder::CodecType::H264)
+                    && is_h264_444_fmtp(&codec.capability.sdp_fmtp_line);
+                if h264_444 {
+                    println!("H.264 4:4:4 stream: decoding in software (multi-threaded)");
+                }
+                let decoder = match super::decoder::HardwareDecoder::new(codec_type, disable_cuda || h264_444) {
                     Ok(d) => d,
                     Err(e) => {
                         eprintln!("Failed to initialize hardware decoder: {:?}", e);
@@ -2998,7 +3023,18 @@ async fn setup_peer_connection(
                 let pending_packets_reader = Arc::clone(&pending_packets);
                 let pending_packets_decoder = Arc::clone(&pending_packets);
 
-                const RTP_QUEUE_LIMIT: usize = 256;
+                // Room for a whole keyframe burst: at 20 Mbps a 1080p keyframe
+                // is a few hundred packets arriving at once. With 256 the
+                // queue overflowed on every keyframe, which dropped packets,
+                // requested another (large) keyframe and froze the stream.
+                const RTP_QUEUE_LIMIT: usize = 4096;
+                // Flush only when the decoder is really behind (~1 s of video
+                // at 20 Mbps), not on a keyframe burst.
+                const RTP_QUEUE_LAG_FLUSH: usize = 2048;
+                // A sequence gap is treated as loss once a NACK retransmission
+                // had time to arrive, or when the reorder buffer gets this big.
+                const RTP_GAP_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(120);
+                const RTP_REORDER_LIMIT: usize = 1024;
                 let (rtp_tx, mut rtp_rx) = tokio::sync::mpsc::channel(RTP_QUEUE_LIMIT);
                 let track_clone_reader = Arc::clone(&track_clone);
                 tokio::spawn(async move {
@@ -3050,6 +3086,7 @@ async fn setup_peer_connection(
                     let has_decoded = has_decoded;
                     
                     let mut next_seq_num: Option<u64> = None;
+                    let mut gap_since: Option<std::time::Instant> = None;
                     let mut packet_buffer = std::collections::BTreeMap::<u64, webrtc::rtp::packet::Packet>::new();
                     let mut h264_seen_config = false;
                     let mut h264_config_annexb = Vec::<u8>::new();
@@ -3079,7 +3116,7 @@ async fn setup_peer_connection(
 
                         // Check for backlog (decoder lagging)
                         let pending_val = pending_packets_decoder.load(std::sync::atomic::Ordering::SeqCst);
-                        if pending_val > 150 {
+                        if pending_val > RTP_QUEUE_LAG_FLUSH {
                             queue_lag_events = queue_lag_events.saturating_add(1);
                             max_queue_lag = max_queue_lag.max(pending_val);
                             eprintln!("Video receiver queue lag detected ({} packets). Flushing queue...", pending_val);
@@ -3096,6 +3133,7 @@ async fn setup_peer_connection(
                             h265_fragment_is_irap = false;
                             let _ = pli_tx.send(());
                             next_seq_num = None;
+                            gap_since = None;
                             continue;
                         }
 
@@ -3119,8 +3157,24 @@ async fn setup_peer_connection(
 
                         packet_buffer.insert(ext_seq, rtp_packet);
 
-                        // If buffer is too large, we have packet loss
-                        if packet_buffer.len() > 64 {
+                        // A gap is open while the next expected packet is missing.
+                        // Give NACK retransmissions time to fill it before giving
+                        // up on the frame (the old 64-packet limit fired within
+                        // one keyframe burst, before any retransmission arrived).
+                        let gap_open = next_seq_num
+                            .map(|expected| !packet_buffer.contains_key(&expected))
+                            .unwrap_or(false);
+                        if !gap_open {
+                            gap_since = None;
+                        } else if gap_since.is_none() {
+                            gap_since = Some(std::time::Instant::now());
+                        }
+                        let gap_expired = gap_since
+                            .map(|since| since.elapsed() >= RTP_GAP_TIMEOUT)
+                            .unwrap_or(false);
+
+                        if gap_open && (gap_expired || packet_buffer.len() > RTP_REORDER_LIMIT) {
+                            gap_since = None;
                             let &first_seq = packet_buffer.keys().next().unwrap();
                             let missing_start = next_seq_num.unwrap();
                             let missing_end = first_seq - 1;
@@ -3188,6 +3242,25 @@ async fn setup_peer_connection(
                                             if last_present_log_label != label {
                                                 println!("Decoded frame via {}", label);
                                                 last_present_log_label = label;
+                                            }
+                                        }
+                                        super::decoder::DecodedFrame::CpuBgrx(frame) => {
+                                            let sink_lock = sink_ref.sink.lock().unwrap();
+                                            let label = "software decode + BGRX present (4:4:4)".to_string();
+                                            if last_present_log_label != label {
+                                                println!("Decoded frame via {}: {}x{}", label, frame.width, frame.height);
+                                                last_present_log_label = label;
+                                            }
+                                            if let Some(sink_ptr_val) = *sink_lock {
+                                                unsafe {
+                                                    deliver_bgrx_frame(
+                                                        sink_ptr_val as *mut qobject::QVideoSink,
+                                                        frame.data.as_ptr(),
+                                                        frame.stride,
+                                                        frame.width,
+                                                        frame.height,
+                                                    );
+                                                }
                                             }
                                         }
                                         super::decoder::DecodedFrame::CpuYuv(frame) => {
@@ -4182,6 +4255,11 @@ async fn run_webrtc_client_task(
         }
     });
 
+    // "h264_444" (menu choice "H.264 4:4:4") is H.264 with full chroma, which
+    // the agent encodes as High 4:4:4 when its encoder can (like the web
+    // client's chroma setting).
+    let (request_codec, request_chroma) = split_chroma_codec(&codec_str);
+
     // Send RequestSession command
     let req_msg = ClientMessage::Signaling(SignalingMessage::RequestSession {
         host_id: host_id.clone(),
@@ -4189,13 +4267,12 @@ async fn run_webrtc_client_task(
         height: Some(height),
         fps: Some(fps),
         bitrate: Some(bitrate),
-        codec: Some(codec_str.clone()),
+        codec: Some(request_codec),
         app_id,
         encoder,
         display_id,
         virtual_display: if virtual_display { Some(true) } else { None },
-        // The native client keeps 4:2:0 for now (decoder paths are NV12-only).
-        chroma: None,
+        chroma: request_chroma,
     });
     outbox_tx.send(req_msg)?;
 
@@ -4539,4 +4616,21 @@ async fn run_webrtc_client_task(
         let _ = pc.close().await;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod chroma_tests {
+    use super::{is_h264_444_fmtp, split_chroma_codec};
+
+    #[test]
+    fn splits_444_choice() {
+        assert_eq!(split_chroma_codec("h264_444"), ("h264".into(), Some("444".into())));
+        assert_eq!(split_chroma_codec("H265"), ("h265".into(), None));
+    }
+
+    #[test]
+    fn detects_high_444_profile() {
+        assert!(is_h264_444_fmtp("level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=f4002a"));
+        assert!(!is_h264_444_fmtp("level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42002a"));
+    }
 }

@@ -82,6 +82,43 @@ void deliver_yuv_frame(QVideoSink* sink,
     }
 }
 
+// Packed BGRX (B, G, R, X bytes): used for 4:4:4 streams, whose chroma the
+// YUV420P path above would halve.
+void deliver_bgrx_frame(QVideoSink* sink, const uint8_t* data, int stride,
+                        int width, int height) {
+    if (!sink) return;
+
+    QVideoFrameFormat format(QSize(width, height), QVideoFrameFormat::Format_BGRX8888);
+    QVideoFrame frame(format);
+    if (!frame.map(QVideoFrame::WriteOnly)) return;
+
+    uint8_t* dst = frame.bits(0);
+    const int dst_stride = frame.bytesPerLine(0);
+    const int row_bytes = width * 4;
+    if (dst_stride == stride && stride == row_bytes) {
+        std::memcpy(dst, data, static_cast<size_t>(row_bytes) * height);
+    } else {
+        for (int i = 0; i < height; ++i) {
+            std::memcpy(dst + i * dst_stride, data + i * stride, row_bytes);
+        }
+    }
+    frame.unmap();
+
+    if (sink->thread() == QThread::currentThread()) {
+        sink->setVideoFrame(frame);
+    } else {
+        QPointer<QVideoSink> sink_guard(sink);
+        QMetaObject::invokeMethod(
+            sink,
+            [sink_guard, frame]() mutable {
+                if (sink_guard) {
+                    sink_guard->setVideoFrame(frame);
+                }
+            },
+            Qt::DirectConnection);
+    }
+}
+
 void warp_cursor_helper(int x, int y) {
     QCursor::setPos(x, y);
 }

@@ -62,7 +62,17 @@ pub struct YUVFrame {
 
 pub enum DecodedFrame {
     CpuYuv(YUVFrame),
+    /// Packed BGRX for formats QVideoSink can't take without losing chroma
+    /// (4:4:4 streams).
+    CpuBgrx(BgrxFrame),
     NativePresented,
+}
+
+pub struct BgrxFrame {
+    pub width: i32,
+    pub height: i32,
+    pub data: Vec<u8>,
+    pub stride: i32,
 }
 
 pub struct HardwareDecoder {
@@ -74,6 +84,10 @@ pub struct HardwareDecoder {
     last_width: i32,
     last_height: i32,
     last_format: i32,
+    /// YUV 4:4:4 -> BGRX converter and the (width, height, format, colorspace,
+    /// range) it was made for.
+    bgrx_sws_ctx: *mut ffi::SwsContext,
+    bgrx_key: (i32, i32, i32, i32, i32),
 }
 
 unsafe impl Send for HardwareDecoder {}
@@ -183,7 +197,17 @@ impl HardwareDecoder {
                 );
             }
         } else {
-            println!("Failed to create GPU hardware decoding context. Falling back to software decoding.");
+            if hardware_decode_requested {
+                println!("Failed to create GPU hardware decoding context. Falling back to software decoding.");
+            }
+            // Software decoding: use slice threads. They decode the slices of
+            // one frame in parallel without the extra frames of delay that
+            // frame threading adds (x264 with zerolatency writes one slice per
+            // encoder thread), which a 1080p60 4:4:4 stream needs.
+            unsafe {
+                (*codec_ctx).thread_type = ffi::FF_THREAD_SLICE as i32;
+                (*codec_ctx).thread_count = 0;
+            }
         }
 
         let open_err = unsafe { ffi::avcodec_open2(codec_ctx, codec, std::ptr::null_mut()) };
@@ -206,6 +230,8 @@ impl HardwareDecoder {
             last_width: 0,
             last_height: 0,
             last_format: -1,
+            bgrx_sws_ctx: std::ptr::null_mut(),
+            bgrx_key: (0, 0, -1, -1, -1),
         })
     }
 
@@ -488,6 +514,17 @@ impl HardwareDecoder {
         let height = unsafe { (*cpu_frame).height };
         let format = unsafe { (*cpu_frame).format };
 
+        if Self::is_yuv444(format) {
+            let result = self.convert_to_bgrx(cpu_frame);
+            unsafe {
+                if is_hw_frame {
+                    ffi::av_frame_free(&mut (cpu_frame as *mut _));
+                }
+                ffi::av_frame_free(&mut (gpu_frame as *mut _));
+            }
+            return result.map(DecodedFrame::CpuBgrx);
+        }
+
         let y_size = (width * height) as usize;
         let u_size = ((width / 2) * (height / 2)) as usize;
         let v_size = u_size;
@@ -689,6 +726,87 @@ impl HardwareDecoder {
         }))
     }
 
+    fn is_yuv444(format: i32) -> bool {
+        format == ffi::AVPixelFormat::AV_PIX_FMT_YUV444P as i32
+            || format == ffi::AVPixelFormat::AV_PIX_FMT_YUVJ444P as i32
+            || format == ffi::AVPixelFormat::AV_PIX_FMT_NV24 as i32
+    }
+
+    /// Converts a 4:4:4 frame to packed BGRX with the frame's own matrix and
+    /// range, keeping the full chroma resolution (the YUV420P path would
+    /// throw away exactly what a 4:4:4 stream is for).
+    fn convert_to_bgrx(&mut self, frame: *mut ffi::AVFrame) -> Result<BgrxFrame, anyhow::Error> {
+        let (width, height, format, colorspace, range) = unsafe {
+            (
+                (*frame).width,
+                (*frame).height,
+                (*frame).format,
+                (*frame).colorspace as i32,
+                (*frame).color_range as i32,
+            )
+        };
+        let key = (width, height, format, colorspace, range);
+        if self.bgrx_sws_ctx.is_null() || self.bgrx_key != key {
+            unsafe {
+                if !self.bgrx_sws_ctx.is_null() {
+                    ffi::sws_freeContext(self.bgrx_sws_ctx);
+                }
+                self.bgrx_sws_ctx = ffi::sws_getContext(
+                    width,
+                    height,
+                    std::mem::transmute(format),
+                    width,
+                    height,
+                    ffi::AVPixelFormat::AV_PIX_FMT_BGR0,
+                    SWS_BILINEAR,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null(),
+                );
+                if self.bgrx_sws_ctx.is_null() {
+                    return Err(anyhow::anyhow!("Failed to create the 4:4:4 -> BGRX converter"));
+                }
+                // Unspecified colourspace: the agent's encoders tag BT.709.
+                let matrix = match colorspace {
+                    c if c == ffi::AVColorSpace::AVCOL_SPC_BT470BG as i32
+                        || c == ffi::AVColorSpace::AVCOL_SPC_SMPTE170M as i32 => ffi::SWS_CS_ITU601,
+                    _ => ffi::SWS_CS_ITU709,
+                } as i32;
+                let full_range = range == ffi::AVColorRange::AVCOL_RANGE_JPEG as i32
+                    || format == ffi::AVPixelFormat::AV_PIX_FMT_YUVJ444P as i32;
+                let coefficients = ffi::sws_getCoefficients(matrix);
+                ffi::sws_setColorspaceDetails(
+                    self.bgrx_sws_ctx,
+                    coefficients,
+                    full_range as i32,
+                    coefficients,
+                    1,
+                    0,
+                    1 << 16,
+                    1 << 16,
+                );
+            }
+            self.bgrx_key = key;
+        }
+
+        let stride = width * 4;
+        let mut data = vec![0u8; (stride * height) as usize];
+        unsafe {
+            let dst_planes: [*mut u8; 4] = [data.as_mut_ptr(), std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut()];
+            let dst_strides: [i32; 4] = [stride, 0, 0, 0];
+            ffi::sws_scale(
+                self.bgrx_sws_ctx,
+                (*frame).data.as_ptr() as *const *const u8,
+                (*frame).linesize.as_ptr(),
+                0,
+                height,
+                dst_planes.as_ptr(),
+                dst_strides.as_ptr(),
+            );
+        }
+        Ok(BgrxFrame { width, height, data, stride })
+    }
+
     #[cfg(target_os = "linux")]
     fn try_present_dmabuf(&mut self, gpu_frame: *mut ffi::AVFrame) -> Result<bool, anyhow::Error> {
         if self.hw_device_type != ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_VAAPI
@@ -840,6 +958,9 @@ impl Drop for HardwareDecoder {
             }
             if !self.sws_ctx.is_null() {
                 ffi::sws_freeContext(self.sws_ctx);
+            }
+            if !self.bgrx_sws_ctx.is_null() {
+                ffi::sws_freeContext(self.bgrx_sws_ctx);
             }
         }
     }
