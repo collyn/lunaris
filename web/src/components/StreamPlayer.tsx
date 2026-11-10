@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 
 const getBackendHost = () => {
   const savedHost = localStorage.getItem('lunaris_server_host');
@@ -586,6 +586,25 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   const [showStats, setShowStats] = useState<boolean>(() => localStorage.getItem('lunaris_show_stats') !== 'false');
   const [isWebTransportConnected, setIsWebTransportConnected] = useState<boolean>(false);
   const headerTimeoutRef = useRef<any | null>(null);
+  const headerBarRef = useRef<HTMLDivElement | null>(null);
+  // A <select> is as wide as its longest option, and Firefox's options are wide
+  // (long display names, "WebTransport"...). Size each toolbar select to the
+  // text it currently shows instead, so they look the same in every browser.
+  useLayoutEffect(() => {
+    const bar = headerBarRef.current;
+    if (!bar) return;
+    const ctx = document.createElement('canvas').getContext('2d');
+    if (!ctx) return;
+    bar.querySelectorAll<HTMLSelectElement>('select.stream-select').forEach((sel) => {
+      const cs = getComputedStyle(sel);
+      ctx.font = `${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
+      const text = sel.selectedOptions[0]?.text ?? '';
+      const extra = parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight)
+        + parseFloat(cs.borderLeftWidth) + parseFloat(cs.borderRightWidth);
+      const width = `${Math.ceil(ctx.measureText(text).width + extra) + 2}px`;
+      if (sel.style.width !== width) sel.style.width = width;
+    });
+  });
 
   // Stats State
   const [stats, setStats] = useState<{
@@ -4500,6 +4519,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
 
       {/* Stream Controls Panel */}
       <div 
+        ref={headerBarRef}
         className={`stream-header-bar ${!isHeaderVisible ? 'hidden' : ''}`}
         onMouseEnter={() => {
           if (headerTimeoutRef.current) {

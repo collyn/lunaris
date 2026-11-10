@@ -3395,7 +3395,6 @@ code, kbd, pre, .host-id, .code-block { font-family: var(--font-mono); }
      always stay inside the bar. */
   flex: 0 1 auto;
   min-width: 3.25rem;
-  width: auto;
   max-width: 9.5rem;
   overflow: hidden;
   text-overflow: ellipsis;
