@@ -62,6 +62,16 @@ for mod in QtQuick QtMultimedia QtQml Qt; do
   fi
 done
 
+# Fail instead of shipping an AppImage whose UI can't load: these are the
+# modules client-qml/qml imports (Ubuntu: qml6-module-* packages).
+for mod in QtQuick/Controls QtQuick/Templates QtQuick/Layouts QtQuick/Shapes \
+           QtQuick/Window QtQml/WorkerScript Qt/labs/platform QtMultimedia; do
+  if [ ! -f "$APP_DIR/qml/$mod/qmldir" ]; then
+    echo "Error: QML module $mod is missing (install the matching qml6-module-* package)."
+    exit 1
+  fi
+done
+
 # Function to recursively resolve and bundle dependencies
 resolve_dependencies() {
   echo "Resolving dependencies recursively..."
