@@ -122,8 +122,10 @@ struct Args {
     #[arg(long)]
     cli: bool,
 
-    #[arg(long, default_value = "agent_config.json")]
-    config: String,
+    /// Config file (default: %APPDATA%\\lunaris-agent / ~/.config/lunaris-agent,
+    /// or ./agent_config.json when it exists)
+    #[arg(long)]
+    config: Option<String>,
 
     #[arg(long)]
     import_config: Option<String>,
@@ -146,6 +148,8 @@ pub extern "C" fn __cpu_indicator_init() -> i32 {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let args = Args::parse();
+    crate::pairing::set_config_path(args.config.clone());
+    let config_path = crate::pairing::config_path().to_string();
 
     // If import_config is specified, we perform the import first
     if let Some(ref import_path) = args.import_config {
@@ -158,9 +162,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
         info!(
             "Importing configuration from {} into {}...",
-            import_path, args.config
+            import_path, config_path
         );
-        if let Err(e) = crate::pairing::import_config_file(import_path, &args.config) {
+        if let Err(e) = crate::pairing::import_config_file(import_path, &config_path) {
             error!("Failed to import configuration: {:?}", e);
             std::process::exit(1);
         }
@@ -222,10 +226,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
 
     // Load or create agent config
-    let config = match crate::pairing::load_config(&args.config) {
+    let config = match crate::pairing::load_config(&config_path) {
         Ok(c) => c,
         Err(e) => {
-            error!("Failed to load agent config from {}: {:?}", args.config, e);
+            error!("Failed to load agent config from {}: {:?}", config_path, e);
             std::process::exit(1);
         }
     };
@@ -234,7 +238,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let loop_res = run_agent_loop(
             config.clone(),
             name.clone(),
-            args.config.clone(),
+            config_path.clone(),
         )
         .await;
 

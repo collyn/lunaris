@@ -9,6 +9,7 @@ on:
       - 'scripts/packaging/**'
       - 'server/**'
       - 'Dockerfile'
+      - 'agent/**'
     tags:
       - 'v*'
   workflow_dispatch:
@@ -322,7 +323,7 @@ jobs:
           name: server-windows
           path: lunaris-server-windows-x86_64.zip
 
-      - name: Package Client Desktop and Agent
+      - name: Package Client Desktop
         run: |
           New-Item -ItemType Directory -Force -Path lunaris-client-desktop
           Copy-Item target/release/client-desktop.exe -Destination lunaris-client-desktop/
@@ -340,13 +341,39 @@ jobs:
           # Create Windows NSIS Installer
           makensis client-desktop-installer.nsi
 
-          # Package Agent
+        shell: pwsh
+
+      - name: Package Agent
+        run: |
+          # Self-contained folder: Qt (+ QML modules), FFmpeg, opus/openssl and
+          # the MSVC runtime, so it runs on a clean Windows install.
           New-Item -ItemType Directory -Force -Path lunaris-agent
-          Copy-Item target/release/agent.exe -Destination lunaris-agent/
+          Copy-Item target/release/agent.exe -Destination lunaris-agent/lunaris-agent.exe
+          & "${env:QT_ROOT_DIR}/bin/windeployqt.exe" --qmldir agent/qml --no-translations --compiler-runtime lunaris-agent/lunaris-agent.exe
+          if ($LASTEXITCODE -ne 0) { throw "windeployqt failed" }
           Copy-Item "C:/vcpkg/installed/x64-windows/bin/*.dll" -Destination lunaris-agent/
           Copy-Item "C:/ffmpeg/bin/*.dll" -Destination lunaris-agent/
+          Copy-Item "$env:VCToolsRedistDir/x64/Microsoft.VC143.CRT/*.dll" -Destination lunaris-agent/
+          Remove-Item lunaris-agent/vc_redist*.exe -ErrorAction SilentlyContinue
           Copy-Item LICENSE, scripts/packaging/THIRD-PARTY-NOTICES.md -Destination lunaris-agent/
+          Get-ChildItem lunaris-agent | Select-Object -First 40 Name
+
+          # Smoke test with nothing but System32 on PATH: a missing DLL makes the
+          # process die at load (0xC0000135); a broken QML import makes it exit early.
+          $clean = "C:\Windows\System32;C:\Windows"
+          $p = Start-Process lunaris-agent/lunaris-agent.exe -ArgumentList "--help" -PassThru -Wait -Environment @{ PATH = $clean }
+          if ($p.ExitCode -ne 0) { throw "lunaris-agent --help exited with $($p.ExitCode)" }
+          $gui = Start-Process lunaris-agent/lunaris-agent.exe -ArgumentList "--minimized" -PassThru -Environment @{ PATH = $clean; QT_QPA_PLATFORM = "offscreen"; QT_DEBUG_PLUGINS = "0" }
+          Start-Sleep -Seconds 10
+          if ($gui.HasExited) { throw "agent GUI exited early with code $($gui.ExitCode)" }
+          Stop-Process -Id $gui.Id -Force
+          Remove-Item "$env:APPDATA/lunaris-agent" -Recurse -Force -ErrorAction SilentlyContinue
+
           Compress-Archive -Path lunaris-agent/* -DestinationPath lunaris-agent-windows.zip
+
+          $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.*)"' | Select-Object -First 1).Matches[0].Groups[1].Value
+          makensis /DVERSION=$version scripts/packaging/agent-installer.nsi
+          if ($LASTEXITCODE -ne 0) { throw "makensis failed" }
         shell: pwsh
 
       - name: Upload Client Desktop Artifact
@@ -372,6 +399,12 @@ jobs:
         with:
           name: agent-windows
           path: lunaris-agent-windows.zip
+
+      - name: Upload Agent Installer Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-installer-windows
+          path: lunaris-agent-installer.exe
 
   release:
     name: Create Release
@@ -432,6 +465,12 @@ jobs:
           name: agent-windows
           path: ./artifacts/windows-agent
 
+      - name: Download Windows Agent Installer Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: agent-installer-windows
+          path: ./artifacts/windows-agent-installer
+
       - name: Download Windows Client Desktop Installer Artifact
         uses: actions/download-artifact@v4
         with:
@@ -455,6 +494,7 @@ jobs:
           mv ./artifacts/windows-client-desktop/lunaris-client-desktop-windows.zip ./release-files/
           mv ./artifacts/windows-client-qml/lunaris-client-qml-windows.zip ./release-files/
           mv ./artifacts/windows-agent/lunaris-agent-windows.zip ./release-files/
+          mv ./artifacts/windows-agent-installer/lunaris-agent-installer.exe ./release-files/lunaris-agent-installer-windows.exe
           mv ./artifacts/windows-client-desktop-installer/lunaris-client-installer.exe ./release-files/lunaris-client-installer-windows.exe
 
 
@@ -476,6 +516,7 @@ jobs:
             release-files/lunaris-client-desktop-windows.zip
             release-files/lunaris-client-qml-windows.zip
             release-files/lunaris-agent-windows.zip
+            release-files/lunaris-agent-installer-windows.exe
             release-files/lunaris-client-installer-windows.exe
 
         env:

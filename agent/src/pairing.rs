@@ -36,6 +36,37 @@ pub struct AgentConfig {
 
 
 
+static CONFIG_PATH: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Sets the config file path for this process (from `--config`); call once at startup.
+pub fn set_config_path(path: Option<String>) {
+    let _ = CONFIG_PATH.set(path.unwrap_or_else(default_config_path));
+}
+
+/// Path of agent_config.json used by both the CLI and the GUI.
+pub fn config_path() -> &'static str {
+    CONFIG_PATH.get_or_init(default_config_path)
+}
+
+/// `agent_config.json` in the working directory when one exists there (dev
+/// checkouts, older setups); otherwise the per-user config directory
+/// (`%APPDATA%\lunaris-agent`, `~/.config/lunaris-agent`, ...), since the
+/// install location (e.g. Program Files) is not writable.
+fn default_config_path() -> String {
+    const NAME: &str = "agent_config.json";
+    if std::path::Path::new(NAME).exists() {
+        return NAME.to_string();
+    }
+    match dirs::config_dir() {
+        Some(dir) => {
+            let dir = dir.join("lunaris-agent");
+            let _ = fs::create_dir_all(&dir);
+            dir.join(NAME).to_string_lossy().into_owned()
+        }
+        None => NAME.to_string(),
+    }
+}
+
 pub fn load_config(path: &str) -> Result<AgentConfig, anyhow::Error> {
     let content = fs::read_to_string(path)?;
     let config: AgentConfig = serde_json::from_str(&content)?;
@@ -45,6 +76,12 @@ pub fn load_config(path: &str) -> Result<AgentConfig, anyhow::Error> {
 pub fn save_config(config: &AgentConfig, path: &str) -> Result<(), anyhow::Error> {
     let content = serde_json::to_string_pretty(config)?;
     fs::write(path, content)?;
+    // The file holds the server token and the client key: owner-only.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
+    }
     Ok(())
 }
 
@@ -112,7 +149,7 @@ pub fn is_autostart_enabled_impl() -> bool {
     }
     #[cfg(target_os = "windows")]
     {
-        let output = std::process::Command::new("reg")
+        let output = reg_command()
             .args(&[
                 "query",
                 "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run",
@@ -127,10 +164,25 @@ pub fn is_autostart_enabled_impl() -> bool {
     false
 }
 
+/// Runs `reg.exe` without flashing a console window from the GUI app.
+#[cfg(target_os = "windows")]
+fn reg_command() -> std::process::Command {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let mut cmd = reg_command();
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    cmd
+}
+
 pub fn set_autostart_enabled_impl(enabled: bool) {
-    let exe_path = match std::env::current_exe() {
-        Ok(path) => path.to_string_lossy().to_string(),
-        Err(_) => return,
+    // Inside an AppImage current_exe() points into a temporary mount; the
+    // AppImage file itself is what has to be started at login.
+    let exe_path = match std::env::var("APPIMAGE").ok().filter(|p| !p.is_empty()) {
+        Some(appimage) => appimage,
+        None => match std::env::current_exe() {
+            Ok(path) => path.to_string_lossy().to_string(),
+            Err(_) => return,
+        },
     };
 
     if enabled {
@@ -171,7 +223,7 @@ pub fn set_autostart_enabled_impl(enabled: bool) {
         #[cfg(target_os = "windows")]
         {
             let val = format!("\"{}\" --minimized", exe_path);
-            let _ = std::process::Command::new("reg")
+            let _ = reg_command()
                 .args(&[
                     "add",
                     "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run",
@@ -200,7 +252,7 @@ pub fn set_autostart_enabled_impl(enabled: bool) {
         }
         #[cfg(target_os = "windows")]
         {
-            let _ = std::process::Command::new("reg")
+            let _ = reg_command()
                 .args(&[
                     "delete",
                     "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run",

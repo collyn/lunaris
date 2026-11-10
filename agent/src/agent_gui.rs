@@ -225,7 +225,7 @@ fn agent_hostname() -> String {
 // ---------------------------------------------------------------------------
 impl qobject::AgentBridge {
     pub fn load_config(mut self: Pin<&mut Self>) {
-        let config = load_config("agent_config.json").unwrap_or_else(|_| make_default_config());
+        let config = load_config(crate::pairing::config_path()).unwrap_or_else(|_| make_default_config());
         let name = agent_hostname();
         self.as_mut().config_loaded(
             QString::from(&config.server_url),
@@ -244,7 +244,7 @@ impl qobject::AgentBridge {
         autostart: bool,
         close_to_tray: bool,
     ) {
-        let mut config = load_config("agent_config.json").unwrap_or_else(|_| make_default_config());
+        let mut config = load_config(crate::pairing::config_path()).unwrap_or_else(|_| make_default_config());
         config.server_url = server_url.to_string();
         config.server_token = server_token.to_string();
         config.autostart = autostart;
@@ -252,7 +252,7 @@ impl qobject::AgentBridge {
 
         crate::pairing::set_autostart_enabled_impl(autostart);
 
-        match save_config_file(&config, "agent_config.json") {
+        match save_config_file(&config, crate::pairing::config_path()) {
             Ok(()) => self.as_mut().config_saved(true, QString::from("")),
             Err(e) => self.as_mut().config_saved(
                 false,
@@ -268,7 +268,7 @@ impl qobject::AgentBridge {
             return;
         }
         let path_str = path.to_string();
-        match import_config_file(&path_str, "agent_config.json") {
+        match import_config_file(&path_str, crate::pairing::config_path()) {
             Ok(()) => {
                 log::info!("Successfully imported configuration from {:?}", path);
                 self.as_mut().import_completed(true, QString::from(""));
@@ -287,7 +287,7 @@ impl qobject::AgentBridge {
             return;
         }
 
-        let config = match load_config("agent_config.json") {
+        let config = match load_config(crate::pairing::config_path()) {
             Ok(c) => c,
             Err(e) => {
                 log::error!("Failed to load config: {:?}", e);
@@ -313,7 +313,7 @@ impl qobject::AgentBridge {
                 res = run_agent_loop(
                     config,
                     name,
-                    "agent_config.json".to_string(),
+                    crate::pairing::config_path().to_string(),
                 ) => {
                     if let Err(e) = res {
                         let err_str = format!("Agent loop error: {:?}", e);
