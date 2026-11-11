@@ -141,7 +141,7 @@ Rectangle {
             PrimaryButton {
                 visible: card.running
                 text: "Open web console"
-                onClicked: Qt.openUrlExternally(card.st.local_url)
+                onClicked: homeView.openWebConsole(card.st.local_url)
             }
             SecondaryButton {
                 visible: card.running && !card.signedInHere && (card.st.admin_password || "") !== ""

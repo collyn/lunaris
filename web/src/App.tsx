@@ -115,6 +115,28 @@ const readThemeChoice = (): ThemeChoice => {
   }
 };
 
+/**
+ * The desktop app opens the web console as `<server>/#session=<token>&user=<name>`
+ * so its signed-in user is signed in here too. The fragment never reaches the
+ * server or its logs; it is saved like a normal sign-in and removed from the
+ * address bar before the app reads the session.
+ */
+const adoptSessionFromApp = () => {
+  const hash = window.location.hash.replace(/^#/, '');
+  if (!hash.includes('session=')) return;
+  const params = new URLSearchParams(hash);
+  const session = params.get('session');
+  if (session) {
+    localStorage.setItem('lunaris_token', session);
+    localStorage.setItem('lunaris_username', params.get('user') || '');
+    // The role comes from /api/auth/me; this page's own server is the server.
+    localStorage.removeItem('lunaris_role');
+    localStorage.removeItem('lunaris_server_host');
+  }
+  window.history.replaceState(null, '', window.location.pathname + window.location.search);
+};
+adoptSessionFromApp();
+
 function App() {
   const [token, setToken] = useState<string | null>(localStorage.getItem('lunaris_token'));
   const [username, setUsername] = useState<string | null>(localStorage.getItem('lunaris_username'));

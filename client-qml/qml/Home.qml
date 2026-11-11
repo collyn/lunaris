@@ -124,16 +124,100 @@ Rectangle {
         return err;
     }
 
-    // The web console: the app's own server, else the server signed in to.
+    // The web console: the server the app is signed in to, else the app's
+    // own server.
     function webConsoleUrl() {
-        if (home.serverStatus.running) return home.serverStatus.local_url;
         if (serverDashboard.isLoggedIn) return serverDashboard.serverUrl;
+        if (home.serverStatus.running) return home.serverStatus.local_url;
         return "";
     }
 
-    function openWebConsole() {
-        var url = webConsoleUrl();
-        if (url !== "") Qt.openUrlExternally(url);
+    function sameServer(a, b) {
+        function norm(u) { return String(u || "").trim().replace(/\/+$/, "").replace("://localhost", "://127.0.0.1").toLowerCase(); }
+        return norm(a) !== "" && norm(a) === norm(b);
+    }
+
+    // Opens the web console signed in as the app's user: the session goes
+    // in the URL fragment, which the browser never sends to the server.
+    property bool pendingWebConsole: false
+    function openWebConsole(url) {
+        var target = url || webConsoleUrl();
+        if (target === "") return;
+        var d = serverDashboard;
+        if (d.isLoggedIn && d.token !== "" && sameServer(d.serverUrl, target)) {
+            Qt.openUrlExternally(target.replace(/\/+$/, "") + "/#session=" + encodeURIComponent(d.token)
+                                 + "&user=" + encodeURIComponent(d.username));
+            return;
+        }
+        // Not signed in anywhere: sign in to this computer's server first.
+        if (!d.isLoggedIn && home.serverStatus.running && sameServer(target, home.serverStatus.local_url)
+                && home.serverStatus.admin_password !== "") {
+            home.pendingWebConsole = true;
+            signInLocal();
+            return;
+        }
+        Qt.openUrlExternally(target);
+    }
+
+    Connections {
+        target: bridge
+        function onLoginResult(success, errorMsg, tok, user, srv) {
+            if (!home.pendingWebConsole) return;
+            home.pendingWebConsole = false;
+            if (success)
+                Qt.openUrlExternally(String(srv).replace(/\/+$/, "") + "/#session=" + encodeURIComponent(tok) + "&user=" + encodeURIComponent(user));
+            else
+                Qt.openUrlExternally(home.serverStatus.local_url);
+        }
+    }
+
+    // ---- This computer in the signed-in server's list ----
+    // While remote control is on, this computer's agent registers with the
+    // server the app is signed in to (unless it already uses another one).
+    property bool pendingAgentSync: false
+    property string hostServerNote: ""
+
+    function syncAgentServer() {
+        if (!home.hostStatus.enabled || !serverDashboard.isLoggedIn || serverDashboard.token === "") return;
+        home.pendingAgentSync = true;
+        bridge.fetchAgentToken(serverDashboard.serverUrl, serverDashboard.token);
+    }
+
+    Connections {
+        target: bridge
+        function onLoginResult(success, errorMsg, tok, user, srv) { if (success) agentSyncSoon.restart(); }
+        function onCredentialsLoaded(success, srv, tok, user) { if (success) agentSyncSoon.restart(); }
+        function onAgentTokenResult(success, errorMsg, tok) {
+            if (!home.pendingAgentSync) return;
+            home.pendingAgentSync = false;
+            if (!success) {
+                home.hostServerNote = "Couldn't add this computer to the server: " + errorMsg;
+                return;
+            }
+            var result = String(bridge.hostUseServer(serverDashboard.serverUrl, tok));
+            if (result.indexOf("elsewhere ") === 0) {
+                home.hostServerNote = "Listed on another server (" + result.slice(10) + "), not on the one signed in to.";
+            } else if (result.indexOf("error: ") === 0) {
+                home.hostServerNote = "Couldn't add this computer to the server: " + result.slice(7);
+            } else {
+                home.hostServerNote = "";
+                hostsRefreshSoon.restart();
+            }
+        }
+    }
+
+    Timer {
+        // The dashboard's own state updates first on sign-in.
+        id: agentSyncSoon
+        interval: 300
+        onTriggered: home.syncAgentServer()
+    }
+
+    Timer {
+        // The agent needs a moment to connect before it is listed.
+        id: hostsRefreshSoon
+        interval: 3500
+        onTriggered: if (serverDashboard.isLoggedIn) bridge.fetchHosts()
     }
 
     // Sign the app in to its own server with the first admin account.
@@ -146,6 +230,8 @@ Rectangle {
     function setRemoteControl(on) {
         var err = on ? bridge.hostStart() : bridge.hostStop();
         home.hostError = err;
+        if (on && err === "") syncAgentServer();
+        else if (!on) hostsRefreshSoon.restart();
         // The agent needs a moment to open its port.
         refreshHost();
         hostRefreshSoon.restart();
@@ -695,6 +781,15 @@ Rectangle {
                             text: home.hostError !== "" ? home.hostError : home.hostStatus.error
                             color: Theme.danger
                             font.pixelSize: 12
+                            wrapMode: Text.WordWrap
+                        }
+
+                        Text {
+                            Layout.fillWidth: true
+                            visible: home.hostStatus.enabled && home.hostServerNote !== ""
+                            text: home.hostServerNote
+                            color: Theme.textMuted
+                            font.pixelSize: 11
                             wrapMode: Text.WordWrap
                         }
 

@@ -1030,6 +1030,12 @@ pub mod qobject {
         #[qinvokable]
         fn host_set_password(self: Pin<&mut StreamBridge>, password: QString) -> QString;
 
+        /// Registers this computer with the signed-in server (`server`
+        /// http(s)://host:port, `token` its agent token). Returns
+        /// "registered", "already", "elsewhere <server>" or "error: ...".
+        #[qinvokable]
+        fn host_use_server(self: Pin<&mut StreamBridge>, server: QString, token: QString) -> QString;
+
         /// Sets the port for direct connections; returns an error message or "".
         #[qinvokable]
         fn host_set_port(self: Pin<&mut StreamBridge>, port: i32) -> QString;
@@ -2612,6 +2618,11 @@ impl qobject::StreamBridge {
         let password = password.to_string();
         let password = (!password.trim().is_empty()).then_some(password);
         QString::from(&crate::host::set_password(password).err().unwrap_or_default())
+    }
+
+    pub fn host_use_server(self: Pin<&mut Self>, server: QString, token: QString) -> QString {
+        let result = crate::host::use_server(&server.to_string(), &token.to_string());
+        QString::from(&result.unwrap_or_else(|e| format!("error: {}", e)))
     }
 
     pub fn host_set_port(self: Pin<&mut Self>, port: i32) -> QString {

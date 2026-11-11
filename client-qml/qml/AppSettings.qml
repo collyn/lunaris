@@ -394,7 +394,7 @@ Rectangle {
                         SecondaryButton {
                             visible: !!(homeView && homeView.dashboard.isLoggedIn)
                             text: "Open web page"
-                            onClicked: Qt.openUrlExternally(homeView.dashboard.serverUrl)
+                            onClicked: homeView.openWebConsole(homeView.dashboard.serverUrl)
                         }
                         SecondaryButton {
                             text: homeView && homeView.dashboard.isLoggedIn ? "Sign out" : "Sign in"

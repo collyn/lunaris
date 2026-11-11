@@ -219,6 +219,49 @@ pub fn use_server_if_none(server_url: &str, token: &str) -> Result<(), String> {
     restart_if_ours()
 }
 
+/// Registers this computer with the server the app is signed in to
+/// (`server` as the app knows it, http(s)://host:port; `token` its agent
+/// token), so it shows up in that server's computer list while remote control
+/// is on. Doesn't move an agent already registered with another server.
+/// Returns "registered", "already" or "elsewhere <server>".
+pub fn use_server(server: &str, token: &str) -> Result<String, String> {
+    let ws_url = agent_server_url(server).ok_or_else(|| format!("unexpected server address {}", server))?;
+    let mut config = load_or_create_config()?;
+    let current = config.server_url.trim().trim_end_matches('/').to_string();
+    let same = |a: &str, b: &str| {
+        let norm = |u: &str| u.replace("://localhost", "://127.0.0.1").to_ascii_lowercase();
+        norm(a) == norm(b)
+    };
+    if !current.is_empty() && !config.server_token.trim().is_empty() && !same(&current, &ws_url) {
+        return Ok(format!("elsewhere {}", current));
+    }
+    if same(&current, &ws_url) && config.server_token == token {
+        return Ok("already".into());
+    }
+    config.server_url = ws_url;
+    config.server_token = token.to_string();
+    save(&config)?;
+    restart_if_ours()?;
+    Ok("registered".into())
+}
+
+/// The agent's signaling address for a server the app knows as
+/// http(s)://host:port.
+fn agent_server_url(server: &str) -> Option<String> {
+    let s = server.trim().trim_end_matches('/');
+    if let Some(rest) = s.strip_prefix("https://") {
+        Some(format!("wss://{}", rest))
+    } else if let Some(rest) = s.strip_prefix("http://") {
+        Some(format!("ws://{}", rest))
+    } else if s.starts_with("ws://") || s.starts_with("wss://") {
+        Some(s.to_string())
+    } else if !s.is_empty() && !s.contains("://") {
+        Some(format!("ws://{}", s))
+    } else {
+        None
+    }
+}
+
 /// The address this computer uses to reach other networks (the interface of
 /// the default route), found without sending anything.
 pub fn primary_address() -> Option<String> {
@@ -300,4 +343,19 @@ fn restart_if_ours() -> Result<(), String> {
         spawn_agent()?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::agent_server_url;
+
+    #[test]
+    fn agent_server_url_from_the_app_server_address() {
+        assert_eq!(agent_server_url("http://192.168.1.5:8090/").as_deref(), Some("ws://192.168.1.5:8090"));
+        assert_eq!(agent_server_url("https://lunaris.example.com").as_deref(), Some("wss://lunaris.example.com"));
+        assert_eq!(agent_server_url("ws://10.0.0.2:8090").as_deref(), Some("ws://10.0.0.2:8090"));
+        assert_eq!(agent_server_url("10.0.0.2:8090").as_deref(), Some("ws://10.0.0.2:8090"));
+        assert_eq!(agent_server_url("ftp://x").as_deref(), None);
+        assert_eq!(agent_server_url("").as_deref(), None);
+    }
 }
