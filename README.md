@@ -97,17 +97,19 @@ Then open `http://<server>:8090`, sign in as `admin` with the printed password
 and change it. Running `lunaris-server` without a command starts it in the
 foreground instead.
 
-### Install the agent and the desktop client
+### Install the app
 
-The **agent** runs on the computer you want to control; the **client** is the
-native viewer (any browser works as a client too). From the
+The **Lunaris app** controls other computers and lets them control this one
+(click **Allow remote control**); it is also the agent and the server (see
+below). The standalone **agent** is for computers that are only controlled
+(servers, headless boxes), and any browser works as a viewer too. From the
 [latest release](https://github.com/collyn/lunaris/releases/latest):
 
-| System | Agent | Client |
+| System | App (control and be controlled) | Agent only |
 |---|---|---|
-| Ubuntu 24.04+, Debian 13+ | `sudo apt install ./lunaris-agent_<ver>_amd64.deb` | `sudo apt install ./lunaris-client_<ver>_amd64.deb` |
-| Fedora, Arch and other Linux (glibc 2.35+) | `lunaris-agent-linux-x86_64.AppImage`, run once with `--setup-host` | `lunaris-client-qml-linux.AppImage` |
-| Windows | `lunaris-agent-installer-windows.exe` | `lunaris-client-installer-windows.exe` |
+| Ubuntu 24.04+, Debian 13+ | `sudo apt install ./lunaris-client_<ver>_amd64.deb` | `sudo apt install ./lunaris-agent_<ver>_amd64.deb` |
+| Fedora, Arch and other Linux (glibc 2.35+) | `lunaris-client-desktop-linux.AppImage`, run once with `--setup-host` to be controlled | `lunaris-agent-linux-x86_64.AppImage`, run once with `--setup-host` |
+| Windows | `lunaris-client-installer-windows.exe` | `lunaris-agent-installer-windows.exe` |
 
 The distro packages use the system's Qt and PipeWire and carry their own small
 static FFmpeg (hardware encoders/decoders, x264, SVT-AV1), so they work the same
@@ -115,15 +117,26 @@ on every distro. They also install the uinput udev rule needed for remote
 keyboard/mouse. (`.rpm` and Arch packages are prepared in `scripts/packaging/`
 and will be published once the PipeWire bindings are updated.)
 
+The app is one program with three modes:
+
+```bash
+lunaris-client                    # the app
+lunaris-client agent [--cli ...]  # the agent, headless (same options as lunaris-agent)
+lunaris-client server [command]   # the server (same commands as lunaris-server)
+```
+
 ### Connect directly, without a server
 
-On a LAN, a VPN or through a forwarded port, a client can connect straight to
-the agent. In the agent window tick **Allow direct connections**: it shows this
-computer's addresses (port 8091) and an access password. In the desktop client
-choose **Connect directly by IP address** on the sign-in screen and enter them.
-Headless agents: `lunaris-agent --cli --direct` prints the same (`--direct-port`
-changes the port). Only the signaling uses this connection (plain WebSocket, so
-keep it to trusted networks); video and input stay end-to-end encrypted WebRTC.
+On a LAN, a VPN or through a forwarded port, one computer can control another
+without a server. On the computer to control, turn on **Allow remote control**
+(app, Home) or **Allow direct connections** (agent window): it shows the
+computer's addresses (port 8091) and an access password. In the app, type the
+address under **Control a remote computer** and enter the password; it then
+appears under **Recent** (add it to **Favorites** from its menu). Headless
+agents: `lunaris-agent --cli --direct` prints the address and password
+(`--direct-port` changes the port). Only the signaling uses this connection
+(plain WebSocket, so keep it to trusted networks); video and input stay
+end-to-end encrypted WebRTC.
 
 ### Prerequisites (building from source)
 
@@ -215,13 +228,14 @@ lunaris/
 │       ├── input.rs            # Input event handling
 │       └── video/              # Video processing
 │
-├── agent/                  # Rust host agent — manages streaming on the remote machine
-│   ├── src/
-│   │   ├── main.rs             # Agent daemon logic
-│   │   ├── bridge.rs           # WebRTC bridge session
-│   │   ├── gui.rs              # Tauri GUI (optional, behind feature flag)
-│   │   └── pairing.rs          # Pairing with the central server
-│   └── tauri.conf.json
+├── agent/                  # Rust host agent library — capture, encode, input, sessions
+│   └── src/
+│       ├── lib.rs              # Agent entry (agent::run), server and session logic
+│       ├── direct.rs           # Direct connections (no server)
+│       ├── bridge.rs           # WebRTC bridge session
+│       └── pairing.rs          # Configuration (server, direct password)
+│
+├── agent-app/              # The standalone agent binary and its Qt window
 │
 ├── web/                    # React frontend — dashboard and stream viewer
 │   ├── src/
@@ -239,11 +253,13 @@ lunaris/
 │   │   └── audio.rs            # Opus audio decoding via cpal
 │   └── qml/
 │       ├── main.qml            # Main window
-│       ├── Dashboard.qml       # Device dashboard
-│       └── Settings.qml        # Stream settings
+│       ├── Home.qml            # Home: this computer, remote computers
+│       ├── AppSettings.qml     # Settings
+│       ├── Dashboard.qml       # Server sign-in and computers (Home > Server)
+│       └── Settings.qml        # Per-computer stream settings
 │
 ├── lunaris-media/          # Rust streaming media library (capture, encode, audio)
-├── client-desktop/         # Tauri wrapper for client-qml
+├── client-desktop/         # The Lunaris app binary: app, `agent` and `server` modes
 ├── client/                 # SDL2-based native client (legacy)
 ├── common/                 # Shared Rust crate — types and protocol definitions
 │
