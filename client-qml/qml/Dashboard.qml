@@ -48,6 +48,17 @@ Rectangle {
     }
 
 
+    // Connect straight to a computer's desktop (app 0, the only one an
+    // agent offers) with the current stream settings.
+    function connectHost(host) {
+        dashboardRoot.startSessionRequested(
+            dashboardRoot.serverUrl, dashboardRoot.token, host.id, host.name, 0,
+            dashboardRoot.configRes, dashboardRoot.configFps, dashboardRoot.configCodec,
+            dashboardRoot.configBitrate, dashboardRoot.configQueueLimit, dashboardRoot.configDisableCuda,
+            dashboardRoot.configRenderBackend, dashboardRoot.configInputProtocol,
+            dashboardRoot.configEncoder, dashboardRoot.configDisplay, dashboardRoot.configVirtualDisplay);
+    }
+
     property var hostsList: []
     property bool hostsLoading: false
     property string hostsError: ""
@@ -731,12 +742,7 @@ Rectangle {
                             width: 240; height: 160
                             hoverEnabled: true
                             onClicked: {
-                                if (modelData.status === "Online") {
-                                    dashboardRoot.selectedHost = modelData;
-                                    dashboardRoot.appsLoading = true;
-                                    dashboardRoot.appsList = [];
-                                    bridge.fetchApps(modelData.id);
-                                }
+                                if (modelData.status === "Online") dashboardRoot.connectHost(modelData);
                             }
                         }
 
@@ -830,12 +836,7 @@ Rectangle {
                                     anchors.left: parent.left
                                     anchors.bottom: parent.bottom
                                     z: 10
-                                    onClicked: {
-                                        dashboardRoot.selectedHost = modelData;
-                                        dashboardRoot.appsLoading = true;
-                                        dashboardRoot.appsList = [];
-                                        bridge.fetchApps(modelData.id);
-                                    }
+                                    onClicked: dashboardRoot.connectHost(modelData)
                                     background: Rectangle {
                                         implicitWidth: 84; implicitHeight: 32; radius: Theme.radiusSm
                                         color: connectBtn.hovered ? Theme.accentHover : Theme.accent

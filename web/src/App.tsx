@@ -629,6 +629,13 @@ function App() {
     }, 3000);
   };
 
+  // Connect straight to a computer's desktop (app 0, the only one an agent
+  // offers) in this browser.
+  const connectToHost = (host: Host) => {
+    setSelectedAppId(0);
+    setSelectedHost(host);
+  };
+
   const currentViewingHost = viewingHost ? (hosts.find(h => h.id === viewingHost.id) || viewingHost) : null;
 
   // If inside streaming session, render full screen stream viewer
@@ -1130,7 +1137,7 @@ function App() {
                                 className={`host-card ${host.status.toLowerCase()} ${isOnline ? 'clickable-host-card' : ''}`}
                                 onClick={() => {
                                   if (isOnline) {
-                                    setViewingHost(host);
+                                    connectToHost(host);
                                   }
                                 }}
                               >
@@ -1160,7 +1167,7 @@ function App() {
                                     <button
                                       type="button"
                                       className="btn-primary host-card-connect"
-                                      onClick={() => setViewingHost(host)}
+                                      onClick={() => connectToHost(host)}
                                     >
                                       Connect
                                     </button>
