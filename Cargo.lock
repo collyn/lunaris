@@ -954,6 +954,7 @@ dependencies = [
 name = "client-qml"
 version = "0.2.2"
 dependencies = [
+ "agent",
  "anyhow",
  "bytes",
  "common",
