@@ -592,29 +592,33 @@ ApplicationWindow {
     Item {
         id: streamView
         anchors.fill: parent
+        clip: true
         visible: window.isStreamMode
         focus: window.isStreamMode
 
-        // Container to preserve aspect ratio of the stream
+        // The picture's box, sized by the display mode (Display settings):
+        // fit keeps the whole picture, fill covers the window (edges cropped),
+        // stretch ignores the aspect ratio, native is one stream pixel per
+        // device pixel. Input is mapped through this box, so it stays right.
         Item {
             id: videoContainer
             anchors.centerIn: parent
+            readonly property real aspect: window.streamWidth / Math.max(1, window.streamHeight)
+            readonly property real parentAspect: parent.width / Math.max(1, parent.height)
             width: {
-                var aspect = window.streamWidth / window.streamHeight;
-                var parentAspect = parent.width / parent.height;
-                if (parentAspect > aspect) {
-                    return parent.height * aspect;
-                } else {
-                    return parent.width;
+                switch (ViewPrefs.displayMode) {
+                case "stretch": return parent.width;
+                case "native": return window.streamWidth / Screen.devicePixelRatio;
+                case "fill": return parentAspect > aspect ? parent.width : parent.height * aspect;
+                default: return parentAspect > aspect ? parent.height * aspect : parent.width;
                 }
             }
             height: {
-                var aspect = window.streamWidth / window.streamHeight;
-                var parentAspect = parent.width / parent.height;
-                if (parentAspect > aspect) {
-                    return parent.height;
-                } else {
-                    return parent.width / aspect;
+                switch (ViewPrefs.displayMode) {
+                case "stretch": return parent.height;
+                case "native": return window.streamHeight / Screen.devicePixelRatio;
+                case "fill": return parentAspect > aspect ? parent.width / aspect : parent.height;
+                default: return parentAspect > aspect ? parent.height : parent.width / aspect;
                 }
             }
 
@@ -1253,7 +1257,23 @@ ApplicationWindow {
     property int streamWidth: 1920
     property int streamHeight: 1080
 
+    // This device's display and sound settings (ViewPrefs): saved, and the
+    // sound applied to the audio output whenever they change.
+    Connections {
+        target: ViewPrefs
+        function onDisplayModeChanged() { bridge.saveStore("view_prefs", ViewPrefs.toJson()); }
+        function onAudioEnabledChanged() { window.applyAudio(); }
+        function onVolumeChanged() { window.applyAudio(); }
+    }
+    function applyAudio() {
+        bridge.setAudio(ViewPrefs.audioEnabled, ViewPrefs.volume);
+        bridge.saveStore("view_prefs", ViewPrefs.toJson());
+    }
+
     Component.onCompleted: {
+        ViewPrefs.fromJson(bridge.loadStore("view_prefs"));
+        bridge.setAudio(ViewPrefs.audioEnabled, ViewPrefs.volume);
+
         // Center window procedurally on startup to avoid permanent bindings
         window.x = (Screen.width - window.width) / 2;
         window.y = (Screen.height - window.height) / 2;

@@ -346,7 +346,7 @@ fn direct_target_path() -> std::path::PathBuf {
 
 /// File of a JSON store the UI keeps (`load_store`/`save_store`).
 fn store_path(name: &str) -> Option<std::path::PathBuf> {
-    matches!(name, "app_settings" | "peers")
+    matches!(name, "app_settings" | "peers" | "view_prefs")
         .then(|| get_config_path().with_file_name(format!("{}.json", name)))
 }
 
@@ -1056,6 +1056,10 @@ pub mod qobject {
         /// Sets the server's port; returns an error message or "".
         #[qinvokable]
         fn server_set_port(self: Pin<&mut StreamBridge>, port: i32) -> QString;
+
+        /// Stream sound on/off and volume (0-100), applied right away.
+        #[qinvokable]
+        fn set_audio(self: Pin<&mut StreamBridge>, enabled: bool, volume: i32);
 
         /// A small JSON store of the app ("app_settings", "peers"); "" if none.
         #[qinvokable]
@@ -2649,6 +2653,10 @@ impl qobject::StreamBridge {
             .map_err(|_| "Use a port from 1024 to 65535".to_string())
             .and_then(crate::local_server::set_port);
         QString::from(&result.err().unwrap_or_default())
+    }
+
+    pub fn set_audio(self: Pin<&mut Self>, enabled: bool, volume: i32) {
+        crate::audio::set_output(enabled, volume.clamp(0, 100) as u32);
     }
 
     pub fn load_store(self: Pin<&mut Self>, name: QString) -> QString {

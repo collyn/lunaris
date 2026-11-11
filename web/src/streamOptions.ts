@@ -2,10 +2,17 @@
 // (client-qml/qml/StreamOptions.qml): keep the two in step.
 
 export const RESOLUTIONS = [
-  { value: '1080p', label: '1080p', width: 1920, height: 1080 },
-  { value: '720p', label: '720p', width: 1280, height: 720 },
+  { value: '2160p', label: '4K', width: 3840, height: 2160 },
+  { value: '1440p', label: '2K', width: 2560, height: 1440 },
+  { value: '1200p', label: '1200p', width: 1920, height: 1200 },
+  { value: '1080p', label: '1080p (FHD)', width: 1920, height: 1080 },
+  { value: '900p', label: '900p', width: 1600, height: 900 },
+  { value: '768p', label: '768p', width: 1366, height: 768 },
+  { value: '720p', label: '720p (HD)', width: 1280, height: 720 },
   { value: '540p', label: '540p', width: 960, height: 540 },
 ] as const;
+
+export const DEFAULT_RESOLUTION = '1080p';
 
 export const FPS_OPTIONS = [240, 144, 120, 90, 75, 60, 30];
 
@@ -39,4 +46,35 @@ export const resolutionSize = (value: string): { width: number; height: number }
   if (preset) return { width: preset.width, height: preset.height };
   const m = /^(\d+)x(\d+)$/.exec(value);
   return m ? { width: Number(m[1]), height: Number(m[2]) } : { width: 1920, height: 1080 };
+};
+
+/** "1920x1080" for a resolution value (the format deep links use). */
+export const resolutionString = (value: string): string => {
+  const { width, height } = resolutionSize(value);
+  return `${width}x${height}`;
+};
+
+// ---- Viewer settings (this device; applied right away, not per computer) ----
+
+export type DisplayMode = 'fit' | 'fill' | 'stretch' | 'native';
+
+export const DISPLAY_MODES: { value: DisplayMode; label: string }[] = [
+  { value: 'fit', label: 'Fit window' },
+  { value: 'fill', label: 'Fill window' },
+  { value: 'stretch', label: 'Stretch' },
+  { value: 'native', label: 'Original size' },
+];
+
+export const readDisplayMode = (): DisplayMode => {
+  const v = localStorage.getItem('lunaris_display_mode');
+  return v === 'fill' || v === 'stretch' || v === 'native' ? v : 'fit';
+};
+
+/** CSS object-fit for a display mode (video and canvas elements). */
+export const objectFitFor = (mode: DisplayMode): 'contain' | 'cover' | 'fill' | 'none' =>
+  mode === 'fill' ? 'cover' : mode === 'stretch' ? 'fill' : mode === 'native' ? 'none' : 'contain';
+
+export const readVolume = (): number => {
+  const v = Number(localStorage.getItem('lunaris_stream_volume'));
+  return Number.isFinite(v) && localStorage.getItem('lunaris_stream_volume') !== null ? Math.max(0, Math.min(100, v)) : 100;
 };

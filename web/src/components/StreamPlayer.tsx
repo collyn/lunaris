@@ -1,6 +1,6 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { BITRATES, CHROMAS, bitrateLabel } from '../streamOptions';
-import StreamSettingsDialog, { type StreamSettingsValues } from './StreamSettingsDialog';
+import { BITRATES, CHROMAS, RESOLUTIONS, bitrateLabel, readDisplayMode, readVolume, objectFitFor, resolutionSize, resolutionString, type DisplayMode } from '../streamOptions';
+import StreamSettingsDialog, { type StreamSettingsValues, type ViewerSettings } from './StreamSettingsDialog';
 import { t } from '../i18n';
 
 const getBackendHost = () => {
@@ -592,6 +592,37 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   const [isHeaderVisible, setIsHeaderVisible] = useState<boolean>(true);
   const [isHeaderPinned, setIsHeaderPinned] = useState<boolean>(() => localStorage.getItem('lunaris_header_pinned') === 'true');
   const [showStats, setShowStats] = useState<boolean>(() => localStorage.getItem('lunaris_show_stats') !== 'false');
+
+  // How the picture fits the window (Display settings): 'fit' keeps the whole
+  // picture, 'fill' covers the window (edges cropped), 'stretch' ignores the
+  // aspect ratio, 'native' shows one stream pixel per CSS pixel.
+  const [displayMode, setDisplayMode] = useState<DisplayMode>(() => readDisplayMode());
+  const displayModeRef = useRef<DisplayMode>(displayMode);
+  displayModeRef.current = displayMode;
+  // Playback volume 0-100 (Audio settings; mute is isMuted).
+  const [volume, setVolume] = useState<number>(() => readVolume());
+
+  /** Where the picture lies inside a box of boxW x boxH for the display mode. */
+  const fitVideoBox = (boxW: number, boxH: number, vidW: number, vidH: number) => {
+    const mode = displayModeRef.current;
+    let w = boxW, h = boxH;
+    if (mode === 'stretch') {
+      w = boxW; h = boxH;
+    } else if (mode === 'native') {
+      w = vidW; h = vidH;
+    } else {
+      const scale = mode === 'fill' ? Math.max(boxW / vidW, boxH / vidH) : Math.min(boxW / vidW, boxH / vidH);
+      w = vidW * scale; h = vidH * scale;
+    }
+    return { w, h, x: (boxW - w) / 2, y: (boxH - h) / 2 };
+  };
+
+  // Playback volume on whichever element carries the audio.
+  useEffect(() => {
+    for (const el of [videoRef.current as HTMLVideoElement | null, hiddenVideoRef.current]) {
+      if (el) el.volume = volume / 100;
+    }
+  });
   const [isWebTransportConnected, setIsWebTransportConnected] = useState<boolean>(false);
   const headerTimeoutRef = useRef<any | null>(null);
   const headerBarRef = useRef<HTMLDivElement | null>(null);
@@ -672,21 +703,18 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
 
     const vidWidth = activeVideo?.videoWidth && activeVideo.videoWidth > 0 ? activeVideo.videoWidth : (video as any).width || 1920;
     const vidHeight = activeVideo?.videoHeight && activeVideo.videoHeight > 0 ? activeVideo.videoHeight : (video as any).height || 1080;
-    const elAspectRatio = rect.width / rect.height;
-    const vidAspectRatio = vidWidth / vidHeight;
     let actualVidWidth = rect.width;
     let actualVidHeight = rect.height;
     let offsetX = 0;
     let offsetY = 0;
 
-    if (elAspectRatio > vidAspectRatio) {
-      actualVidHeight = rect.height;
-      actualVidWidth = rect.height * vidAspectRatio;
-      offsetX = (rect.width - actualVidWidth) / 2;
-    } else {
-      actualVidWidth = rect.width;
-      actualVidHeight = rect.width / vidAspectRatio;
-      offsetY = (rect.height - actualVidHeight) / 2;
+    {
+      // Picture area for the display mode (fit, fill, stretch, native size).
+      const box = fitVideoBox(rect.width, rect.height, vidWidth, vidHeight);
+      actualVidWidth = box.w;
+      actualVidHeight = box.h;
+      offsetX = box.x;
+      offsetY = box.y;
     }
 
     const xLocal = (clientX - rect.left) - offsetX;
@@ -921,16 +949,13 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
             let scaledDx = dx;
             let scaledDy = dy;
             if (rect.width > 0 && rect.height > 0) {
-              const elAspectRatio = rect.width / rect.height;
-              const vidAspectRatio = vidWidth / vidHeight;
               let actualVidWidth = rect.width;
               let actualVidHeight = rect.height;
-              if (elAspectRatio > vidAspectRatio) {
-                actualVidHeight = rect.height;
-                actualVidWidth = rect.height * vidAspectRatio;
-              } else {
-                actualVidWidth = rect.width;
-                actualVidHeight = rect.width / vidAspectRatio;
+              {
+                // Picture area for the display mode (fit, fill, stretch, native size).
+                const box = fitVideoBox(rect.width, rect.height, vidWidth, vidHeight);
+                actualVidWidth = box.w;
+                actualVidHeight = box.h;
               }
               scaledDx = (dx / Math.max(1, actualVidWidth)) * vidWidth;
               scaledDy = (dy / Math.max(1, actualVidHeight)) * vidHeight;
@@ -985,22 +1010,19 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
               const vidWidth = activeVideo?.videoWidth && activeVideo.videoWidth > 0 ? activeVideo.videoWidth : (video as any).width || 1920;
               const vidHeight = activeVideo?.videoHeight && activeVideo.videoHeight > 0 ? activeVideo.videoHeight : (video as any).height || 1080;
 
-              const elAspectRatio = elWidth / elHeight;
-              const vidAspectRatio = vidWidth / vidHeight;
 
               let actualVidWidth = elWidth;
               let actualVidHeight = elHeight;
               let offsetX = 0;
               let offsetY = 0;
 
-              if (elAspectRatio > vidAspectRatio) {
-                actualVidHeight = elHeight;
-                actualVidWidth = elHeight * vidAspectRatio;
-                offsetX = (elWidth - actualVidWidth) / 2;
-              } else {
-                actualVidWidth = elWidth;
-                actualVidHeight = elWidth / vidAspectRatio;
-                offsetY = (elHeight - actualVidHeight) / 2;
+              {
+                // Picture area for the display mode (fit, fill, stretch, native size).
+                const box = fitVideoBox(elWidth, elHeight, vidWidth, vidHeight);
+                actualVidWidth = box.w;
+                actualVidHeight = box.h;
+                offsetX = box.x;
+                offsetY = box.y;
               }
 
               const xLocal = pos.clientX - rect.left;
@@ -1156,7 +1178,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       if (codecDecision.fellBack) {
         console.warn(`Native client codec fallback: requested=${codecDecision.requested}, resolved=${resolvedCodec}. ${codecDecision.reason}. ${codecSupportSummary()}`);
       }
-      const resStr = activeResolution === '720p' ? '1280x720' : activeResolution === '540p' ? '960x540' : '1920x1080';
+      const resStr = resolutionString(activeResolution);
       const backendHost = getBackendHost();
       const serverUrl = `${window.location.protocol === 'https:' ? 'https:' : 'http:'}//${backendHost}`;
 
@@ -1232,12 +1254,10 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
         setStatus("Signaling...");
         let width = 1920;
         let height = 1080;
-        if (activeResolution === '720p') {
-          width = 1280;
-          height = 720;
-        } else if (activeResolution === '540p') {
-          width = 960;
-          height = 540;
+        {
+          const size = resolutionSize(activeResolution);
+          width = size.width;
+          height = size.height;
         }
 
         // Request session
@@ -2628,6 +2648,18 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   };
 
   // ---- Settings dialog (StreamSettingsDialog) ----
+  // This device's display and sound: applied right away and remembered.
+  const viewerSettings: ViewerSettings = {
+    displayMode,
+    setDisplayMode: (m) => { setDisplayMode(m); localStorage.setItem('lunaris_display_mode', m); },
+    muted: isMuted,
+    setMuted: (m) => { setIsMuted(m); localStorage.setItem('lunaris_stream_muted', String(m)); },
+    volume,
+    setVolume: (v) => { setVolume(v); localStorage.setItem('lunaris_stream_volume', String(v)); },
+    showStats,
+    setShowStats: (v) => { setShowStats(v); localStorage.setItem('lunaris_show_stats', String(v)); },
+  };
+
   const draftSettingsValues: StreamSettingsValues = {
     resolution: draftResolution,
     fps: draftFps,
@@ -2856,21 +2888,18 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     const vidWidth = activeVideo?.videoWidth && activeVideo.videoWidth > 0 ? activeVideo.videoWidth : (video as any).width || 1920;
     const vidHeight = activeVideo?.videoHeight && activeVideo.videoHeight > 0 ? activeVideo.videoHeight : (video as any).height || 1080;
 
-    const elAspectRatio = rect.width / rect.height;
-    const vidAspectRatio = vidWidth / vidHeight;
     let actualVidWidth = rect.width;
     let actualVidHeight = rect.height;
     let offsetX = 0;
     let offsetY = 0;
 
-    if (elAspectRatio > vidAspectRatio) {
-      actualVidHeight = rect.height;
-      actualVidWidth = rect.height * vidAspectRatio;
-      offsetX = (rect.width - actualVidWidth) / 2;
-    } else {
-      actualVidWidth = rect.width;
-      actualVidHeight = rect.width / vidAspectRatio;
-      offsetY = (rect.height - actualVidHeight) / 2;
+    {
+      // Picture area for the display mode (fit, fill, stretch, native size).
+      const box = fitVideoBox(rect.width, rect.height, vidWidth, vidHeight);
+      actualVidWidth = box.w;
+      actualVidHeight = box.h;
+      offsetX = box.x;
+      offsetY = box.y;
     }
 
     const xNorm = Math.max(0, Math.min(1, x / vidWidth));
@@ -2959,17 +2988,14 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     let offsetX = 0;
     let offsetY = 0;
 
-    const elAspectRatio = elWidth / elHeight;
-    const vidAspectRatio = vidWidth / vidHeight;
 
-    if (elAspectRatio > vidAspectRatio) {
-      actualVidHeight = elHeight;
-      actualVidWidth = elHeight * vidAspectRatio;
-      offsetX = (elWidth - actualVidWidth) / 2;
-    } else {
-      actualVidWidth = elWidth;
-      actualVidHeight = elWidth / vidAspectRatio;
-      offsetY = (elHeight - actualVidHeight) / 2;
+    {
+      // Picture area for the display mode (fit, fill, stretch, native size).
+      const box = fitVideoBox(elWidth, elHeight, vidWidth, vidHeight);
+      actualVidWidth = box.w;
+      actualVidHeight = box.h;
+      offsetX = box.x;
+      offsetY = box.y;
     }
 
     const cursorKind = normalizeHostCursorKind(hostCursor.kind);
@@ -3072,22 +3098,19 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       let xNorm = 0.5;
       let yNorm = 0.5;
 
-      const elAspectRatio = elWidth / elHeight;
-      const vidAspectRatio = vidWidth / vidHeight;
 
       let actualVidWidth = elWidth;
       let actualVidHeight = elHeight;
       let offsetX = 0;
       let offsetY = 0;
 
-      if (elAspectRatio > vidAspectRatio) {
-        actualVidHeight = elHeight;
-        actualVidWidth = elHeight * vidAspectRatio;
-        offsetX = (elWidth - actualVidWidth) / 2;
-      } else {
-        actualVidWidth = elWidth;
-        actualVidHeight = elWidth / vidAspectRatio;
-        offsetY = (elHeight - actualVidHeight) / 2;
+      {
+        // Picture area for the display mode (fit, fill, stretch, native size).
+        const box = fitVideoBox(elWidth, elHeight, vidWidth, vidHeight);
+        actualVidWidth = box.w;
+        actualVidHeight = box.h;
+        offsetX = box.x;
+        offsetY = box.y;
       }
 
       xNorm = (xLocal - offsetX) / actualVidWidth;
@@ -3990,6 +4013,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
               set: configureVirtualScreen,
             }}
             showNativeClient={typeof window.RTCPeerConnection !== 'undefined' && !!(window as any).__TAURI__}
+          viewer={viewerSettings}
           />
         )}
 
@@ -4140,6 +4164,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
             set: configureVirtualScreen,
           }}
           showNativeClient={typeof window.RTCPeerConnection !== 'undefined' && !!(window as any).__TAURI__}
+          viewer={viewerSettings}
         />
       )}
 
@@ -4192,9 +4217,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
           className="stream-select"
           title="Resolution"
         >
-          <option value="1080p">1080p</option>
-          <option value="720p">720p</option>
-          <option value="540p">540p</option>
+          {RESOLUTIONS.map(r => <option key={r.value} value={r.value}>{r.label}</option>)}
         </select>
 
         {/* FPS Dropdown */}
@@ -4499,7 +4522,8 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
               style={{ 
                 cursor: streamCursorStyle,
                 transform: `translate(${zoomPan.x}px, ${zoomPan.y}px) scale(${zoomScale})`,
-                transformOrigin: '0 0'
+                transformOrigin: '0 0',
+                objectFit: objectFitFor(displayMode)
               }}
             />
             <video
@@ -4528,7 +4552,8 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
             style={{ 
               cursor: streamCursorStyle,
               transform: `translate(${zoomPan.x}px, ${zoomPan.y}px) scale(${zoomScale})`,
-              transformOrigin: '0 0'
+              transformOrigin: '0 0',
+              objectFit: objectFitFor(displayMode)
             }}
           />
         )}
@@ -4767,9 +4792,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
                       className="stream-select"
                       style={{ width: '100%', fontSize: '0.8rem' }}
                     >
-                      <option value="1080p">📺 1080p</option>
-                      <option value="720p">📺 720p</option>
-                      <option value="540p">📺 540p</option>
+                      {RESOLUTIONS.map(r => <option key={r.value} value={r.value}>📺 {r.label}</option>)}
                     </select>
                     <select
                       value={activeFps}

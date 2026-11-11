@@ -41,8 +41,9 @@ Rectangle {
 
     readonly property var categories: [
         { key: "video", label: "Video", icon: "monitor" },
+        { key: "display", label: "Display", icon: "grid" },
+        { key: "audio", label: "Audio", icon: "volume" },
         { key: "host", label: "Remote computer", icon: "server" },
-        { key: "decoding", label: "Decoding", icon: "settings" },
         { key: "input", label: "Input", icon: "link" }
     ]
 
@@ -294,7 +295,7 @@ Rectangle {
                 SettingRow {
                     divider: false
                     title: I18n.t("Resolution")
-                    hint: I18n.t("Size of the picture the remote computer sends.")
+                    hint: I18n.t("Size of the picture the remote computer sends. Default 1080p (FHD).")
                     ThemedCombo {
                         width: parent.width
                         options: StreamOptions.resolutions.map(function (r) { return { value: r.value, label: r.label + "  (" + r.value.replace("x", " × ") + ")" }; })
@@ -346,6 +347,81 @@ Rectangle {
                         options: StreamOptions.chromas
                         value: settingsRoot.chroma
                         onPicked: (v) => settingsRoot.chroma = v
+                    }
+                }
+            }
+
+            // ===== Video: decoding =====
+            SectionTitle { visible: settingsRoot.category === "video"; text: I18n.t("Decoding") }
+            Card {
+                visible: settingsRoot.category === "video"
+                SettingRow {
+                    divider: false
+                    title: I18n.t("Decoder")
+                    hint: I18n.t("GPU for the lowest latency (NVDEC, VAAPI, D3D11). Choose Software only if the picture stays black or breaks up.")
+                    ThemedCombo {
+                        width: parent.width
+                        options: [{ value: "auto_gpu", label: I18n.t("Auto (GPU)") }, { value: "native_gpu", label: I18n.t("Prefer native GPU") }, { value: "software", label: I18n.t("Software") }]
+                        value: settingsRoot.renderBackend
+                        onPicked: (v) => settingsRoot.renderBackend = v
+                    }
+                }
+            }
+
+            // ===== Display (this device, applied right away) =====
+            SectionTitle { visible: settingsRoot.category === "display"; text: I18n.t("Picture on screen") }
+            Card {
+                visible: settingsRoot.category === "display"
+                SettingRow {
+                    divider: false
+                    title: I18n.t("Display mode")
+                    hint: I18n.t("How the remote screen fits this window. Applies right away to every computer.")
+                    ThemedCombo {
+                        width: parent.width
+                        options: ViewPrefs.displayModes
+                        value: ViewPrefs.displayMode
+                        onPicked: (v) => ViewPrefs.displayMode = v
+                    }
+                }
+                SettingRow {
+                    title: I18n.t("Statistics overlay")
+                    hint: I18n.t("Frame rate, bitrate, latency and the codec in a corner of the stream.")
+                    Toggle {
+                        anchors.right: parent.right
+                        checked: typeof window !== "undefined" && window.showStats
+                        onToggled: if (typeof window !== "undefined") window.showStats = checked
+                        Accessible.name: I18n.t("Statistics overlay")
+                    }
+                }
+            }
+
+            // ===== Audio (this device, applied right away) =====
+            SectionTitle { visible: settingsRoot.category === "audio"; text: I18n.t("Sound") }
+            Card {
+                visible: settingsRoot.category === "audio"
+                SettingRow {
+                    divider: false
+                    title: I18n.t("Play sound")
+                    hint: I18n.t("The remote computer's sound plays on this device. Applies right away.")
+                    Toggle {
+                        anchors.right: parent.right
+                        checked: ViewPrefs.audioEnabled
+                        onToggled: ViewPrefs.audioEnabled = checked
+                        Accessible.name: I18n.t("Play sound")
+                    }
+                }
+                SettingRow {
+                    title: I18n.t("Volume")
+                    hint: ViewPrefs.volume + "%"
+                    Slider {
+                        width: parent.width
+                        from: 0
+                        to: 100
+                        stepSize: 1
+                        enabled: ViewPrefs.audioEnabled
+                        value: ViewPrefs.volume
+                        onMoved: ViewPrefs.volume = Math.round(value)
+                        Accessible.name: I18n.t("Volume")
                     }
                 }
             }
@@ -407,23 +483,6 @@ Rectangle {
                         }
                         SecondaryButton { text: I18n.t("On"); implicitHeight: 40; onClicked: settingsRoot.configureVirtualDisplay(true, settingsRoot.virtualScreenHz) }
                         SecondaryButton { text: I18n.t("Off"); implicitHeight: 40; onClicked: settingsRoot.configureVirtualDisplay(false, settingsRoot.virtualScreenHz) }
-                    }
-                }
-            }
-
-            // ===== Decoding =====
-            SectionTitle { visible: settingsRoot.category === "decoding"; text: I18n.t("Video decoding") }
-            Card {
-                visible: settingsRoot.category === "decoding"
-                SettingRow {
-                    divider: false
-                    title: I18n.t("Decoder")
-                    hint: I18n.t("GPU for the lowest latency (NVDEC, VAAPI, D3D11). Choose Software only if the picture stays black or breaks up.")
-                    ThemedCombo {
-                        width: parent.width
-                        options: [{ value: "auto_gpu", label: I18n.t("Auto (GPU)") }, { value: "native_gpu", label: I18n.t("Prefer native GPU") }, { value: "software", label: I18n.t("Software") }]
-                        value: settingsRoot.renderBackend
-                        onPicked: (v) => settingsRoot.renderBackend = v
                     }
                 }
             }

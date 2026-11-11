@@ -2,6 +2,16 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
+/// Playback gain (f32 bits): 0 when sound is off, else volume / 100. Set by
+/// the app's Audio settings; read by the output callback.
+static AUDIO_GAIN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0x3f80_0000); // 1.0
+
+/// Turns the stream's sound on or off and sets its volume (0-100).
+pub fn set_output(enabled: bool, volume: u32) {
+    let gain = if enabled { volume.min(100) as f32 / 100.0 } else { 0.0 };
+    AUDIO_GAIN.store(gain.to_bits(), std::sync::atomic::Ordering::Relaxed);
+}
+
 pub fn setup_audio() -> Option<mpsc::UnboundedSender<Vec<f32>>> {
     let host = cpal::default_host();
     let device = host.default_output_device()?;
@@ -34,6 +44,7 @@ pub fn setup_audio() -> Option<mpsc::UnboundedSender<Vec<f32>>> {
                 let available_input_frames = audio_buffer.len() / 2;
 
                 let mut source_frame_ptr = 0.0f64;
+                let gain = f32::from_bits(AUDIO_GAIN.load(std::sync::atomic::Ordering::Relaxed));
                 for i in 0..output_frames {
                     let idx = source_frame_ptr as usize;
 
@@ -58,8 +69,8 @@ pub fn setup_audio() -> Option<mpsc::UnboundedSender<Vec<f32>>> {
                         (l1, r1)
                     };
 
-                    let left = l1 + (l2 - l1) * fract;
-                    let right = r1 + (r2 - r1) * fract;
+                    let left = (l1 + (l2 - l1) * fract) * gain;
+                    let right = (r1 + (r2 - r1) * fract) * gain;
 
                     let out_idx = i * target_channels;
                     if target_channels == 1 {

@@ -1,5 +1,8 @@
 import { useEffect, useState, type ReactNode } from 'react';
-import { BITRATES, CHROMAS, CODECS, FPS_OPTIONS, MOUSE_QUEUES, RESOLUTIONS, bitrateLabel, mouseQueueLabel } from '../streamOptions';
+import {
+  BITRATES, CHROMAS, CODECS, DISPLAY_MODES, FPS_OPTIONS, MOUSE_QUEUES, RESOLUTIONS,
+  bitrateLabel, mouseQueueLabel, readDisplayMode, readVolume, type DisplayMode,
+} from '../streamOptions';
 import { t } from '../i18n';
 
 /** The settings the dialog edits (same names as the stored settings). */
@@ -16,6 +19,19 @@ export type StreamSettingsValues = {
   virtualDisplay: boolean;
   useCanvasRenderer: boolean;
   useNativeClient: boolean;
+};
+
+/** Settings of the viewing device (not of the remote computer), applied right away. */
+export type ViewerSettings = {
+  displayMode: DisplayMode;
+  setDisplayMode: (m: DisplayMode) => void;
+  muted: boolean;
+  setMuted: (m: boolean) => void;
+  volume: number;
+  setVolume: (v: number) => void;
+  /** Statistics overlay (in a session only). */
+  showStats?: boolean;
+  setShowStats?: (v: boolean) => void;
 };
 
 type Props = {
@@ -37,14 +53,18 @@ type Props = {
   /** Linux hosts' forced high-refresh output (in a session). */
   virtualScreen?: { hz: number; setHz: (hz: number) => void; busy: boolean; status?: string; set: (on: boolean) => void };
   showNativeClient?: boolean;
+  /** This device's display and sound in a session. Without it the dialog
+   *  keeps them itself, as this browser's defaults. */
+  viewer?: ViewerSettings;
 };
 
-type Category = 'video' | 'host' | 'decoding' | 'input';
+type Category = 'video' | 'display' | 'audio' | 'host' | 'input';
 
 const CATEGORIES: { key: Category; label: string; icon: ReactNode }[] = [
   { key: 'video', label: 'Video', icon: <><rect x="3" y="4" width="18" height="12" rx="1.5" /><path d="M8 20h8M12 16v4" /></> },
+  { key: 'display', label: 'Display', icon: <><rect x="3" y="5" width="18" height="12" rx="1.5" /><path d="M7 21h10M9 9l-2 2 2 2M15 9l2 2-2 2" /></> },
+  { key: 'audio', label: 'Audio', icon: <><path d="M4 9v6h4l5 4V5L8 9H4z" /><path d="M16 9a3.5 3.5 0 0 1 0 6M18.5 6.5a7 7 0 0 1 0 11" /></> },
   { key: 'host', label: 'Remote computer', icon: <><rect x="4" y="4" width="16" height="6" rx="1" /><rect x="4" y="14" width="16" height="6" rx="1" /><path d="M8 7h.01M8 17h.01" /></> },
-  { key: 'decoding', label: 'Decoding', icon: <><circle cx="12" cy="12" r="3.5" /><path d="M12 2.5V5M12 19v2.5M2.5 12H5M19 12h2.5M5.3 5.3l1.8 1.8M16.9 16.9l1.8 1.8M5.3 18.7l1.8-1.8M16.9 7.1l1.8-1.8" /></> },
   { key: 'input', label: 'Input', icon: <><rect x="3" y="6" width="18" height="12" rx="2" /><path d="M7 10h.01M11 10h.01M15 10h.01M7 14h10" /></> },
 ];
 
@@ -63,15 +83,40 @@ const Row = ({ title, hint, children }: { title: string; hint?: string; children
   </div>
 );
 
+const Switch = ({ checked, disabled, onChange, label }: { checked: boolean; disabled?: boolean; onChange: (v: boolean) => void; label: string }) => (
+  <label className="ssd-switch">
+    <input type="checkbox" checked={checked} disabled={disabled} onChange={(e) => onChange(e.target.checked)} aria-label={label} />
+    <span aria-hidden="true" />
+  </label>
+);
+
+/** Display and sound kept in this browser when no session applies them. */
+const useStoredViewer = (): ViewerSettings => {
+  const [displayMode, setMode] = useState<DisplayMode>(readDisplayMode);
+  const [muted, setMutedState] = useState<boolean>(() => localStorage.getItem('lunaris_stream_muted') === 'true');
+  const [volume, setVol] = useState<number>(readVolume);
+  return {
+    displayMode,
+    setDisplayMode: (m) => { setMode(m); localStorage.setItem('lunaris_display_mode', m); },
+    muted,
+    setMuted: (m) => { setMutedState(m); localStorage.setItem('lunaris_stream_muted', String(m)); },
+    volume,
+    setVolume: (v) => { setVol(v); localStorage.setItem('lunaris_stream_volume', String(v)); },
+  };
+};
+
 /**
  * Stream settings in the Settings style: categories on the left, sections of
  * explained rows on the right. The desktop app's dialog (Settings.qml) has the
  * same layout and choices.
  */
 export default function StreamSettingsDialog({
-  hostName, values, onChange, onCancel, onSave, saveLabel, footerNote, displays, unsupportedCodecs = [], codecLabels = {}, encoders = [], virtualScreen, showNativeClient,
+  hostName, values, onChange, onCancel, onSave, saveLabel, footerNote, displays, unsupportedCodecs = [],
+  codecLabels = {}, encoders = [], virtualScreen, showNativeClient, viewer: viewerProp,
 }: Props) {
   const [category, setCategory] = useState<Category>('video');
+  const storedViewer = useStoredViewer();
+  const viewer = viewerProp ?? storedViewer;
   const canvasSupported = typeof (window as any).MediaStreamTrackProcessor !== 'undefined';
   const webTransportSupported = typeof (window as any).WebTransport !== 'undefined';
 
@@ -113,7 +158,7 @@ export default function StreamSettingsDialog({
               <>
                 <h3 className="ssd-section">{t('Picture')}</h3>
                 <div className="ssd-card">
-                  <Row title={t('Resolution')} hint={t('Size of the picture the remote computer sends.')}>
+                  <Row title={t('Resolution')} hint={t('Size of the picture the remote computer sends. Default 1080p (FHD).')}>
                     <select value={values.resolution} onChange={(e) => onChange('resolution', e.target.value)}>
                       {RESOLUTIONS.map(r => <option key={r.value} value={r.value}>{r.label} ({r.width} × {r.height})</option>)}
                     </select>
@@ -144,6 +189,57 @@ export default function StreamSettingsDialog({
                     </select>
                   </Row>
                 </div>
+
+                <h3 className="ssd-section">{t('Decoding')}</h3>
+                <div className="ssd-card">
+                  <Row title={t('Canvas renderer')} hint={t('Draws frames on a canvas as soon as they are decoded, for lower latency. Not available in every browser.') + (canvasSupported ? '' : ' ' + t('(not supported by this browser)'))}>
+                    <Switch label={t('Canvas renderer')} checked={values.useCanvasRenderer && canvasSupported} disabled={!canvasSupported} onChange={(v) => onChange('useCanvasRenderer', v)} />
+                  </Row>
+                  {showNativeClient && (
+                    <Row title={t('Desktop app')} hint={t('Open sessions in the Lunaris desktop app instead of this browser.')}>
+                      <Switch label={t('Desktop app')} checked={values.useNativeClient} onChange={(v) => onChange('useNativeClient', v)} />
+                    </Row>
+                  )}
+                </div>
+              </>
+            )}
+
+            {category === 'display' && (
+              <>
+                <h3 className="ssd-section">{t('Picture on screen')}</h3>
+                <div className="ssd-card">
+                  <Row title={t('Display mode')} hint={t('How the remote screen fits this window. Applies right away.')}>
+                    <select value={viewer.displayMode} onChange={(e) => viewer.setDisplayMode(e.target.value as DisplayMode)}>
+                      {DISPLAY_MODES.map(m => <option key={m.value} value={m.value}>{t(m.label)}</option>)}
+                    </select>
+                  </Row>
+                  {viewer.setShowStats && (
+                    <Row title={t('Statistics overlay')} hint={t('Frame rate, bitrate, latency and the codec in a corner of the stream.')}>
+                      <Switch label={t('Statistics overlay')} checked={!!viewer.showStats} onChange={(v) => viewer.setShowStats!(v)} />
+                    </Row>
+                  )}
+                </div>
+              </>
+            )}
+
+            {category === 'audio' && (
+              <>
+                <h3 className="ssd-section">{t('Sound')}</h3>
+                <div className="ssd-card">
+                  <Row title={t('Play sound')} hint={t("The remote computer's sound plays on this device. Applies right away.")}>
+                    <Switch label={t('Play sound')} checked={!viewer.muted} onChange={(v) => viewer.setMuted(!v)} />
+                  </Row>
+                  <Row title={t('Volume')} hint={`${viewer.volume}%`}>
+                    <input
+                      type="range" min={0} max={100} step={1}
+                      className="ssd-range"
+                      value={viewer.volume}
+                      disabled={viewer.muted}
+                      onChange={(e) => viewer.setVolume(Number(e.target.value))}
+                      aria-label={t('Volume')}
+                    />
+                  </Row>
+                </div>
               </>
             )}
 
@@ -170,17 +266,14 @@ export default function StreamSettingsDialog({
 
                 <h3 className="ssd-section">{t('Screen')}</h3>
                 <div className="ssd-card">
-                  <Row title={t('Display')} hint={t('Which screen of the remote computer to show.')}>
+                  <Row title={t('Monitor')} hint={t('Which screen of the remote computer to show.')}>
                     <select value={values.display} onChange={(e) => onChange('display', e.target.value)}>
                       <option value="default">{t('Default')}</option>
                       {(displays || []).map(d => <option key={d.id} value={d.id}>{d.label}</option>)}
                     </select>
                   </Row>
                   <Row title={t('Virtual display')} hint={t('Create a separate screen on the remote computer for this session (Windows hosts with the virtual display driver).')}>
-                    <label className="ssd-switch">
-                      <input type="checkbox" checked={values.virtualDisplay} onChange={(e) => onChange('virtualDisplay', e.target.checked)} />
-                      <span aria-hidden="true" />
-                    </label>
+                    <Switch label={t('Virtual display')} checked={values.virtualDisplay} onChange={(v) => onChange('virtualDisplay', v)} />
                   </Row>
                   {virtualScreen && (
                     <Row title={t('High-refresh virtual screen')} hint={virtualScreen.status || t('Linux hosts: turn on a forced high-refresh output so frame rates above the real screen are possible. Applies right away.')}>
@@ -191,28 +284,6 @@ export default function StreamSettingsDialog({
                         <button type="button" className="btn-secondary" disabled={virtualScreen.busy} onClick={() => virtualScreen.set(true)}>{t('On')}</button>
                         <button type="button" className="btn-secondary" disabled={virtualScreen.busy} onClick={() => virtualScreen.set(false)}>{t('Off')}</button>
                       </div>
-                    </Row>
-                  )}
-                </div>
-              </>
-            )}
-
-            {category === 'decoding' && (
-              <>
-                <h3 className="ssd-section">{t('Video decoding')}</h3>
-                <div className="ssd-card">
-                  <Row title={t('Canvas renderer')} hint={t('Draws frames on a canvas as soon as they are decoded, for lower latency. Not available in every browser.') + (canvasSupported ? '' : ' ' + t('(not supported by this browser)'))}>
-                    <label className="ssd-switch">
-                      <input type="checkbox" checked={values.useCanvasRenderer && canvasSupported} disabled={!canvasSupported} onChange={(e) => onChange('useCanvasRenderer', e.target.checked)} />
-                      <span aria-hidden="true" />
-                    </label>
-                  </Row>
-                  {showNativeClient && (
-                    <Row title={t('Desktop app')} hint={t('Open sessions in the Lunaris desktop app instead of this browser.')}>
-                      <label className="ssd-switch">
-                        <input type="checkbox" checked={values.useNativeClient} onChange={(e) => onChange('useNativeClient', e.target.checked)} />
-                        <span aria-hidden="true" />
-                      </label>
                     </Row>
                   )}
                 </div>

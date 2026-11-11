@@ -232,6 +232,23 @@ QtObject {
         "No server: start one on this computer or sign in to one": "Chưa có server: chạy server trên máy này hoặc đăng nhập một server",
         "Manage users, groups and computers in your browser (%1)": "Quản lý người dùng, nhóm và máy tính trên trình duyệt (%1)",
         "This server was started outside the app (port %1).": "Server này được chạy bên ngoài ứng dụng (cổng %1).",
-        "this computer": "máy này"
+        "this computer": "máy này",
+
+        // ---- display and sound ----
+        "Audio": "Âm thanh",
+        "Picture on screen": "Kết xuất hình ảnh",
+        "Display mode": "Chế độ hiển thị",
+        "How the remote screen fits this window. Applies right away to every computer.": "Cách màn hình máy kia hiển thị trong cửa sổ này. Áp dụng ngay cho mọi máy.",
+        "Fit window": "Vừa cửa sổ",
+        "Fill window": "Lấp đầy cửa sổ",
+        "Stretch": "Kéo giãn",
+        "Original size": "Kích thước gốc",
+        "Sound": "Âm thanh",
+        "Play sound": "Phát âm thanh",
+        "The remote computer's sound plays on this device. Applies right away.": "Âm thanh của máy kia phát trên thiết bị này. Áp dụng ngay.",
+        "Volume": "Âm lượng",
+        "Statistics overlay": "Hiện thông số",
+        "Frame rate, bitrate, latency and the codec in a corner of the stream.": "Tốc độ khung hình, bitrate, độ trễ và codec ở góc màn hình.",
+        "Size of the picture the remote computer sends. Default 1080p (FHD).": "Kích thước hình ảnh máy kia gửi về. Mặc định 1080p (FHD)."
     })
 }

@@ -3,7 +3,9 @@ import QtQuick.Controls
 
 Item {
     id: menuContainer
-    width: 1080
+    // Wide enough for both sides, so the right-hand controls never cover
+    // the back button (they grew with the chroma and resolution choices).
+    width: leftSection.width + rightSection.width + 16 + 16 + 24
     height: 48
 
     // Same choices as the web client (StreamOptions).
@@ -124,13 +126,7 @@ Item {
         hostName = host;
 
         // Set resolution combobox
-        if (res.indexOf("1920") !== -1) {
-            resComboBox.currentIndex = 0;
-        } else if (res.indexOf("1280") !== -1) {
-            resComboBox.currentIndex = 1;
-        } else if (res.indexOf("960") !== -1) {
-            resComboBox.currentIndex = 2;
-        }
+        resComboBox.currentIndex = StreamOptions.resolutionIndex(res);
 
         // Set FPS combobox
         var fpsPresets = menuContainer.fpsPresets;
@@ -163,8 +159,7 @@ Item {
     function applyCurrentSettings() {
         if (isInitializing) return;
 
-        var resMap = ["1920x1080", "1280x720", "960x540"];
-        var selectedRes = resMap[resComboBox.currentIndex];
+        var selectedRes = StreamOptions.resolutions[resComboBox.currentIndex].value;
 
         var selectedFps = menuContainer.fpsPresets[fpsComboBox.currentIndex];
 
@@ -261,8 +256,9 @@ Item {
             // Resolution Dropdown
             LunarisComboBox {
                 id: resComboBox
-                customWidth: 85
-                model: ["1080p", "720p", "540p"]
+                customWidth: 80
+                // Short labels here ("1080p", "2K"); the settings page has the full ones.
+                model: StreamOptions.resolutions.map(function(r) { return r.label.split(" ")[0]; })
                 anchors.verticalCenter: parent.verticalCenter
                 LunarisToolTip { text: "Stream Resolution" }
                 onActivated: menuContainer.applyCurrentSettings()
@@ -311,7 +307,7 @@ Item {
             // Decoder Dropdown
             LunarisComboBox {
                 id: decoderComboBox
-                customWidth: 110
+                customWidth: 100
                 model: ["Auto GPU", "Prefer Native GPU", "Software"]
                 anchors.verticalCenter: parent.verticalCenter
                 LunarisToolTip { text: "Decode and presentation backend. Prefer Native GPU may fall back until native presenter is available." }
@@ -331,7 +327,7 @@ Item {
             // Input Protocol Dropdown
             LunarisComboBox {
                 id: protocolComboBox
-                customWidth: 125
+                customWidth: 124
                 model: ["WebRTC (SCTP)", "WebTransport"]
                 anchors.verticalCenter: parent.verticalCenter
                 LunarisToolTip { text: "Input Protocol" }

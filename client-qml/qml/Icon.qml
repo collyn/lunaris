@@ -46,7 +46,8 @@ Item {
         "logout": "M15 4h4v16h-4 M10 8l-4 4 4 4 M6 12h10",
         "user": "M12 4a4 4 0 1 0 0.01 0z M4 21c0-4 3.6-6 8-6s8 2 8 6",
         "grid": "M4 4h7v7H4z M13 4h7v7h-7z M4 13h7v7H4z M13 13h7v7h-7z",
-        "list": "M8 6h12 M8 12h12 M8 18h12 M4 6h.01 M4 12h.01 M4 18h.01"
+        "list": "M8 6h12 M8 12h12 M8 18h12 M4 6h.01 M4 12h.01 M4 18h.01",
+        "volume": "M4 9v6h4l5 4V5L8 9H4z M16 9a3.5 3.5 0 0 1 0 6 M18.5 6.5a7 7 0 0 1 0 11"
     })
 
     Shape {

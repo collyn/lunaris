@@ -3,6 +3,7 @@
     <file>qmldir</file>
     <file>Theme.qml</file>
     <file>I18n.qml</file>
+    <file>ViewPrefs.qml</file>
     <file>StreamOptions.qml</file>
     <file>main.qml</file>
     <file>LunarisMenuBar.qml</file>

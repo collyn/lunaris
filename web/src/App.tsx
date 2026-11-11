@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { LANGUAGES, getLang, setLang, t, type Lang } from './i18n';
 import StreamSettingsDialog from './components/StreamSettingsDialog';
-import { DEFAULT_BITRATE, DEFAULT_CODEC } from './streamOptions';
+import { DEFAULT_BITRATE, DEFAULT_CODEC, resolutionString } from './streamOptions';
 import { StreamPlayer } from './components/StreamPlayer';
 import { AdminUsers } from './components/AdminUsers';
 import { AdminGroups } from './components/AdminGroups';
@@ -651,7 +651,7 @@ function App() {
     const protocol = getBackendProtocol();
     const serverHost = getBackendHost();
     const rawRes = localStorage.getItem('lunaris_stream_res') || '1080p';
-    const res = rawRes === '720p' ? '1280x720' : rawRes === '540p' ? '960x540' : (rawRes.includes('x') ? rawRes : '1920x1080');
+    const res = resolutionString(rawRes);
     const params = new URLSearchParams({
       host_id: host.id,
       server: `${protocol.ws}//${serverHost}`,
@@ -998,7 +998,7 @@ function App() {
                                         const serverHost = getBackendHost();
                                         const serverUrl = `${protocol}//${serverHost}`;
                                         const rawRes = localStorage.getItem('lunaris_stream_res') || '1080p';
-                                        const resStr = rawRes === '720p' ? '1280x720' : rawRes === '540p' ? '960x540' : (rawRes.includes('x') ? rawRes : '1920x1080');
+                                        const resStr = resolutionString(rawRes);
                                         const fps = localStorage.getItem('lunaris_stream_fps') || '60';
                                         const bitrate = localStorage.getItem('lunaris_stream_bitrate') || '8000';
                                         const codec = localStorage.getItem('lunaris_stream_codec') || 'auto';

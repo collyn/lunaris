@@ -3674,3 +3674,5 @@ button, input, select, textarea { font-family: inherit; }
   cursor: pointer;
 }
 .lang-select:hover { border-color: var(--border-strong); }
+.ssd-range { width: 100%; accent-color: var(--accent); }
+.ssd-range:disabled { opacity: 0.45; }

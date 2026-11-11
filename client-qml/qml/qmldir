@@ -19,3 +19,4 @@ LocalServerCard 1.0 LocalServerCard.qml
 singleton StreamOptions 1.0 StreamOptions.qml
 ThemedCombo 1.0 ThemedCombo.qml
 singleton I18n 1.0 I18n.qml
+singleton ViewPrefs 1.0 ViewPrefs.qml

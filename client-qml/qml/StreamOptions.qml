@@ -6,10 +6,16 @@ import QtQuick
 QtObject {
     // value: "WxH" sent to the agent
     readonly property var resolutions: [
-        { value: "1920x1080", label: "1080p" },
-        { value: "1280x720", label: "720p" },
+        { value: "3840x2160", label: "4K" },
+        { value: "2560x1440", label: "2K" },
+        { value: "1920x1200", label: "1200p" },
+        { value: "1920x1080", label: "1080p (FHD)" },
+        { value: "1600x900", label: "900p" },
+        { value: "1366x768", label: "768p" },
+        { value: "1280x720", label: "720p (HD)" },
         { value: "960x540", label: "540p" }
     ]
+    readonly property string defaultResolution: "1920x1080"
     readonly property var fps: [240, 144, 120, 90, 75, 60, 30]
     // kbps
     readonly property var bitrates: [2000, 5000, 8000, 10000, 15000, 20000, 30000, 40000, 50000, 75000, 100000, 150000]
@@ -50,9 +56,10 @@ QtObject {
         return best;
     }
 
+    // Index of a resolution ("WxH"); 1080p for one not in the list.
     function resolutionIndex(res) {
         var i = indexOfValue(resolutions, res);
-        return i === -1 ? 0 : i;
+        return i === -1 ? indexOfValue(resolutions, defaultResolution) : i;
     }
 
     // The app keeps one codec string: "h264_444" is H.264 with 4:4:4 chroma.
