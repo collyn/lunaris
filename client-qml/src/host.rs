@@ -178,9 +178,41 @@ fn spawn_agent() -> Result<(), String> {
         cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     }
     stop_with_parent(&mut cmd);
-    let child = cmd.spawn().map_err(|e| format!("cannot start the agent: {}", e))?;
+    let child = spawn_child(cmd).map_err(|e| format!("cannot start the agent: {}", e))?;
     *HOST_CHILD.lock().unwrap() = Some(child);
     Ok(())
+}
+
+/// Starts a child process from a thread that lives as long as the app.
+/// PR_SET_PDEATHSIG (stop_with_parent) fires when the *thread* that started
+/// the child ends, so a child started from a short-lived thread (e.g. the
+/// one waiting for the server's token) would be stopped right away.
+pub fn spawn_child(cmd: Command) -> std::io::Result<Child> {
+    use std::sync::mpsc;
+    type Job = (Command, mpsc::Sender<std::io::Result<Child>>);
+    static SPAWNER: Mutex<Option<mpsc::Sender<Job>>> = Mutex::new(None);
+    let tx = {
+        let mut lock = SPAWNER.lock().unwrap();
+        lock.get_or_insert_with(|| {
+            let (tx, rx) = mpsc::channel::<Job>();
+            std::thread::Builder::new()
+                .name("lunaris-spawner".into())
+                .spawn(move || {
+                    for (mut cmd, reply) in rx {
+                        let _ = reply.send(cmd.spawn());
+                    }
+                })
+                .expect("spawner thread");
+            tx
+        })
+        .clone()
+    };
+    let (reply_tx, reply_rx) = mpsc::channel();
+    tx.send((cmd, reply_tx))
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "spawner thread gone"))?;
+    reply_rx
+        .recv()
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "spawner thread gone"))?
 }
 
 /// Makes a child process stop when the app does, even if the app is killed

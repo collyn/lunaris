@@ -165,7 +165,7 @@ fn spawn(port: u16) -> Result<(), String> {
         cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     }
     crate::host::stop_with_parent(&mut cmd);
-    let child = cmd.spawn().map_err(|e| format!("cannot start the server: {}", e))?;
+    let child = crate::host::spawn_child(cmd).map_err(|e| format!("cannot start the server: {}", e))?;
     *SERVER_CHILD.lock().unwrap() = Some(child);
     Ok(())
 }
