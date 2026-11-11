@@ -23,7 +23,7 @@ Rectangle {
 
     // This computer (see host.rs): enabled, running, port, password,
     // addresses, hostname, error.
-    property var hostStatus: ({ enabled: false, running: false, port: 8091, password: "", addresses: [], hostname: "", error: "" })
+    property var hostStatus: ({ enabled: false, running: false, port: 8091, password: "", addresses: [], hostname: "", input_ready: true, error: "" })
     property bool passwordVisible: false
     property string hostError: ""
 
@@ -540,6 +540,26 @@ Rectangle {
                             color: Theme.danger
                             font.pixelSize: 12
                             wrapMode: Text.WordWrap
+                        }
+
+                        // Remote keyboard/mouse need /dev/uinput (Linux).
+                        Rectangle {
+                            Layout.fillWidth: true
+                            visible: home.hostStatus.enabled && home.hostStatus.input_ready === false
+                            implicitHeight: inputNote.implicitHeight + 24
+                            radius: Theme.radius
+                            color: Qt.rgba(245 / 255, 158 / 255, 11 / 255, 0.10)
+                            border.color: Qt.rgba(245 / 255, 158 / 255, 11 / 255, 0.35)
+                            Text {
+                                id: inputNote
+                                anchors.fill: parent
+                                anchors.margins: 12
+                                text: "The other computer will see this screen but can't use the keyboard and mouse yet: Lunaris has no access to /dev/uinput. Install the Lunaris package, or run the AppImage once with --setup-host, then sign out and in again."
+                                color: Theme.text
+                                font.pixelSize: 11
+                                wrapMode: Text.WordWrap
+                                lineHeight: 1.2
+                            }
                         }
 
                         // Note on security (direct connections aren't TLS).

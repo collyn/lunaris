@@ -47,7 +47,8 @@ Recommends: qt6-wayland$recommends
 Description: $description
 EOF
 
-    if [[ "$kind" == agent ]]; then
+    # Both packages give remote keyboard/mouse (the app is also the agent).
+    if [[ "$kind" == agent || "$kind" == client ]]; then
         cat > "$root/DEBIAN/postinst" <<'EOF'
 #!/bin/sh
 set -e
@@ -77,7 +78,8 @@ build agent "$TARGET/release/agent" "" \
 
 build client "$TARGET/release/client-desktop" \
     ", qml6-module-qtmultimedia, qml6-module-qtquick-shapes" \
-    ", mesa-va-drivers, xdg-utils" \
-    "Lunaris remote desktop client
- Native low-latency client for computers running the Lunaris agent, with
- hardware video decoding (VAAPI, NVDEC)."
+    ", mesa-va-drivers, xdg-utils, xdg-desktop-portal, pipewire" \
+    "Lunaris remote desktop
+ Control other computers running Lunaris, with hardware video decoding
+ (VAAPI, NVDEC), and let them control this one (built-in agent and server:
+ lunaris-client agent, lunaris-client server)."

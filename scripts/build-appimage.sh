@@ -147,10 +147,28 @@ Plugins = plugins
 QmlImports = qml
 EOF
 
+# Host setup for "Allow remote control" (the app is also the agent): uinput
+# access for remote keyboard/mouse, run via `--setup-host`.
+install -Dm755 scripts/linux-host/setup-host.sh "$APP_DIR/share/lunaris/setup-host.sh"
+install -Dm644 scripts/linux-host/60-lunaris-input.rules "$APP_DIR/share/lunaris/60-lunaris-input.rules"
+install -Dm644 scripts/linux-host/60-lunaris.conf "$APP_DIR/share/lunaris/60-lunaris.conf"
+
 # Create AppRun
 cat <<'EOF' > "$APP_DIR/AppRun"
 #!/bin/bash
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+if [ "$1" = "--setup-host" ]; then
+    # The AppImage mount is not readable by root, so stage the files first.
+    tmp="$(mktemp -d)"
+    cp "$SCRIPT_DIR"/share/lunaris/* "$tmp/"
+    shift
+    if [ "$(id -u)" -eq 0 ]; then bash "$tmp/setup-host.sh" "$@"
+    elif command -v pkexec >/dev/null 2>&1 && [ -n "$DISPLAY$WAYLAND_DISPLAY" ]; then
+        pkexec env SUDO_USER="$(id -un)" bash "$tmp/setup-host.sh" "$@"
+    else sudo bash "$tmp/setup-host.sh" "$@"
+    fi
+    rc=$?; rm -rf "$tmp"; exit $rc
+fi
 export LD_LIBRARY_PATH="$SCRIPT_DIR/lib:$LD_LIBRARY_PATH"
 export QT_PLUGIN_PATH="$SCRIPT_DIR/plugins"
 export QML2_IMPORT_PATH="$SCRIPT_DIR/qml"

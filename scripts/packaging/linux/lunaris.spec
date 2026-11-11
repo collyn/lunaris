@@ -49,6 +49,11 @@ modprobe uinput >/dev/null 2>&1 || :
 udevadm control --reload-rules >/dev/null 2>&1 || :
 udevadm trigger --subsystem-match=misc --sysname-match=uinput >/dev/null 2>&1 || :
 
+%post -n lunaris-client
+modprobe uinput >/dev/null 2>&1 || :
+udevadm control --reload-rules >/dev/null 2>&1 || :
+udevadm trigger --subsystem-match=misc --sysname-match=uinput >/dev/null 2>&1 || :
+
 %files -n lunaris-agent
 %license /usr/share/licenses/lunaris-agent
 /usr/bin/lunaris-agent
@@ -62,3 +67,5 @@ udevadm trigger --subsystem-match=misc --sysname-match=uinput >/dev/null 2>&1 ||
 /usr/bin/lunaris-client
 /usr/share/applications/lunaris-client.desktop
 /usr/share/icons/hicolor/256x256/apps/lunaris-client.png
+/usr/lib/udev/rules.d/60-lunaris-client-input.rules
+/usr/lib/modules-load.d/lunaris-client.conf

@@ -26,6 +26,8 @@ struct HostStatus {
     password: String,
     addresses: Vec<String>,
     hostname: String,
+    /// Remote keyboard/mouse can work (Linux: /dev/uinput is writable).
+    input_ready: bool,
     error: String,
 }
 
@@ -92,6 +94,19 @@ fn hostname() -> String {
         .unwrap_or_default()
 }
 
+/// Whether the agent can inject keyboard/mouse input. On Linux it needs
+/// write access to /dev/uinput (udev rule from the package or --setup-host).
+fn input_ready() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        std::fs::OpenOptions::new().write(true).open("/dev/uinput").is_ok()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        true
+    }
+}
+
 /// Status of remote control as JSON for the UI.
 pub fn status_json() -> String {
     let status = match load_or_create_config() {
@@ -102,6 +117,7 @@ pub fn status_json() -> String {
             password: config.direct_password.clone(),
             addresses: addresses(),
             hostname: hostname(),
+            input_ready: input_ready(),
             error: String::new(),
         },
         Err(error) => HostStatus {
@@ -111,6 +127,7 @@ pub fn status_json() -> String {
             password: String::new(),
             addresses: addresses(),
             hostname: hostname(),
+            input_ready: input_ready(),
             error,
         },
     };

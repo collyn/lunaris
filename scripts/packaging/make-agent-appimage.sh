@@ -54,10 +54,10 @@ if [ "$1" = "--setup-host" ]; then
     tmp="$(mktemp -d)"
     cp "$HERE"/usr/share/lunaris-agent/* "$tmp/"
     shift
-    if [ "$(id -u)" -eq 0 ]; then sh "$tmp/setup-host.sh" "$@"
+    if [ "$(id -u)" -eq 0 ]; then bash "$tmp/setup-host.sh" "$@"
     elif command -v pkexec >/dev/null 2>&1 && [ -n "$DISPLAY$WAYLAND_DISPLAY" ]; then
-        pkexec env SUDO_USER="$(id -un)" sh "$tmp/setup-host.sh" "$@"
-    else sudo sh "$tmp/setup-host.sh" "$@"
+        pkexec env SUDO_USER="$(id -un)" bash "$tmp/setup-host.sh" "$@"
+    else sudo bash "$tmp/setup-host.sh" "$@"
     fi
     rc=$?; rm -rf "$tmp"; exit $rc
 fi

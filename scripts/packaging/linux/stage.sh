@@ -21,6 +21,10 @@ case "$KIND" in
         ;;
     client)
         install -Dm644 "$ROOT/client-qml/qml/icon.png" "$DEST/usr/share/icons/hicolor/256x256/apps/$NAME.png"
+        # The app is also the agent ("Allow remote control"): same uinput
+        # access, under its own names so both packages can be installed.
+        install -Dm644 "$ROOT/scripts/linux-host/60-lunaris-input.rules" "$DEST/usr/lib/udev/rules.d/60-lunaris-client-input.rules"
+        install -Dm644 "$ROOT/scripts/linux-host/60-lunaris.conf" "$DEST/usr/lib/modules-load.d/lunaris-client.conf"
         ;;
     *) echo "unknown package kind: $KIND" >&2; exit 1 ;;
 esac
