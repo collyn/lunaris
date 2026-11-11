@@ -6,6 +6,10 @@ license.workspace = true
 
 [dependencies]
 client-qml = { path = "../client-qml" }
+# The app is also the host agent (`lunaris agent`) and the server
+# (`lunaris server`); the standalone agent and server binaries remain.
+agent = { path = "../agent", default-features = false }
+server = { path = "../server" }
 
 [features]
-static-ffmpeg = ["client-qml/static-ffmpeg"]
+static-ffmpeg = ["client-qml/static-ffmpeg", "agent/static-ffmpeg"]
