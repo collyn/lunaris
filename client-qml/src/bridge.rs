@@ -1034,6 +1034,23 @@ pub mod qobject {
         #[qinvokable]
         fn host_set_port(self: Pin<&mut StreamBridge>, port: i32) -> QString;
 
+        /// The app's own Lunaris server, as JSON: enabled, running, ours,
+        /// port, local_url, lan_url, admin_password, data_dir, error.
+        #[qinvokable]
+        fn server_status(self: Pin<&mut StreamBridge>) -> QString;
+
+        /// Starts the app's server; returns an error message or "".
+        #[qinvokable]
+        fn server_start(self: Pin<&mut StreamBridge>) -> QString;
+
+        /// Stops the app's server; returns an error message or "".
+        #[qinvokable]
+        fn server_stop(self: Pin<&mut StreamBridge>) -> QString;
+
+        /// Sets the server's port; returns an error message or "".
+        #[qinvokable]
+        fn server_set_port(self: Pin<&mut StreamBridge>, port: i32) -> QString;
+
         /// A small JSON store of the app ("app_settings", "peers"); "" if none.
         #[qinvokable]
         fn load_store(self: Pin<&mut StreamBridge>, name: QString) -> QString;
@@ -2601,6 +2618,25 @@ impl qobject::StreamBridge {
         let result = u16::try_from(port)
             .map_err(|_| "Use a port from 1024 to 65535".to_string())
             .and_then(crate::host::set_port);
+        QString::from(&result.err().unwrap_or_default())
+    }
+
+    pub fn server_status(self: Pin<&mut Self>) -> QString {
+        QString::from(&crate::local_server::status_json())
+    }
+
+    pub fn server_start(self: Pin<&mut Self>) -> QString {
+        QString::from(&crate::local_server::start().err().unwrap_or_default())
+    }
+
+    pub fn server_stop(self: Pin<&mut Self>) -> QString {
+        QString::from(&crate::local_server::stop().err().unwrap_or_default())
+    }
+
+    pub fn server_set_port(self: Pin<&mut Self>, port: i32) -> QString {
+        let result = u16::try_from(port)
+            .map_err(|_| "Use a port from 1024 to 65535".to_string())
+            .and_then(crate::local_server::set_port);
         QString::from(&result.err().unwrap_or_default())
     }
 

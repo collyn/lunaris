@@ -261,7 +261,7 @@ Rectangle {
                         text: homeView ? (homeView.passwordVisible ? homeView.hostStatus.password : homeView.hostStatus.password.replace(/./g, "•")) : ""
                         color: Theme.textStrong
                         font.pixelSize: 16
-                        font.family: homeView && homeView.passwordVisible ? "monospace" : ""
+                        font.family: homeView && homeView.passwordVisible ? "monospace" : Qt.application.font.family
                     }
                     IconButton {
                         iconName: homeView && homeView.passwordVisible ? "eyeOff" : "eye"
@@ -323,7 +323,7 @@ Rectangle {
                 subtitle: "Port other computers use to reach this one. Allow it in the firewall to connect from your network."
                 SettingRow {
                     label: "Port"
-                    hint: "Default 8091. Other computers then connect to <address>:<port>."
+                    hint: "Default 8091. With another port, other computers connect to address:port."
                     RowLayout {
                         spacing: 8
                         InputField {
@@ -347,9 +347,44 @@ Rectangle {
                 Text { visible: settings.portError !== ""; text: settings.portError; color: Theme.danger; font.pixelSize: 12 }
             }
 
+            LocalServerCard {
+                visible: settings.section === "network"
+                Layout.fillWidth: true
+                Layout.maximumWidth: 620
+                homeView: settings.homeView
+            }
+
             Card {
                 visible: settings.section === "network"
-                title: "Lunaris server"
+                title: "Server port"
+                SettingRow {
+                    label: "Port"
+                    hint: "Default 8090. Change it if another program uses that port."
+                    RowLayout {
+                        spacing: 8
+                        InputField {
+                            id: serverPortField
+                            Layout.fillWidth: false
+                            implicitWidth: 90
+                            implicitHeight: 34
+                            fontSize: 13
+                            text: homeView ? String(homeView.serverStatus.port) : "8090"
+                            input.validator: IntValidator { bottom: 1; top: 65535 }
+                            onAccepted: saveServerPortBtn.clicked()
+                        }
+                        SecondaryButton {
+                            id: saveServerPortBtn
+                            text: "Save"
+                            enabled: homeView && serverPortField.text !== String(homeView.serverStatus.port)
+                            onClicked: homeView.setServerPort(parseInt(serverPortField.text))
+                        }
+                    }
+                }
+            }
+
+            Card {
+                visible: settings.section === "network"
+                title: "Signed-in server"
                 subtitle: "A server lets you reach computers outside your network and manage users, groups and computers from its web page."
                 SettingRow {
                     label: homeView && homeView.dashboard.isLoggedIn ? "Signed in as " + homeView.dashboard.username : "Not signed in"

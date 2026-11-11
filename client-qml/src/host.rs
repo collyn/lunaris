@@ -76,7 +76,7 @@ fn port_open(port: u16) -> bool {
 /// This computer's LAN/VPN addresses. `local_addresses` is async; run it on a
 /// thread of its own (the caller may be inside a tokio runtime).
 fn addresses() -> Vec<String> {
-    std::thread::spawn(|| {
+    let mut list: Vec<String> = std::thread::spawn(|| {
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -84,7 +84,15 @@ fn addresses() -> Vec<String> {
             .unwrap_or_default()
     })
     .join()
-    .unwrap_or_default()
+    .unwrap_or_default();
+    // The main address first: it's the one other computers most likely use.
+    if let Some(primary) = primary_address() {
+        if let Some(i) = list.iter().position(|a| *a == primary) {
+            let main = list.remove(i);
+            list.insert(0, main);
+        }
+    }
+    list
 }
 
 fn hostname() -> String {
@@ -169,8 +177,16 @@ fn spawn_agent() -> Result<(), String> {
         use std::os::windows::process::CommandExt;
         cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     }
-    // The agent goes when the app goes, even if the app is killed or crashes
-    // (otherwise it keeps the port and "Turn off" can't reach it).
+    stop_with_parent(&mut cmd);
+    let child = cmd.spawn().map_err(|e| format!("cannot start the agent: {}", e))?;
+    *HOST_CHILD.lock().unwrap() = Some(child);
+    Ok(())
+}
+
+/// Makes a child process stop when the app does, even if the app is killed
+/// or crashes (otherwise it would keep its port, out of the app's reach).
+/// Linux only; elsewhere the app stops its children when it exits.
+pub fn stop_with_parent(cmd: &mut Command) {
     #[cfg(target_os = "linux")]
     unsafe {
         use std::os::unix::process::CommandExt;
@@ -186,9 +202,32 @@ fn spawn_agent() -> Result<(), String> {
             Ok(())
         });
     }
-    let child = cmd.spawn().map_err(|e| format!("cannot start the agent: {}", e))?;
-    *HOST_CHILD.lock().unwrap() = Some(child);
-    Ok(())
+    #[cfg(not(target_os = "linux"))]
+    let _ = cmd;
+}
+
+/// Registers this computer with `server_url` (the app's own server) unless
+/// it already uses a server; restarts the app's agent to connect.
+pub fn use_server_if_none(server_url: &str, token: &str) -> Result<(), String> {
+    let mut config = load_or_create_config()?;
+    if !config.server_url.trim().is_empty() && !config.server_token.trim().is_empty() {
+        return Ok(());
+    }
+    config.server_url = server_url.to_string();
+    config.server_token = token.to_string();
+    save(&config)?;
+    restart_if_ours()
+}
+
+/// The address this computer uses to reach other networks (the interface of
+/// the default route), found without sending anything.
+pub fn primary_address() -> Option<String> {
+    let socket = std::net::UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).ok()?;
+    socket.connect((Ipv4Addr::new(192, 0, 2, 1), 9)).ok()?;
+    match socket.local_addr().ok()?.ip() {
+        std::net::IpAddr::V4(ip) if !ip.is_loopback() && !ip.is_unspecified() => Some(ip.to_string()),
+        _ => None,
+    }
 }
 
 /// Stops the agent the app started and remembers remote control as off.

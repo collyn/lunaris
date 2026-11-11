@@ -26,6 +26,13 @@ Rectangle {
     property var hostStatus: ({ enabled: false, running: false, port: 8091, password: "", addresses: [], hostname: "", input_ready: true, error: "" })
     property bool passwordVisible: false
     property string hostError: ""
+    property bool showAllAddresses: false
+
+    // The app's own server (see local_server.rs): enabled, running, ours,
+    // port, local_url, lan_url, admin_password, data_dir, error.
+    property var serverStatus: ({ enabled: false, running: false, ours: false, port: 8090, local_url: "", lan_url: "", admin_password: "", data_dir: "", error: "" })
+    property string serverError: ""
+    property bool serverBusy: false
 
     // Saved computers: [{ address, name, password, favorite, lastUsed, os }]
     property var peers: []
@@ -84,6 +91,56 @@ Rectangle {
 
     function refreshHost() {
         try { home.hostStatus = JSON.parse(bridge.hostStatus()); } catch (e) { console.log("host status: " + e); }
+        refreshServer();
+    }
+
+    function refreshServer() {
+        try { home.serverStatus = JSON.parse(bridge.serverStatus()); } catch (e) { console.log("server status: " + e); }
+        if (home.serverStatus.running) home.serverBusy = false;
+    }
+
+    // "address" or "address:port" when the port isn't the default.
+    function withPort(ip) {
+        return ip + (home.hostStatus.port === 8091 ? "" : ":" + home.hostStatus.port);
+    }
+
+    function hostAddress(i) {
+        var list = home.hostStatus.addresses;
+        return list.length > i ? withPort(list[i]) : "—";
+    }
+
+    function setServer(on) {
+        home.serverError = on ? bridge.serverStart() : bridge.serverStop();
+        home.serverBusy = on && home.serverError === "";
+        refreshServer();
+        serverRefreshSoon.restart();
+    }
+
+    function setServerPort(port) {
+        var err = bridge.serverSetPort(port);
+        home.serverError = err;
+        refreshServer();
+        serverRefreshSoon.restart();
+        return err;
+    }
+
+    // The web console: the app's own server, else the server signed in to.
+    function webConsoleUrl() {
+        if (home.serverStatus.running) return home.serverStatus.local_url;
+        if (serverDashboard.isLoggedIn) return serverDashboard.serverUrl;
+        return "";
+    }
+
+    function openWebConsole() {
+        var url = webConsoleUrl();
+        if (url !== "") Qt.openUrlExternally(url);
+    }
+
+    // Sign the app in to its own server with the first admin account.
+    function signInLocal() {
+        if (home.serverStatus.admin_password === "") return;
+        serverDashboard.authLoading = true;
+        bridge.login(home.serverStatus.local_url, "admin", home.serverStatus.admin_password);
     }
 
     function setRemoteControl(on) {
@@ -200,6 +257,8 @@ Rectangle {
             "webrtc", "auto", "default", false);
     }
 
+    function copyText(text) { clipboardHelper.copy(text); }
+
     function setStatus(text, isError) {
         home.statusText = text;
         home.statusIsError = isError;
@@ -225,6 +284,18 @@ Rectangle {
         id: hostRefreshSoon
         interval: 1200
         onTriggered: home.refreshHost()
+    }
+
+    Timer {
+        // The server needs a few seconds to create its database and open the port.
+        id: serverRefreshSoon
+        interval: 1000
+        repeat: true
+        property int left: 8
+        onTriggered: {
+            home.refreshServer();
+            if (home.serverStatus.running || --left <= 0) { stop(); left = 8; }
+        }
     }
 
     // ---------------------------------------------------------------
@@ -313,6 +384,64 @@ Rectangle {
             TopTab { text: "Home"; iconName: "home"; current: home.page === "home"; onClicked: home.page = "home" }
             TopTab { text: "Settings"; iconName: "settings"; current: home.page === "settings"; onClicked: home.page = "settings" }
         }
+
+        // Right: the server (if any) and its web console
+        Row {
+            anchors.right: parent.right
+            anchors.rightMargin: 14
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: 10
+
+            AbstractButton {
+                id: serverChip
+                anchors.verticalCenter: parent.verticalCenter
+                hoverEnabled: true
+                implicitHeight: 30
+                implicitWidth: chipRow.implicitWidth + 20
+                onClicked: { home.page = "home"; home.peerTab = "server"; }
+                ToolTip.visible: hovered
+                ToolTip.delay: 400
+                ToolTip.text: home.serverStatus.running ? "Server running at " + home.serverStatus.lan_url
+                    : (serverDashboard.isLoggedIn ? "Signed in to " + serverDashboard.serverUrl : "No server: start one on this computer or sign in to one")
+                background: Rectangle {
+                    radius: 15
+                    color: serverChip.hovered ? Theme.surface2 : "transparent"
+                    border.color: Theme.border
+                }
+                contentItem: Item {
+                    Row {
+                        id: chipRow
+                        anchors.centerIn: parent
+                        spacing: 7
+                        Rectangle {
+                            width: 7; height: 7; radius: 3.5
+                            anchors.verticalCenter: parent.verticalCenter
+                            color: home.serverStatus.running || serverDashboard.isLoggedIn ? Theme.success : Theme.textSubtle
+                        }
+                        Text {
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: home.serverStatus.running ? "Server on this computer"
+                                : (serverDashboard.isLoggedIn ? "Signed in to a server" : "No server")
+                            color: Theme.textMuted
+                            font.pixelSize: 12
+                        }
+                    }
+                }
+            }
+
+            PrimaryButton {
+                anchors.verticalCenter: parent.verticalCenter
+                visible: home.webConsoleUrl() !== ""
+                implicitHeight: 32
+                leftPadding: 14
+                rightPadding: 14
+                text: "Web console"
+                ToolTip.visible: hovered
+                ToolTip.delay: 400
+                ToolTip.text: "Manage users, groups and computers in your browser (" + home.webConsoleUrl() + ")"
+                onClicked: home.openWebConsole()
+            }
+        }
     }
 
     Rectangle {
@@ -380,7 +509,10 @@ Rectangle {
                 Rectangle { anchors.right: parent.right; anchors.top: parent.top; anchors.bottom: parent.bottom; width: 1; color: Theme.border }
 
                 Flickable {
-                    anchors.fill: parent
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.top: parent.top
+                    anchors.bottom: sideFooter.top
                     anchors.rightMargin: 1
                     contentHeight: sideColumn.implicitHeight + 40
                     clip: true
@@ -391,7 +523,7 @@ Rectangle {
                         x: 22
                         y: 22
                         width: sidePanel.width - 44
-                        spacing: 16
+                        spacing: 18
 
                         ColumnLayout {
                             spacing: 4
@@ -399,11 +531,10 @@ Rectangle {
                             Text { text: "This computer"; color: Theme.textStrong; font.pixelSize: 19; font.weight: Font.DemiBold }
                             Text {
                                 Layout.fillWidth: true
-                                text: "Let another computer control this one with the address and password below."
+                                text: "Others can control it with this address and password."
                                 color: Theme.textMuted
                                 font.pixelSize: 12
                                 wrapMode: Text.WordWrap
-                                lineHeight: 1.2
                             }
                         }
 
@@ -412,8 +543,8 @@ Rectangle {
                             Layout.fillWidth: true
                             implicitHeight: 52
                             radius: Theme.radius
-                            color: Theme.surface2
-                            border.color: Theme.border
+                            color: home.hostStatus.running ? Qt.rgba(34 / 255, 197 / 255, 94 / 255, 0.08) : Theme.surface2
+                            border.color: home.hostStatus.running ? Qt.rgba(34 / 255, 197 / 255, 94 / 255, 0.30) : Theme.border
                             RowLayout {
                                 anchors.fill: parent
                                 anchors.leftMargin: 14
@@ -442,93 +573,118 @@ Rectangle {
                             }
                         }
 
-                        // Address
+                        // Address and password
                         ColumnLayout {
                             Layout.fillWidth: true
-                            spacing: 6
-                            opacity: home.hostStatus.enabled ? 1 : 0.55
-                            Rectangle { Layout.fillWidth: true; height: 1; color: Theme.border }
-                            Text { text: "Address"; color: Theme.textMuted; font.pixelSize: 12; font.weight: Font.Medium; Layout.topMargin: 4 }
-                            Repeater {
-                                model: home.hostStatus.addresses
-                                delegate: RowLayout {
+                            spacing: 14
+                            opacity: home.hostStatus.enabled ? 1 : 0.5
+
+                            ColumnLayout {
+                                Layout.fillWidth: true
+                                spacing: 2
+                                Text { text: "Address"; color: Theme.textMuted; font.pixelSize: 12; font.weight: Font.Medium }
+                                RowLayout {
                                     Layout.fillWidth: true
-                                    spacing: 4
-                                    readonly property string full: modelData + (home.hostStatus.port === 8091 ? "" : ":" + home.hostStatus.port)
+                                    spacing: 2
                                     Text {
                                         Layout.fillWidth: true
-                                        text: parent.full
+                                        text: home.hostAddress(0)
                                         color: Theme.textStrong
-                                        font.pixelSize: index === 0 ? 22 : 15
-                                        font.weight: index === 0 ? Font.DemiBold : Font.Medium
-                                        font.letterSpacing: 0.3
+                                        font.pixelSize: 24
+                                        font.weight: Font.DemiBold
                                         elide: Text.ElideRight
                                     }
                                     IconButton {
                                         iconName: "copy"
                                         tip: "Copy address"
-                                        onClicked: { clipboardHelper.copy(parent.full); home.setStatus("Address copied", false); }
+                                        visible: home.hostStatus.addresses.length > 0
+                                        onClicked: { clipboardHelper.copy(home.hostAddress(0)); home.setStatus("Address copied", false); }
                                     }
                                 }
+                                Text {
+                                    visible: home.hostStatus.hostname !== ""
+                                    text: home.hostStatus.hostname
+                                    color: Theme.textSubtle
+                                    font.pixelSize: 11
+                                }
+                                // Other addresses (VPN, other networks), folded away
+                                Text {
+                                    visible: home.hostStatus.addresses.length > 1
+                                    Layout.topMargin: 4
+                                    text: (home.showAllAddresses ? "Hide other addresses" : "+" + (home.hostStatus.addresses.length - 1) + " other address" + (home.hostStatus.addresses.length > 2 ? "es" : ""))
+                                    color: moreAddrMa.containsMouse ? Theme.accentFg : Theme.textMuted
+                                    font.pixelSize: 12
+                                    MouseArea {
+                                        id: moreAddrMa
+                                        anchors.fill: parent
+                                        hoverEnabled: true
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: home.showAllAddresses = !home.showAllAddresses
+                                    }
+                                }
+                                Repeater {
+                                    model: home.showAllAddresses ? home.hostStatus.addresses.slice(1) : []
+                                    delegate: RowLayout {
+                                        Layout.fillWidth: true
+                                        spacing: 2
+                                        readonly property string full: home.withPort(modelData)
+                                        Text { Layout.fillWidth: true; text: parent.full; color: Theme.text; font.pixelSize: 13; elide: Text.ElideRight }
+                                        IconButton {
+                                            iconName: "copy"; iconSize: 14; implicitWidth: 26; implicitHeight: 26
+                                            tip: "Copy address"
+                                            onClicked: { clipboardHelper.copy(parent.full); home.setStatus("Address copied", false); }
+                                        }
+                                    }
+                                }
+                                Text {
+                                    visible: home.hostStatus.addresses.length === 0
+                                    text: "No network connection"
+                                    color: Theme.textSubtle
+                                    font.pixelSize: 13
+                                }
                             }
-                            Text {
-                                visible: home.hostStatus.addresses.length === 0
-                                text: "No network connection"
-                                color: Theme.textSubtle
-                                font.pixelSize: 13
-                            }
-                            Text {
-                                visible: home.hostStatus.hostname !== ""
-                                text: home.hostStatus.hostname + (home.hostStatus.port === 8091 ? "" : " · port " + home.hostStatus.port)
-                                color: Theme.textSubtle
-                                font.pixelSize: 11
-                            }
-                        }
 
-                        // Password
-                        ColumnLayout {
-                            Layout.fillWidth: true
-                            spacing: 6
-                            opacity: home.hostStatus.enabled ? 1 : 0.55
-                            Rectangle { Layout.fillWidth: true; height: 1; color: Theme.border }
-                            Text { text: "Password"; color: Theme.textMuted; font.pixelSize: 12; font.weight: Font.Medium; Layout.topMargin: 4 }
-                            RowLayout {
+                            ColumnLayout {
                                 Layout.fillWidth: true
                                 spacing: 2
+                                Text { text: "Password"; color: Theme.textMuted; font.pixelSize: 12; font.weight: Font.Medium }
                                 Text {
                                     Layout.fillWidth: true
                                     text: home.passwordVisible ? home.hostStatus.password : home.hostStatus.password.replace(/./g, "•")
                                     color: Theme.textStrong
-                                    font.pixelSize: 17
+                                    font.pixelSize: home.passwordVisible ? 18 : 16
                                     font.weight: Font.Medium
-                                    font.family: home.passwordVisible ? "monospace" : ""
+                                    font.family: home.passwordVisible ? "monospace" : Qt.application.font.family
                                     elide: Text.ElideRight
                                 }
-                                IconButton {
-                                    iconName: home.passwordVisible ? "eyeOff" : "eye"
-                                    tip: home.passwordVisible ? "Hide password" : "Show password"
-                                    onClicked: home.passwordVisible = !home.passwordVisible
-                                }
-                                IconButton {
-                                    iconName: "copy"
-                                    tip: "Copy password"
-                                    onClicked: { clipboardHelper.copy(home.hostStatus.password); home.setStatus("Password copied", false); }
-                                }
-                            }
-                            RowLayout {
-                                spacing: 6
-                                SecondaryButton {
-                                    text: "New password"
-                                    onClicked: {
-                                        if (home.setHostPassword("") === "") {
-                                            home.passwordVisible = true;
-                                            home.setStatus("New password set. Computers using the old one can no longer connect.", false);
+                                Row {
+                                    spacing: 2
+                                    Layout.leftMargin: -6
+                                    IconButton {
+                                        iconName: home.passwordVisible ? "eyeOff" : "eye"
+                                        tip: home.passwordVisible ? "Hide password" : "Show password"
+                                        onClicked: home.passwordVisible = !home.passwordVisible
+                                    }
+                                    IconButton {
+                                        iconName: "copy"
+                                        tip: "Copy password"
+                                        onClicked: { clipboardHelper.copy(home.hostStatus.password); home.setStatus("Password copied", false); }
+                                    }
+                                    IconButton {
+                                        iconName: "refresh"
+                                        tip: "New random password"
+                                        onClicked: {
+                                            if (home.setHostPassword("") === "") {
+                                                home.passwordVisible = true;
+                                                home.setStatus("New password set. Computers using the old one can no longer connect.", false);
+                                            }
                                         }
                                     }
-                                }
-                                SecondaryButton {
-                                    text: "Set my own"
-                                    onClicked: customPasswordDialog.open()
+                                    IconButton {
+                                        iconName: "edit"
+                                        tip: "Set your own password"
+                                        onClicked: customPasswordDialog.open()
+                                    }
                                 }
                             }
                         }
@@ -561,29 +717,33 @@ Rectangle {
                                 lineHeight: 1.2
                             }
                         }
+                    }
+                }
 
-                        // Note on security (direct connections aren't TLS).
-                        Rectangle {
+                // Footer: where direct connections are meant to be used
+                Item {
+                    id: sideFooter
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.bottom: parent.bottom
+                    anchors.rightMargin: 1
+                    height: footerRow.implicitHeight + 24
+                    Rectangle { anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; height: 1; color: Theme.border }
+                    RowLayout {
+                        id: footerRow
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
+                        anchors.leftMargin: 22
+                        anchors.rightMargin: 22
+                        spacing: 8
+                        Icon { name: "shield"; size: 14; color: Theme.textSubtle; Layout.alignment: Qt.AlignTop }
+                        Text {
                             Layout.fillWidth: true
-                            implicitHeight: noteText.implicitHeight + 24
-                            radius: Theme.radius
-                            color: Theme.accentA(0.08)
-                            border.color: Theme.accentA(0.25)
-                            RowLayout {
-                                anchors.fill: parent
-                                anchors.margins: 12
-                                spacing: 10
-                                Icon { name: "shield"; size: 16; color: Theme.accentFg; Layout.alignment: Qt.AlignTop }
-                                Text {
-                                    id: noteText
-                                    Layout.fillWidth: true
-                                    text: "Direct connections are meant for your own network or a VPN. Video and input are encrypted; to reach this computer from the Internet, use a Lunaris server."
-                                    color: Theme.textMuted
-                                    font.pixelSize: 11
-                                    wrapMode: Text.WordWrap
-                                    lineHeight: 1.2
-                                }
-                            }
+                            text: "Direct connections: for your network or a VPN. Video and input are encrypted."
+                            color: Theme.textSubtle
+                            font.pixelSize: 11
+                            wrapMode: Text.WordWrap
                         }
                     }
                 }
@@ -602,7 +762,7 @@ Rectangle {
                     anchors.left: parent.left
                     anchors.top: parent.top
                     anchors.margins: 24
-                    width: Math.min(560, parent.width - 48)
+                    anchors.right: parent.right
                     // The Server tab needs the room (and has its own list).
                     visible: home.peerTab !== "server"
                     height: visible ? connectColumn.implicitHeight + 40 : 0
@@ -775,11 +935,32 @@ Rectangle {
                     }
                 }
 
+                // Server tab, not signed in: run a server here (left) or sign
+                // in to one (right).
+                Flickable {
+                    id: localServerPanel
+                    visible: home.peerTab === "server" && !serverDashboard.isLoggedIn
+                    anchors.left: parent.left
+                    anchors.top: peerBar.bottom
+                    anchors.bottom: parent.bottom
+                    anchors.leftMargin: 24
+                    anchors.topMargin: 16
+                    width: Math.min(380, parent.width * 0.42)
+                    contentHeight: localServerCard.implicitHeight + 24
+                    clip: true
+                    boundsBehavior: Flickable.StopAtBounds
+                    LocalServerCard {
+                        id: localServerCard
+                        width: parent.width
+                        homeView: home
+                    }
+                }
+
                 // Lunaris server: sign-in and its computers
                 Dashboard {
                     id: serverDashboard
                     embedded: true
-                    anchors.left: parent.left
+                    anchors.left: localServerPanel.visible ? localServerPanel.right : parent.left
                     anchors.right: parent.right
                     anchors.top: peerBar.bottom
                     anchors.bottom: parent.bottom

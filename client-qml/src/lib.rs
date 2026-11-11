@@ -10,6 +10,7 @@ pub mod audio;
 pub mod bridge;
 pub mod decoder;
 pub mod host;
+pub mod local_server;
 pub mod input;
 pub mod protocol;
 
@@ -573,6 +574,7 @@ pub fn run() {
     // one-stream launch (lunaris:// link): its exit would stop it again.
     if APP_ARGS.get().is_none() {
         host::start_if_enabled();
+        local_server::start_if_enabled();
     }
 
     let mut engine = QQmlApplicationEngine::new();
@@ -591,4 +593,5 @@ pub fn run() {
     // Clean up local agent if running
     bridge::stop_local_agent();
     host::shutdown();
+    local_server::shutdown();
 }

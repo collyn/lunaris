@@ -15,3 +15,4 @@ RadioRow 1.0 RadioRow.qml
 InputField 1.0 InputField.qml
 DialogFrame 1.0 DialogFrame.qml
 ThemedMenu 1.0 ThemedMenu.qml
+LocalServerCard 1.0 LocalServerCard.qml

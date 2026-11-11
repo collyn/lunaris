@@ -8,6 +8,7 @@
     <file>Dashboard.qml</file>
     <file>Settings.qml</file>
     <file>Home.qml</file>
+    <file>LocalServerCard.qml</file>
     <file>AppSettings.qml</file>
     <file>Icon.qml</file>
     <file>IconButton.qml</file>

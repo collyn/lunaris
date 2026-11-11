@@ -980,6 +980,7 @@ dependencies = [
  "cxx-qt",
  "cxx-qt-build",
  "cxx-qt-lib",
+ "dirs",
  "ffmpeg-next",
  "futures-util",
  "hostname",
