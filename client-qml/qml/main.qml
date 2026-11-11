@@ -1356,9 +1356,11 @@ ApplicationWindow {
         function onVolumeChanged() { window.applyAudio(); }
         function onClipboardSyncChanged() { window.applySharing(); }
         function onFileTransferChanged() { window.applySharing(); }
+        function onGamepadChanged() { window.applySharing(); }
     }
     function applySharing() {
         bridge.setShareOptions(ViewPrefs.clipboardSync, ViewPrefs.fileTransfer);
+        bridge.setGamepadEnabled(ViewPrefs.gamepad);
         bridge.saveStore("view_prefs", ViewPrefs.toJson());
     }
     function applyAudio() {
@@ -1370,6 +1372,7 @@ ApplicationWindow {
         ViewPrefs.fromJson(bridge.loadStore("view_prefs"));
         bridge.setAudio(ViewPrefs.audioEnabled, ViewPrefs.volume);
         bridge.setShareOptions(ViewPrefs.clipboardSync, ViewPrefs.fileTransfer);
+        bridge.setGamepadEnabled(ViewPrefs.gamepad);
 
         // Center window procedurally on startup to avoid permanent bindings
         window.x = (Screen.width - window.width) / 2;

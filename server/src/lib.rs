@@ -20,6 +20,7 @@ mod db;
 pub mod input;
 mod paths;
 mod service;
+mod tls;
 mod turn;
 mod web;
 
@@ -138,7 +139,9 @@ Commands:
   status                      Show the service status
   help, version
 
-Environment: SERVER_PORT (default 8090), LUNARIS_DATA_DIR (database, token,
+Environment: SERVER_PORT (default 8090), LUNARIS_HTTPS_PORT (default 8443,
+off to disable), LUNARIS_TLS_CERT + LUNARIS_TLS_KEY (PEM; default: a
+self-signed certificate kept in the data directory), LUNARIS_DATA_DIR (database, token,
 initial admin password; default: working directory), LUNARIS_TOKEN,
 LUNARIS_ADMIN_PASSWORD (first start only), DATABASE_URL, RUST_LOG.
 ";
@@ -223,6 +226,13 @@ async fn shutdown_signal() {
     info!("Shutting down");
 }
 
+/// Ports the server listens on: agents use ws:// on `http`, browsers may
+/// prefer `https` (controllers and the clipboard need a secure page).
+async fn ports_handler() -> axum::Json<serde_json::Value> {
+    let http: u16 = std::env::var("SERVER_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(8090);
+    axum::Json(serde_json::json!({ "http": http, "https": tls::https_port() }))
+}
+
 /// Runs the server until `shutdown` completes.
 pub(crate) async fn run_server(
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
@@ -256,6 +266,7 @@ pub(crate) async fn run_server(
         .route("/api/hosts", get(hosts_handler))
         .route("/api/hosts/:id", delete(delete_host_handler))
         .route("/api/agent/token", get(agent_token_handler))
+        .route("/api/server/ports", get(ports_handler))
         .route(
             "/api/admin/users",
             get(admin::list_users).post(admin::create_user),
@@ -309,13 +320,20 @@ pub(crate) async fn run_server(
     let addr = format!("0.0.0.0:{}", port);
     let listener = tokio::net::TcpListener::bind(&addr).await?;
 
+    // HTTPS next to HTTP (tls.rs); stopped with the HTTP server.
+    let https = tls::https_port().map(|p| tokio::spawn(tls::serve(app.clone(), p)));
+
     info!("Lunaris Server running on http://{}", addr);
-    axum::serve(
+    let served = axum::serve(
         listener,
         app.into_make_service_with_connect_info::<signaling::ConnAddrs>(),
     )
     .with_graceful_shutdown(shutdown)
-        .await?;
+    .await;
+    if let Some(task) = https {
+        task.abort();
+    }
+    served?;
 
     Ok(())
 }

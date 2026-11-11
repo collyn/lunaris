@@ -17,6 +17,7 @@ use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 mod bridge;
 mod buffer;
 pub mod direct;
+mod gamepad;
 mod hub;
 mod input;
 pub mod pairing;

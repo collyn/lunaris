@@ -46,7 +46,7 @@ pub fn take_status() -> Option<String> {
     STATUS.lock().unwrap().take()
 }
 
-fn set_status(text: impl Into<String>) {
+pub(crate) fn set_status(text: impl Into<String>) {
     *STATUS.lock().unwrap() = Some(text.into());
 }
 

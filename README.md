@@ -186,6 +186,8 @@ cd web && npm install && npm run dev
 | Variable | Default | Description |
 |---|---|---|
 | `SERVER_PORT` | `8090` | HTTP port (web client, API, WebSocket signaling) |
+| `LUNARIS_HTTPS_PORT` | `8443` | HTTPS port for the web client (`off` disables it). Browsers only allow game controllers, the clipboard API and WebTransport on https pages (or localhost); agents keep using `ws://` on `SERVER_PORT` |
+| `LUNARIS_TLS_CERT`, `LUNARIS_TLS_KEY` | *(self-signed)* | PEM certificate and key for HTTPS. Without them a self-signed certificate is made once in the data directory (the browser asks to accept it) |
 | `LUNARIS_DATA_DIR` | working directory | Database, agent token and initial admin password (`/var/lib/lunaris` for the service, `/data` in Docker) |
 | `LUNARIS_TOKEN` | *(auto-generated)* | Token for agent-to-server authentication |
 | `LUNARIS_ADMIN_PASSWORD` | *(random)* | Initial `admin` password — first start only |

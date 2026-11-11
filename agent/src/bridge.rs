@@ -729,6 +729,10 @@ pub async fn setup_bridge_session(
         Ok(tasks) => spawned_tasks.extend(tasks),
         Err(e) => warn!("Clipboard/file channels unavailable: {}", e),
     }
+    // Game controllers (gamepad.rs).
+    if let Err(e) = crate::gamepad::attach(&peer_connection).await {
+        warn!("Controller channel unavailable: {}", e);
+    }
 
     // Handle messages on Data Channels
     setup_data_channel_handler(

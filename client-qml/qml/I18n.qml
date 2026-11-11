@@ -267,6 +267,16 @@ QtObject {
         "Share the clipboard (both ways)": "Chia sẻ clipboard (hai chiều)",
         "Receive files (saved in Downloads/Lunaris)": "Nhận file (lưu vào Downloads/Lunaris)",
         "Frame rate, bitrate, latency and the codec in a corner of the stream.": "Tốc độ khung hình, bitrate, độ trễ và codec ở góc màn hình.",
-        "Size of the picture the remote computer sends. Default 1080p (FHD).": "Kích thước hình ảnh máy kia gửi về. Mặc định 1080p (FHD)."
+        "Size of the picture the remote computer sends. Default 1080p (FHD).": "Kích thước hình ảnh máy kia gửi về. Mặc định 1080p (FHD).",
+        "Controllers": "Tay cầm",
+        "Game controllers": "Tay cầm chơi game",
+        "Use controllers in sessions": "Dùng tay cầm trong phiên",
+        "Controllers connected to this device (PlayStation, Xbox, Nintendo and others) act as Xbox controllers on the remote computer. Windows computers need the ViGEmBus driver. Applies right away.": "Tay cầm cắm vào thiết bị này (PlayStation, Xbox, Nintendo và loại khác) hoạt động như tay cầm Xbox trên máy kia. Máy Windows cần cài driver ViGEmBus. Áp dụng ngay.",
+        "Test": "Kiểm tra",
+        "No controller found. Connect one (USB or Bluetooth) and press any button on it.": "Chưa thấy tay cầm. Cắm tay cầm (USB hoặc Bluetooth) rồi bấm một nút bất kỳ.",
+        "Controller %1": "Tay cầm %1",
+        "Test vibration": "Thử rung",
+        "Left stick": "Cần trái",
+        "Right stick": "Cần phải"
     })
 }

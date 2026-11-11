@@ -1,7 +1,7 @@
 # Lunaris server image: one static-ish binary with the web client embedded.
 #
 #   docker build -t lunaris-server .
-#   docker run -d -p 8090:8090 -v lunaris-data:/data --name lunaris lunaris-server
+#   docker run -d -p 8090:8090 -p 8443:8443 -v lunaris-data:/data --name lunaris lunaris-server
 #   docker logs lunaris        # shows the initial admin password and agent token
 
 # --- Web client ---
@@ -32,6 +32,6 @@ ENV SERVER_PORT=8090 \
     LUNARIS_DATA_DIR=/data \
     RUST_LOG=info
 VOLUME /data
-EXPOSE 8090 3478/udp 49160-49260/udp
+EXPOSE 8090 8443 3478/udp 49160-49260/udp
 ENTRYPOINT ["/usr/local/bin/lunaris-server"]
 CMD ["run"]

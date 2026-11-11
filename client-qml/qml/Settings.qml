@@ -45,7 +45,8 @@ Rectangle {
         { key: "audio", label: "Audio", icon: "volume" },
         { key: "sharing", label: "Clipboard & files", icon: "clipboard" },
         { key: "host", label: "Remote computer", icon: "server" },
-        { key: "input", label: "Input", icon: "link" }
+        { key: "input", label: "Input", icon: "link" },
+        { key: "controllers", label: "Controllers", icon: "gamepad" }
     ]
 
     Keys.onEscapePressed: settingsRoot.close()
@@ -545,6 +546,29 @@ Rectangle {
                         onPicked: (v) => settingsRoot.queueLimit = v
                     }
                 }
+            }
+
+            // ===== Controllers (this device, applied right away) =====
+            SectionTitle { visible: settingsRoot.category === "controllers"; text: I18n.t("Game controllers") }
+            Card {
+                visible: settingsRoot.category === "controllers"
+                SettingRow {
+                    divider: false
+                    title: I18n.t("Use controllers in sessions")
+                    hint: I18n.t("Controllers connected to this device (PlayStation, Xbox, Nintendo and others) act as Xbox controllers on the remote computer. Windows computers need the ViGEmBus driver. Applies right away.")
+                    Toggle {
+                        anchors.right: parent.right
+                        checked: ViewPrefs.gamepad
+                        onToggled: ViewPrefs.gamepad = checked
+                        Accessible.name: I18n.t("Use controllers in sessions")
+                    }
+                }
+            }
+            SectionTitle { visible: settingsRoot.category === "controllers"; text: I18n.t("Test") }
+            GamepadTester {
+                visible: settingsRoot.category === "controllers"
+                Layout.fillWidth: true
+                source: bridge
             }
         }
     }

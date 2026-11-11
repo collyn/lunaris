@@ -9,6 +9,7 @@ use cxx_qt_lib::{QQmlApplicationEngine, QUrl};
 pub mod audio;
 pub mod bridge;
 pub mod decoder;
+pub mod gamepad;
 pub mod host;
 pub mod local_server;
 pub mod input;

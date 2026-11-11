@@ -1074,6 +1074,15 @@ pub mod qobject {
         #[qinvokable]
         fn set_share_options(self: Pin<&mut StreamBridge>, clipboard: bool, files: bool);
 
+        /// This computer's controllers for the Controllers page (JSON, see
+        /// gamepad.rs), whether to send them in sessions, and a rumble test.
+        #[qinvokable]
+        fn gamepads_json(self: Pin<&mut StreamBridge>) -> QString;
+        #[qinvokable]
+        fn set_gamepad_enabled(self: Pin<&mut StreamBridge>, enabled: bool);
+        #[qinvokable]
+        fn vibrate_gamepad(self: Pin<&mut StreamBridge>, slot: i32);
+
         /// Sends files (newline-separated paths or file:// URLs) to the
         /// remote computer; progress comes through share_status.
         #[qinvokable]
@@ -1237,6 +1246,7 @@ impl qobject::StreamBridge {
 
     pub fn stop_stream(mut self: Pin<&mut Self>) {
         crate::share::detach();
+        crate::gamepad::detach();
         println!("Stopping stream and releasing signaling runtime...");
         qobject::set_cuda_stream_active(false);
         qobject::set_d3d11_stream_active(false);
@@ -2687,6 +2697,19 @@ impl qobject::StreamBridge {
 
     pub fn set_share_options(self: Pin<&mut Self>, clipboard: bool, files: bool) {
         crate::share::set_options(clipboard, files);
+    }
+
+    pub fn gamepads_json(self: Pin<&mut Self>) -> QString {
+        QString::from(&crate::gamepad::pads_json())
+    }
+
+    pub fn set_gamepad_enabled(self: Pin<&mut Self>, enabled: bool) {
+        crate::gamepad::set_enabled(enabled);
+        crate::gamepad::start();
+    }
+
+    pub fn vibrate_gamepad(self: Pin<&mut Self>, slot: i32) {
+        crate::gamepad::vibrate(slot);
     }
 
     pub fn send_files(self: Pin<&mut Self>, files: QString) {
@@ -4275,6 +4298,7 @@ async fn setup_peer_connection(
             }
             "clipboard" => crate::share::attach_clipboard(channel_ref),
             "file" => crate::share::attach_files(channel_ref),
+            "gamepad" => crate::gamepad::attach(channel_ref),
             "general" | "cursor" => {
                 d.on_message(Box::new(move |msg: DataChannelMessage| {
                     Box::pin(async move {

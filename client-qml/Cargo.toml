@@ -34,6 +34,8 @@ dirs = "5.0"
 # Clipboard sharing with the remote computer.
 arboard = { version = "3", default-features = false, features = ["wayland-data-control"] }
 png = "0.17"
+# Game controllers of this computer, sent to the remote one.
+gilrs = "0.11"
 
 
 # Qt6 bindings dependencies

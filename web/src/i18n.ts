@@ -149,6 +149,20 @@ const vi: Record<string, string> = {
   'Password': 'Mật khẩu',
   'Server': 'Server',
   'Theme': 'Giao diện',
+  "Controllers": "Tay cầm",
+  "Game controllers": "Tay cầm chơi game",
+  "Use controllers in sessions": "Dùng tay cầm trong phiên",
+  "Controllers connected to this device (PlayStation, Xbox, Nintendo and others) act as Xbox controllers on the remote computer. Windows computers need the ViGEmBus driver. Applies right away.": "Tay cầm cắm vào thiết bị này (PlayStation, Xbox, Nintendo và loại khác) hoạt động như tay cầm Xbox trên máy kia. Máy Windows cần cài driver ViGEmBus. Áp dụng ngay.",
+  "Test": "Kiểm tra",
+  "Controllers need a secure page: open the web console over https (or on localhost).": "Tay cầm chỉ dùng được trên trang bảo mật: mở web console qua https (hoặc localhost).",
+  "This browser does not support game controllers.": "Trình duyệt này không hỗ trợ tay cầm.",
+  "No controller found. Connect one (USB or Bluetooth) and press any button on it.": "Chưa thấy tay cầm. Cắm tay cầm (USB hoặc Bluetooth) rồi bấm một nút bất kỳ.",
+  "Controller %1": "Tay cầm %1",
+  "unknown layout: buttons may be in other places": "bố cục lạ: nút có thể nằm chỗ khác",
+  "Test vibration": "Thử rung",
+  "This browser cannot make this controller vibrate": "Trình duyệt này không làm tay cầm rung được",
+  "Left stick": "Cần trái",
+  "Right stick": "Cần phải",
 };
 
 export const t = (text: string, ...args: (string | number)[]): string => {

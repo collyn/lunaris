@@ -49,7 +49,8 @@ Item {
         "list": "M8 6h12 M8 12h12 M8 18h12 M4 6h.01 M4 12h.01 M4 18h.01",
         "volume": "M4 9v6h4l5 4V5L8 9H4z M16 9a3.5 3.5 0 0 1 0 6 M18.5 6.5a7 7 0 0 1 0 11",
         "upload": "M12 16V4 M7 9l5-5 5 5 M4 16v4h16v-4",
-        "clipboard": "M9 4h6v3H9z M7 5H5v16h14V5h-2"
+        "clipboard": "M9 4h6v3H9z M7 5H5v16h14V5h-2",
+        "gamepad": "M7 7h10a5 5 0 0 1 4.9 6l-.8 4a2.5 2.5 0 0 1-4.4 1.1L15 16H9l-1.7 2.1a2.5 2.5 0 0 1-4.4-1.1l-.8-4A5 5 0 0 1 7 7z M7.5 10v3 M6 11.5h3 M15.5 11h.01 M17.5 13h.01"
     })
 
     Shape {

@@ -3694,3 +3694,15 @@ button, input, select, textarea { font-family: inherit; }
   background: rgb(37 99 235 / 0.18); color: #fff; font-size: 1.1rem; font-weight: 600;
   pointer-events: none;
 }
+
+/* Controllers (GamepadTester) */
+.pad-empty { padding: 18px; border: 1px dashed var(--border); border-radius: var(--radius); color: var(--text-muted); font-size: 0.9rem; line-height: 1.5; }
+.pad-list { display: grid; gap: 14px; }
+.pad-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; }
+.pad-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.pad-head .btn-secondary { flex-shrink: 0; height: 34px; padding: 0 12px; }
+.pad-name { font-weight: 600; color: var(--text-strong); word-break: break-word; }
+.pad-meta { margin-top: 2px; font-size: 0.82rem; color: var(--text-muted); }
+.pad-diagram { display: block; width: 100%; max-width: 460px; margin: 10px auto 4px; }
+.pad-diagram circle, .pad-diagram rect { transition: fill 60ms linear; }
+.pad-axes { display: flex; justify-content: center; gap: 18px; flex-wrap: wrap; font-size: 0.8rem; color: var(--text-muted); font-variant-numeric: tabular-nums; }

@@ -13,6 +13,8 @@ QtObject {
     // Clipboard both ways and sending files with the remote computer.
     property bool clipboardSync: true
     property bool fileTransfer: true
+    // Send this device's game controllers to the remote computer.
+    property bool gamepad: true
 
     readonly property var displayModes: [
         { value: "fit", label: "Fit window" },
@@ -23,7 +25,7 @@ QtObject {
 
     function toJson() {
         return JSON.stringify({ displayMode: displayMode, audioEnabled: audioEnabled, volume: volume,
-                                clipboardSync: clipboardSync, fileTransfer: fileTransfer });
+                                clipboardSync: clipboardSync, fileTransfer: fileTransfer, gamepad: gamepad });
     }
     function fromJson(text) {
         if (!text) return;
@@ -34,6 +36,7 @@ QtObject {
             if (typeof p.volume === "number") volume = Math.max(0, Math.min(100, Math.round(p.volume)));
             if (typeof p.clipboardSync === "boolean") clipboardSync = p.clipboardSync;
             if (typeof p.fileTransfer === "boolean") fileTransfer = p.fileTransfer;
+            if (typeof p.gamepad === "boolean") gamepad = p.gamepad;
         } catch (e) { console.log("view_prefs: " + e); }
     }
 }

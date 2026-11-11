@@ -5,6 +5,8 @@ import {
 } from '../streamOptions';
 import { t } from '../i18n';
 import { readClipboardSync, readFileTransfer } from '../share';
+import { readGamepadEnabled } from '../gamepad';
+import GamepadTester from './GamepadTester';
 
 /** The settings the dialog edits (same names as the stored settings). */
 export type StreamSettingsValues = {
@@ -64,7 +66,7 @@ type Props = {
   viewer?: ViewerSettings;
 };
 
-type Category = 'video' | 'display' | 'audio' | 'sharing' | 'host' | 'input';
+type Category = 'video' | 'display' | 'audio' | 'sharing' | 'host' | 'input' | 'controllers';
 
 const CATEGORIES: { key: Category; label: string; icon: ReactNode }[] = [
   { key: 'video', label: 'Video', icon: <><rect x="3" y="4" width="18" height="12" rx="1.5" /><path d="M8 20h8M12 16v4" /></> },
@@ -73,6 +75,7 @@ const CATEGORIES: { key: Category; label: string; icon: ReactNode }[] = [
   { key: 'sharing', label: 'Clipboard & files', icon: <><rect x="8" y="3" width="8" height="4" rx="1" /><path d="M8 5H6a1 1 0 0 0-1 1v14a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V6a1 1 0 0 0-1-1h-2" /></> },
   { key: 'host', label: 'Remote computer', icon: <><rect x="4" y="4" width="16" height="6" rx="1" /><rect x="4" y="14" width="16" height="6" rx="1" /><path d="M8 7h.01M8 17h.01" /></> },
   { key: 'input', label: 'Input', icon: <><rect x="3" y="6" width="18" height="12" rx="2" /><path d="M7 10h.01M11 10h.01M15 10h.01M7 14h10" /></> },
+  { key: 'controllers', label: 'Controllers', icon: <><path d="M7 7h10a5 5 0 0 1 4.9 6l-.8 4a2.5 2.5 0 0 1-4.4 1.1L15 16H9l-1.7 2.1a2.5 2.5 0 0 1-4.4-1.1l-.8-4A5 5 0 0 1 7 7z" /><path d="M7.5 10v3M6 11.5h3M15.5 11h.01M17.5 13h.01" /></> },
 ];
 
 const Icon = ({ children }: { children: ReactNode }) => (
@@ -132,6 +135,7 @@ export default function StreamSettingsDialog({
   const viewer = viewerProp ?? storedViewer;
   const canvasSupported = typeof (window as any).MediaStreamTrackProcessor !== 'undefined';
   const webTransportSupported = typeof (window as any).WebTransport !== 'undefined';
+  const [gamepadOn, setGamepadOn] = useState<boolean>(readGamepadEnabled);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onCancel(); };
@@ -336,6 +340,19 @@ export default function StreamSettingsDialog({
                     </select>
                   </Row>
                 </div>
+              </>
+            )}
+
+            {category === 'controllers' && (
+              <>
+                <h3 className="ssd-section">{t('Game controllers')}</h3>
+                <div className="ssd-card">
+                  <Row title={t('Use controllers in sessions')} hint={t('Controllers connected to this device (PlayStation, Xbox, Nintendo and others) act as Xbox controllers on the remote computer. Windows computers need the ViGEmBus driver. Applies right away.')}>
+                    <Switch label={t('Use controllers in sessions')} checked={gamepadOn} onChange={(v) => { setGamepadOn(v); localStorage.setItem('lunaris_gamepad', String(v)); }} />
+                  </Row>
+                </div>
+                <h3 className="ssd-section">{t('Test')}</h3>
+                <GamepadTester />
               </>
             )}
           </div>

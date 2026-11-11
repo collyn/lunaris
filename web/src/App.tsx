@@ -223,6 +223,22 @@ function App() {
   // Dashboard State
   const [hosts, setHosts] = useState<Host[]>([]);
   const [hostsLoading, setHostsLoading] = useState<boolean>(false);
+  // Agents connect with ws:// to the server's HTTP port, also when this page
+  // was opened over https (another port).
+  const [agentServerUrl, setAgentServerUrl] = useState<string>(() => `ws://${getBackendHost()}`);
+  useEffect(() => {
+    const { http } = getBackendProtocol();
+    if (http !== 'https:') return;
+    fetch(`${http}//${getBackendHost()}/api/server/ports`)
+      .then(r => (r.ok ? r.json() : null))
+      .then(p => {
+        if (p && typeof p.http === 'number') {
+          const hostname = getBackendHost().replace(/:\d+$/, '');
+          setAgentServerUrl(`ws://${hostname}:${p.http}`);
+        }
+      })
+      .catch(() => {});
+  }, []);
   const [hostsError, setHostsError] = useState<string | null>(null);
   const [selectedHost, setSelectedHost] = useState<Host | null>(null);
   const [agentToken, setAgentToken] = useState<string | null>(null);
@@ -1114,12 +1130,12 @@ function App() {
                           <div className="setup-field">
                             <span className="setup-field-label">Signaling server URL</span>
                             <div className="setup-field-row">
-                              <code>{`ws://${getBackendHost()}`}</code>
+                              <code>{agentServerUrl}</code>
                               <button
                                 type="button"
                                 className="icon-btn"
                                 onClick={() => {
-                                  navigator.clipboard.writeText(`ws://${getBackendHost()}`);
+                                  navigator.clipboard.writeText(agentServerUrl);
                                   alert("Server URL copied!");
                                 }}
                                 title="Copy server URL"

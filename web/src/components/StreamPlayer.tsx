@@ -3,6 +3,7 @@ import { BITRATES, CHROMAS, RESOLUTIONS, bitrateLabel, readDisplayMode, readVolu
 import StreamSettingsDialog, { type StreamSettingsValues, type ViewerSettings } from './StreamSettingsDialog';
 import { t } from '../i18n';
 import { WebShare, readClipboardSync, readFileTransfer } from '../share';
+import { GamepadSender } from '../gamepad';
 
 const getBackendHost = () => {
   const savedHost = localStorage.getItem('lunaris_server_host');
@@ -607,12 +608,18 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   const [shareToast, setShareToast] = useState<string>('');
   const shareToastTimerRef = useRef<number | null>(null);
   const shareRef = useRef<WebShare | null>(null);
+  const showShareToast = (message: string, ms = 4000) => {
+    setShareToast(message);
+    if (shareToastTimerRef.current !== null) window.clearTimeout(shareToastTimerRef.current);
+    shareToastTimerRef.current = window.setTimeout(() => setShareToast(''), ms);
+  };
   if (shareRef.current === null) {
-    shareRef.current = new WebShare((message) => {
-      setShareToast(message);
-      if (shareToastTimerRef.current !== null) window.clearTimeout(shareToastTimerRef.current);
-      shareToastTimerRef.current = window.setTimeout(() => setShareToast(''), 4000);
-    });
+    shareRef.current = new WebShare((message) => showShareToast(message));
+  }
+  // Game controllers (gamepad.ts), sent on the agent's `gamepad` channel.
+  const gamepadRef = useRef<GamepadSender | null>(null);
+  if (gamepadRef.current === null) {
+    gamepadRef.current = new GamepadSender((message) => showShareToast(t(message), 9000));
   }
   const [clipboardSync, setClipboardSync] = useState<boolean>(readClipboardSync);
   const [fileTransfer, setFileTransfer] = useState<boolean>(readFileTransfer);
@@ -634,6 +641,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       window.removeEventListener('focus', onFocus);
       window.removeEventListener('mousedown', onPointer, true);
       shareRef.current?.detach();
+      gamepadRef.current?.detach();
     };
   }, []);
 
@@ -2182,6 +2190,12 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       const label = channel.label;
       if (shareRef.current?.attach(label, channel)) {
         addLog(`Data Channel ${label} ready (sharing).`);
+        return;
+      }
+      if (label === 'gamepad') {
+        gamepadRef.current?.attach(channel);
+        channel.addEventListener('close', () => gamepadRef.current?.detach());
+        addLog('Data Channel gamepad ready (controllers).');
         return;
       }
       const WT_CHANNELS = {
