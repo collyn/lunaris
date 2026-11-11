@@ -3860,7 +3860,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
         {/* Settings Modal Overlay */}
         {showSettingsModal && (
           <div className="stream-settings-overlay" style={{ zIndex: 200 }}>
-            <div className="stream-settings-card">
+            <div className="stream-settings-card wide">
               <h2>Stream Settings</h2>
               <p className="subtitle">Adjust quality settings for this session</p>
               
@@ -3922,7 +3922,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
                   )}
                 </div>
 
-                <div className="settings-group full-width">
+                <div className="settings-group full-width span-all">
                   <label htmlFor="bitrate">Bitrate (Kbps)</label>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
                     <input 
@@ -4014,7 +4014,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
                     Create Virtual Display (Linux: xrandr virtual output, Windows: IddSampleDriver required)
                   </label>
                 </div>
-                <div className="settings-group full-width">
+                <div className="settings-group full-width span-all">
                   <label>Virtual Screen (host high-refresh output)</label>
                   <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
                     <select
@@ -4231,7 +4231,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       {/* Settings Modal Overlay */}
       {showSettingsModal && (
         <div className="stream-settings-overlay" style={{ zIndex: 200 }}>
-          <div className="stream-settings-card">
+          <div className="stream-settings-card wide">
             <h2>Stream Settings</h2>
             <p className="subtitle">Adjust quality settings for this session</p>
             
@@ -4335,7 +4335,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
                 </div>
               )}
 
-              <div className="settings-group full-width">
+              <div className="settings-group full-width span-all">
                 <label htmlFor="bitrate">Bitrate (Kbps)</label>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
                   <input 
@@ -4428,7 +4428,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
                   Create Virtual Display (Linux: xrandr virtual output, Windows: IddSampleDriver required)
                 </label>
               </div>
-              <div className="settings-group full-width">
+              <div className="settings-group full-width span-all">
                 <label>Virtual Screen (host high-refresh output)</label>
                 <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
                   <select

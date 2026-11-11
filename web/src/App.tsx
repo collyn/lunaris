@@ -1303,7 +1303,7 @@ function App() {
 
       {settingsHost && (
         <div className="stream-settings-overlay" style={{ zIndex: 1200 }} onMouseDown={(e) => { if (e.target === e.currentTarget) setSettingsHost(null); }}>
-          <div className="stream-settings-card">
+          <div className="stream-settings-card wide">
             <h2>Stream Settings</h2>
             <p className="subtitle">Defaults used when connecting to {settingsHost.name}</p>
             <div className="settings-grid">
@@ -1357,7 +1357,7 @@ function App() {
                   ))}
                 </select>
               </div>
-              <div className="settings-group full-width">
+              <div className="settings-group full-width span-all">
                 <label htmlFor="hostBitrate">Bitrate (Kbps)</label>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
                   <input id="hostBitrate" type="range" min={1000} max={150000} step={500} value={draftHostSettings.bitrate} onChange={(e) => updateDraftHostSettings('bitrate', Number(e.target.value))} style={{ flex: 1 }} />

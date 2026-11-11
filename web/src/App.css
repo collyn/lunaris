@@ -3499,3 +3499,42 @@ button, input, select, textarea { font-family: inherit; }
   width: 48px;
   height: 48px;
 }
+
+/* Stream settings: up to three fields per row, so they fit without
+   scrolling on usual screens; the card scrolls inside when taller than the
+   window. Only wide controls (bitrate slider, virtual screen) take a row. */
+.stream-settings-card.wide {
+  max-width: 900px;
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
+}
+
+.stream-settings-card.wide .settings-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.stream-settings-card.wide .settings-group.full-width {
+  grid-column: auto;
+}
+
+.stream-settings-card.wide .settings-group.span-all {
+  grid-column: 1 / -1;
+}
+
+.stream-settings-card.wide .settings-checkbox-group {
+  grid-column: auto;
+  margin-top: 0;
+  align-items: center;
+}
+
+@media (max-width: 900px) {
+  .stream-settings-card.wide .settings-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 600px) {
+  .stream-settings-card.wide .settings-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
