@@ -92,6 +92,11 @@ Rectangle {
     function refreshHost() {
         try { home.hostStatus = JSON.parse(bridge.hostStatus()); } catch (e) { console.log("host status: " + e); }
         refreshServer();
+        // Remote control on and signed in: make sure this computer is in
+        // that server's list (once per server and sign-in).
+        if (!home.hostStatus.enabled) home.agentSyncedFor = "";
+        else if (serverDashboard.isLoggedIn && !home.pendingAgentSync
+                 && home.agentSyncedFor !== agentSyncKey()) syncAgentServer();
     }
 
     function refreshServer() {
@@ -176,12 +181,18 @@ Rectangle {
     // server the app is signed in to (unless it already uses another one).
     property bool pendingAgentSync: false
     property string hostServerNote: ""
+    // Server and sign-in this computer was last registered for.
+    property string agentSyncedFor: ""
+
+    function agentSyncKey() { return serverDashboard.serverUrl + "|" + serverDashboard.token; }
 
     function syncAgentServer() {
         if (!home.hostStatus.enabled || !serverDashboard.isLoggedIn || serverDashboard.token === "") return;
         home.pendingAgentSync = true;
+        home.agentSyncKeyPending = agentSyncKey();
         bridge.fetchAgentToken(serverDashboard.serverUrl, serverDashboard.token);
     }
+    property string agentSyncKeyPending: ""
 
     Connections {
         target: bridge
@@ -190,6 +201,8 @@ Rectangle {
         function onAgentTokenResult(success, errorMsg, tok) {
             if (!home.pendingAgentSync) return;
             home.pendingAgentSync = false;
+            // Tried for this sign-in: don't retry every refresh.
+            home.agentSyncedFor = home.agentSyncKeyPending;
             if (!success) {
                 home.hostServerNote = "Couldn't add this computer to the server: " + errorMsg;
                 return;
@@ -230,8 +243,7 @@ Rectangle {
     function setRemoteControl(on) {
         var err = on ? bridge.hostStart() : bridge.hostStop();
         home.hostError = err;
-        if (on && err === "") syncAgentServer();
-        else if (!on) hostsRefreshSoon.restart();
+        if (!on) hostsRefreshSoon.restart();
         // The agent needs a moment to open its port.
         refreshHost();
         hostRefreshSoon.restart();
