@@ -22,3 +22,7 @@ singleton I18n 1.0 I18n.qml
 singleton ViewPrefs 1.0 ViewPrefs.qml
 GamepadTester 1.0 GamepadTester.qml
 FileManager 1.0 FileManager.qml
+ApiClient 1.0 ApiClient.qml
+AdminUsers 1.0 AdminUsers.qml
+AdminGroups 1.0 AdminGroups.qml
+AdminTurnServers 1.0 AdminTurnServers.qml

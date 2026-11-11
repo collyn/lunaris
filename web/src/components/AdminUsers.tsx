@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { t } from '../i18n';
 
 interface AdminUsersProps {
   token: string;
@@ -61,10 +62,10 @@ export function AdminUsers({ token, getBackendHost, getBackendProtocol }: AdminU
         const data = await response.json();
         setUsers(data);
       } else {
-        setError('Failed to fetch users');
+        setError(t('Failed to fetch users'));
       }
     } catch (err) {
-      setError('Connection error while fetching users');
+      setError(t('Connection error while fetching users'));
     } finally {
       setLoading(false);
     }
@@ -93,7 +94,7 @@ export function AdminUsers({ token, getBackendHost, getBackendProtocol }: AdminU
     e.preventDefault();
     setCreateError(null);
     if (!createUsername.trim() || !createPassword.trim()) {
-      setCreateError('Username and password are required');
+      setCreateError(t('Username and password are required'));
       return;
     }
     setCreateLoading(true);
@@ -118,10 +119,10 @@ export function AdminUsers({ token, getBackendHost, getBackendProtocol }: AdminU
         fetchUsers();
       } else {
         const data = await response.json();
-        setCreateError(data.error || 'Failed to create user');
+        setCreateError(t(data.error || 'Failed to create user'));
       }
     } catch (err) {
-      setCreateError('Connection error');
+      setCreateError(t('Connection error'));
     } finally {
       setCreateLoading(false);
     }
@@ -163,10 +164,10 @@ export function AdminUsers({ token, getBackendHost, getBackendProtocol }: AdminU
         fetchUsers();
       } else {
         const data = await response.json();
-        setEditError(data.error || 'Failed to update user');
+        setEditError(t(data.error || 'Failed to update user'));
       }
     } catch (err) {
-      setEditError('Connection error');
+      setEditError(t('Connection error'));
     } finally {
       setEditLoading(false);
     }
@@ -201,7 +202,7 @@ export function AdminUsers({ token, getBackendHost, getBackendProtocol }: AdminU
     return (
       <div className="loading-card">
         <div className="tech-loader"></div>
-        <div>Loading users...</div>
+        <div>{t('Loading users...')}</div>
       </div>
     );
   }
@@ -220,15 +221,15 @@ export function AdminUsers({ token, getBackendHost, getBackendProtocol }: AdminU
     <div className="admin-page-container">
       <div className="section-header">
         <div>
-          <h1 className="section-title">User Management</h1>
-          <p className="section-subtitle">Create, edit, and manage user accounts and their permissions</p>
+          <h1 className="section-title">{t('User Management')}</h1>
+          <p className="section-subtitle">{t('Create, edit, and manage user accounts and their permissions')}</p>
         </div>
         <button onClick={() => setShowCreateModal(true)} className="btn-primary" style={{ padding: '0.6rem 1.2rem', fontSize: '0.9rem' }}>
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
             <line x1="12" y1="5" x2="12" y2="19" />
             <line x1="5" y1="12" x2="19" y2="12" />
           </svg>
-          Add User
+          {t('Add user')}
         </button>
       </div>
 
@@ -236,12 +237,12 @@ export function AdminUsers({ token, getBackendHost, getBackendProtocol }: AdminU
         <table className="admin-table">
           <thead>
             <tr>
-              <th>Username</th>
-              <th>Role</th>
-              <th>Status</th>
-              <th>Groups</th>
-              <th>Created</th>
-              <th>Actions</th>
+              <th>{t('Username')}</th>
+              <th>{t('Role')}</th>
+              <th>{t('Status')}</th>
+              <th>{t('Groups')}</th>
+              <th>{t('Created')}</th>
+              <th>{t('Actions')}</th>
             </tr>
           </thead>
           <tbody>
@@ -251,12 +252,12 @@ export function AdminUsers({ token, getBackendHost, getBackendProtocol }: AdminU
                   <span style={{ fontWeight: 600, color: 'var(--text-main)' }}>{user.username}</span>
                 </td>
                 <td>
-                  <span className={`role-badge ${user.role}`}>{user.role}</span>
+                  <span className={`role-badge ${user.role}`}>{user.role === 'admin' ? t('Admin') : t('User')}</span>
                 </td>
                 <td>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                     <span className={`status-dot ${user.is_active ? 'active' : 'inactive'}`}></span>
-                    <span style={{ fontSize: '0.85rem' }}>{user.is_active ? 'Active' : 'Inactive'}</span>
+                    <span style={{ fontSize: '0.85rem' }}>{user.is_active ? t('Active') : t('Disabled')}</span>
                   </div>
                 </td>
                 <td>
@@ -280,7 +281,7 @@ export function AdminUsers({ token, getBackendHost, getBackendProtocol }: AdminU
                     <button
                       onClick={() => openEditModal(user)}
                       className="admin-action-btn edit"
-                      title="Edit User"
+                      title={t('Edit User')}
                     >
                       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                         <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
@@ -290,7 +291,7 @@ export function AdminUsers({ token, getBackendHost, getBackendProtocol }: AdminU
                     <button
                       onClick={() => setDeleteUser(user)}
                       className="admin-action-btn delete"
-                      title="Delete User"
+                      title={t('Delete User')}
                     >
                       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                         <polyline points="3 6 5 6 21 6" />
@@ -304,7 +305,7 @@ export function AdminUsers({ token, getBackendHost, getBackendProtocol }: AdminU
             {users.length === 0 && (
               <tr>
                 <td colSpan={6} style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-muted)' }}>
-                  No users found. Click "Add User" to create one.
+                  {t('No users yet. Click "Add user" to create one.')}
                 </td>
               </tr>
             )}
@@ -317,7 +318,7 @@ export function AdminUsers({ token, getBackendHost, getBackendProtocol }: AdminU
         <div className="admin-modal-overlay" onClick={() => setShowCreateModal(false)}>
           <div className="admin-modal" onClick={e => e.stopPropagation()}>
             <div className="admin-modal-header">
-              <h3>Create New User</h3>
+              <h3>{t('Create New User')}</h3>
               <button onClick={() => setShowCreateModal(false)} className="btn-close-modal">
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                   <line x1="18" y1="6" x2="6" y2="18" />
@@ -334,41 +335,41 @@ export function AdminUsers({ token, getBackendHost, getBackendProtocol }: AdminU
                   </div>
                 )}
                 <div className="form-group">
-                  <label>Username</label>
+                  <label>{t('Username')}</label>
                   <input
                     type="text"
                     value={createUsername}
                     onChange={e => setCreateUsername(e.target.value)}
-                    placeholder="Enter username"
+                    placeholder={t('Enter username')}
                     required
                   />
                 </div>
                 <div className="form-group">
-                  <label>Password</label>
+                  <label>{t('Password')}</label>
                   <input
                     type="password"
                     value={createPassword}
                     onChange={e => setCreatePassword(e.target.value)}
-                    placeholder="Enter password (min 6 chars)"
+                    placeholder={t('Enter password (min 6 chars)')}
                     required
                   />
                 </div>
                 <div className="form-group">
-                  <label>Role</label>
+                  <label>{t('Role')}</label>
                   <select
                     value={createRole}
                     onChange={e => setCreateRole(e.target.value)}
                     className="admin-select"
                   >
-                    <option value="user">User</option>
-                    <option value="admin">Admin</option>
+                    <option value="user">{t('User')}</option>
+                    <option value="admin">{t('Admin')}</option>
                   </select>
                 </div>
               </div>
               <div className="admin-modal-footer">
-                <button type="button" onClick={() => setShowCreateModal(false)} className="btn-secondary">Cancel</button>
+                <button type="button" onClick={() => setShowCreateModal(false)} className="btn-secondary">{t('Cancel')}</button>
                 <button type="submit" disabled={createLoading} className="btn-primary">
-                  {createLoading ? <div className="inline-loader"></div> : 'Create User'}
+                  {createLoading ? <div className="inline-loader"></div> : t('Create User')}
                 </button>
               </div>
             </form>
@@ -381,7 +382,7 @@ export function AdminUsers({ token, getBackendHost, getBackendProtocol }: AdminU
         <div className="admin-modal-overlay" onClick={() => setEditUser(null)}>
           <div className="admin-modal" onClick={e => e.stopPropagation()}>
             <div className="admin-modal-header">
-              <h3>Edit User — {editUser.username}</h3>
+              <h3>{t('Edit user %1', editUser.username)}</h3>
               <button onClick={() => setEditUser(null)} className="btn-close-modal">
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                   <line x1="18" y1="6" x2="6" y2="18" />
@@ -398,39 +399,39 @@ export function AdminUsers({ token, getBackendHost, getBackendProtocol }: AdminU
                   </div>
                 )}
                 <div className="form-group">
-                  <label>Role</label>
+                  <label>{t('Role')}</label>
                   <select
                     value={editRole}
                     onChange={e => setEditRole(e.target.value)}
                     className="admin-select"
                   >
-                    <option value="user">User</option>
-                    <option value="admin">Admin</option>
+                    <option value="user">{t('User')}</option>
+                    <option value="admin">{t('Admin')}</option>
                   </select>
                 </div>
                 <div className="form-group">
-                  <label style={{ marginBottom: '0.25rem' }}>Status</label>
+                  <label style={{ marginBottom: '0.25rem' }}>{t('Status')}</label>
                   <label className="admin-toggle-label">
                     <input
                       type="checkbox"
                       checked={editIsActive}
                       onChange={e => setEditIsActive(e.target.checked)}
                     />
-                    <span>{editIsActive ? 'Active' : 'Inactive'}</span>
+                    <span>{editIsActive ? t('Active') : t('Disabled')}</span>
                   </label>
                 </div>
                 <div className="form-group">
-                  <label>Reset Password (leave blank to keep current)</label>
+                  <label>{t('Reset Password (leave blank to keep current)')}</label>
                   <input
                     type="password"
                     value={editPassword}
                     onChange={e => setEditPassword(e.target.value)}
-                    placeholder="New password"
+                    placeholder={t('New password')}
                   />
                 </div>
                 {groups.length > 0 && (
                   <div className="form-group">
-                    <label>Groups</label>
+                    <label>{t('Groups')}</label>
                     <div className="membership-panel" style={{ maxHeight: '160px' }}>
                       {groups.map(g => (
                         <label key={g.id} className="membership-item">
@@ -447,9 +448,9 @@ export function AdminUsers({ token, getBackendHost, getBackendProtocol }: AdminU
                 )}
               </div>
               <div className="admin-modal-footer">
-                <button type="button" onClick={() => setEditUser(null)} className="btn-secondary">Cancel</button>
+                <button type="button" onClick={() => setEditUser(null)} className="btn-secondary">{t('Cancel')}</button>
                 <button type="submit" disabled={editLoading} className="btn-primary">
-                  {editLoading ? <div className="inline-loader"></div> : 'Save Changes'}
+                  {editLoading ? <div className="inline-loader"></div> : t('Save Changes')}
                 </button>
               </div>
             </form>
@@ -462,7 +463,7 @@ export function AdminUsers({ token, getBackendHost, getBackendProtocol }: AdminU
         <div className="admin-modal-overlay" onClick={() => setDeleteUser(null)}>
           <div className="admin-modal" onClick={e => e.stopPropagation()} style={{ maxWidth: '420px' }}>
             <div className="admin-modal-header">
-              <h3>Confirm Delete</h3>
+              <h3>{t('Confirm Delete')}</h3>
               <button onClick={() => setDeleteUser(null)} className="btn-close-modal">
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                   <line x1="18" y1="6" x2="6" y2="18" />
@@ -472,18 +473,18 @@ export function AdminUsers({ token, getBackendHost, getBackendProtocol }: AdminU
             </div>
             <div className="admin-modal-body">
               <p style={{ color: 'var(--text-muted)', fontSize: '0.95rem', lineHeight: 1.6 }}>
-                Are you sure you want to delete user <strong style={{ color: '#f43f5e' }}>{deleteUser.username}</strong>? This action cannot be undone.
+                {t('The account %1 will be deleted. This cannot be undone.', deleteUser.username)}
               </p>
             </div>
             <div className="admin-modal-footer">
-              <button onClick={() => setDeleteUser(null)} className="btn-secondary">Cancel</button>
+              <button onClick={() => setDeleteUser(null)} className="btn-secondary">{t('Cancel')}</button>
               <button
                 onClick={handleDelete}
                 disabled={deleteLoading}
                 className="btn-primary"
                 style={{ background: 'linear-gradient(135deg, #ef4444, #dc2626)', boxShadow: '0 4px 15px rgba(239, 68, 68, 0.2)' }}
               >
-                {deleteLoading ? <div className="inline-loader"></div> : 'Delete User'}
+                {deleteLoading ? <div className="inline-loader"></div> : t('Delete User')}
               </button>
             </div>
           </div>

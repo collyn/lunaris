@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { t } from '../i18n';
 
 interface AdminTurnServersProps {
   token: string;
@@ -45,10 +46,10 @@ export function AdminTurnServers({ token, getBackendHost, getBackendProtocol }: 
         const data = await response.json();
         setServers(data);
       } else {
-        setError('Failed to fetch TURN servers');
+        setError(t('Failed to fetch TURN servers'));
       }
     } catch (err) {
-      setError('Connection error while fetching TURN servers');
+      setError(t('Connection error while fetching TURN servers'));
     } finally {
       setLoading(false);
     }
@@ -62,14 +63,14 @@ export function AdminTurnServers({ token, getBackendHost, getBackendProtocol }: 
     e.preventDefault();
     setCreateError(null);
     if (!createUrls.trim()) {
-      setCreateError('Server URL is required');
+      setCreateError(t('Server URL is required'));
       return;
     }
     
     // Simple validation for stun: or turn: schemes
     const urls = createUrls.trim();
     if (!urls.startsWith('stun:') && !urls.startsWith('turn:') && !urls.startsWith('turns:')) {
-      setCreateError('URL must start with stun:, turn:, or turns: (e.g. turn:my-turn-server.com:3478)');
+      setCreateError(t('The address must start with stun:, turn: or turns: (e.g. turn:turn.example.com:3478)'));
       return;
     }
 
@@ -95,10 +96,10 @@ export function AdminTurnServers({ token, getBackendHost, getBackendProtocol }: 
         fetchServers();
       } else {
         const data = await response.json();
-        setCreateError(data.error || 'Failed to add TURN server');
+        setCreateError(t(data.error || 'Failed to add TURN server'));
       }
     } catch (err) {
-      setCreateError('Connection error');
+      setCreateError(t('Connection error'));
     } finally {
       setCreateLoading(false);
     }
@@ -116,7 +117,7 @@ export function AdminTurnServers({ token, getBackendHost, getBackendProtocol }: 
         setDeleteServer(null);
         fetchServers();
       } else {
-        alert('Failed to delete TURN server');
+        alert(t('Failed to delete TURN server'));
       }
     } catch (err) {
       console.error('Failed to delete TURN server:', err);
@@ -129,7 +130,7 @@ export function AdminTurnServers({ token, getBackendHost, getBackendProtocol }: 
     return (
       <div className="loading-card">
         <div className="tech-loader"></div>
-        <div>Loading TURN servers...</div>
+        <div>{t('Loading TURN servers...')}</div>
       </div>
     );
   }
@@ -148,15 +149,15 @@ export function AdminTurnServers({ token, getBackendHost, getBackendProtocol }: 
     <div className="admin-page-container">
       <div className="section-header">
         <div>
-          <h1 className="section-title">TURN/STUN Server Configuration</h1>
-          <p className="section-subtitle">Manage external relay servers used to negotiate connection traversal across Symmetric NATs</p>
+          <h1 className="section-title">{t('TURN/STUN Server Configuration')}</h1>
+          <p className="section-subtitle">{t('Manage external relay servers used to negotiate connection traversal across Symmetric NATs')}</p>
         </div>
         <button onClick={() => setShowCreateModal(true)} className="btn-primary" style={{ padding: '0.6rem 1.2rem', fontSize: '0.9rem' }}>
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
             <line x1="12" y1="5" x2="12" y2="19" />
             <line x1="5" y1="12" x2="19" y2="12" />
           </svg>
-          Add Server
+          {t('Add server')}
         </button>
       </div>
 
@@ -164,11 +165,11 @@ export function AdminTurnServers({ token, getBackendHost, getBackendProtocol }: 
         <table className="admin-table">
           <thead>
             <tr>
-              <th>Server URL</th>
-              <th>Username</th>
-              <th>Credential / Secret</th>
-              <th>Added On</th>
-              <th>Actions</th>
+              <th>{t('Server URL')}</th>
+              <th>{t('Username')}</th>
+              <th>{t('Credential / Secret')}</th>
+              <th>{t('Added On')}</th>
+              <th>{t('Actions')}</th>
             </tr>
           </thead>
           <tbody>
@@ -195,7 +196,7 @@ export function AdminTurnServers({ token, getBackendHost, getBackendProtocol }: 
                     <button
                       onClick={() => setDeleteServer(server)}
                       className="admin-action-btn delete"
-                      title="Delete Server"
+                      title={t('Delete Server')}
                     >
                       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                         <polyline points="3 6 5 6 21 6" />
@@ -209,7 +210,7 @@ export function AdminTurnServers({ token, getBackendHost, getBackendProtocol }: 
             {servers.length === 0 && (
               <tr>
                 <td colSpan={5} style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-muted)' }}>
-                  No custom TURN/STUN servers configured. Defaulting to public Google STUN fallbacks.
+                  {t('No TURN servers. Connections use public STUN only, which can fail behind strict networks.')}
                 </td>
               </tr>
             )}
@@ -222,7 +223,7 @@ export function AdminTurnServers({ token, getBackendHost, getBackendProtocol }: 
         <div className="admin-modal-overlay" onClick={() => setShowCreateModal(false)}>
           <div className="admin-modal" onClick={e => e.stopPropagation()}>
             <div className="admin-modal-header">
-              <h3>Add TURN/STUN Server</h3>
+              <h3>{t('Add TURN/STUN Server')}</h3>
               <button onClick={() => setShowCreateModal(false)} className="btn-close-modal">
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                   <line x1="18" y1="6" x2="6" y2="18" />
@@ -239,41 +240,41 @@ export function AdminTurnServers({ token, getBackendHost, getBackendProtocol }: 
                   </div>
                 )}
                 <div className="form-group">
-                  <label>Server URL</label>
+                  <label>{t('Server URL')}</label>
                   <input
                     type="text"
                     value={createUrls}
                     onChange={e => setCreateUrls(e.target.value)}
-                    placeholder="e.g. turn:my-turn-server.com:3478"
+                    placeholder={t('e.g. turn:my-turn-server.com:3478')}
                     required
                   />
                   <small style={{ color: 'var(--text-muted)', display: 'block', marginTop: '4px' }}>
-                    Scheme must be <code>stun:</code>, <code>turn:</code>, or <code>turns:</code>.
+                    {t('Scheme must be')} <code>stun:</code>, <code>turn:</code>, <code>turns:</code>.
                   </small>
                 </div>
                 <div className="form-group">
-                  <label>Username (Optional)</label>
+                  <label>{t('Username (Optional)')}</label>
                   <input
                     type="text"
                     value={createUsername}
                     onChange={e => setCreateUsername(e.target.value)}
-                    placeholder="Enter username if required"
+                    placeholder={t('Enter username if required')}
                   />
                 </div>
                 <div className="form-group">
-                  <label>Credential / Password (Optional)</label>
+                  <label>{t('Credential / Password (Optional)')}</label>
                   <input
                     type="password"
                     value={createCredential}
                     onChange={e => setCreateCredential(e.target.value)}
-                    placeholder="Enter password/secret if required"
+                    placeholder={t('Enter password/secret if required')}
                   />
                 </div>
               </div>
               <div className="admin-modal-footer">
-                <button type="button" onClick={() => setShowCreateModal(false)} className="btn-secondary">Cancel</button>
+                <button type="button" onClick={() => setShowCreateModal(false)} className="btn-secondary">{t('Cancel')}</button>
                 <button type="submit" disabled={createLoading} className="btn-primary">
-                  {createLoading ? <div className="inline-loader"></div> : 'Add Server'}
+                  {createLoading ? <div className="inline-loader"></div> : t('Add Server')}
                 </button>
               </div>
             </form>
@@ -286,7 +287,7 @@ export function AdminTurnServers({ token, getBackendHost, getBackendProtocol }: 
         <div className="admin-modal-overlay" onClick={() => setDeleteServer(null)}>
           <div className="admin-modal" onClick={e => e.stopPropagation()} style={{ maxWidth: '420px' }}>
             <div className="admin-modal-header">
-              <h3>Confirm Delete</h3>
+              <h3>{t('Confirm Delete')}</h3>
               <button onClick={() => setDeleteServer(null)} className="btn-close-modal">
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                   <line x1="18" y1="6" x2="6" y2="18" />
@@ -296,18 +297,18 @@ export function AdminTurnServers({ token, getBackendHost, getBackendProtocol }: 
             </div>
             <div className="admin-modal-body">
               <p style={{ color: 'var(--text-muted)', fontSize: '0.95rem', lineHeight: 1.6 }}>
-                Are you sure you want to delete the TURN server <strong style={{ color: '#f43f5e' }}>{deleteServer.urls}</strong>?
+                {t('%1 will no longer be offered to new connections.', deleteServer.urls)}
               </p>
             </div>
             <div className="admin-modal-footer">
-              <button onClick={() => setDeleteServer(null)} className="btn-secondary">Cancel</button>
+              <button onClick={() => setDeleteServer(null)} className="btn-secondary">{t('Cancel')}</button>
               <button
                 onClick={handleDelete}
                 disabled={deleteLoading}
                 className="btn-primary"
                 style={{ background: 'linear-gradient(135deg, #ef4444, #dc2626)', boxShadow: '0 4px 15px rgba(239, 68, 68, 0.2)' }}
               >
-                {deleteLoading ? <div className="inline-loader"></div> : 'Delete Server'}
+                {deleteLoading ? <div className="inline-loader"></div> : t('Delete Server')}
               </button>
             </div>
           </div>

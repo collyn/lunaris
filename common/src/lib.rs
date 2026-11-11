@@ -66,6 +66,11 @@ pub struct GroupInfo {
     pub note: String,
     pub user_count: i64,
     pub host_count: i64,
+    /// Members (filled by the group list; empty in create/update answers).
+    #[serde(default)]
+    pub users: Vec<UserBrief>,
+    #[serde(default)]
+    pub hosts: Vec<HostBrief>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

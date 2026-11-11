@@ -43,6 +43,12 @@ pub enum PendingDashboardEvent {
         latest_version: String,
         release_url: String,
     },
+    /// Answer to `api_request`: HTTP status (0 = no connection) and body.
+    ApiResult {
+        req_id: String,
+        status: i32,
+        body: String,
+    },
 }
 
 pub static PENDING_EVENTS: std::sync::Mutex<Vec<PendingDashboardEvent>> =
@@ -845,6 +851,10 @@ pub mod qobject {
         #[qsignal]
         fn deeplink_received(self: Pin<&mut StreamBridge>, url: QString);
 
+        /// Answer to `api_request` (status 0 = the server could not be reached).
+        #[qsignal]
+        fn api_result(self: Pin<&mut StreamBridge>, req_id: QString, status: i32, body: QString);
+
         /// The stream could not start or ended with an error (message for the user).
         #[qsignal]
         fn stream_failed(self: Pin<&mut StreamBridge>, message: QString);
@@ -945,6 +955,17 @@ pub mod qobject {
 
         #[qinvokable]
         fn fetch_hosts(self: Pin<&mut StreamBridge>);
+
+        /// Calls the signed-in server's REST API (`path` like "/api/admin/users")
+        /// with the saved token; the answer comes back as `api_result(req_id, …)`.
+        #[qinvokable]
+        fn api_request(
+            self: Pin<&mut StreamBridge>,
+            req_id: QString,
+            method: QString,
+            path: QString,
+            body: QString,
+        );
 
         #[qinvokable]
         fn delete_host(self: Pin<&mut StreamBridge>, host_id: QString);
@@ -1806,6 +1827,74 @@ impl qobject::StreamBridge {
         });
     }
 
+    pub fn api_request(
+        self: Pin<&mut Self>,
+        req_id: QString,
+        method: QString,
+        path: QString,
+        body: QString,
+    ) {
+        let req_id = req_id.to_string();
+        let push = |req_id: String, status: i32, body: String| {
+            PENDING_EVENTS
+                .lock()
+                .unwrap()
+                .push(PendingDashboardEvent::ApiResult {
+                    req_id,
+                    status,
+                    body,
+                });
+        };
+        let Some(settings) = load_settings() else {
+            push(req_id, 401, r#"{"error":"Not signed in"}"#.to_string());
+            return;
+        };
+        let path = path.to_string();
+        if !path.starts_with("/api/") {
+            push(req_id, 400, r#"{"error":"Bad path"}"#.to_string());
+            return;
+        }
+        let method = match method.to_string().to_ascii_uppercase().as_str() {
+            "GET" => reqwest::Method::GET,
+            "POST" => reqwest::Method::POST,
+            "PUT" => reqwest::Method::PUT,
+            "DELETE" => reqwest::Method::DELETE,
+            _ => {
+                push(req_id, 400, r#"{"error":"Bad method"}"#.to_string());
+                return;
+            }
+        };
+        let body = body.to_string();
+        let url = format!("{}{}", settings.server_url.trim_end_matches('/'), path);
+        let token = settings.token;
+
+        let mut rust_obj = self.rust_mut();
+        let rt = rust_obj.get_or_init_runtime();
+        rt.spawn(async move {
+            let client = reqwest::Client::new();
+            let mut req = client
+                .request(method, &url)
+                .header("Authorization", format!("Bearer {}", token))
+                .timeout(std::time::Duration::from_secs(30));
+            if !body.is_empty() {
+                req = req.header("Content-Type", "application/json").body(body);
+            }
+            match req.send().await {
+                Ok(resp) => {
+                    let status = resp.status().as_u16() as i32;
+                    let text = resp.text().await.unwrap_or_default();
+                    push(req_id, status, text);
+                }
+                Err(e) => push(
+                    req_id,
+                    0,
+                    serde_json::json!({ "error": format!("Connection failed: {}", e) })
+                        .to_string(),
+                ),
+            }
+        });
+    }
+
     pub fn delete_host(self: Pin<&mut Self>, host_id: QString) {
         let host_id_str = host_id.to_string();
         let settings = match load_settings() {
@@ -2517,6 +2606,17 @@ impl qobject::StreamBridge {
                     let tok_qstr = QString::from(&token);
                     self.as_mut()
                         .agent_token_result(success, err_qstr, tok_qstr);
+                }
+                PendingDashboardEvent::ApiResult {
+                    req_id,
+                    status,
+                    body,
+                } => {
+                    self.as_mut().api_result(
+                        QString::from(&req_id),
+                        status,
+                        QString::from(&body),
+                    );
                 }
                 PendingDashboardEvent::DeepLinkReceived { url } => {
                     let url_qstr = QString::from(&url);

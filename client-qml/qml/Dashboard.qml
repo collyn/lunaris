@@ -107,6 +107,47 @@ Rectangle {
     property string localAgentHostname: ""
     property bool localAgentRunning: false
 
+    // Signed-in account's role ("admin" shows the administration sections)
+    // and the section shown: devices | users | groups | turn.
+    property string role: ""
+    readonly property bool isAdmin: role === "admin"
+    property string section: "devices"
+    onIsLoggedInChanged: {
+        section = "devices";
+        role = "";
+        if (isLoggedIn) refreshRole();
+    }
+    function refreshRole() {
+        roleApi.call("GET", "/api/auth/me", null, function (ok, data) {
+            dashboardRoot.role = ok && data && data.role ? data.role : "";
+            if (!dashboardRoot.isAdmin) dashboardRoot.section = "devices";
+        });
+    }
+    ApiClient { id: roleApi }
+
+    component SectionTab: AbstractButton {
+        id: stab
+        property string iconName: ""
+        property bool current: false
+        hoverEnabled: true
+        implicitHeight: 34
+        implicitWidth: stRow.implicitWidth + 24
+        background: Rectangle {
+            radius: Theme.radiusSm
+            color: stab.current ? Theme.surface2 : (stab.hovered ? Theme.ink(0.04) : "transparent")
+            border.color: stab.current ? Theme.border : "transparent"
+        }
+        contentItem: Item {
+            Row {
+                id: stRow
+                anchors.centerIn: parent
+                spacing: 8
+                Icon { name: stab.iconName; size: 15; color: stab.current ? Theme.accentFg : Theme.textMuted; anchors.verticalCenter: parent.verticalCenter }
+                Text { text: stab.text; color: stab.current ? Theme.textStrong : Theme.textMuted; font.pixelSize: 13; font.weight: Font.Medium; anchors.verticalCenter: parent.verticalCenter }
+            }
+        }
+    }
+
 
 
     // Connect to bridge signals
@@ -511,6 +552,7 @@ Rectangle {
 
                 // Brand Title & Tech Pill
                 Row {
+                    id: brandRow
                     visible: !dashboardRoot.embedded
                     anchors.left: parent.left
                     anchors.leftMargin: 24
@@ -546,6 +588,19 @@ Rectangle {
                             anchors.centerIn: parent
                         }
                     }
+                }
+
+                // Sections (administrators only): computers, users, groups, TURN
+                Row {
+                    visible: dashboardRoot.isAdmin
+                    anchors.left: brandRow.visible ? brandRow.right : parent.left
+                    anchors.leftMargin: 24
+                    anchors.verticalCenter: parent.verticalCenter
+                    spacing: 4
+                    SectionTab { text: I18n.t("Computers"); iconName: "monitor"; current: dashboardRoot.section === "devices"; onClicked: dashboardRoot.section = "devices" }
+                    SectionTab { text: I18n.t("Users"); iconName: "user"; current: dashboardRoot.section === "users"; onClicked: dashboardRoot.section = "users" }
+                    SectionTab { text: I18n.t("Groups"); iconName: "grid"; current: dashboardRoot.section === "groups"; onClicked: dashboardRoot.section = "groups" }
+                    SectionTab { text: I18n.t("TURN servers"); iconName: "globe"; current: dashboardRoot.section === "turn"; onClicked: dashboardRoot.section = "turn" }
                 }
 
                 // Right Panel
@@ -654,13 +709,19 @@ Rectangle {
 
                 Loader {
                     anchors.fill: parent
-                    sourceComponent: dashboardRoot.selectedHost !== null 
-                        ? appDirectoryComponent 
+                    sourceComponent: dashboardRoot.section === "users" ? adminUsersComponent
+                        : dashboardRoot.section === "groups" ? adminGroupsComponent
+                        : dashboardRoot.section === "turn" ? adminTurnComponent
+                        : dashboardRoot.selectedHost !== null ? appDirectoryComponent
                         : hostsGridComponent
                 }
             }
         }
     }
+
+    Component { id: adminUsersComponent; AdminUsers { anchors.fill: parent; currentUser: dashboardRoot.username } }
+    Component { id: adminGroupsComponent; AdminGroups { anchors.fill: parent } }
+    Component { id: adminTurnComponent; AdminTurnServers { anchors.fill: parent } }
 
     // ----------------------------------------------------
     // COMPONENT: Grid view of paired host devices
@@ -738,13 +799,13 @@ Rectangle {
                     id: hostsGrid
                     anchors.fill: parent
                     topMargin: 8
-                    cellWidth: 260
+                    cellWidth: 290
                     cellHeight: 180
                     model: dashboardRoot.hostsList.length > 0 ? dashboardRoot.hostsList : 0
 
                     delegate: Item {
                         id: hostDelegate
-                        width: 260
+                        width: 290
                         height: 180
 
                         property bool isHostHovered: cardMouseArea.containsMouse || webBtn.hovered || gearBtn.hovered || deleteBtn.hovered || connectBtn.hovered
@@ -752,7 +813,7 @@ Rectangle {
                         // Static background click handler to avoid hover-translation flicker
                         MouseArea {
                             id: cardMouseArea
-                            width: 240; height: 160
+                            width: 270; height: 160
                             hoverEnabled: true
                             onClicked: {
                                 if (modelData.status === "Online") dashboardRoot.connectHost(modelData);
@@ -762,7 +823,7 @@ Rectangle {
                         // Device card (translates up 4px smoothly on hover based on parent static MouseArea)
                         Rectangle {
                             id: card
-                            width: 240
+                            width: 270
                             height: 160
                             radius: 14
                             color: Theme.surface
@@ -869,7 +930,7 @@ Rectangle {
                                     id: cardFooter
                                     anchors.right: parent.right
                                     anchors.bottom: parent.bottom
-                                    spacing: 8
+                                    spacing: 4
                                     z: 10
 
                                     // Remote control in the browser (web console, signed in)

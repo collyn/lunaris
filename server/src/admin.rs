@@ -5,8 +5,8 @@ use axum::{
     Json,
 };
 use common::{
-    CreateGroupRequest, CreateUserRequest, GroupBrief, GroupInfo, UpdateGroupRequest,
-    UpdateUserRequest, UserInfo,
+    CreateGroupRequest, CreateUserRequest, GroupBrief, GroupInfo, HostBrief, UpdateGroupRequest,
+    UpdateUserRequest, UserBrief, UserInfo,
 };
 use std::sync::Arc;
 use tracing::{error, info};
@@ -450,12 +450,42 @@ pub async fn list_groups(
                     )
                 })?;
 
+        let db_err = |e: sqlx::Error| {
+            error!("Database error: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": "Internal Database Error" })),
+            )
+        };
+        let users: Vec<(String, String)> = sqlx::query_as(
+            "SELECT u.id, u.username FROM users u INNER JOIN user_groups ug ON u.id = ug.user_id WHERE ug.group_id = ?",
+        )
+        .bind(&id)
+        .fetch_all(&state.db)
+        .await
+        .map_err(db_err)?;
+        let hosts: Vec<(String, String)> = sqlx::query_as(
+            "SELECT h.id, h.name FROM hosts h INNER JOIN host_groups hg ON h.id = hg.host_id WHERE hg.group_id = ?",
+        )
+        .bind(&id)
+        .fetch_all(&state.db)
+        .await
+        .map_err(db_err)?;
+
         groups.push(GroupInfo {
             id,
             name,
             note,
             user_count: user_count.0,
             host_count: host_count.0,
+            users: users
+                .into_iter()
+                .map(|(id, username)| UserBrief { id, username })
+                .collect(),
+            hosts: hosts
+                .into_iter()
+                .map(|(id, name)| HostBrief { id, name })
+                .collect(),
         });
     }
 
@@ -504,6 +534,8 @@ pub async fn create_group(
             note,
             user_count: 0,
             host_count: 0,
+            users: Vec::new(),
+            hosts: Vec::new(),
         }),
     ))
 }
@@ -677,6 +709,8 @@ pub async fn update_group(
             note: row.2,
             user_count: user_count.0,
             host_count: host_count.0,
+            users: Vec::new(),
+            hosts: Vec::new(),
         }),
     ))
 }

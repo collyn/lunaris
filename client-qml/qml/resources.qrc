@@ -26,6 +26,10 @@
     <file>ThemedMenu.qml</file>
     <file>GamepadTester.qml</file>
     <file>FileManager.qml</file>
+    <file>AdminTurnServers.qml</file>
+    <file>AdminGroups.qml</file>
+    <file>AdminUsers.qml</file>
+    <file>ApiClient.qml</file>
     <file>icon.png</file>
     <file>cursors/arrow.png</file>
     <file>cursors/cross.png</file>

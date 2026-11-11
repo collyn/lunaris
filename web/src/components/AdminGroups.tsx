@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { t } from '../i18n';
 
 interface AdminGroupsProps {
   token: string;
@@ -73,10 +74,10 @@ export function AdminGroups({ token, getBackendHost, getBackendProtocol }: Admin
         const data = await response.json();
         setGroups(data);
       } else {
-        setError('Failed to fetch groups');
+        setError(t('Failed to fetch groups'));
       }
     } catch (err) {
-      setError('Connection error while fetching groups');
+      setError(t('Connection error while fetching groups'));
     } finally {
       setLoading(false);
     }
@@ -120,7 +121,7 @@ export function AdminGroups({ token, getBackendHost, getBackendProtocol }: Admin
     e.preventDefault();
     setCreateError(null);
     if (!createName.trim()) {
-      setCreateError('Group name is required');
+      setCreateError(t('Group name is required'));
       return;
     }
     setCreateLoading(true);
@@ -140,10 +141,10 @@ export function AdminGroups({ token, getBackendHost, getBackendProtocol }: Admin
         fetchGroups();
       } else {
         const data = await response.json();
-        setCreateError(data.error || 'Failed to create group');
+        setCreateError(t(data.error || 'Failed to create group'));
       }
     } catch (err) {
-      setCreateError('Connection error');
+      setCreateError(t('Connection error'));
     } finally {
       setCreateLoading(false);
     }
@@ -216,10 +217,10 @@ export function AdminGroups({ token, getBackendHost, getBackendProtocol }: Admin
         }
       } else {
         const data = await response.json();
-        setEditError(data.error || 'Failed to update group');
+        setEditError(t(data.error || 'Failed to update group'));
       }
     } catch (err) {
-      setEditError('Connection error');
+      setEditError(t('Connection error'));
     } finally {
       setEditLoading(false);
     }
@@ -263,7 +264,7 @@ export function AdminGroups({ token, getBackendHost, getBackendProtocol }: Admin
     return (
       <div className="loading-card">
         <div className="tech-loader"></div>
-        <div>Loading groups...</div>
+        <div>{t('Loading groups...')}</div>
       </div>
     );
   }
@@ -282,15 +283,15 @@ export function AdminGroups({ token, getBackendHost, getBackendProtocol }: Admin
     <div className="admin-page-container">
       <div className="section-header">
         <div>
-          <h1 className="section-title">Group Management</h1>
-          <p className="section-subtitle">Organize users and hosts into access groups</p>
+          <h1 className="section-title">{t('Group Management')}</h1>
+          <p className="section-subtitle">{t('Organize users and hosts into access groups')}</p>
         </div>
         <button onClick={() => setShowCreateModal(true)} className="btn-primary" style={{ padding: '0.6rem 1.2rem', fontSize: '0.9rem' }}>
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
             <line x1="12" y1="5" x2="12" y2="19" />
             <line x1="5" y1="12" x2="19" y2="12" />
           </svg>
-          Add Group
+          {t('Add group')}
         </button>
       </div>
 
@@ -300,8 +301,8 @@ export function AdminGroups({ token, getBackendHost, getBackendProtocol }: Admin
           {groups.length === 0 ? (
             <div className="empty-card" style={{ padding: '3rem' }}>
               <div className="empty-icon">📁</div>
-              <h3>No Groups</h3>
-              <p>Create a group to organize users and hosts.</p>
+              <h3>{t('No Groups')}</h3>
+              <p>{t('No groups yet. Groups decide which computers each user can see.')}</p>
             </div>
           ) : (
             <div className="admin-group-cards">
@@ -321,7 +322,7 @@ export function AdminGroups({ token, getBackendHost, getBackendProtocol }: Admin
                       <button
                         onClick={(e) => openEditModal(group, e)}
                         className="admin-action-btn edit"
-                        title="Edit Group"
+                        title={t('Edit Group')}
                       >
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                           <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
@@ -331,7 +332,7 @@ export function AdminGroups({ token, getBackendHost, getBackendProtocol }: Admin
                       <button
                         onClick={(e) => { e.stopPropagation(); setDeleteGroup(group); }}
                         className="admin-action-btn delete"
-                        title="Delete Group"
+                        title={t('Delete Group')}
                       >
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                           <polyline points="3 6 5 6 21 6" />
@@ -346,7 +347,7 @@ export function AdminGroups({ token, getBackendHost, getBackendProtocol }: Admin
                         <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
                         <circle cx="12" cy="7" r="4"/>
                       </svg>
-                      <span>{group.users?.length ?? group.user_count ?? 0} users</span>
+                      <span>{t('%1 users', group.users?.length ?? group.user_count ?? 0)}</span>
                     </div>
                     <div className="admin-group-stat">
                       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -354,7 +355,7 @@ export function AdminGroups({ token, getBackendHost, getBackendProtocol }: Admin
                         <line x1="8" y1="21" x2="16" y2="21"/>
                         <line x1="12" y1="17" x2="12" y2="21"/>
                       </svg>
-                      <span>{group.hosts?.length ?? group.host_count ?? 0} hosts</span>
+                      <span>{t('%1 computers', group.hosts?.length ?? group.host_count ?? 0)}</span>
                     </div>
                   </div>
                 </div>
@@ -373,7 +374,7 @@ export function AdminGroups({ token, getBackendHost, getBackendProtocol }: Admin
               </div>
               <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
                 {detailSaved && (
-                  <span style={{ color: '#10b981', fontSize: '0.85rem', fontWeight: 600 }}>✓ Saved</span>
+                  <span style={{ color: '#10b981', fontSize: '0.85rem', fontWeight: 600 }}>✓ {t('Saved')}</span>
                 )}
                 <button
                   onClick={handleSaveMembership}
@@ -381,7 +382,7 @@ export function AdminGroups({ token, getBackendHost, getBackendProtocol }: Admin
                   className="btn-primary"
                   style={{ padding: '0.5rem 1rem', fontSize: '0.85rem' }}
                 >
-                  {detailSaving ? <div className="inline-loader"></div> : 'Save Membership'}
+                  {detailSaving ? <div className="inline-loader"></div> : t('Save Membership')}
                 </button>
               </div>
             </div>
@@ -392,11 +393,11 @@ export function AdminGroups({ token, getBackendHost, getBackendProtocol }: Admin
                     <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
                     <circle cx="12" cy="7" r="4"/>
                   </svg>
-                  Users ({detailUserIds.length})
+                  {t('Users')} ({detailUserIds.length})
                 </h4>
                 <div className="membership-panel">
                   {allUsers.length === 0 ? (
-                    <div style={{ color: 'var(--text-muted)', fontSize: '0.85rem', padding: '1rem', textAlign: 'center' }}>No users available</div>
+                    <div style={{ color: 'var(--text-muted)', fontSize: '0.85rem', padding: '1rem', textAlign: 'center' }}>{t('No users')}</div>
                   ) : allUsers.map(u => (
                     <label key={u.id} className="membership-item">
                       <input
@@ -416,11 +417,11 @@ export function AdminGroups({ token, getBackendHost, getBackendProtocol }: Admin
                     <line x1="8" y1="21" x2="16" y2="21"/>
                     <line x1="12" y1="17" x2="12" y2="21"/>
                   </svg>
-                  Hosts ({detailHostIds.length})
+                  {t('Computers')} ({detailHostIds.length})
                 </h4>
                 <div className="membership-panel">
                   {allHosts.length === 0 ? (
-                    <div style={{ color: 'var(--text-muted)', fontSize: '0.85rem', padding: '1rem', textAlign: 'center' }}>No hosts available</div>
+                    <div style={{ color: 'var(--text-muted)', fontSize: '0.85rem', padding: '1rem', textAlign: 'center' }}>{t('No computers')}</div>
                   ) : allHosts.map(h => (
                     <label key={h.id} className="membership-item">
                       <input
@@ -428,7 +429,7 @@ export function AdminGroups({ token, getBackendHost, getBackendProtocol }: Admin
                         checked={detailHostIds.includes(h.id)}
                         onChange={() => toggleDetailHost(h.id)}
                       />
-                      <span>{h.name}</span>
+                      <span>{h.name}{h.id && h.id !== h.name && <span style={{ color: 'var(--text-muted)', marginLeft: '0.5rem', fontSize: '0.8rem' }}>· {h.id}</span>}</span>
                     </label>
                   ))}
                 </div>
@@ -443,7 +444,7 @@ export function AdminGroups({ token, getBackendHost, getBackendProtocol }: Admin
         <div className="admin-modal-overlay" onClick={() => setShowCreateModal(false)}>
           <div className="admin-modal" onClick={e => e.stopPropagation()}>
             <div className="admin-modal-header">
-              <h3>Create New Group</h3>
+              <h3>{t('Create New Group')}</h3>
               <button onClick={() => setShowCreateModal(false)} className="btn-close-modal">
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                   <line x1="18" y1="6" x2="6" y2="18" />
@@ -460,29 +461,29 @@ export function AdminGroups({ token, getBackendHost, getBackendProtocol }: Admin
                   </div>
                 )}
                 <div className="form-group">
-                  <label>Group Name</label>
+                  <label>{t('Group Name')}</label>
                   <input
                     type="text"
                     value={createName}
                     onChange={e => setCreateName(e.target.value)}
-                    placeholder="Enter group name"
+                    placeholder={t('Enter group name')}
                     required
                   />
                 </div>
                 <div className="form-group">
-                  <label>Note (optional)</label>
+                  <label>{t('Note (optional)')}</label>
                   <input
                     type="text"
                     value={createNote}
                     onChange={e => setCreateNote(e.target.value)}
-                    placeholder="Short description"
+                    placeholder={t('Short description')}
                   />
                 </div>
               </div>
               <div className="admin-modal-footer">
-                <button type="button" onClick={() => setShowCreateModal(false)} className="btn-secondary">Cancel</button>
+                <button type="button" onClick={() => setShowCreateModal(false)} className="btn-secondary">{t('Cancel')}</button>
                 <button type="submit" disabled={createLoading} className="btn-primary">
-                  {createLoading ? <div className="inline-loader"></div> : 'Create Group'}
+                  {createLoading ? <div className="inline-loader"></div> : t('Create Group')}
                 </button>
               </div>
             </form>
@@ -512,29 +513,29 @@ export function AdminGroups({ token, getBackendHost, getBackendProtocol }: Admin
                   </div>
                 )}
                 <div className="form-group">
-                  <label>Group Name</label>
+                  <label>{t('Group Name')}</label>
                   <input
                     type="text"
                     value={editName}
                     onChange={e => setEditName(e.target.value)}
-                    placeholder="Enter group name"
+                    placeholder={t('Enter group name')}
                     required
                   />
                 </div>
                 <div className="form-group">
-                  <label>Note</label>
+                  <label>{t('Note')}</label>
                   <input
                     type="text"
                     value={editNote}
                     onChange={e => setEditNote(e.target.value)}
-                    placeholder="Short description"
+                    placeholder={t('Short description')}
                   />
                 </div>
               </div>
               <div className="admin-modal-footer">
-                <button type="button" onClick={() => setEditGroup(null)} className="btn-secondary">Cancel</button>
+                <button type="button" onClick={() => setEditGroup(null)} className="btn-secondary">{t('Cancel')}</button>
                 <button type="submit" disabled={editLoading} className="btn-primary">
-                  {editLoading ? <div className="inline-loader"></div> : 'Save Changes'}
+                  {editLoading ? <div className="inline-loader"></div> : t('Save Changes')}
                 </button>
               </div>
             </form>
@@ -547,7 +548,7 @@ export function AdminGroups({ token, getBackendHost, getBackendProtocol }: Admin
         <div className="admin-modal-overlay" onClick={() => setDeleteGroup(null)}>
           <div className="admin-modal" onClick={e => e.stopPropagation()} style={{ maxWidth: '420px' }}>
             <div className="admin-modal-header">
-              <h3>Confirm Delete</h3>
+              <h3>{t('Confirm Delete')}</h3>
               <button onClick={() => setDeleteGroup(null)} className="btn-close-modal">
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                   <line x1="18" y1="6" x2="6" y2="18" />
@@ -557,18 +558,18 @@ export function AdminGroups({ token, getBackendHost, getBackendProtocol }: Admin
             </div>
             <div className="admin-modal-body">
               <p style={{ color: 'var(--text-muted)', fontSize: '0.95rem', lineHeight: 1.6 }}>
-                Are you sure you want to delete group <strong style={{ color: '#f43f5e' }}>{deleteGroup.name}</strong>? All membership associations will be removed.
+                {t('The group %1 will be deleted. Its users lose access to its computers.', deleteGroup.name)}
               </p>
             </div>
             <div className="admin-modal-footer">
-              <button onClick={() => setDeleteGroup(null)} className="btn-secondary">Cancel</button>
+              <button onClick={() => setDeleteGroup(null)} className="btn-secondary">{t('Cancel')}</button>
               <button
                 onClick={handleDelete}
                 disabled={deleteLoading}
                 className="btn-primary"
                 style={{ background: 'linear-gradient(135deg, #ef4444, #dc2626)', boxShadow: '0 4px 15px rgba(239, 68, 68, 0.2)' }}
               >
-                {deleteLoading ? <div className="inline-loader"></div> : 'Delete Group'}
+                {deleteLoading ? <div className="inline-loader"></div> : t('Delete Group')}
               </button>
             </div>
           </div>
