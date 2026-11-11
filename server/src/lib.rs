@@ -287,6 +287,14 @@ pub(crate) async fn run_server(
         info!("Serving React client from {:?}", path);
         let serve_react =
             ServeDir::new(path).not_found_service(ServeFile::new(path.join("index.html")));
+        // Revalidate (Last-Modified → 304): without it browsers guess a cache
+        // lifetime and keep showing an old index.html after an update.
+        let serve_react = Router::new().fallback_service(serve_react).layer(
+            tower_http::set_header::SetResponseHeaderLayer::if_not_present(
+                axum::http::header::CACHE_CONTROL,
+                axum::http::HeaderValue::from_static("no-cache"),
+            ),
+        );
         app = app.fallback_service(serve_react);
     } else if web::is_embedded() {
         info!("Serving the embedded React client");

@@ -62,6 +62,10 @@ Categories=Network;
             "lunaris-client.desktop",
             "x-scheme-handler/lunaris",
         ])
+        // xdg-mime's own complaints (e.g. "qtpaths: not found" on KDE) are
+        // noise here; success is judged by the exit status.
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
         .status();
 
     match status {
@@ -76,6 +80,8 @@ Categories=Network;
     // Update the desktop database so desktop environments index it immediately
     let _ = std::process::Command::new("update-desktop-database")
         .arg(&dest_dir)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
         .status();
 
     Ok(())
