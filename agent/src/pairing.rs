@@ -81,13 +81,13 @@ pub fn ensure_direct_password(config: &mut AgentConfig) -> bool {
 static CONFIG_PATH: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
 /// Sets the config file path for this process (from `--config`); call once at startup.
-/// A fresh configuration for this computer: a new id, no server, direct
-/// connections on with a new password.
+/// A fresh configuration for this computer: a new id, no server and a new
+/// direct-access password. Direct connections stay off until the user turns
+/// remote control on.
 pub fn new_config() -> AgentConfig {
     let mut config: AgentConfig = serde_json::from_str("{}").expect("every field has a default");
     config.client_unique_id = uuid::Uuid::new_v4().to_string().to_uppercase();
     config.server_url = String::new();
-    config.direct_enabled = true;
     ensure_direct_password(&mut config);
     config
 }

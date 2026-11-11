@@ -169,6 +169,23 @@ fn spawn_agent() -> Result<(), String> {
         use std::os::windows::process::CommandExt;
         cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     }
+    // The agent goes when the app goes, even if the app is killed or crashes
+    // (otherwise it keeps the port and "Turn off" can't reach it).
+    #[cfg(target_os = "linux")]
+    unsafe {
+        use std::os::unix::process::CommandExt;
+        let app_pid = libc::getpid();
+        cmd.pre_exec(move || {
+            if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            // The app may already have exited between fork and prctl.
+            if libc::getppid() != app_pid {
+                libc::_exit(0);
+            }
+            Ok(())
+        });
+    }
     let child = cmd.spawn().map_err(|e| format!("cannot start the agent: {}", e))?;
     *HOST_CHILD.lock().unwrap() = Some(child);
     Ok(())

@@ -11,7 +11,7 @@ ApplicationWindow {
     height: 720
     visible: false
     flags: Qt.Window
-    title: "Lunaris Player Client"
+    title: "Lunaris"
     color: window.isStreamMode ? "#000000" : Theme.bg
 
     property bool exitRequested: false

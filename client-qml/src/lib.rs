@@ -569,8 +569,11 @@ pub fn run() {
     bridge::qobject::register_native_video_item_types();
 
     // 2. Create QQmlApplicationEngine
-    // Remote control of this computer, when it was left on.
-    host::start_if_enabled();
+    // Remote control of this computer, when it was left on. Not for a
+    // one-stream launch (lunaris:// link): its exit would stop it again.
+    if APP_ARGS.get().is_none() {
+        host::start_if_enabled();
+    }
 
     let mut engine = QQmlApplicationEngine::new();
 

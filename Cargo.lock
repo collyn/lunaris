@@ -983,6 +983,7 @@ dependencies = [
  "ffmpeg-next",
  "futures-util",
  "hostname",
+ "libc",
  "opus 0.2.1",
  "png",
  "reqwest",
