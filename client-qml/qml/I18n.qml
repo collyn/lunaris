@@ -220,6 +220,7 @@ QtObject {
         "Status": "Trạng thái",
         "Online": "Trực tuyến",
         "Offline": "Ngoại tuyến",
+        "Busy": "Đang bận",
         "Connected via Agent": "Kết nối qua agent",
         "Delete Host": "Xoá máy",
         "GPU": "GPU",

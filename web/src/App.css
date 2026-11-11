@@ -566,7 +566,7 @@ body {
 /* Hosts Grid */
 .hosts-card-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(320px, 100%), 1fr));
   gap: 1.5rem;
 }
 
@@ -3422,13 +3422,16 @@ code, kbd, pre, .host-id, .code-block { font-family: var(--font-mono); }
 button, input, select, textarea { font-family: inherit; }
 
 /* ---- Host card ------------------------------------------------------------ */
-.host-card-actions { align-items: center; }
+.host-card-actions { align-items: center; flex-wrap: wrap; gap: 8px; }
 .host-card-connect {
   margin-right: auto;
   height: 34px;
-  padding: 0 14px;
+  padding: 0 16px;
   font-size: 13px;
+  flex-shrink: 0;
+  white-space: nowrap;
 }
+.host-card-actions .host-action-btn { flex-shrink: 0; }
 .host-action-btn {
   border: 1px solid var(--border);
   background: transparent;

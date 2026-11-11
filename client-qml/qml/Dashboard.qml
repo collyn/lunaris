@@ -703,7 +703,7 @@ Rectangle {
                 anchors.left: parent.left
                 anchors.right: parent.right
                 anchors.top: parent.top
-                anchors.topMargin: 64 // Below navbar
+                anchors.topMargin: 64 + (dashboardRoot.embedded ? 20 : 32) // below the navbar
                 anchors.bottom: parent.bottom
                 anchors.margins: dashboardRoot.embedded ? 20 : 40
 
@@ -799,8 +799,8 @@ Rectangle {
                     id: hostsGrid
                     anchors.fill: parent
                     topMargin: 8
-                    cellWidth: 290
-                    cellHeight: 180
+                    cellWidth: 330
+                    cellHeight: 190
                     model: dashboardRoot.hostsList.length > 0 ? dashboardRoot.hostsList : 0
 
                     delegate: Item {
@@ -823,8 +823,8 @@ Rectangle {
                         // Device card (translates up 4px smoothly on hover based on parent static MouseArea)
                         Rectangle {
                             id: card
-                            width: 270
-                            height: 160
+                            width: 310
+                            height: 170
                             radius: 14
                             color: Theme.surface
                             border.color: isHostHovered ? Theme.borderStrong : Theme.border
@@ -880,7 +880,7 @@ Rectangle {
                                     Row {
                                         width: parent.width
                                         Text { text: I18n.t("IP Address"); font.pixelSize: 11; color: Theme.textSubtle; width: 80 }
-                                        Text { text: modelData.ip_address || "Connected via Agent"; font.pixelSize: 11; font.bold: true; font.family: "monospace"; color: Theme.text }
+                                        Text { text: modelData.ip_address || I18n.t("Connected via Agent"); font.pixelSize: 11; font.bold: true; font.family: "monospace"; color: Theme.text }
                                     }
 
                                     Row {
@@ -894,7 +894,7 @@ Rectangle {
                                                 color: modelData.status === "Online" ? "#22c55e" : (modelData.status === "Busy" ? "#f59e0b" : "#ef4444")
                                             }
                                             Text {
-                                                text: modelData.status
+                                                text: I18n.t(modelData.status)
                                                 font.pixelSize: 11
                                                 font.bold: true
                                                 color: modelData.status === "Online" ? "#22c55e" : (modelData.status === "Busy" ? "#f59e0b" : "#ef4444")
@@ -912,10 +912,11 @@ Rectangle {
                                     z: 10
                                     onClicked: dashboardRoot.connectHost(modelData)
                                     background: Rectangle {
-                                        implicitWidth: 84; implicitHeight: 32; radius: Theme.radiusSm
+                                        implicitWidth: Math.max(84, connectLabel.implicitWidth + 32); implicitHeight: 32; radius: Theme.radiusSm
                                         color: connectBtn.hovered ? Theme.accentHover : Theme.accent
                                     }
                                     contentItem: Text {
+                                        id: connectLabel
                                         text: I18n.t("Connect")
                                         color: Theme.textOnAccent
                                         font.pixelSize: 13
@@ -930,7 +931,7 @@ Rectangle {
                                     id: cardFooter
                                     anchors.right: parent.right
                                     anchors.bottom: parent.bottom
-                                    spacing: 4
+                                    spacing: 8
                                     z: 10
 
                                     // Remote control in the browser (web console, signed in)
@@ -946,7 +947,7 @@ Rectangle {
                                         background: Rectangle {
                                             implicitWidth: 32; implicitHeight: 32; radius: 6
                                             color: webBtn.hovered ? Theme.accentA(0.1) : "transparent"
-                                            border.color: webBtn.hovered ? Theme.accentFg : "transparent"
+                                            border.color: webBtn.hovered ? Theme.accentFg : Theme.border
                                             border.width: 1
                                         }
                                         contentItem: Item {
@@ -968,7 +969,7 @@ Rectangle {
                                         background: Rectangle {
                                             implicitWidth: 32; implicitHeight: 32; radius: 6
                                             color: filesBtn.hovered ? Theme.accentA(0.1) : "transparent"
-                                            border.color: filesBtn.hovered ? Theme.accentFg : "transparent"
+                                            border.color: filesBtn.hovered ? Theme.accentFg : Theme.border
                                             border.width: 1
                                         }
                                         contentItem: Item {
@@ -1008,29 +1009,12 @@ Rectangle {
                                         background: Rectangle {
                                             implicitWidth: 32; implicitHeight: 32; radius: 6
                                             color: gearBtn.hovered ? Theme.accentA(0.1) : "transparent"
-                                            border.color: gearBtn.hovered ? Theme.accentFg : "transparent"
+                                            border.color: gearBtn.hovered ? Theme.accentFg : Theme.border
                                             border.width: 1
                                         }
                                         contentItem: Item {
                                             implicitWidth: 16; implicitHeight: 16
-                                            Item {
-                                                width: 16; height: 16
-                                                anchors.centerIn: parent
-                                                Rectangle {
-                                                    anchors.centerIn: parent; width: 10; height: 10; radius: 5
-                                                    color: "transparent"; border.color: gearBtn.hovered ? Theme.accentFg : Theme.text; border.width: 1.8
-                                                }
-                                                Repeater {
-                                                    model: 8
-                                                    Rectangle {
-                                                        anchors.centerIn: parent; width: 2.2; height: 13.5
-                                                        color: gearBtn.hovered ? Theme.accent : Theme.text; rotation: index * 45; antialiasing: true
-                                                    }
-                                                }
-                                                Rectangle {
-                                                    anchors.centerIn: parent; width: 6.4; height: 6.4; radius: 3.2; color: Theme.surface
-                                                }
-                                            }
+                                            Icon { anchors.centerIn: parent; name: "settings"; size: 17; color: gearBtn.hovered ? Theme.accentFg : Theme.text }
                                         }
                                     }
 
@@ -1043,28 +1027,12 @@ Rectangle {
                                         background: Rectangle {
                                             implicitWidth: 32; implicitHeight: 32; radius: 6
                                             color: deleteBtn.hovered ? Qt.rgba(239/255, 68/255, 68/255, 0.1) : "transparent"
-                                            border.color: deleteBtn.hovered ? "#ef4444" : "transparent"
+                                            border.color: deleteBtn.hovered ? "#ef4444" : Theme.border
                                             border.width: 1
                                         }
                                         contentItem: Item {
                                             implicitWidth: 16; implicitHeight: 16
-                                            Item {
-                                                width: 16; height: 16
-                                                anchors.centerIn: parent
-                                                Rectangle {
-                                                    x: 4; y: 5; width: 8; height: 9; radius: 1
-                                                    color: "transparent"
-                                                    border.color: deleteBtn.hovered ? "#ef4444" : Theme.text
-                                                    border.width: 1.4
-                                                }
-                                                Rectangle {
-                                                    x: 3; y: 3; width: 10; height: 1.5; radius: 0.75
-                                                    color: deleteBtn.hovered ? "#ef4444" : Theme.text
-                                                }
-                                                Rectangle { x: 6; y: 1.5; width: 4; height: 1.4; radius: 0.7; color: deleteBtn.hovered ? "#ef4444" : Theme.text }
-                                                Rectangle { x: 6.2; y: 7; width: 1.2; height: 5; radius: 0.6; color: deleteBtn.hovered ? "#ef4444" : Theme.text }
-                                                Rectangle { x: 9; y: 7; width: 1.2; height: 5; radius: 0.6; color: deleteBtn.hovered ? "#ef4444" : Theme.text }
-                                            }
+                                            Icon { anchors.centerIn: parent; name: "trash"; size: 17; color: deleteBtn.hovered ? "#ef4444" : Theme.text }
                                         }
                                     }
 
