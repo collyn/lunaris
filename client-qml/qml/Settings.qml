@@ -11,56 +11,11 @@ Rectangle {
     border.width: 1
     visible: false
 
-    property var fpsPresets: getSupportedFpsPresets()
+    // Same choices as the web client (StreamOptions).
+    property var fpsPresets: StreamOptions.fps
     property var availableEncoders: ["Auto", "Native", "FFmpeg", "NVENC", "AMF", "QSV", "VAAPI", "Software"]
     property var availableDisplayIds: []
     property var availableDisplayLabels: []
-
-    function getSupportedFpsPresets() {
-        // Allow up to 240 regardless of the local monitor: this FPS is the host
-        // encode rate (e.g. streaming a 240Hz virtual screen), not the client's
-        // own display refresh.
-        var localRate = (Screen && Screen.refreshRate > 0) ? Math.ceil(Screen.refreshRate) : 60;
-        var maxRate = Math.max(240, localRate);
-        var allPresets = [240, 144, 120, 90, 60, 30];
-        var filtered = [];
-        
-        var insertedExact = false;
-        for (var i = 0; i < allPresets.length; i++) {
-            var preset = allPresets[i];
-            if (preset <= maxRate) {
-                if (!insertedExact && Math.abs(maxRate - preset) > 5 && maxRate > preset) {
-                    filtered.push(maxRate);
-                    insertedExact = true;
-                }
-                filtered.push(preset);
-            }
-        }
-        
-        if (!insertedExact && maxRate > 30 && filtered.indexOf(maxRate) === -1) {
-            var inserted = false;
-            for (var j = 0; j < filtered.length; j++) {
-                if (maxRate > filtered[j]) {
-                    filtered.splice(j, 0, maxRate);
-                    inserted = true;
-                    break;
-                }
-            }
-            if (!inserted) {
-                filtered.push(maxRate);
-            }
-        }
-        
-        if (filtered.indexOf(60) === -1) filtered.push(60);
-        if (filtered.indexOf(30) === -1) filtered.push(30);
-        
-        filtered = filtered.filter(function(item, pos) {
-            return filtered.indexOf(item) === pos;
-        });
-        filtered.sort(function(a, b) { return b - a; });
-        
-        return filtered;
-    }
 
     // Signals
     signal applySettings(string res, int fps, string codec, int bitrate, int queueLimit, bool disableCuda, string renderBackend, string inputProtocol, string encoder, string displayId, bool virtualDisplay)
@@ -152,16 +107,8 @@ Rectangle {
         }
         fpsInput.text = String(fpsVal);
 
-        var codecLower = codec.toLowerCase();
-        if (codecLower.indexOf("444") !== -1) {
-            codecCombo.currentIndex = 3;
-        } else if (codecLower.indexOf("264") !== -1) {
-            codecCombo.currentIndex = 0;
-        } else if (codecLower.indexOf("265") !== -1 || codecLower.indexOf("hevc") !== -1) {
-            codecCombo.currentIndex = 1;
-        } else if (codecLower.indexOf("av1") !== -1) {
-            codecCombo.currentIndex = 2;
-        }
+        codecCombo.currentIndex = StreamOptions.indexOfValue(StreamOptions.codecs, StreamOptions.codecPart(codec));
+        chromaCombo.currentIndex = StreamOptions.indexOfValue(StreamOptions.chromas, StreamOptions.chromaPart(codec));
 
         decoderCombo.currentIndex = backendIndex(renderBackend, disableCuda);
 
@@ -417,9 +364,8 @@ Rectangle {
         ComboBox {
             id: codecCombo
             width: 260
-            // "H264 4:4:4": full chroma for sharp coloured text (host NVENC or
-            // CPU encoder; decoded on the CPU here).
-            model: ["H264", "H265", "AV1", "H264 4:4:4"]
+            // Auto: H.265 when the other computer encodes it in hardware, else H.264.
+            model: StreamOptions.codecs.map(function(c) { return c.label; })
             currentIndex: 0
 
             delegate: ItemDelegate {
@@ -463,6 +409,68 @@ Rectangle {
                     implicitHeight: contentHeight
                     model: codecCombo.popup.visible ? codecCombo.delegateModel : null
                     currentIndex: codecCombo.highlightedIndex
+                }
+
+                background: Rectangle {
+                    color: Theme.live.surface
+                    border.color: Theme.live.ink(0.15)
+                    border.width: 1
+                    radius: 8
+                }
+            }
+        }
+
+        // Chroma
+        Text { text: "Chroma:"; color: Theme.live.textMuted; font.pixelSize: 13; font.weight: Font.Medium; width: 120 }
+        ComboBox {
+            id: chromaCombo
+            width: 260
+            // 4:4:4: sharp coloured text; H.264 only (host NVENC or CPU
+            // encoder; decoded on the CPU here).
+            model: StreamOptions.chromas.map(function(c) { return c.label; })
+            currentIndex: 0
+
+            delegate: ItemDelegate {
+                width: chromaCombo.width
+                contentItem: Text {
+                    text: modelData
+                    color: chromaCombo.highlightedIndex === index ? Theme.live.textStrong : Theme.live.text
+                    font.pixelSize: 13
+                    verticalAlignment: Text.AlignVCenter
+                }
+                background: Rectangle {
+                    color: chromaCombo.highlightedIndex === index ? Theme.live.accent : "transparent"
+                }
+                highlighted: chromaCombo.highlightedIndex === index
+            }
+
+            contentItem: Text {
+                leftPadding: 12
+                text: chromaCombo.displayText
+                font.pixelSize: 13
+                color: Theme.live.textStrong
+                verticalAlignment: Text.AlignVCenter
+            }
+
+            background: Rectangle {
+                implicitHeight: 38
+                color: Theme.live.surface
+                border.color: chromaCombo.activeFocus ? Theme.live.accentFg : Theme.live.ink(0.08)
+                border.width: 1
+                radius: 8
+            }
+
+            popup: Popup {
+                y: chromaCombo.height + 4
+                width: chromaCombo.width
+                implicitHeight: contentItem.implicitHeight
+                padding: 1
+
+                contentItem: ListView {
+                    clip: true
+                    implicitHeight: contentHeight
+                    model: chromaCombo.popup.visible ? chromaCombo.delegateModel : null
+                    currentIndex: chromaCombo.highlightedIndex
                 }
 
                 background: Rectangle {
@@ -870,7 +878,9 @@ Rectangle {
                 if (fps < 1) fps = 1;
                 if (fps > 999) fps = 999;
 
-                var codec = ["h264", "h265", "av1", "h264_444"][codecCombo.currentIndex] || "h264"
+                var codec = StreamOptions.composeCodec(
+                    (StreamOptions.codecs[codecCombo.currentIndex] || StreamOptions.codecs[0]).value,
+                    (StreamOptions.chromas[chromaCombo.currentIndex] || StreamOptions.chromas[0]).value)
                 var bitrate = Math.round(bitrateSlider.value)
 
                 var queueLimit = 256

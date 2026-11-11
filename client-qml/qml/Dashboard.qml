@@ -24,6 +24,8 @@ Rectangle {
     // Shown inside the Home "Server" tab: Home has its own address box and
     // brand, and the window isn't dragged from here.
     property bool embedded: false
+    // main.qml passes the host's encoders and displays to the settings dialog.
+    property alias settingsModal: settingsModal
     clip: embedded
 
     // Direct connection (no server): the agent's address ("host" or
@@ -83,8 +85,8 @@ Rectangle {
     property var activeConfigHost: null
     property string configRes: "1920x1080"
     property int configFps: 60
-    property string configCodec: "h264"
-    property int configBitrate: 8000
+    property string configCodec: "auto"
+    property int configBitrate: 15000
     property int configQueueLimit: 256
     property bool configDisableCuda: false
     property string configRenderBackend: configDisableCuda ? "software" : "auto_gpu"
@@ -901,8 +903,8 @@ Rectangle {
                                             if (dashboardRoot.activeConfigHost === null || dashboardRoot.activeConfigHost.id !== modelData.id) {
                                                 dashboardRoot.configRes = "1920x1080";
                                                 dashboardRoot.configFps = 60;
-                                                dashboardRoot.configCodec = "h264";
-                                                dashboardRoot.configBitrate = 8000;
+                                                dashboardRoot.configCodec = "auto";
+                                                dashboardRoot.configBitrate = 15000;
                                                 dashboardRoot.configQueueLimit = 256;
                                                 dashboardRoot.configDisableCuda = false;
                                                 dashboardRoot.configRenderBackend = "auto_gpu";

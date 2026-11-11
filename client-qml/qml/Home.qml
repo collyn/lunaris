@@ -42,7 +42,7 @@ Rectangle {
         theme: "system",
         res: "1920x1080",
         fps: 60,
-        codec: "h264",
+        codec: "auto",
         bitrate: 15000,
         renderBackend: "auto_gpu"
     })

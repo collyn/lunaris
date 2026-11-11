@@ -2921,6 +2921,113 @@ fn handle_host_cursor_message(data: &[u8]) {
 
 /// Splits the client's codec choice into the codec and chroma to request:
 /// "h264_444" -> ("h264", Some("444")), anything else -> (codec, None).
+/// Input over WebTransport (QUIC datagrams): once ICE is connected, connect to
+/// the agent at the address ICE found reachable (the selected candidate pair,
+/// unless it is a TURN relay), then the signaling server's host, checking the
+/// agent's self-signed certificate against the hash from its offer.
+async fn connect_webtransport_input(
+    pc: Arc<RTCPeerConnection>,
+    server_url: String,
+    port: u16,
+    cert_hash: Option<String>,
+    wt_conn: Arc<Mutex<Option<wtransport::Connection>>>,
+    wt_connected: Arc<std::sync::atomic::AtomicBool>,
+) {
+    use webrtc::ice_transport::ice_candidate_type::RTCIceCandidateType;
+    use webrtc::ice_transport::ice_connection_state::RTCIceConnectionState;
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    while pc.ice_connection_state() != RTCIceConnectionState::Connected
+        && pc.ice_connection_state() != RTCIceConnectionState::Completed
+    {
+        if std::time::Instant::now() > deadline
+            || pc.connection_state() == webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState::Closed
+        {
+            eprintln!("WebTransport: ICE not connected, input stays on WebRTC");
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+
+    let mut hosts: Vec<String> = Vec::new();
+    if let Some(pair) = pc.sctp().transport().ice_transport().get_selected_candidate_pair().await {
+        if pair.remote.typ != RTCIceCandidateType::Relay && !pair.remote.address.is_empty() {
+            hosts.push(pair.remote.address.clone());
+        }
+    }
+    if let Some(host) = url::Url::parse(&server_url).ok().and_then(|u| u.host_str().map(str::to_string)) {
+        if !hosts.contains(&host) {
+            hosts.push(host);
+        }
+    }
+
+    let hash = cert_hash.as_deref().and_then(parse_sha256_hex);
+    let config = match hash {
+        Some(digest) => ClientConfig::builder()
+            .with_bind_default()
+            .with_server_certificate_hashes([wtransport::tls::Sha256Digest::new(digest)])
+            .build(),
+        // Older agents send no hash: accept their self-signed certificate.
+        None => ClientConfig::builder().with_bind_default().with_no_cert_validation().build(),
+    };
+    let endpoint = match Endpoint::client(config) {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("WebTransport: cannot create the endpoint: {:?}", e);
+            return;
+        }
+    };
+    for host in hosts {
+        let host_part = if host.contains(':') { format!("[{}]", host) } else { host.clone() };
+        let url = format!("https://{}:{}", host_part, port);
+        println!("WebTransport: connecting to {}", url);
+        match tokio::time::timeout(std::time::Duration::from_secs(4), endpoint.connect(&url)).await {
+            Ok(Ok(connection)) => {
+                println!("WebTransport: connected to {}; input now goes over QUIC datagrams", url);
+                *wt_conn.lock().unwrap() = Some(connection);
+                wt_connected.store(true, std::sync::atomic::Ordering::Release);
+                return;
+            }
+            Ok(Err(e)) => eprintln!("WebTransport: {} failed: {:?}", url, e),
+            Err(_) => eprintln!("WebTransport: {} timed out", url),
+        }
+    }
+    eprintln!("WebTransport: no agent address answered, input stays on WebRTC");
+}
+
+/// A SHA-256 digest from hex (the agent's certificate hash).
+fn parse_sha256_hex(hex: &str) -> Option<[u8; 32]> {
+    let hex = hex.trim();
+    if hex.len() != 64 {
+        return None;
+    }
+    let mut out = [0u8; 32];
+    for (i, byte) in out.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).ok()?;
+    }
+    Some(out)
+}
+
+/// Codec for "auto": H.265 when the host has a hardware HEVC encoder for its
+/// GPU, else H.264. (The host lists every encoder its FFmpeg has, usable or
+/// not, so the encoder must match the GPU; a software H.265 encode would be
+/// slow.) AV1 isn't picked: hardware AV1 decoding here isn't guaranteed.
+fn auto_codec_for_host(encoders: &[String], gpu_info: Option<&str>) -> &'static str {
+    let gpu = gpu_info.unwrap_or_default().to_ascii_lowercase();
+    let has = |name: &str| encoders.iter().any(|e| e.eq_ignore_ascii_case(name));
+    let nvidia = gpu.contains("nvidia") || gpu.contains("geforce") || gpu.contains("quadro");
+    let intel = gpu.contains("intel");
+    let amd = gpu.contains("amd") || gpu.contains("radeon");
+    let hw_hevc = (nvidia && has("hevc_nvenc"))
+        || ((intel || amd) && (has("hevc_vaapi") || has("hevc_qsv")))
+        || (amd && has("hevc_amf"));
+    if hw_hevc {
+        "h265"
+    } else {
+        "h264"
+    }
+}
+
 fn split_chroma_codec(codec: &str) -> (String, Option<String>) {
     let codec = codec.trim().to_ascii_lowercase();
     match codec.as_str() {
@@ -4485,22 +4592,50 @@ async fn run_webrtc_client_task(
     // the agent encodes as High 4:4:4 when its encoder can (like the web
     // client's chroma setting).
     let (request_codec, request_chroma) = split_chroma_codec(&codec_str);
+    let mut codec_str = codec_str;
 
-    // Send RequestSession command
-    let req_msg = ClientMessage::Signaling(SignalingMessage::RequestSession {
+    // The session request, sent with the codec to use.
+    let request_template = SignalingMessage::RequestSession {
         host_id: host_id.clone(),
         width: Some(width),
         height: Some(height),
         fps: Some(fps),
         bitrate: Some(bitrate),
-        codec: Some(request_codec),
+        codec: Some(request_codec.clone()),
         app_id,
         encoder,
         display_id,
         virtual_display: if virtual_display { Some(true) } else { None },
         chroma: request_chroma,
-    });
-    outbox_tx.send(req_msg)?;
+    };
+    let request_with_codec = move |codec: &str| -> ClientMessage {
+        let mut sig = request_template.clone();
+        if let SignalingMessage::RequestSession { codec: c, .. } = &mut sig {
+            *c = Some(codec.to_string());
+        }
+        ClientMessage::Signaling(sig)
+    };
+
+    // "auto": pick the codec from what the host can encode in hardware
+    // (asked first; H.264 if it doesn't answer in time).
+    let auto_pending = Arc::new(std::sync::atomic::AtomicBool::new(request_codec == "auto"));
+    if request_codec == "auto" {
+        outbox_tx.send(ClientMessage::Signaling(SignalingMessage::GetCapabilities {
+            target_id: host_id.clone(),
+        }))?;
+        let pending = auto_pending.clone();
+        let outbox = outbox_tx.clone();
+        let fallback = request_with_codec("h264");
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            if pending.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                println!("Codec auto: no capabilities from the host in time, using H.264");
+                let _ = outbox.send(fallback);
+            }
+        });
+    } else {
+        outbox_tx.send(request_with_codec(&request_codec))?;
+    }
 
     // Read incoming WS messages
     while let Some(msg_res) = ws_read.next().await {
@@ -4530,6 +4665,12 @@ async fn run_webrtc_client_task(
                         host_os,
                         ..
                     } => {
+                        if auto_pending.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                            let chosen = auto_codec_for_host(&encoders, gpu_info.as_deref());
+                            println!("Codec auto: {} (host GPU {:?})", chosen, gpu_info);
+                            codec_str = chosen.to_string();
+                            outbox_tx.send(request_with_codec(chosen))?;
+                        }
                         let host_os_str = host_os.clone().unwrap_or_default();
                         let host_os_lower = host_os_str.to_ascii_lowercase();
                         if !host_os_lower.is_empty() {
@@ -4579,54 +4720,16 @@ async fn run_webrtc_client_task(
                         sdp,
                         ice_servers,
                         webtransport_port,
+                        webtransport_cert_hash,
                         ..
                     } => {
                         if sdp.ty == RtcSdpType::Offer {
-                            if input_protocol == "webtransport" {
-                                if let Some(port) = webtransport_port {
-                                    let wt_conn_c = Arc::clone(&wt_conn_ref);
-                                    let wt_connected_flag = Arc::clone(&wt_connected);
-                                    let server_url_c = server_url.clone();
-                                    tokio::spawn(async move {
-                                        if let Ok(parsed_url) = url::Url::parse(&server_url_c) {
-                                            if let Some(host) = parsed_url.host_str() {
-                                                println!(
-                                                    "WebTransport: Connecting to https://{}:{}",
-                                                    host, port
-                                                );
-                                                let config = ClientConfig::builder()
-                                                    .with_bind_default()
-                                                    .with_no_cert_validation()
-                                                    .build();
-                                                match Endpoint::client(config) {
-                                                    Ok(endpoint) => {
-                                                        match endpoint
-                                                            .connect(format!(
-                                                                "https://{}:{}",
-                                                                host, port
-                                                            ))
-                                                            .await
-                                                        {
-                                                            Ok(connection) => {
-                                                                println!("WebTransport connected successfully!");
-                                                                *wt_conn_c.lock().unwrap() =
-                                                                    Some(connection);
-                                                                wt_connected_flag.store(true, std::sync::atomic::Ordering::Release);
-                                                            }
-                                                            Err(e) => {
-                                                                eprintln!("WebTransport connection to {}:{} failed: {:?}", host, port, e);
-                                                            }
-                                                        }
-                                                    }
-                                                    Err(e) => {
-                                                        eprintln!("Failed to construct WebTransport endpoint: {:?}", e);
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    });
-                                }
-                            }
+                            // WebTransport input starts once ICE is connected (below).
+                            let wt_target = if input_protocol == "webtransport" {
+                                webtransport_port.map(|port| (port, webtransport_cert_hash.clone()))
+                            } else {
+                                None
+                            };
 
                             let offer_codec = select_video_codec_for_offer(&codec_str, &sdp.sdp);
                             if offer_codec != codec_str {
@@ -4663,6 +4766,17 @@ async fn run_webrtc_client_task(
                                     continue;
                                 }
                             };
+
+                            if let Some((port, cert_hash)) = wt_target {
+                                tokio::spawn(connect_webtransport_input(
+                                    Arc::clone(&pc),
+                                    server_url.clone(),
+                                    port,
+                                    cert_hash,
+                                    Arc::clone(&wt_conn_ref),
+                                    Arc::clone(&wt_connected),
+                                ));
+                            }
 
                             match RTCSessionDescription::offer(sdp.sdp.clone()) {
                                 Ok(rtc_sdp) => {
@@ -4851,7 +4965,18 @@ async fn run_webrtc_client_task(
 
 #[cfg(test)]
 mod chroma_tests {
-    use super::{is_h264_444_fmtp, split_chroma_codec};
+    use super::{auto_codec_for_host, is_h264_444_fmtp, split_chroma_codec};
+
+    #[test]
+    fn auto_codec_needs_a_hardware_hevc_encoder_for_the_gpu() {
+        let list = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let all = list(&["h264_nvenc", "hevc_nvenc", "h264_vaapi", "hevc_vaapi", "libx264", "libx265"]);
+        assert_eq!(auto_codec_for_host(&all, Some("NVIDIA GeForce RTX 2070")), "h265");
+        assert_eq!(auto_codec_for_host(&all, Some("Intel Iris Xe Graphics")), "h265");
+        // nvenc compiled in but no NVIDIA GPU, no VAAPI HEVC: software only.
+        assert_eq!(auto_codec_for_host(&list(&["hevc_nvenc", "libx265", "libx264"]), Some("Intel UHD 620")), "h264");
+        assert_eq!(auto_codec_for_host(&all, None), "h264");
+    }
 
     #[test]
     fn splits_444_choice() {

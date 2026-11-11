@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { CHROMAS, CODECS, DEFAULT_BITRATE, DEFAULT_CODEC, FPS_OPTIONS, MOUSE_QUEUES, mouseQueueLabel } from './streamOptions';
 import { StreamPlayer } from './components/StreamPlayer';
 import { AdminUsers } from './components/AdminUsers';
 import { AdminGroups } from './components/AdminGroups';
@@ -18,6 +19,8 @@ type HostStreamSettings = {
   resolution: string;
   fps: number;
   codec: string;
+  /** '420' | '444' (4:4:4 is H.264 only) */
+  chroma: string;
   bitrate: number;
   mouseQueueLimit: number;
   inputProtocol: string;
@@ -31,8 +34,9 @@ type HostStreamSettings = {
 const loadHostStreamSettings = (): HostStreamSettings => ({
   resolution: localStorage.getItem('lunaris_stream_res') || '1080p',
   fps: Number(localStorage.getItem('lunaris_stream_fps') || '60'),
-  codec: localStorage.getItem('lunaris_stream_codec') || 'h264',
-  bitrate: Number(localStorage.getItem('lunaris_stream_bitrate') || '8000'),
+  codec: localStorage.getItem('lunaris_stream_codec') || DEFAULT_CODEC,
+  chroma: localStorage.getItem('lunaris_stream_chroma') === '444' ? '444' : '420',
+  bitrate: Number(localStorage.getItem('lunaris_stream_bitrate') || String(DEFAULT_BITRATE)),
   mouseQueueLimit: Number(localStorage.getItem('lunaris_mouse_queue_limit') || '256'),
   inputProtocol: localStorage.getItem('lunaris_input_protocol') || 'webrtc',
   useNativeClient: localStorage.getItem('lunaris_tauri_use_native') === 'true',
@@ -47,6 +51,7 @@ const saveHostStreamSettings = (settings: HostStreamSettings) => {
   localStorage.setItem('lunaris_stream_fps', String(settings.fps));
   localStorage.setItem('lunaris_stream_bitrate', String(settings.bitrate));
   localStorage.setItem('lunaris_stream_codec', settings.codec);
+  localStorage.setItem('lunaris_stream_chroma', settings.chroma);
   localStorage.setItem('lunaris_mouse_queue_limit', String(settings.mouseQueueLimit));
   localStorage.setItem('lunaris_input_protocol', settings.inputProtocol);
   localStorage.setItem('lunaris_tauri_use_native', String(settings.useNativeClient));
@@ -1313,22 +1318,19 @@ function App() {
               <div className="settings-group">
                 <label htmlFor="hostFps">Frame Rate</label>
                 <select id="hostFps" value={draftHostSettings.fps} onChange={(e) => updateDraftHostSettings('fps', Number(e.target.value))}>
-                  <option value={240}>240 FPS</option>
-                  <option value={144}>144 FPS</option>
-                  <option value={120}>120 FPS</option>
-                  <option value={90}>90 FPS</option>
-                  <option value={75}>75 FPS</option>
-                  <option value={60}>60 FPS</option>
-                  <option value={30}>30 FPS</option>
+                  {FPS_OPTIONS.map(f => <option key={f} value={f}>{f} FPS</option>)}
                 </select>
               </div>
               <div className="settings-group">
                 <label htmlFor="hostCodec">Video Codec</label>
                 <select id="hostCodec" value={draftHostSettings.codec} onChange={(e) => updateDraftHostSettings('codec', e.target.value)}>
-                  <option value="h264">H.264</option>
-                  <option value="h265">H.265 (HEVC)</option>
-                  <option value="av1">AV1</option>
-                  <option value="auto">Auto</option>
+                  {CODECS.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
+                </select>
+              </div>
+              <div className="settings-group">
+                <label htmlFor="hostChroma">Chroma</label>
+                <select id="hostChroma" value={draftHostSettings.chroma} onChange={(e) => updateDraftHostSettings('chroma', e.target.value)}>
+                  {CHROMAS.map(c => <option key={c.value} value={c.value}>{c.label}{c.value === '444' ? ' (H.264 only)' : ''}</option>)}
                 </select>
               </div>
               <div className="settings-group">
@@ -1365,12 +1367,7 @@ function App() {
               <div className="settings-group full-width">
                 <label htmlFor="hostMouseQueue">Mouse Queue Limit</label>
                 <select id="hostMouseQueue" value={draftHostSettings.mouseQueueLimit} onChange={(e) => updateDraftHostSettings('mouseQueueLimit', Number(e.target.value))}>
-                  <option value={0}>0 B (Strict No Queue)</option>
-                  <option value={64}>64 B (Ultra Low Buffer)</option>
-                  <option value={256}>256 B (Recommended)</option>
-                  <option value={1024}>1024 B (Moderate Buffer)</option>
-                  <option value={4096}>4096 B (High Buffer)</option>
-                  <option value={16384}>16384 B (Previous Default)</option>
+                  {MOUSE_QUEUES.map(q => <option key={q} value={q}>{mouseQueueLabel(q)}{q === 256 ? ' (Recommended)' : ''}</option>)}
                 </select>
               </div>
               <div className="settings-group full-width">

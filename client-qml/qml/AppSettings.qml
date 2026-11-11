@@ -84,8 +84,9 @@ Rectangle {
     }
 
     // Choice between a few values: segmented buttons.
-    component Segmented: Row {
+    component Segmented: Flow {
         id: seg
+        Layout.maximumWidth: 380
         property var options: []      // [{ value, label }]
         property var value
         signal picked(var value)
@@ -423,7 +424,7 @@ Rectangle {
                 SettingRow {
                     label: "Resolution"
                     Segmented {
-                        options: [{ value: "1280x720", label: "720p" }, { value: "1920x1080", label: "1080p" }, { value: "2560x1440", label: "1440p" }, { value: "3840x2160", label: "4K" }]
+                        options: StreamOptions.resolutions
                         value: settings.pref("res")
                         onPicked: (v) => settings.setPref("res", v)
                     }
@@ -431,27 +432,36 @@ Rectangle {
                 SettingRow {
                     label: "Frame rate"
                     Segmented {
-                        options: [{ value: 30, label: "30" }, { value: 60, label: "60" }, { value: 120, label: "120" }, { value: 144, label: "144" }]
+                        options: StreamOptions.fps.map(function (f) { return { value: f, label: String(f) }; })
                         value: settings.pref("fps")
                         onPicked: (v) => settings.setPref("fps", v)
                     }
                 }
                 SettingRow {
-                    label: "Quality (bitrate)"
+                    label: "Bitrate (Mbps)"
                     hint: "Higher looks sharper but needs a faster network."
                     Segmented {
-                        options: [{ value: 5000, label: "5" }, { value: 10000, label: "10" }, { value: 15000, label: "15" }, { value: 20000, label: "20" }, { value: 30000, label: "30" }, { value: 50000, label: "50 Mbps" }]
+                        options: StreamOptions.bitrates.map(function (b) { return { value: b, label: String(b / 1000) }; })
                         value: settings.pref("bitrate")
                         onPicked: (v) => settings.setPref("bitrate", v)
                     }
                 }
                 SettingRow {
-                    label: "Codec"
-                    hint: "H.264 4:4:4 keeps text crisp but is encoded in software unless the other computer has an NVIDIA GPU."
+                    label: "Video codec"
+                    hint: "Auto: H.265 when the other computer encodes it in hardware, else H.264."
                     Segmented {
-                        options: [{ value: "h264", label: "H.264" }, { value: "h264_444", label: "H.264 4:4:4" }, { value: "h265", label: "H.265" }, { value: "av1", label: "AV1" }]
-                        value: settings.pref("codec")
-                        onPicked: (v) => settings.setPref("codec", v)
+                        options: StreamOptions.codecs
+                        value: StreamOptions.codecPart(settings.pref("codec"))
+                        onPicked: (v) => settings.setPref("codec", StreamOptions.composeCodec(v, StreamOptions.chromaPart(settings.pref("codec"))))
+                    }
+                }
+                SettingRow {
+                    label: "Chroma"
+                    hint: "4:4:4 keeps coloured text sharp; H.264 only, encoded on NVIDIA or the CPU."
+                    Segmented {
+                        options: StreamOptions.chromas
+                        value: StreamOptions.chromaPart(settings.pref("codec"))
+                        onPicked: (v) => settings.setPref("codec", StreamOptions.composeCodec(StreamOptions.codecPart(settings.pref("codec")), v))
                     }
                 }
                 SettingRow {

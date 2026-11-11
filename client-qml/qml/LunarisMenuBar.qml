@@ -6,49 +6,8 @@ Item {
     width: 1080
     height: 48
 
-    property var fpsPresets: getSupportedFpsPresets()
-
-    function getSupportedFpsPresets() {
-        var maxRate = (Screen && Screen.refreshRate > 0) ? Math.ceil(Screen.refreshRate) : 60;
-        var allPresets = [240, 144, 120, 90, 60, 30];
-        var filtered = [];
-        
-        var insertedExact = false;
-        for (var i = 0; i < allPresets.length; i++) {
-            var preset = allPresets[i];
-            if (preset <= maxRate) {
-                if (!insertedExact && Math.abs(maxRate - preset) > 5 && maxRate > preset) {
-                    filtered.push(maxRate);
-                    insertedExact = true;
-                }
-                filtered.push(preset);
-            }
-        }
-        
-        if (!insertedExact && maxRate > 30 && filtered.indexOf(maxRate) === -1) {
-            var inserted = false;
-            for (var j = 0; j < filtered.length; j++) {
-                if (maxRate > filtered[j]) {
-                    filtered.splice(j, 0, maxRate);
-                    inserted = true;
-                    break;
-                }
-            }
-            if (!inserted) {
-                filtered.push(maxRate);
-            }
-        }
-        
-        if (filtered.indexOf(60) === -1) filtered.push(60);
-        if (filtered.indexOf(30) === -1) filtered.push(30);
-        
-        filtered = filtered.filter(function(item, pos) {
-            return filtered.indexOf(item) === pos;
-        });
-        filtered.sort(function(a, b) { return b - a; });
-        
-        return filtered;
-    }
+    // Same choices as the web client (StreamOptions).
+    property var fpsPresets: StreamOptions.fps
     
     // Custom signals
     signal fullscreenToggled()
@@ -181,40 +140,14 @@ Item {
         fpsComboBox.currentIndex = fpsIdx !== -1 ? fpsIdx : fallbackIdx;
 
         // Set Bitrate combobox (bitrate is in kbps)
-        var bitratePresets = [2000, 5000, 8000, 10000, 15000, 20000, 30000, 50000, 75000, 100000, 150000];
-        var brIdx = -1;
-        var closestDiff = 999999;
-        for (var i = 0; i < bitratePresets.length; i++) {
-            var diff = Math.abs(bitratePresets[i] - bitrate);
-            if (diff < closestDiff) {
-                closestDiff = diff;
-                brIdx = i;
-            }
-        }
-        bitrateComboBox.currentIndex = brIdx !== -1 ? brIdx : 2; // Default to 8 Mbps
+        bitrateComboBox.currentIndex = StreamOptions.nearestIndex(StreamOptions.bitrates, bitrate);
 
         // Set Codec combobox
-        var c = codec.toLowerCase();
-        if (c === "h264_444") {
-            codecComboBox.currentIndex = 3;
-        } else if (c === "h264") {
-            codecComboBox.currentIndex = 0;
-        } else if (c === "h265" || c === "hevc") {
-            codecComboBox.currentIndex = 1;
-        } else if (c === "av1") {
-            codecComboBox.currentIndex = 2;
-        }
+        codecComboBox.currentIndex = StreamOptions.indexOfValue(StreamOptions.codecs, StreamOptions.codecPart(codec));
+        chromaComboBox.currentIndex = StreamOptions.indexOfValue(StreamOptions.chromas, StreamOptions.chromaPart(codec));
 
         // Set Queue Limit combobox
-        if (queueLimit <= 128) {
-            queueComboBox.currentIndex = 0;
-        } else if (queueLimit <= 256) {
-            queueComboBox.currentIndex = 1;
-        } else if (queueLimit <= 512) {
-            queueComboBox.currentIndex = 2;
-        } else {
-            queueComboBox.currentIndex = 3;
-        }
+        queueComboBox.currentIndex = StreamOptions.nearestIndex(StreamOptions.mouseQueues, queueLimit);
 
         decoderComboBox.currentIndex = renderBackendIndex(renderBackend, disableCuda);
 
@@ -235,14 +168,13 @@ Item {
 
         var selectedFps = menuContainer.fpsPresets[fpsComboBox.currentIndex];
 
-        var bitrateMap = [2000, 5000, 8000, 10000, 15000, 20000, 30000, 50000, 75000, 100000, 150000];
-        var selectedBitrate = bitrateMap[bitrateComboBox.currentIndex];
+        var selectedBitrate = StreamOptions.bitrates[bitrateComboBox.currentIndex];
 
-        var codecMap = ["h264", "h265", "av1", "h264_444"];
-        var selectedCodec = codecMap[codecComboBox.currentIndex];
+        var selectedCodec = StreamOptions.composeCodec(
+            StreamOptions.codecs[codecComboBox.currentIndex].value,
+            StreamOptions.chromas[chromaComboBox.currentIndex].value);
 
-        var queueMap = [128, 256, 512, 1024];
-        var selectedQueue = queueMap[queueComboBox.currentIndex];
+        var selectedQueue = StreamOptions.mouseQueues[queueComboBox.currentIndex];
 
         var selectedRenderBackend = currentRenderBackend();
         var selectedDisableCuda = (selectedRenderBackend === "software");
@@ -350,7 +282,7 @@ Item {
             LunarisComboBox {
                 id: bitrateComboBox
                 customWidth: 95
-                model: ["2 Mbps", "5 Mbps", "8 Mbps", "10 Mbps", "15 Mbps", "20 Mbps", "30 Mbps", "50 Mbps", "75 Mbps", "100 Mbps", "150 Mbps"]
+                model: StreamOptions.bitrates.map(function(v) { return StreamOptions.bitrateLabel(v); })
                 anchors.verticalCenter: parent.verticalCenter
                 LunarisToolTip { text: "Stream Bitrate Limit" }
                 onActivated: menuContainer.applyCurrentSettings()
@@ -359,10 +291,20 @@ Item {
             // Codec Dropdown
             LunarisComboBox {
                 id: codecComboBox
-                customWidth: 96
-                model: ["H264", "H265", "AV1", "H264 4:4:4"]
+                customWidth: 80
+                model: StreamOptions.codecs.map(function(c) { return c.label; })
                 anchors.verticalCenter: parent.verticalCenter
-                LunarisToolTip { text: "Video codec (H264 4:4:4: sharp coloured text, decoded on the CPU)" }
+                LunarisToolTip { text: "Video codec (Auto: H.265 when the other computer encodes it in hardware, else H.264)" }
+                onActivated: menuContainer.applyCurrentSettings()
+            }
+
+            // Chroma Dropdown
+            LunarisComboBox {
+                id: chromaComboBox
+                customWidth: 72
+                model: StreamOptions.chromas.map(function(c) { return c.label; })
+                anchors.verticalCenter: parent.verticalCenter
+                LunarisToolTip { text: "Chroma (4:4:4: sharp coloured text, H.264 only, decoded on the CPU)" }
                 onActivated: menuContainer.applyCurrentSettings()
             }
 
@@ -380,7 +322,7 @@ Item {
             LunarisComboBox {
                 id: queueComboBox
                 customWidth: 80
-                model: ["128 B", "256 B", "512 B", "1024 B"]
+                model: StreamOptions.mouseQueues.map(function(v) { return v + " B"; })
                 anchors.verticalCenter: parent.verticalCenter
                 LunarisToolTip { text: "Mouse Queue Limit" }
                 onActivated: menuContainer.applyCurrentSettings()

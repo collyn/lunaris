@@ -1,4 +1,5 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { BITRATES, CHROMAS, bitrateLabel } from '../streamOptions';
 
 const getBackendHost = () => {
   const savedHost = localStorage.getItem('lunaris_server_host');
@@ -497,6 +498,10 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
 
   const getCodecDecision = (requestedCodec: string = activeCodec): { requested: CodecChoice; resolved: CodecName; fellBack: boolean; reason?: string } => {
     const requested = normalizeCodecChoice(requestedCodec);
+    // 4:4:4 chroma exists for H.264 only (the desktop app does the same).
+    if (activeChroma === '444' && supportedCodecs.h264) {
+      return { requested, resolved: 'h264', fellBack: requested !== 'h264' && requested !== 'auto', reason: requested !== 'h264' && requested !== 'auto' ? '4:4:4 chroma is H.264 only' : undefined };
+    }
     const resolved = requested === 'auto' ? resolveAutoCodec() : requested;
 
     if (requested !== 'auto' && !supportedCodecs[resolved]) {
@@ -1334,9 +1339,6 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
             if (candIp && !agentIpsRef.current.includes(candIp)) {
               agentIpsRef.current.push(candIp);
               addLog(`Found remote candidate IP: ${candIp}`);
-              if (activeInputProtocol === "webtransport" && !wtRef.current && wtPortRef.current && wtCertHashRef.current) {
-                attemptWebTransport();
-              }
             }
             if (pcRef.current) {
               try {
@@ -1864,6 +1866,25 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     };
   };
 
+  /** Remote address of the ICE candidate pair in use (not a TURN relay). */
+  const selectedRemoteIp = async (): Promise<string | null> => {
+    const pc = pcRef.current;
+    if (!pc) return null;
+    try {
+      const stats = await pc.getStats();
+      let ip: string | null = null;
+      const fromPair = (pair: any) => {
+        const remote = pair && stats.get(pair.remoteCandidateId);
+        if (remote && remote.candidateType !== 'relay') ip = remote.address || remote.ip || null;
+      };
+      stats.forEach((s: any) => { if (!ip && s.type === 'transport' && s.selectedCandidatePairId) fromPair(stats.get(s.selectedCandidatePairId)); });
+      stats.forEach((s: any) => { if (!ip && s.type === 'candidate-pair' && s.nominated && s.state === 'succeeded') fromPair(s); });
+      return ip;
+    } catch {
+      return null;
+    }
+  };
+
   const attemptWebTransport = async () => {
     if (wtRef.current || wtConnectingRef.current) return;
     if (!wtPortRef.current || !wtCertHashRef.current) return;
@@ -1872,15 +1893,13 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     const port = wtPortRef.current;
     const certHash = wtCertHashRef.current;
     
-    // Build list of IPs to try
-    const ips = [...agentIpsRef.current];
-    const sigHost = getBackendHost().split(':')[0];
-    if (!ips.includes(sigHost)) {
-      ips.push(sigHost);
-    }
-    if (!ips.includes("127.0.0.1")) {
-      ips.push("127.0.0.1");
-    }
+    // The agent address ICE connected to comes first (it is reachable);
+    // then the agent's other candidate addresses and the server's host.
+    const ips: string[] = [];
+    const add = (ip: string | null | undefined) => { if (ip && !ips.includes(ip)) ips.push(ip); };
+    add(await selectedRemoteIp());
+    agentIpsRef.current.forEach(add);
+    add(getBackendHost().split(':')[0]);
     
     addLog(`Attempting WebTransport connection with IPs: ${ips.join(', ')} on port ${port}`);
     
@@ -2052,9 +2071,8 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     
     wtPortRef.current = webtransportPort;
     wtCertHashRef.current = webtransportCertHash;
-    if (activeInputProtocol === "webtransport" && webtransportPort && webtransportCertHash) {
-      attemptWebTransport();
-    }
+    // WebTransport starts once ICE is connected (oniceconnectionstatechange):
+    // the selected candidate pair then tells which agent address works.
     
     // Create RTCPeerConnection
     const pc = new RTCPeerConnection({
@@ -2076,6 +2094,9 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       setStats(prev => ({ ...prev, iceState: pc.iceConnectionState }));
       if (pc.iceConnectionState === 'connected') {
         setStatus("Streaming");
+        if (activeInputProtocol === "webtransport" && !wtRef.current && wtPortRef.current && wtCertHashRef.current) {
+          attemptWebTransport();
+        }
       }
     };
 
@@ -2627,6 +2648,12 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       setActiveCodec(value);
       setDraftCodec(value);
       if (value !== activeCodec) setStatus("Connecting...");
+    } else if (key === 'chroma') {
+      const chroma = value === '444' ? '444' : '420';
+      localStorage.setItem('lunaris_stream_chroma', chroma);
+      setActiveChroma(chroma);
+      setDraftChroma(chroma);
+      if (chroma !== activeChroma) setStatus("Connecting...");
     } else if (key === 'mouseQueueLimit') {
       const numValue = Number(value);
       localStorage.setItem('lunaris_mouse_queue_limit', String(numValue));
@@ -4580,18 +4607,8 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
           className="stream-select"
           title="Bitrate"
         >
-          <option value={2000}>2 Mbps</option>
-          <option value={5000}>5 Mbps</option>
-          <option value={10000}>10 Mbps</option>
-          <option value={15000}>15 Mbps</option>
-          <option value={20000}>20 Mbps</option>
-          <option value={30000}>30 Mbps</option>
-          <option value={40000}>40 Mbps</option>
-          <option value={50000}>50 Mbps</option>
-          <option value={75000}>75 Mbps</option>
-          <option value={100000}>100 Mbps</option>
-          <option value={150000}>150 Mbps</option>
-          {![2000, 5000, 10000, 15000, 20000, 30000, 40000, 50000, 75000, 100000, 150000].includes(activeBitrate) && (
+          {BITRATES.map(b => <option key={b} value={b}>{bitrateLabel(b)}</option>)}
+          {!BITRATES.includes(activeBitrate) && (
             <option value={activeBitrate}>{(activeBitrate / 1000).toFixed(1)} Mbps</option>
           )}
         </select>
@@ -4607,6 +4624,16 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
           <option value="h264" disabled={!supportedCodecs.h264}>H264</option>
           <option value="h265" disabled={!supportedCodecs.h265}>H265</option>
           <option value="av1" disabled={!supportedCodecs.av1}>AV1</option>
+        </select>
+
+        {/* Chroma Dropdown (4:4:4 is H.264 only, like the desktop app) */}
+        <select
+          value={activeChroma}
+          onChange={(e) => updateSetting('chroma', e.target.value)}
+          className="stream-select"
+          title="Chroma (4:4:4: sharp coloured text, H.264 only)"
+        >
+          {CHROMAS.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
         </select>
 
         {/* Mouse Queue Limit Dropdown */}

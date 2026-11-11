@@ -1299,12 +1299,32 @@ pub async fn setup_bridge_session(
                 .map(|b| format!("{:02x}", b))
                 .collect::<String>();
 
-            let config = wtransport::ServerConfig::builder()
-                .with_bind_default(agent_config.webtransport_port)
-                .with_identity(identity)
-                .build();
+            // The previous session's endpoint may still hold the port for a
+            // moment: retry, then take any free port (the offer carries the
+            // port, so clients follow it).
+            let mut bound = None;
+            for attempt in 0..=10u32 {
+                let port = if attempt < 10 { agent_config.webtransport_port } else { 0 };
+                let config = wtransport::ServerConfig::builder()
+                    .with_bind_default(port)
+                    .with_identity(identity.clone_identity())
+                    .build();
+                match wtransport::Endpoint::server(config) {
+                    Ok(endpoint) => {
+                        bound = Some(Ok(endpoint));
+                        break;
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::AddrInUse && attempt < 10 => {
+                        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                    }
+                    Err(e) => {
+                        bound = Some(Err(e));
+                        break;
+                    }
+                }
+            }
 
-            match wtransport::Endpoint::server(config) {
+            match bound.expect("the loop always sets it") {
                 Ok(endpoint) => {
                     if let Ok(addr) = endpoint.local_addr() {
                         let port = addr.port();
