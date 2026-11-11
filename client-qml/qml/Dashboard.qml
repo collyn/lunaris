@@ -48,6 +48,17 @@ Rectangle {
     }
 
 
+    // Remote control of `host` in the browser: the web console signed in as
+    // this app's user (session in the URL fragment, never sent to the
+    // server) connecting straight to the computer.
+    function openHostInBrowser(host) {
+        Qt.openUrlExternally(String(dashboardRoot.serverUrl).replace(/\/+$/, "")
+            + "/#session=" + encodeURIComponent(dashboardRoot.token)
+            + "&user=" + encodeURIComponent(dashboardRoot.username)
+            + "&connect=" + encodeURIComponent(host.id)
+            + "&name=" + encodeURIComponent(host.name));
+    }
+
     // Connect straight to a computer's desktop (app 0, the only one an
     // agent offers) with the current stream settings.
     function connectHost(host) {
@@ -734,7 +745,7 @@ Rectangle {
                         width: 260
                         height: 180
 
-                        property bool isHostHovered: cardMouseArea.containsMouse || gearBtn.hovered || deleteBtn.hovered || connectBtn.hovered
+                        property bool isHostHovered: cardMouseArea.containsMouse || webBtn.hovered || gearBtn.hovered || deleteBtn.hovered || connectBtn.hovered
 
                         // Static background click handler to avoid hover-translation flicker
                         MouseArea {
@@ -858,6 +869,28 @@ Rectangle {
                                     anchors.bottom: parent.bottom
                                     spacing: 8
                                     z: 10
+
+                                    // Remote control in the browser (web console, signed in)
+                                    Button {
+                                        id: webBtn
+                                        visible: modelData.status === "Online"
+                                        hoverEnabled: true
+                                        ToolTip.visible: hovered
+                                        ToolTip.delay: 400
+                                        ToolTip.text: "Open in the browser"
+                                        Accessible.name: "Open in the browser"
+                                        onClicked: dashboardRoot.openHostInBrowser(modelData)
+                                        background: Rectangle {
+                                            implicitWidth: 32; implicitHeight: 32; radius: 6
+                                            color: webBtn.hovered ? Theme.accentA(0.1) : "transparent"
+                                            border.color: webBtn.hovered ? Theme.accentFg : "transparent"
+                                            border.width: 1
+                                        }
+                                        contentItem: Item {
+                                            implicitWidth: 16; implicitHeight: 16
+                                            Icon { anchors.centerIn: parent; name: "globe"; size: 17; color: webBtn.hovered ? Theme.accentFg : Theme.text }
+                                        }
+                                    }
 
                                     // Settings Gear Icon (Sleek custom vector gear)
                                     Button {

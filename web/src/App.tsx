@@ -132,6 +132,13 @@ const adoptSessionFromApp = () => {
     // The role comes from /api/auth/me; this page's own server is the server.
     localStorage.removeItem('lunaris_role');
     localStorage.removeItem('lunaris_server_host');
+    // `connect=<host id>`: start remote control of that computer right away
+    // (the auto-launch keys App reads on load).
+    const connect = params.get('connect');
+    if (connect) {
+      localStorage.setItem('lunaris_auto_launch_host_id', connect);
+      localStorage.setItem('lunaris_auto_launch_host_name', params.get('name') || 'Remote computer');
+    }
   }
   window.history.replaceState(null, '', window.location.pathname + window.location.search);
 };
@@ -176,6 +183,8 @@ function App() {
         }
       }
 
+      // The desktop (app 0, the only one an agent offers): no app picker.
+      setSelectedAppId(0);
       setSelectedHost({
         id: qHostId,
         name: qHostName,
