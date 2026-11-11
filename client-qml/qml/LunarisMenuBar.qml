@@ -515,21 +515,21 @@ Item {
                 }
             }
 
-            // Send files to the remote computer
+            // Files of the remote computer (file manager, own connection)
             Button {
                 id: sendFileButton
                 width: 28
                 height: 28
                 padding: 0
                 anchors.verticalCenter: parent.verticalCenter
-                LunarisToolTip { text: I18n.t("Send files to the remote computer (or drop them on the stream)") }
+                LunarisToolTip { text: I18n.t("Files on the remote computer (or drop files on the stream)") }
                 background: Rectangle {
                     anchors.fill: parent
                     color: sendFileButton.hovered ? Theme.live.ink(0.12) : "transparent"
                     radius: 14
                 }
                 contentItem: Item {
-                    Icon { anchors.centerIn: parent; name: "upload"; size: 16; color: Theme.live.text }
+                    Icon { anchors.centerIn: parent; name: "folder"; size: 16; color: Theme.live.text }
                 }
                 onClicked: {
                     menuContainer.sendFilesRequested();

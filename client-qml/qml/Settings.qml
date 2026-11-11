@@ -449,13 +449,13 @@ Rectangle {
                 visible: settingsRoot.category === "sharing"
                 SettingRow {
                     divider: false
-                    title: I18n.t("Send files")
-                    hint: I18n.t("Drop files on the stream or use the send button in the menu; they are saved in Downloads/Lunaris on the remote computer.")
+                    title: I18n.t("File transfer")
+                    hint: I18n.t("Browse the remote computer and copy files both ways with the Files button (session menu or computer card); files dropped on the stream go to its Downloads/Lunaris. Transfers use a connection of their own, so the stream stays smooth.")
                     Toggle {
                         anchors.right: parent.right
                         checked: ViewPrefs.fileTransfer
                         onToggled: ViewPrefs.fileTransfer = checked
-                        Accessible.name: I18n.t("Send files")
+                        Accessible.name: I18n.t("File transfer")
                     }
                 }
             }

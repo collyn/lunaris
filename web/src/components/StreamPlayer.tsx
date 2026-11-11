@@ -4,6 +4,7 @@ import StreamSettingsDialog, { type StreamSettingsValues, type ViewerSettings } 
 import { t } from '../i18n';
 import { WebShare, readClipboardSync, readFileTransfer } from '../share';
 import { GamepadSender } from '../gamepad';
+import FileManager from './FileManager';
 
 const getBackendHost = () => {
   const savedHost = localStorage.getItem('lunaris_server_host');
@@ -624,7 +625,9 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   const [clipboardSync, setClipboardSync] = useState<boolean>(readClipboardSync);
   const [fileTransfer, setFileTransfer] = useState<boolean>(readFileTransfer);
   const [isDraggingFiles, setIsDraggingFiles] = useState(false);
-  const sendFileInputRef = useRef<HTMLInputElement | null>(null);
+  // File manager on its own connection (FileManager.tsx); files dropped on
+  // the stream go to the remote computer's Downloads/Lunaris through it.
+  const [fileManager, setFileManager] = useState<{ uploads?: File[] } | null>(null);
 
   useEffect(() => {
     const onPaste = (e: ClipboardEvent) => {
@@ -1613,7 +1616,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
         return;
       }
 
-      if (showSettingsModal) return;
+      if (showSettingsModal || fileManager) return;
 
       // ESC hold-to-exit for pointer lock (requires keyboard.lock to be active).
       // When the browser has granted keyboard lock, pressing ESC does not
@@ -1664,7 +1667,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
         return;
       }
 
-      if (showSettingsModal) return;
+      if (showSettingsModal || fileManager) return;
 
       // Cancel the ESC hold timer on release
       if (e.code === 'Escape' && isPointerLockedRef.current) {
@@ -1690,7 +1693,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       window.removeEventListener('keydown', handleGlobalKeyDown);
       window.removeEventListener('keyup', handleGlobalKeyUp);
     };
-  }, [status, showSettingsModal]);
+  }, [status, showSettingsModal, fileManager]);
 
   // WebRTC Stats Polling (Ping/RTT, Decode Latency, FPS, Bitrate)
   useEffect(() => {
@@ -4207,24 +4210,23 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
         if (!e.dataTransfer.files.length) return;
         e.preventDefault();
         setIsDraggingFiles(false);
-        void shareRef.current?.sendFiles(Array.from(e.dataTransfer.files));
+        if (!fileTransfer) { showShareToast(t('File transfer is turned off in Settings')); return; }
+        setFileManager({ uploads: Array.from(e.dataTransfer.files) });
       }}
     >
       {isDraggingFiles && (
         <div className="share-drop-hint">{fileTransfer ? t('Drop to send to the remote computer (Downloads/Lunaris)') : t('File transfer is turned off in Settings')}</div>
       )}
       {shareToast && <div className="share-toast" role="status">{shareToast}</div>}
-      <input
-        ref={sendFileInputRef}
-        type="file"
-        multiple
-        style={{ display: 'none' }}
-        onChange={(e) => {
-          const files = Array.from(e.target.files || []);
-          e.target.value = '';
-          void shareRef.current?.sendFiles(files);
-        }}
-      />
+      {fileManager && (
+        <FileManager
+          hostId={hostId}
+          hostName={hostName}
+          wsUrl={`${getBackendProtocol().ws}//${getBackendHost()}/ws/client?token=${encodeURIComponent(token)}`}
+          initialUploads={fileManager.uploads}
+          onClose={() => setFileManager(null)}
+        />
+      )}
       {/* Settings Modal Overlay */}
       {showSettingsModal && (
         <StreamSettingsDialog
@@ -4544,10 +4546,10 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
 
         {/* Send files to the remote computer */}
         <button
-          onClick={() => sendFileInputRef.current?.click()}
+          onClick={() => fileTransfer ? setFileManager({}) : showShareToast(t('File transfer is turned off in Settings'))}
           className="stream-action-btn"
-          title={t('Send files to the remote computer (or drop them on the stream)')}
-          aria-label={t('Send files to the remote computer')}
+          title={t('Files on the remote computer (or drop files on the stream)')}
+          aria-label={t('Files on the remote computer')}
         >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
             <path d="M12 16V4M7 9l5-5 5 5M4 16v4h16v-4" />

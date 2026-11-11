@@ -894,6 +894,28 @@ Rectangle {
                                         }
                                     }
 
+                                    // Files of the computer (own connection, FileManager.qml)
+                                    Button {
+                                        id: filesBtn
+                                        visible: modelData.status === "Online" || modelData.status === "Busy"
+                                        hoverEnabled: true
+                                        ToolTip.visible: hovered
+                                        ToolTip.delay: 400
+                                        ToolTip.text: I18n.t("Files")
+                                        Accessible.name: "Files"
+                                        onClicked: fileManager.openFor(dashboardRoot.serverUrl, dashboardRoot.token, modelData.id, modelData.name)
+                                        background: Rectangle {
+                                            implicitWidth: 32; implicitHeight: 32; radius: 6
+                                            color: filesBtn.hovered ? Theme.accentA(0.1) : "transparent"
+                                            border.color: filesBtn.hovered ? Theme.accentFg : "transparent"
+                                            border.width: 1
+                                        }
+                                        contentItem: Item {
+                                            implicitWidth: 16; implicitHeight: 16
+                                            Icon { anchors.centerIn: parent; name: "folder"; size: 17; color: filesBtn.hovered ? Theme.accentFg : Theme.text }
+                                        }
+                                    }
+
                                     // Settings Gear Icon (Sleek custom vector gear)
                                     Button {
                                         id: gearBtn

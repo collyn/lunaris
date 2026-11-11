@@ -17,6 +17,7 @@ use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 mod bridge;
 mod buffer;
 pub mod direct;
+mod files;
 mod gamepad;
 mod hub;
 mod input;
@@ -561,8 +562,72 @@ async fn run_session_logic(
     let active_session: Arc<Mutex<Option<Arc<BridgeSession>>>> = Arc::new(Mutex::new(None));
     // The client connection that owns `active_session`.
     let mut active_client: Option<String> = None;
+    // File-transfer connections (files.rs), by client connection; any number,
+    // beside the stream.
+    let mut file_sessions: std::collections::HashMap<String, Arc<webrtc::peer_connection::RTCPeerConnection>> =
+        std::collections::HashMap::new();
 
     while let Some(sig) = inbound.recv().await {
+        // Answers, candidates and ends of file sessions go to them.
+        let sig = match sig {
+            SignalingMessage::IncomingFileSession { client_id, ice_servers } => {
+                info!("File transfer session requested by {}", client_id);
+                if let Some(old) = file_sessions.remove(&client_id) {
+                    let _ = old.close().await;
+                }
+                match files::start(client_id.clone(), agent_tx.clone(), ice_servers, config.allow_file_transfer).await {
+                    Ok((pc, sdp)) => {
+                        file_sessions.insert(client_id.clone(), pc);
+                        let _ = agent_tx.send(AgentMessage::Signaling(SignalingMessage::Sdp {
+                            target_id: client_id,
+                            sdp: RtcSessionDescription { ty: RtcSdpType::Offer, sdp },
+                            ice_servers: None,
+                            webtransport_port: None,
+                            webtransport_cert_hash: None,
+                        }));
+                    }
+                    Err(e) => {
+                        error!("Could not start a file session: {:?}", e);
+                        let _ = agent_tx.send(AgentMessage::Signaling(SignalingMessage::Error {
+                            message: format!("Could not start file transfer: {}", e),
+                        }));
+                    }
+                }
+                continue;
+            }
+            SignalingMessage::Sdp { ref target_id, ref sdp, .. } if file_sessions.contains_key(target_id) => {
+                let pc = file_sessions[target_id].clone();
+                match RTCSessionDescription::answer(sdp.sdp.clone()) {
+                    Ok(answer) => {
+                        if let Err(e) = pc.set_remote_description(answer).await {
+                            error!("File session: bad answer: {:?}", e);
+                        }
+                    }
+                    Err(e) => error!("File session: bad answer: {:?}", e),
+                }
+                continue;
+            }
+            SignalingMessage::IceCandidate { ref target_id, ref candidate } if file_sessions.contains_key(target_id) => {
+                let pc = file_sessions[target_id].clone();
+                let _ = pc
+                    .add_ice_candidate(RTCIceCandidateInit {
+                        candidate: candidate.candidate.clone(),
+                        sdp_mid: candidate.sdp_mid.clone(),
+                        sdp_mline_index: candidate.sdp_mline_index,
+                        username_fragment: candidate.username_fragment.clone(),
+                    })
+                    .await;
+                continue;
+            }
+            SignalingMessage::EndSession { ref target_id } if file_sessions.contains_key(target_id) => {
+                info!("File transfer session ended by {}", target_id);
+                if let Some(pc) = file_sessions.remove(target_id) {
+                    let _ = pc.close().await;
+                }
+                continue;
+            }
+            other => other,
+        };
         match sig {
             SignalingMessage::IncomingSession {
                 client_id,

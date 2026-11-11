@@ -219,6 +219,17 @@ pub enum SignalingMessage {
         chroma: Option<String>,
         ice_servers: Option<Vec<RtcIceServer>>,
     },
+    /// Client: a file-transfer connection to `host_id`, separate from any
+    /// stream (agent/src/files.rs). Sent on its own signaling connection.
+    RequestFileSession {
+        host_id: String,
+    },
+    /// Server/hub -> agent: a client wants a file-transfer connection.
+    IncomingFileSession {
+        client_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ice_servers: Option<Vec<RtcIceServer>>,
+    },
     // SDP / ICE Exchange
     Sdp {
         target_id: String,

@@ -98,8 +98,8 @@ pub fn spawn_router(hub: Arc<Hub>) -> (mpsc::UnboundedSender<AgentMessage>, toki
 pub fn target_of(sig: &SignalingMessage) -> Option<&str> {
     use SignalingMessage::*;
     match sig {
-        RequestSession { host_id, .. } => Some(host_id),
-        IncomingSession { client_id, .. } => Some(client_id),
+        RequestSession { host_id, .. } | RequestFileSession { host_id } => Some(host_id),
+        IncomingSession { client_id, .. } | IncomingFileSession { client_id, .. } => Some(client_id),
         Sdp { target_id, .. }
         | IceCandidate { target_id, .. }
         | EndSession { target_id }
@@ -120,8 +120,8 @@ pub fn target_of(sig: &SignalingMessage) -> Option<&str> {
 pub fn with_target(mut sig: SignalingMessage, target: &str) -> SignalingMessage {
     use SignalingMessage::*;
     match &mut sig {
-        RequestSession { host_id, .. } => *host_id = target.to_string(),
-        IncomingSession { client_id, .. } => *client_id = target.to_string(),
+        RequestSession { host_id, .. } | RequestFileSession { host_id } => *host_id = target.to_string(),
+        IncomingSession { client_id, .. } | IncomingFileSession { client_id, .. } => *client_id = target.to_string(),
         Sdp { target_id, .. }
         | IceCandidate { target_id, .. }
         | EndSession { target_id }
@@ -170,6 +170,10 @@ pub fn from_direct_client(sig: SignalingMessage, conn_id: &str) -> Option<Signal
             display_id,
             virtual_display,
             chroma,
+            ice_servers: None,
+        }),
+        RequestFileSession { .. } => Some(IncomingFileSession {
+            client_id: conn_id.to_string(),
             ice_servers: None,
         }),
         Sdp {

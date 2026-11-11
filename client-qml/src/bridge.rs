@@ -333,6 +333,21 @@ fn clear_settings() {
     let _ = std::fs::remove_file(path);
 }
 
+/// Paths or file:// URLs, one per line.
+fn local_paths(text: &str) -> Vec<std::path::PathBuf> {
+    text.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(|l| {
+            url::Url::parse(l)
+                .ok()
+                .filter(|u| u.scheme() == "file")
+                .and_then(|u| u.to_file_path().ok())
+                .unwrap_or_else(|| std::path::PathBuf::from(l))
+        })
+        .collect()
+}
+
 /// The last direct connection (no server), remembered like the login.
 #[derive(serde::Serialize, serde::Deserialize, Default)]
 struct DirectTarget {
@@ -1083,10 +1098,44 @@ pub mod qobject {
         #[qinvokable]
         fn vibrate_gamepad(self: Pin<&mut StreamBridge>, slot: i32);
 
-        /// Sends files (newline-separated paths or file:// URLs) to the
-        /// remote computer; progress comes through share_status.
+        /// File transfer on its own connection (files.rs) for the file
+        /// manager page. Open for a computer, or for the one being streamed.
         #[qinvokable]
-        fn send_files(self: Pin<&mut StreamBridge>, files: QString);
+        fn files_open(self: Pin<&mut StreamBridge>, server_url: QString, token: QString, host_id: QString, host_name: QString);
+        #[qinvokable]
+        fn files_open_current(self: Pin<&mut StreamBridge>) -> bool;
+        #[qinvokable]
+        fn files_close(self: Pin<&mut StreamBridge>);
+        /// Changes when files_state changes.
+        #[qinvokable]
+        fn files_version(self: Pin<&mut StreamBridge>) -> i32;
+        #[qinvokable]
+        fn files_state(self: Pin<&mut StreamBridge>) -> QString;
+        #[qinvokable]
+        fn files_list_remote(self: Pin<&mut StreamBridge>, path: QString, hidden: bool);
+        /// "mkdir" | "remove" | "rename" (name: the new name).
+        #[qinvokable]
+        fn files_remote_op(self: Pin<&mut StreamBridge>, op: QString, path: QString, name: QString);
+        #[qinvokable]
+        fn files_local_places(self: Pin<&mut StreamBridge>) -> QString;
+        #[qinvokable]
+        fn files_list_local(self: Pin<&mut StreamBridge>, path: QString, hidden: bool) -> QString;
+        /// Returns "" or an error message.
+        #[qinvokable]
+        fn files_local_op(self: Pin<&mut StreamBridge>, op: QString, path: QString, name: QString) -> QString;
+        /// Local paths or file:// URLs (one per line) -> the remote folder.
+        #[qinvokable]
+        fn files_upload(self: Pin<&mut StreamBridge>, paths: QString, remote_dir: QString);
+        /// Files dropped on the stream -> the remote Downloads/Lunaris.
+        #[qinvokable]
+        fn files_upload_dropped(self: Pin<&mut StreamBridge>, paths: QString);
+        /// Remote names (one per line) in remote_dir -> the local folder.
+        #[qinvokable]
+        fn files_download(self: Pin<&mut StreamBridge>, names: QString, remote_dir: QString, local_dir: QString);
+        #[qinvokable]
+        fn files_cancel(self: Pin<&mut StreamBridge>, id: QString);
+        #[qinvokable]
+        fn files_clear_finished(self: Pin<&mut StreamBridge>);
 
         /// A small JSON store of the app ("app_settings", "peers"); "" if none.
         #[qinvokable]
@@ -1245,7 +1294,6 @@ impl qobject::StreamBridge {
     }
 
     pub fn stop_stream(mut self: Pin<&mut Self>) {
-        crate::share::detach();
         crate::gamepad::detach();
         println!("Stopping stream and releasing signaling runtime...");
         qobject::set_cuda_stream_active(false);
@@ -2712,26 +2760,72 @@ impl qobject::StreamBridge {
         crate::gamepad::vibrate(slot);
     }
 
-    pub fn send_files(self: Pin<&mut Self>, files: QString) {
-        let paths: Vec<std::path::PathBuf> = files
-            .to_string()
-            .lines()
-            .map(str::trim)
-            .filter(|l| !l.is_empty())
-            .map(|l| {
-                url::Url::parse(l)
-                    .ok()
-                    .filter(|u| u.scheme() == "file")
-                    .and_then(|u| u.to_file_path().ok())
-                    .unwrap_or_else(|| std::path::PathBuf::from(l))
-            })
-            .collect();
-        if paths.is_empty() {
-            return;
+    pub fn files_open(self: Pin<&mut Self>, server_url: QString, token: QString, host_id: QString, host_name: QString) {
+        crate::files::open(server_url.to_string(), token.to_string(), host_id.to_string(), host_name.to_string());
+    }
+
+    pub fn files_open_current(self: Pin<&mut Self>) -> bool {
+        let args = ACTIVE_CONFIG.lock().unwrap().clone().or_else(|| APP_ARGS.get().cloned());
+        match args {
+            Some(a) if !a.server_url.is_empty() => {
+                crate::files::open(a.server_url, a.token, a.host_id, a.host_name);
+                true
+            }
+            _ => false,
         }
-        let mut rust_obj = self.rust_mut();
-        let rt = rust_obj.get_or_init_runtime();
-        rt.spawn(crate::share::send_files(paths));
+    }
+
+    pub fn files_close(self: Pin<&mut Self>) {
+        crate::files::close();
+    }
+
+    pub fn files_version(self: Pin<&mut Self>) -> i32 {
+        crate::files::version() as i32
+    }
+
+    pub fn files_state(self: Pin<&mut Self>) -> QString {
+        QString::from(&crate::files::state_json())
+    }
+
+    pub fn files_list_remote(self: Pin<&mut Self>, path: QString, hidden: bool) {
+        crate::files::list_remote(path.to_string(), hidden);
+    }
+
+    pub fn files_remote_op(self: Pin<&mut Self>, op: QString, path: QString, name: QString) {
+        crate::files::remote_op(&op.to_string(), path.to_string(), name.to_string());
+    }
+
+    pub fn files_local_places(self: Pin<&mut Self>) -> QString {
+        QString::from(&crate::files::local_places())
+    }
+
+    pub fn files_list_local(self: Pin<&mut Self>, path: QString, hidden: bool) -> QString {
+        QString::from(&crate::files::list_local(&path.to_string(), hidden))
+    }
+
+    pub fn files_local_op(self: Pin<&mut Self>, op: QString, path: QString, name: QString) -> QString {
+        QString::from(&crate::files::local_op(&op.to_string(), &path.to_string(), &name.to_string()))
+    }
+
+    pub fn files_upload(self: Pin<&mut Self>, paths: QString, remote_dir: QString) {
+        crate::files::upload(local_paths(&paths.to_string()), remote_dir.to_string());
+    }
+
+    pub fn files_upload_dropped(self: Pin<&mut Self>, paths: QString) {
+        crate::files::upload_to_downloads(local_paths(&paths.to_string()));
+    }
+
+    pub fn files_download(self: Pin<&mut Self>, names: QString, remote_dir: QString, local_dir: QString) {
+        let names = names.to_string().lines().map(str::to_string).filter(|n| !n.is_empty()).collect();
+        crate::files::download(names, remote_dir.to_string(), std::path::PathBuf::from(local_dir.to_string()));
+    }
+
+    pub fn files_cancel(self: Pin<&mut Self>, id: QString) {
+        crate::files::cancel(&id.to_string());
+    }
+
+    pub fn files_clear_finished(self: Pin<&mut Self>) {
+        crate::files::clear_finished();
     }
 
     pub fn load_store(self: Pin<&mut Self>, name: QString) -> QString {
@@ -4297,7 +4391,6 @@ async fn setup_peer_connection(
                 *mr_c.lock().unwrap() = Some(channel_ref);
             }
             "clipboard" => crate::share::attach_clipboard(channel_ref),
-            "file" => crate::share::attach_files(channel_ref),
             "gamepad" => crate::gamepad::attach(channel_ref),
             "general" | "cursor" => {
                 d.on_message(Box::new(move |msg: DataChannelMessage| {

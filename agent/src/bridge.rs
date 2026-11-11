@@ -724,10 +724,10 @@ pub async fn setup_bridge_session(
         .create_data_channel("keyboard", None)
         .await?;
 
-    // Clipboard and file sharing (share.rs).
-    match crate::share::attach(&peer_connection, agent_config.allow_clipboard, agent_config.allow_file_transfer).await {
+    // Clipboard sharing (share.rs); files have their own connection (files.rs).
+    match crate::share::attach(&peer_connection, agent_config.allow_clipboard).await {
         Ok(tasks) => spawned_tasks.extend(tasks),
-        Err(e) => warn!("Clipboard/file channels unavailable: {}", e),
+        Err(e) => warn!("Clipboard channel unavailable: {}", e),
     }
     // Game controllers (gamepad.rs).
     if let Err(e) = crate::gamepad::attach(&peer_connection).await {

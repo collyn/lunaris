@@ -1025,7 +1025,7 @@ ApplicationWindow {
                 shareToastTimer.restart();
                 return;
             }
-            sendFilesDialog.open();
+            fileManager.openCurrent();
         }
 
         onFullscreenToggled: {
@@ -1095,7 +1095,7 @@ ApplicationWindow {
     // Files dropped on the stream go to the remote computer.
     DropArea {
         anchors.fill: parent
-        enabled: window.isStreamMode
+        enabled: window.isStreamMode && !fileManager.visible
         keys: ["text/uri-list"]
         onEntered: (drag) => { dropHint.visible = ViewPrefs.fileTransfer; }
         onExited: dropHint.visible = false
@@ -1108,7 +1108,9 @@ ApplicationWindow {
                 shareToastTimer.restart();
                 return;
             }
-            bridge.sendFiles(drop.urls.map(function (u) { return u.toString(); }).join("\n"));
+            // Through the file connection (opened for this computer).
+            if (!fileManager.openCurrent()) return;
+            bridge.filesUploadDropped(drop.urls.map(function (u) { return u.toString(); }).join("\n"));
             drop.accept();
         }
     }
@@ -1131,11 +1133,12 @@ ApplicationWindow {
         }
     }
 
-    Platform.FileDialog {
-        id: sendFilesDialog
-        title: I18n.t("Send files to the remote computer")
-        fileMode: Platform.FileDialog.OpenFiles
-        onAccepted: bridge.sendFiles(files.map(function (u) { return u.toString(); }).join("\n"))
+    // Files of a remote computer (its own connection): from a computer card,
+    // the session menu, or files dropped on the stream.
+    FileManager {
+        id: fileManager
+        anchors.fill: parent
+        z: 960
     }
 
     // Clipboard/file sharing news (progress, saved, errors).

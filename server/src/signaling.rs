@@ -61,6 +61,8 @@ pub struct SignalingState {
     pub agent_connections: RwLock<HashMap<String, Uuid>>,
     // conn_id (String) -> client_id — tracks which client owns each connection
     pub client_connections: RwLock<HashMap<String, String>>,
+    // conn_id -> host_id of file-transfer connections (agent/src/files.rs)
+    pub file_sessions: RwLock<HashMap<String, String>>,
     // client_id -> BridgeSession managed by server
     pub local_sessions: RwLock<HashMap<String, Arc<crate::bridge::BridgeSession>>>,
 }
@@ -78,6 +80,7 @@ impl SignalingState {
             client_to_agent: RwLock::new(HashMap::new()),
             agent_connections: RwLock::new(HashMap::new()),
             client_connections: RwLock::new(HashMap::new()),
+            file_sessions: RwLock::new(HashMap::new()),
             local_sessions: RwLock::new(HashMap::new()),
         }
     }
@@ -476,6 +479,17 @@ async fn handle_client_socket(
     state.client_connections.write().unwrap().remove(&conn_id_str);
     state.client_local_ips.write().unwrap().remove(&conn_id_str);
 
+    // A file-transfer connection: its agent closes that connection only.
+    let file_host = state.file_sessions.write().unwrap().remove(&conn_id_str);
+    if let Some(host_id) = file_host {
+        if let Some(agent_tx) = state.agents.read().unwrap().get(&host_id).cloned() {
+            let _ = agent_tx.send(ServerToAgentMessage::Signaling(SignalingMessage::EndSession {
+                target_id: conn_id_str.clone(),
+            }));
+        }
+        return;
+    }
+
     // Only clean up session if this was the last connection for this client
     let has_other_connections = {
         let conn_map = state.client_connections.read().unwrap();
@@ -654,6 +668,37 @@ async fn handle_client_signaling(
     state: Arc<SignalingState>,
 ) {
     match sig {
+        // A file-transfer connection (on its own client WebSocket): routed
+        // like a session, without touching the host's streaming state.
+        SignalingMessage::RequestFileSession { host_id } => {
+            let agent_tx = state.agents.read().unwrap().get(&host_id).cloned();
+            match agent_tx {
+                Some(agent_tx) => {
+                    info!("Client {} requested file transfer with host {}", client_id, host_id);
+                    let ice_servers = state.ice_servers_for_agent(&host_id).await;
+                    state.file_sessions.write().unwrap().insert(conn_id.to_string(), host_id.clone());
+                    let _ = agent_tx.send(ServerToAgentMessage::Signaling(SignalingMessage::IncomingFileSession {
+                        client_id: conn_id.to_string(),
+                        ice_servers: Some(ice_servers),
+                    }));
+                }
+                None => {
+                    if let Some(client_tx) = state.clients.read().unwrap().get(conn_id) {
+                        let _ = client_tx.send(ServerToClientMessage::Signaling(SignalingMessage::Error {
+                            message: "No agent connected for this host. Please ensure the agent is running.".to_string(),
+                        }));
+                    }
+                }
+            }
+        }
+        SignalingMessage::EndSession { ref target_id } if state.file_sessions.read().unwrap().contains_key(conn_id) => {
+            state.file_sessions.write().unwrap().remove(conn_id);
+            if let Some(agent_tx) = state.agents.read().unwrap().get(target_id).cloned() {
+                let _ = agent_tx.send(ServerToAgentMessage::Signaling(SignalingMessage::EndSession {
+                    target_id: conn_id.to_string(),
+                }));
+            }
+        }
         SignalingMessage::RequestSession {
             host_id,
             width,

@@ -270,8 +270,8 @@ export default function StreamSettingsDialog({
                 </div>
                 <h3 className="ssd-section">{t('Files')}</h3>
                 <div className="ssd-card">
-                  <Row title={t('Send files')} hint={t('Drop files on the stream or use the send button in the toolbar; they are saved in Downloads/Lunaris on the remote computer.')}>
-                    <Switch label={t('Send files')} checked={viewer.fileTransfer} onChange={viewer.setFileTransfer} />
+                  <Row title={t('File transfer')} hint={t('Browse the remote computer and copy files both ways with the Files button (toolbar or computer card); files dropped on the stream go to its Downloads/Lunaris. Transfers use a connection of their own, so the stream stays smooth.')}>
+                    <Switch label={t('File transfer')} checked={viewer.fileTransfer} onChange={viewer.setFileTransfer} />
                   </Row>
                 </div>
               </>

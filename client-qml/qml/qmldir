@@ -21,3 +21,4 @@ ThemedCombo 1.0 ThemedCombo.qml
 singleton I18n 1.0 I18n.qml
 singleton ViewPrefs 1.0 ViewPrefs.qml
 GamepadTester 1.0 GamepadTester.qml
+FileManager 1.0 FileManager.qml

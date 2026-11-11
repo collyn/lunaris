@@ -6,6 +6,7 @@ import { StreamPlayer } from './components/StreamPlayer';
 import { AdminUsers } from './components/AdminUsers';
 import { AdminGroups } from './components/AdminGroups';
 import { AdminTurnServers } from './components/AdminTurnServers';
+import FileManager from './components/FileManager';
 import './App.css';
 
 interface Host {
@@ -223,6 +224,8 @@ function App() {
   // Dashboard State
   const [hosts, setHosts] = useState<Host[]>([]);
   const [hostsLoading, setHostsLoading] = useState<boolean>(false);
+  // File manager open for this host (its own connection, FileManager.tsx).
+  const [filesHost, setFilesHost] = useState<Host | null>(null);
   // Agents connect with ws:// to the server's HTTP port, also when this page
   // was opened over https (another port).
   const [agentServerUrl, setAgentServerUrl] = useState<string>(() => `ws://${getBackendHost()}`);
@@ -1253,6 +1256,20 @@ function App() {
                                       </svg>
                                     </button>
                                   )}
+                                  {isOnline && (
+                                    <button
+                                      type="button"
+                                      className="host-action-btn"
+                                      title={t('Files')}
+                                      aria-label={t('Files')}
+                                      onClick={() => setFilesHost(host)}
+                                    >
+                                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                        <path d="M3 6a1 1 0 0 1 1-1h5l2 2h9a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z" />
+                                        <path d="M12 10v6M9 13l3-3 3 3" />
+                                      </svg>
+                                    </button>
+                                  )}
                                   <button
                                     type="button"
                                     className="host-action-btn"
@@ -1302,6 +1319,14 @@ function App() {
             </div>
           </div>
         )}
+      {filesHost && token && (
+        <FileManager
+          hostId={filesHost.id}
+          hostName={filesHost.name}
+          wsUrl={`${getBackendProtocol().ws}//${getBackendHost()}/ws/client?token=${encodeURIComponent(token)}`}
+          onClose={() => setFilesHost(null)}
+        />
+      )}
       {pendingDeleteHost && (
         <div className="host-confirm-overlay" onMouseDown={(e) => { if (e.target === e.currentTarget && !deleteHostLoading) setPendingDeleteHost(null); }}>
           <div className="host-confirm-card" role="dialog" aria-modal="true" aria-labelledby="deleteHostTitle">
