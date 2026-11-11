@@ -1424,11 +1424,10 @@ Rectangle {
     }
 
     // Settings Modal
-    // A full-window page (over the app's top bar too), not a dialog that a
-    // small window cuts off.
+    // A page over this view (the Server tab), not a dialog that a small
+    // window cuts off.
     Settings {
         id: settingsModal
-        parent: Overlay.overlay
         anchors.fill: parent
         z: 1000
 

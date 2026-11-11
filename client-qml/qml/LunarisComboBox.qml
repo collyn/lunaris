@@ -5,6 +5,10 @@ ComboBox {
     id: control
     
     property real customWidth: 100
+    // The in-stream menu is always dark (Theme.live); elsewhere follow the
+    // app's theme with live: false.
+    property bool live: true
+    readonly property var pal: live ? Theme.live : Theme
     implicitWidth: customWidth
     implicitHeight: 28
 
@@ -13,7 +17,7 @@ ComboBox {
         height: 28
         contentItem: Text {
             text: modelData
-            color: Theme.live.textStrong
+            color: control.pal.textStrong
             font.pixelSize: 11
             font.bold: true
             elide: Text.ElideRight
@@ -21,7 +25,7 @@ ComboBox {
             horizontalAlignment: Text.AlignHCenter
         }
         background: Rectangle {
-            color: hovered ? Theme.live.ink(0.08) : "transparent"
+            color: hovered ? control.pal.ink(0.08) : "transparent"
             radius: 6
         }
     }
@@ -41,7 +45,7 @@ ComboBox {
             ctx.lineTo(width, 0);
             ctx.lineTo(width / 2, height);
             ctx.closePath();
-            ctx.fillStyle = Theme.live.textMuted;
+            ctx.fillStyle = control.pal.textMuted;
             ctx.fill();
         }
     }
@@ -52,14 +56,14 @@ ComboBox {
         text: control.displayText
         font.pixelSize: 11
         font.bold: true
-        color: Theme.live.textStrong
+        color: control.pal.textStrong
         verticalAlignment: Text.AlignVCenter
         horizontalAlignment: Text.AlignLeft
         elide: Text.ElideRight
     }
 
     background: Rectangle {
-        color: control.hovered ? Theme.live.ink(0.12) : Theme.live.ink(0.06)
+        color: control.hovered ? control.pal.ink(0.12) : control.pal.ink(0.06)
         border.color: "transparent"
         radius: 8
     }
@@ -80,8 +84,8 @@ ComboBox {
         }
 
         background: Rectangle {
-            color: Theme.live.surface2
-            border.color: Theme.live.ink(0.08)
+            color: control.pal.surface2
+            border.color: control.pal.ink(0.08)
             border.width: 1
             radius: 8
         }

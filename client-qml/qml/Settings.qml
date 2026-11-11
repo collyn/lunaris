@@ -1,11 +1,12 @@
 import QtQuick
 import QtQuick.Controls
 
-// Stream settings for one computer, shown as a page over the window (the
-// fields scroll; Cancel / Save stay at the bottom).
+// Stream settings for one computer, shown as a page over the computer list
+// (the fields scroll, in two columns when wide; Cancel / Save stay at the
+// bottom).
 Rectangle {
     id: settingsRoot
-    color: Theme.live.bg
+    color: Theme.bg
     visible: false
     // Name of the computer being configured (page title).
     property string hostName: ""
@@ -158,7 +159,7 @@ Rectangle {
         width: parent.width
         height: 72
         anchors.top: parent.top
-        color: Theme.live.surface
+        color: Theme.surface
 
         // Back to the computer list
         Button {
@@ -171,7 +172,7 @@ Rectangle {
             Accessible.name: "Back"
             contentItem: Text {
                 text: "←  Back"
-                color: backButton.hovered ? Theme.live.textStrong : Theme.live.text
+                color: backButton.hovered ? Theme.textStrong : Theme.text
                 font.pixelSize: 13
                 font.weight: Font.Medium
                 verticalAlignment: Text.AlignVCenter
@@ -181,8 +182,8 @@ Rectangle {
                 implicitWidth: 84
                 implicitHeight: 34
                 radius: Theme.radiusSm
-                color: backButton.hovered ? Theme.live.surface3 : "transparent"
-                border.color: Theme.live.border
+                color: backButton.hovered ? Theme.surface3 : "transparent"
+                border.color: Theme.border
             }
         }
         
@@ -191,7 +192,7 @@ Rectangle {
             width: parent.width
             height: 1
             anchors.bottom: parent.bottom
-            color: Theme.live.ink(0.06)
+            color: Theme.ink(0.06)
         }
     }
 
@@ -201,7 +202,7 @@ Rectangle {
         text: settingsRoot.hostName !== "" ? "Stream settings — " + settingsRoot.hostName : "Stream settings"
         font.pixelSize: 17
         font.weight: Font.DemiBold
-        color: Theme.live.textStrong
+        color: Theme.textStrong
         anchors.top: parent.top
         anchors.horizontalCenter: parent.horizontalCenter
         anchors.topMargin: 24
@@ -212,7 +213,7 @@ Rectangle {
         id: headerSubtitle
         text: "Adjust settings to optimize latency and video quality"
         font.pixelSize: 11
-        color: Theme.live.textMuted
+        color: Theme.textMuted
         anchors.top: headerTitle.bottom
         anchors.horizontalCenter: parent.horizontalCenter
         anchors.topMargin: 6
@@ -233,16 +234,18 @@ Rectangle {
 
     Grid {
         id: fieldsGrid
+        // Two label/field pairs per row when there is room.
+        readonly property bool wide: fieldsFlick.width >= 940
         y: 28
         x: Math.max(24, (fieldsFlick.width - width) / 2)
-        width: 440
-        columns: 2
+        width: wide ? 880 : 420
+        columns: wide ? 4 : 2
         rowSpacing: 12
-        columnSpacing: 20
+        columnSpacing: wide ? 36 : 20
         verticalItemAlignment: Grid.AlignVCenter
 
         // Resolution
-        Text { text: "Resolution:"; color: Theme.live.textMuted; font.pixelSize: 13; font.weight: Font.Medium; width: 120 }
+        Text { text: "Resolution:"; color: Theme.textMuted; font.pixelSize: 13; font.weight: Font.Medium; width: 120 }
         ComboBox {
             id: resCombo
             width: 260
@@ -253,12 +256,12 @@ Rectangle {
                 width: resCombo.width
                 contentItem: Text {
                     text: modelData
-                    color: resCombo.highlightedIndex === index ? Theme.live.textStrong : Theme.live.text
+                    color: resCombo.highlightedIndex === index ? Theme.textStrong : Theme.text
                     font.pixelSize: 13
                     verticalAlignment: Text.AlignVCenter
                 }
                 background: Rectangle {
-                    color: resCombo.highlightedIndex === index ? Theme.live.accent : "transparent"
+                    color: resCombo.highlightedIndex === index ? Theme.accent : "transparent"
                 }
                 highlighted: resCombo.highlightedIndex === index
             }
@@ -267,14 +270,14 @@ Rectangle {
                 leftPadding: 12
                 text: resCombo.displayText
                 font.pixelSize: 13
-                color: Theme.live.textStrong
+                color: Theme.textStrong
                 verticalAlignment: Text.AlignVCenter
             }
 
             background: Rectangle {
                 implicitHeight: 38
-                color: Theme.live.surface
-                border.color: resCombo.activeFocus ? Theme.live.accentFg : Theme.live.ink(0.08)
+                color: Theme.surface
+                border.color: resCombo.activeFocus ? Theme.accentFg : Theme.ink(0.08)
                 border.width: 1
                 radius: 8
             }
@@ -293,8 +296,8 @@ Rectangle {
                 }
 
                 background: Rectangle {
-                    color: Theme.live.surface
-                    border.color: Theme.live.ink(0.15)
+                    color: Theme.surface
+                    border.color: Theme.ink(0.15)
                     border.width: 1
                     radius: 8
                 }
@@ -302,7 +305,7 @@ Rectangle {
         }
 
         // FPS — Editable ComboBox with presets + custom input
-        Text { text: "Target FPS:"; color: Theme.live.textMuted; font.pixelSize: 13; font.weight: Font.Medium; width: 120 }
+        Text { text: "Target FPS:"; color: Theme.textMuted; font.pixelSize: 13; font.weight: Font.Medium; width: 120 }
         Item {
             width: 260
             height: 38
@@ -323,12 +326,12 @@ Rectangle {
                     width: fpsCombo.width
                     contentItem: Text {
                         text: modelData
-                        color: fpsCombo.highlightedIndex === index ? Theme.live.textStrong : Theme.live.text
+                        color: fpsCombo.highlightedIndex === index ? Theme.textStrong : Theme.text
                         font.pixelSize: 13
                         verticalAlignment: Text.AlignVCenter
                     }
                     background: Rectangle {
-                        color: fpsCombo.highlightedIndex === index ? Theme.live.accent : "transparent"
+                        color: fpsCombo.highlightedIndex === index ? Theme.accent : "transparent"
                     }
                     highlighted: fpsCombo.highlightedIndex === index
                 }
@@ -340,7 +343,7 @@ Rectangle {
                     rightPadding: 36
                     text: "60"
                     font.pixelSize: 13
-                    color: Theme.live.textStrong
+                    color: Theme.textStrong
                     verticalAlignment: Text.AlignVCenter
                     selectByMouse: true
                     validator: IntValidator { bottom: 1; top: 999 }
@@ -359,8 +362,8 @@ Rectangle {
 
                 background: Rectangle {
                     implicitHeight: 38
-                    color: Theme.live.surface
-                    border.color: fpsInput.activeFocus || fpsCombo.activeFocus ? Theme.live.accentFg : Theme.live.ink(0.08)
+                    color: Theme.surface
+                    border.color: fpsInput.activeFocus || fpsCombo.activeFocus ? Theme.accentFg : Theme.ink(0.08)
                     border.width: 1
                     radius: 8
                 }
@@ -379,8 +382,8 @@ Rectangle {
                     }
 
                     background: Rectangle {
-                        color: Theme.live.surface
-                        border.color: Theme.live.ink(0.15)
+                        color: Theme.surface
+                        border.color: Theme.ink(0.15)
                         border.width: 1
                         radius: 8
                     }
@@ -389,7 +392,7 @@ Rectangle {
         }
 
         // Codec
-        Text { text: "Video Codec:"; color: Theme.live.textMuted; font.pixelSize: 13; font.weight: Font.Medium; width: 120 }
+        Text { text: "Video Codec:"; color: Theme.textMuted; font.pixelSize: 13; font.weight: Font.Medium; width: 120 }
         ComboBox {
             id: codecCombo
             width: 260
@@ -401,12 +404,12 @@ Rectangle {
                 width: codecCombo.width
                 contentItem: Text {
                     text: modelData
-                    color: codecCombo.highlightedIndex === index ? Theme.live.textStrong : Theme.live.text
+                    color: codecCombo.highlightedIndex === index ? Theme.textStrong : Theme.text
                     font.pixelSize: 13
                     verticalAlignment: Text.AlignVCenter
                 }
                 background: Rectangle {
-                    color: codecCombo.highlightedIndex === index ? Theme.live.accent : "transparent"
+                    color: codecCombo.highlightedIndex === index ? Theme.accent : "transparent"
                 }
                 highlighted: codecCombo.highlightedIndex === index
             }
@@ -415,14 +418,14 @@ Rectangle {
                 leftPadding: 12
                 text: codecCombo.displayText
                 font.pixelSize: 13
-                color: Theme.live.textStrong
+                color: Theme.textStrong
                 verticalAlignment: Text.AlignVCenter
             }
 
             background: Rectangle {
                 implicitHeight: 38
-                color: Theme.live.surface
-                border.color: codecCombo.activeFocus ? Theme.live.accentFg : Theme.live.ink(0.08)
+                color: Theme.surface
+                border.color: codecCombo.activeFocus ? Theme.accentFg : Theme.ink(0.08)
                 border.width: 1
                 radius: 8
             }
@@ -441,8 +444,8 @@ Rectangle {
                 }
 
                 background: Rectangle {
-                    color: Theme.live.surface
-                    border.color: Theme.live.ink(0.15)
+                    color: Theme.surface
+                    border.color: Theme.ink(0.15)
                     border.width: 1
                     radius: 8
                 }
@@ -450,7 +453,7 @@ Rectangle {
         }
 
         // Chroma
-        Text { text: "Chroma:"; color: Theme.live.textMuted; font.pixelSize: 13; font.weight: Font.Medium; width: 120 }
+        Text { text: "Chroma:"; color: Theme.textMuted; font.pixelSize: 13; font.weight: Font.Medium; width: 120 }
         ComboBox {
             id: chromaCombo
             width: 260
@@ -463,12 +466,12 @@ Rectangle {
                 width: chromaCombo.width
                 contentItem: Text {
                     text: modelData
-                    color: chromaCombo.highlightedIndex === index ? Theme.live.textStrong : Theme.live.text
+                    color: chromaCombo.highlightedIndex === index ? Theme.textStrong : Theme.text
                     font.pixelSize: 13
                     verticalAlignment: Text.AlignVCenter
                 }
                 background: Rectangle {
-                    color: chromaCombo.highlightedIndex === index ? Theme.live.accent : "transparent"
+                    color: chromaCombo.highlightedIndex === index ? Theme.accent : "transparent"
                 }
                 highlighted: chromaCombo.highlightedIndex === index
             }
@@ -477,14 +480,14 @@ Rectangle {
                 leftPadding: 12
                 text: chromaCombo.displayText
                 font.pixelSize: 13
-                color: Theme.live.textStrong
+                color: Theme.textStrong
                 verticalAlignment: Text.AlignVCenter
             }
 
             background: Rectangle {
                 implicitHeight: 38
-                color: Theme.live.surface
-                border.color: chromaCombo.activeFocus ? Theme.live.accentFg : Theme.live.ink(0.08)
+                color: Theme.surface
+                border.color: chromaCombo.activeFocus ? Theme.accentFg : Theme.ink(0.08)
                 border.width: 1
                 radius: 8
             }
@@ -503,8 +506,8 @@ Rectangle {
                 }
 
                 background: Rectangle {
-                    color: Theme.live.surface
-                    border.color: Theme.live.ink(0.15)
+                    color: Theme.surface
+                    border.color: Theme.ink(0.15)
                     border.width: 1
                     radius: 8
                 }
@@ -512,7 +515,7 @@ Rectangle {
         }
 
         // Encoder Backend
-        Text { text: "Encoder Backend:"; color: Theme.live.textMuted; font.pixelSize: 13; font.weight: Font.Medium; width: 120 }
+        Text { text: "Encoder Backend:"; color: Theme.textMuted; font.pixelSize: 13; font.weight: Font.Medium; width: 120 }
         ComboBox {
             id: encoderCombo
             width: 260
@@ -520,21 +523,21 @@ Rectangle {
             currentIndex: 0
             delegate: ItemDelegate {
                 width: encoderCombo.width
-                contentItem: Text { text: modelData; color: encoderCombo.highlightedIndex === index ? Theme.live.textStrong : Theme.live.text; font.pixelSize: 13; verticalAlignment: Text.AlignVCenter }
-                background: Rectangle { color: encoderCombo.highlightedIndex === index ? Theme.live.accent : "transparent" }
+                contentItem: Text { text: modelData; color: encoderCombo.highlightedIndex === index ? Theme.textStrong : Theme.text; font.pixelSize: 13; verticalAlignment: Text.AlignVCenter }
+                background: Rectangle { color: encoderCombo.highlightedIndex === index ? Theme.accent : "transparent" }
                 highlighted: encoderCombo.highlightedIndex === index
             }
-            contentItem: Text { leftPadding: 12; text: encoderCombo.displayText; font.pixelSize: 13; color: Theme.live.textStrong; verticalAlignment: Text.AlignVCenter }
-            background: Rectangle { implicitHeight: 38; color: Theme.live.surface; border.color: encoderCombo.activeFocus ? Theme.live.accentFg : Theme.live.ink(0.08); border.width: 1; radius: 8 }
+            contentItem: Text { leftPadding: 12; text: encoderCombo.displayText; font.pixelSize: 13; color: Theme.textStrong; verticalAlignment: Text.AlignVCenter }
+            background: Rectangle { implicitHeight: 38; color: Theme.surface; border.color: encoderCombo.activeFocus ? Theme.accentFg : Theme.ink(0.08); border.width: 1; radius: 8 }
             popup: Popup {
                 y: encoderCombo.height + 4; width: encoderCombo.width; implicitHeight: contentItem.implicitHeight; padding: 1
                 contentItem: ListView { clip: true; implicitHeight: contentHeight; model: encoderCombo.popup.visible ? encoderCombo.delegateModel : null; currentIndex: encoderCombo.highlightedIndex }
-                background: Rectangle { color: Theme.live.surface; border.color: Theme.live.ink(0.15); border.width: 1; radius: 8 }
+                background: Rectangle { color: Theme.surface; border.color: Theme.ink(0.15); border.width: 1; radius: 8 }
             }
         }
 
         // Display ID
-        Text { text: "Display:"; color: Theme.live.textMuted; font.pixelSize: 13; font.weight: Font.Medium; width: 120 }
+        Text { text: "Display:"; color: Theme.textMuted; font.pixelSize: 13; font.weight: Font.Medium; width: 120 }
         ComboBox {
             id: displayCombo
             width: 260
@@ -542,36 +545,37 @@ Rectangle {
             currentIndex: 0
             delegate: ItemDelegate {
                 width: displayCombo.width
-                contentItem: Text { text: modelData; color: displayCombo.highlightedIndex === index ? Theme.live.textStrong : Theme.live.text; font.pixelSize: 13; verticalAlignment: Text.AlignVCenter }
-                background: Rectangle { color: displayCombo.highlightedIndex === index ? Theme.live.accent : "transparent" }
+                contentItem: Text { text: modelData; color: displayCombo.highlightedIndex === index ? Theme.textStrong : Theme.text; font.pixelSize: 13; verticalAlignment: Text.AlignVCenter }
+                background: Rectangle { color: displayCombo.highlightedIndex === index ? Theme.accent : "transparent" }
                 highlighted: displayCombo.highlightedIndex === index
             }
-            contentItem: Text { leftPadding: 12; text: displayCombo.displayText; font.pixelSize: 13; color: Theme.live.textStrong; verticalAlignment: Text.AlignVCenter }
-            background: Rectangle { implicitHeight: 38; color: Theme.live.surface; border.color: displayCombo.activeFocus ? Theme.live.accentFg : Theme.live.ink(0.08); border.width: 1; radius: 8 }
+            contentItem: Text { leftPadding: 12; text: displayCombo.displayText; font.pixelSize: 13; color: Theme.textStrong; verticalAlignment: Text.AlignVCenter }
+            background: Rectangle { implicitHeight: 38; color: Theme.surface; border.color: displayCombo.activeFocus ? Theme.accentFg : Theme.ink(0.08); border.width: 1; radius: 8 }
             popup: Popup {
                 y: displayCombo.height + 4; width: displayCombo.width; implicitHeight: contentItem.implicitHeight; padding: 1
                 contentItem: ListView { clip: true; implicitHeight: contentHeight; model: displayCombo.popup.visible ? displayCombo.delegateModel : null; currentIndex: displayCombo.highlightedIndex }
-                background: Rectangle { color: Theme.live.surface; border.color: Theme.live.ink(0.15); border.width: 1; radius: 8 }
+                background: Rectangle { color: Theme.surface; border.color: Theme.ink(0.15); border.width: 1; radius: 8 }
             }
         }
 
         // Virtual Display
-        Text { text: "Virtual Display:"; color: Theme.live.textMuted; font.pixelSize: 13; font.weight: Font.Medium; width: 120 }
+        Text { text: "Virtual Display:"; color: Theme.textMuted; font.pixelSize: 13; font.weight: Font.Medium; width: 120 }
         CheckBox {
             id: virtualDisplayCheck
             width: 260
             text: "Create virtual display"
             checked: false
-            contentItem: Text { text: virtualDisplayCheck.text; color: Theme.live.text; font.pixelSize: 13; verticalAlignment: Text.AlignVCenter; leftPadding: virtualDisplayCheck.indicator.width + 8 }
+            contentItem: Text { text: virtualDisplayCheck.text; color: Theme.text; font.pixelSize: 13; verticalAlignment: Text.AlignVCenter; leftPadding: virtualDisplayCheck.indicator.width + 8 }
         }
 
         // Virtual Screen (host high-refresh output) — enable/disable + refresh
-        Text { text: "Virtual Screen:"; color: Theme.live.textMuted; font.pixelSize: 13; font.weight: Font.Medium; width: 120 }
+        Text { text: "Virtual Screen:"; color: Theme.textMuted; font.pixelSize: 13; font.weight: Font.Medium; width: 120 }
         Row {
             width: 260
             spacing: 8
             LunarisComboBox {
                 id: vdRefreshCombo
+                live: false
                 customWidth: 84
                 implicitHeight: 32
                 model: ["240", "144", "120", "60"]
@@ -585,12 +589,12 @@ Rectangle {
                     onClicked: settingsRoot.configureVirtualDisplay(modelData.enable, parseInt(vdRefreshCombo.currentText))
                     background: Rectangle {
                         implicitWidth: 76; implicitHeight: 32; radius: Theme.radiusSm
-                        color: vdBtn.hovered ? Theme.live.surface2 : "transparent"
-                        border.color: Theme.live.borderStrong; border.width: 1
+                        color: vdBtn.hovered ? Theme.surface2 : "transparent"
+                        border.color: Theme.borderStrong; border.width: 1
                     }
                     contentItem: Text {
                         text: vdBtn.modelData.label
-                        color: Theme.live.text
+                        color: Theme.text
                         font.pixelSize: 12
                         font.weight: Font.Medium
                         horizontalAlignment: Text.AlignHCenter
@@ -601,7 +605,7 @@ Rectangle {
         }
 
         // Decoder Type
-        Text { text: "Render Backend:"; color: Theme.live.textMuted; font.pixelSize: 13; font.weight: Font.Medium; width: 120 }
+        Text { text: "Render Backend:"; color: Theme.textMuted; font.pixelSize: 13; font.weight: Font.Medium; width: 120 }
         ComboBox {
             id: decoderCombo
             width: 260
@@ -612,12 +616,12 @@ Rectangle {
                 width: decoderCombo.width
                 contentItem: Text {
                     text: modelData
-                    color: decoderCombo.highlightedIndex === index ? Theme.live.textStrong : Theme.live.text
+                    color: decoderCombo.highlightedIndex === index ? Theme.textStrong : Theme.text
                     font.pixelSize: 13
                     verticalAlignment: Text.AlignVCenter
                 }
                 background: Rectangle {
-                    color: decoderCombo.highlightedIndex === index ? Theme.live.accent : "transparent"
+                    color: decoderCombo.highlightedIndex === index ? Theme.accent : "transparent"
                 }
                 highlighted: decoderCombo.highlightedIndex === index
             }
@@ -626,14 +630,14 @@ Rectangle {
                 leftPadding: 12
                 text: decoderCombo.displayText
                 font.pixelSize: 13
-                color: Theme.live.textStrong
+                color: Theme.textStrong
                 verticalAlignment: Text.AlignVCenter
             }
 
             background: Rectangle {
                 implicitHeight: 38
-                color: Theme.live.surface
-                border.color: decoderCombo.activeFocus ? Theme.live.accentFg : Theme.live.ink(0.08)
+                color: Theme.surface
+                border.color: decoderCombo.activeFocus ? Theme.accentFg : Theme.ink(0.08)
                 border.width: 1
                 radius: 8
             }
@@ -652,8 +656,8 @@ Rectangle {
                 }
 
                 background: Rectangle {
-                    color: Theme.live.surface
-                    border.color: Theme.live.ink(0.15)
+                    color: Theme.surface
+                    border.color: Theme.ink(0.15)
                     border.width: 1
                     radius: 8
                 }
@@ -661,7 +665,7 @@ Rectangle {
         }
 
         // Bitrate — Slider
-        Text { text: "Bitrate:"; color: Theme.live.textMuted; font.pixelSize: 13; font.weight: Font.Medium; width: 120 }
+        Text { text: "Bitrate:"; color: Theme.textMuted; font.pixelSize: 13; font.weight: Font.Medium; width: 120 }
         Column {
             width: 260
             spacing: 6
@@ -682,12 +686,12 @@ Rectangle {
                     width: bitrateSlider.availableWidth
                     height: implicitHeight
                     radius: 2
-                    color: Theme.live.ink(0.08)
+                    color: Theme.ink(0.08)
 
                     Rectangle {
                         width: bitrateSlider.visualPosition * parent.width
                         height: parent.height
-                        color: Theme.live.accent
+                        color: Theme.accent
                         radius: 2
                     }
                 }
@@ -698,7 +702,7 @@ Rectangle {
                     implicitWidth: 16
                     implicitHeight: 16
                     radius: 8
-                    color: bitrateSlider.pressed ? Theme.live.accent : Theme.live.accent
+                    color: bitrateSlider.pressed ? Theme.accent : Theme.accent
                     border.color: Qt.rgba(0, 0, 0, 0.3)
                     border.width: 1
                 }
@@ -718,7 +722,7 @@ Rectangle {
                         }
                         return val + " Kbps";
                     }
-                    color: Theme.live.accentFg
+                    color: Theme.accentFg
                     font.pixelSize: 12
                     font.bold: true
                     anchors.left: parent.left
@@ -727,7 +731,7 @@ Rectangle {
 
                 Text {
                     text: "(" + bitrateSlider.value + " Kbps)"
-                    color: Theme.live.textSubtle
+                    color: Theme.textSubtle
                     font.pixelSize: 11
                     anchors.right: parent.right
                     anchors.verticalCenter: parent.verticalCenter
@@ -736,7 +740,7 @@ Rectangle {
         }
 
         // Mouse Queue Limit
-        Text { text: "Mouse Queue:"; color: Theme.live.textMuted; font.pixelSize: 13; font.weight: Font.Medium; width: 120 }
+        Text { text: "Mouse Queue:"; color: Theme.textMuted; font.pixelSize: 13; font.weight: Font.Medium; width: 120 }
         ComboBox {
             id: queueCombo
             width: 260
@@ -754,12 +758,12 @@ Rectangle {
                 width: queueCombo.width
                 contentItem: Text {
                     text: modelData
-                    color: queueCombo.highlightedIndex === index ? Theme.live.textStrong : Theme.live.text
+                    color: queueCombo.highlightedIndex === index ? Theme.textStrong : Theme.text
                     font.pixelSize: 13
                     verticalAlignment: Text.AlignVCenter
                 }
                 background: Rectangle {
-                    color: queueCombo.highlightedIndex === index ? Theme.live.accent : "transparent"
+                    color: queueCombo.highlightedIndex === index ? Theme.accent : "transparent"
                 }
                 highlighted: queueCombo.highlightedIndex === index
             }
@@ -768,14 +772,14 @@ Rectangle {
                 leftPadding: 12
                 text: queueCombo.displayText
                 font.pixelSize: 13
-                color: Theme.live.textStrong
+                color: Theme.textStrong
                 verticalAlignment: Text.AlignVCenter
             }
 
             background: Rectangle {
                 implicitHeight: 38
-                color: Theme.live.surface
-                border.color: queueCombo.activeFocus ? Theme.live.accentFg : Theme.live.ink(0.08)
+                color: Theme.surface
+                border.color: queueCombo.activeFocus ? Theme.accentFg : Theme.ink(0.08)
                 border.width: 1
                 radius: 8
             }
@@ -794,8 +798,8 @@ Rectangle {
                 }
 
                 background: Rectangle {
-                    color: Theme.live.surface
-                    border.color: Theme.live.ink(0.15)
+                    color: Theme.surface
+                    border.color: Theme.ink(0.15)
                     border.width: 1
                     radius: 8
                 }
@@ -803,7 +807,7 @@ Rectangle {
         }
 
         // Input Protocol
-        Text { text: "Input Protocol:"; color: Theme.live.textMuted; font.pixelSize: 13; font.weight: Font.Medium; width: 120 }
+        Text { text: "Input Protocol:"; color: Theme.textMuted; font.pixelSize: 13; font.weight: Font.Medium; width: 120 }
         ComboBox {
             id: protocolCombo
             width: 260
@@ -814,12 +818,12 @@ Rectangle {
                 width: protocolCombo.width
                 contentItem: Text {
                     text: modelData
-                    color: protocolCombo.highlightedIndex === index ? Theme.live.textStrong : Theme.live.text
+                    color: protocolCombo.highlightedIndex === index ? Theme.textStrong : Theme.text
                     font.pixelSize: 13
                     verticalAlignment: Text.AlignVCenter
                 }
                 background: Rectangle {
-                    color: protocolCombo.highlightedIndex === index ? Theme.live.accent : "transparent"
+                    color: protocolCombo.highlightedIndex === index ? Theme.accent : "transparent"
                 }
                 highlighted: protocolCombo.highlightedIndex === index
             }
@@ -828,14 +832,14 @@ Rectangle {
                 leftPadding: 12
                 text: protocolCombo.displayText
                 font.pixelSize: 13
-                color: Theme.live.textStrong
+                color: Theme.textStrong
                 verticalAlignment: Text.AlignVCenter
             }
 
             background: Rectangle {
                 implicitHeight: 38
-                color: Theme.live.surface
-                border.color: protocolCombo.activeFocus ? Theme.live.accentFg : Theme.live.ink(0.08)
+                color: Theme.surface
+                border.color: protocolCombo.activeFocus ? Theme.accentFg : Theme.ink(0.08)
                 border.width: 1
                 radius: 8
             }
@@ -854,8 +858,8 @@ Rectangle {
                 }
 
                 background: Rectangle {
-                    color: Theme.live.surface
-                    border.color: Theme.live.ink(0.15)
+                    color: Theme.surface
+                    border.color: Theme.ink(0.15)
                     border.width: 1
                     radius: 8
                 }
@@ -872,8 +876,8 @@ Rectangle {
         anchors.right: parent.right
         anchors.bottom: parent.bottom
         height: 72
-        color: Theme.live.surface
-        Rectangle { anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; height: 1; color: Theme.live.ink(0.06) }
+        color: Theme.surface
+        Rectangle { anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; height: 1; color: Theme.ink(0.06) }
     }
 
     Row {
@@ -890,8 +894,8 @@ Rectangle {
                 settingsRoot.close();
             }
             background: Rectangle {
-                color: cancelButton.hovered ? Theme.live.surface2 : "transparent"
-                border.color: Theme.live.borderStrong
+                color: cancelButton.hovered ? Theme.surface2 : "transparent"
+                border.color: Theme.borderStrong
                 border.width: 1
                 radius: Theme.radiusSm
                 implicitWidth: 100
@@ -899,7 +903,7 @@ Rectangle {
             }
             contentItem: Text {
                 text: cancelButton.text
-                color: cancelButton.hovered ? Theme.live.textStrong : Theme.live.text
+                color: cancelButton.hovered ? Theme.textStrong : Theme.text
                 font.weight: Font.DemiBold
                 font.pixelSize: 13
                 horizontalAlignment: Text.AlignHCenter
@@ -945,14 +949,14 @@ Rectangle {
                 settingsRoot.close();
             }
             background: Rectangle {
-                color: applyButton.hovered ? Theme.live.accentHover : Theme.live.accent
+                color: applyButton.hovered ? Theme.accentHover : Theme.accent
                 radius: Theme.radiusSm
                 implicitWidth: 120
                 implicitHeight: 36
             }
             contentItem: Text {
                 text: applyButton.text
-                color: Theme.live.textOnAccent
+                color: Theme.textOnAccent
                 font.weight: Font.DemiBold
                 font.pixelSize: 13
                 horizontalAlignment: Text.AlignHCenter
