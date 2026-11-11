@@ -28,6 +28,9 @@ struct HostStatus {
     hostname: String,
     /// Remote keyboard/mouse can work (Linux: /dev/uinput is writable).
     input_ready: bool,
+    /// Clients may share the clipboard / send files to this computer.
+    allow_clipboard: bool,
+    allow_file_transfer: bool,
     error: String,
 }
 
@@ -126,6 +129,8 @@ pub fn status_json() -> String {
             addresses: addresses(),
             hostname: hostname(),
             input_ready: input_ready(),
+            allow_clipboard: config.allow_clipboard,
+            allow_file_transfer: config.allow_file_transfer,
             error: String::new(),
         },
         Err(error) => HostStatus {
@@ -136,6 +141,8 @@ pub fn status_json() -> String {
             addresses: addresses(),
             hostname: hostname(),
             input_ready: input_ready(),
+            allow_clipboard: true,
+            allow_file_transfer: true,
             error,
         },
     };
@@ -357,6 +364,16 @@ pub fn set_password(password: Option<String>) -> Result<(), String> {
         }
         None => pairing::generate_direct_password(),
     };
+    save(&config)?;
+    restart_if_ours()
+}
+
+/// What clients may do with this computer: share its clipboard, send it
+/// files. Restarts the app's agent so new sessions follow.
+pub fn set_sharing(clipboard: bool, files: bool) -> Result<(), String> {
+    let mut config = load_or_create_config()?;
+    config.allow_clipboard = clipboard;
+    config.allow_file_transfer = files;
     save(&config)?;
     restart_if_ours()
 }

@@ -2,6 +2,7 @@ import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { BITRATES, CHROMAS, RESOLUTIONS, bitrateLabel, readDisplayMode, readVolume, objectFitFor, resolutionSize, resolutionString, type DisplayMode } from '../streamOptions';
 import StreamSettingsDialog, { type StreamSettingsValues, type ViewerSettings } from './StreamSettingsDialog';
 import { t } from '../i18n';
+import { WebShare, readClipboardSync, readFileTransfer } from '../share';
 
 const getBackendHost = () => {
   const savedHost = localStorage.getItem('lunaris_server_host');
@@ -601,6 +602,40 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   displayModeRef.current = displayMode;
   // Playback volume 0-100 (Audio settings; mute is isMuted).
   const [volume, setVolume] = useState<number>(() => readVolume());
+
+  // Clipboard and file sharing (share.ts); its news shows as a toast.
+  const [shareToast, setShareToast] = useState<string>('');
+  const shareToastTimerRef = useRef<number | null>(null);
+  const shareRef = useRef<WebShare | null>(null);
+  if (shareRef.current === null) {
+    shareRef.current = new WebShare((message) => {
+      setShareToast(message);
+      if (shareToastTimerRef.current !== null) window.clearTimeout(shareToastTimerRef.current);
+      shareToastTimerRef.current = window.setTimeout(() => setShareToast(''), 4000);
+    });
+  }
+  const [clipboardSync, setClipboardSync] = useState<boolean>(readClipboardSync);
+  const [fileTransfer, setFileTransfer] = useState<boolean>(readFileTransfer);
+  const [isDraggingFiles, setIsDraggingFiles] = useState(false);
+  const sendFileInputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    const onPaste = (e: ClipboardEvent) => {
+      if (isTextEntryElement(document.activeElement)) return;
+      shareRef.current?.onPaste(e);
+    };
+    const onFocus = () => { void shareRef.current?.syncOnFocus(); };
+    const onPointer = () => shareRef.current?.flushPendingCopy();
+    document.addEventListener('paste', onPaste, true);
+    window.addEventListener('focus', onFocus);
+    window.addEventListener('mousedown', onPointer, true);
+    return () => {
+      document.removeEventListener('paste', onPaste, true);
+      window.removeEventListener('focus', onFocus);
+      window.removeEventListener('mousedown', onPointer, true);
+      shareRef.current?.detach();
+    };
+  }, []);
 
   /** Where the picture lies inside a box of boxW x boxH for the display mode. */
   const fitVideoBox = (boxW: number, boxH: number, vidW: number, vidH: number) => {
@@ -1603,8 +1638,14 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
         return;
       }
 
+      // Remote text the browser didn't let us copy earlier: a key press may.
+      shareRef.current?.flushPendingCopy();
+      const sendDown = () => sendKeyEvent(e.code, e.shiftKey, e.ctrlKey, e.altKey, e.metaKey, true);
+      // Ctrl/Cmd+V: let the browser fire `paste` (its text goes first).
+      if (shareRef.current?.holdPasteKey(e, sendDown)) return;
       e.preventDefault();
-      sendKeyEvent(e.code, e.shiftKey, e.ctrlKey, e.altKey, e.metaKey, true);
+      if (shareRef.current?.queueAfterPaste(sendDown)) return;
+      sendDown();
     };
 
     const handleGlobalKeyUp = (e: KeyboardEvent) => {
@@ -1629,7 +1670,9 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       }
 
       e.preventDefault();
-      sendKeyEvent(e.code, e.shiftKey, e.ctrlKey, e.altKey, e.metaKey, false);
+      const sendUp = () => sendKeyEvent(e.code, e.shiftKey, e.ctrlKey, e.altKey, e.metaKey, false);
+      if (shareRef.current?.queueAfterPaste(sendUp)) return;
+      sendUp();
     };
 
     window.addEventListener('keydown', handleGlobalKeyDown);
@@ -2137,6 +2180,10 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       addLog(`Data Channel established: ${channel.label}`);
       
       const label = channel.label;
+      if (shareRef.current?.attach(label, channel)) {
+        addLog(`Data Channel ${label} ready (sharing).`);
+        return;
+      }
       const WT_CHANNELS = {
         keyboard: 7,
         mouse_absolute: 5,
@@ -2658,6 +2705,10 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     setVolume: (v) => { setVolume(v); localStorage.setItem('lunaris_stream_volume', String(v)); },
     showStats,
     setShowStats: (v) => { setShowStats(v); localStorage.setItem('lunaris_show_stats', String(v)); },
+    clipboardSync,
+    setClipboardSync: (v) => { setClipboardSync(v); localStorage.setItem('lunaris_clipboard_sync', String(v)); },
+    fileTransfer,
+    setFileTransfer: (v) => { setFileTransfer(v); localStorage.setItem('lunaris_file_transfer', String(v)); },
   };
 
   const draftSettingsValues: StreamSettingsValues = {
@@ -4133,7 +4184,33 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   }
 
   return (
-    <div className="stream-container is-live" ref={containerRef}>
+    <div
+      className="stream-container is-live"
+      ref={containerRef}
+      onDragOver={(e) => { if (e.dataTransfer.types.includes('Files')) { e.preventDefault(); setIsDraggingFiles(true); } }}
+      onDragLeave={(e) => { if (e.currentTarget === e.target) setIsDraggingFiles(false); }}
+      onDrop={(e) => {
+        if (!e.dataTransfer.files.length) return;
+        e.preventDefault();
+        setIsDraggingFiles(false);
+        void shareRef.current?.sendFiles(Array.from(e.dataTransfer.files));
+      }}
+    >
+      {isDraggingFiles && (
+        <div className="share-drop-hint">{fileTransfer ? t('Drop to send to the remote computer (Downloads/Lunaris)') : t('File transfer is turned off in Settings')}</div>
+      )}
+      {shareToast && <div className="share-toast" role="status">{shareToast}</div>}
+      <input
+        ref={sendFileInputRef}
+        type="file"
+        multiple
+        style={{ display: 'none' }}
+        onChange={(e) => {
+          const files = Array.from(e.target.files || []);
+          e.target.value = '';
+          void shareRef.current?.sendFiles(files);
+        }}
+      />
       {/* Settings Modal Overlay */}
       {showSettingsModal && (
         <StreamSettingsDialog
@@ -4449,6 +4526,18 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
               <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
             </svg>
           )}
+        </button>
+
+        {/* Send files to the remote computer */}
+        <button
+          onClick={() => sendFileInputRef.current?.click()}
+          className="stream-action-btn"
+          title={t('Send files to the remote computer (or drop them on the stream)')}
+          aria-label={t('Send files to the remote computer')}
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M12 16V4M7 9l5-5 5 5M4 16v4h16v-4" />
+          </svg>
         </button>
 
         {/* Settings Desktop Action */}

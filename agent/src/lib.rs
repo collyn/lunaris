@@ -20,6 +20,7 @@ pub mod direct;
 mod hub;
 mod input;
 pub mod pairing;
+mod share;
 mod vdisplay;
 mod video;
 

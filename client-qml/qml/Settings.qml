@@ -43,6 +43,7 @@ Rectangle {
         { key: "video", label: "Video", icon: "monitor" },
         { key: "display", label: "Display", icon: "grid" },
         { key: "audio", label: "Audio", icon: "volume" },
+        { key: "sharing", label: "Clipboard & files", icon: "clipboard" },
         { key: "host", label: "Remote computer", icon: "server" },
         { key: "input", label: "Input", icon: "link" }
     ]
@@ -422,6 +423,38 @@ Rectangle {
                         value: ViewPrefs.volume
                         onMoved: ViewPrefs.volume = Math.round(value)
                         Accessible.name: I18n.t("Volume")
+                    }
+                }
+            }
+
+            // ===== Clipboard & files (this device, applied right away) =====
+            SectionTitle { visible: settingsRoot.category === "sharing"; text: I18n.t("Clipboard") }
+            Card {
+                visible: settingsRoot.category === "sharing"
+                SettingRow {
+                    divider: false
+                    title: I18n.t("Sync clipboard")
+                    hint: I18n.t("Text you copy here can be pasted on the remote computer, and the other way round. The remote computer can turn this off for itself.")
+                    Toggle {
+                        anchors.right: parent.right
+                        checked: ViewPrefs.clipboardSync
+                        onToggled: ViewPrefs.clipboardSync = checked
+                        Accessible.name: I18n.t("Sync clipboard")
+                    }
+                }
+            }
+            SectionTitle { visible: settingsRoot.category === "sharing"; text: I18n.t("Files") }
+            Card {
+                visible: settingsRoot.category === "sharing"
+                SettingRow {
+                    divider: false
+                    title: I18n.t("Send files")
+                    hint: I18n.t("Drop files on the stream or use the send button in the menu; they are saved in Downloads/Lunaris on the remote computer.")
+                    Toggle {
+                        anchors.right: parent.right
+                        checked: ViewPrefs.fileTransfer
+                        onToggled: ViewPrefs.fileTransfer = checked
+                        Accessible.name: I18n.t("Send files")
                     }
                 }
             }

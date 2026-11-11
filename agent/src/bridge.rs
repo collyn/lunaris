@@ -724,6 +724,12 @@ pub async fn setup_bridge_session(
         .create_data_channel("keyboard", None)
         .await?;
 
+    // Clipboard and file sharing (share.rs).
+    match crate::share::attach(&peer_connection, agent_config.allow_clipboard, agent_config.allow_file_transfer).await {
+        Ok(tasks) => spawned_tasks.extend(tasks),
+        Err(e) => warn!("Clipboard/file channels unavailable: {}", e),
+    }
+
     // Handle messages on Data Channels
     setup_data_channel_handler(
         general_channel,

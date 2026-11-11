@@ -10,6 +10,9 @@ QtObject {
     property bool audioEnabled: true
     // 0-100
     property int volume: 100
+    // Clipboard both ways and sending files with the remote computer.
+    property bool clipboardSync: true
+    property bool fileTransfer: true
 
     readonly property var displayModes: [
         { value: "fit", label: "Fit window" },
@@ -19,7 +22,8 @@ QtObject {
     ]
 
     function toJson() {
-        return JSON.stringify({ displayMode: displayMode, audioEnabled: audioEnabled, volume: volume });
+        return JSON.stringify({ displayMode: displayMode, audioEnabled: audioEnabled, volume: volume,
+                                clipboardSync: clipboardSync, fileTransfer: fileTransfer });
     }
     function fromJson(text) {
         if (!text) return;
@@ -28,6 +32,8 @@ QtObject {
             if (["fit", "fill", "stretch", "native"].indexOf(p.displayMode) !== -1) displayMode = p.displayMode;
             if (typeof p.audioEnabled === "boolean") audioEnabled = p.audioEnabled;
             if (typeof p.volume === "number") volume = Math.max(0, Math.min(100, Math.round(p.volume)));
+            if (typeof p.clipboardSync === "boolean") clipboardSync = p.clipboardSync;
+            if (typeof p.fileTransfer === "boolean") fileTransfer = p.fileTransfer;
         } catch (e) { console.log("view_prefs: " + e); }
     }
 }

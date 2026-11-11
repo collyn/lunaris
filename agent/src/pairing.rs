@@ -41,6 +41,16 @@ pub struct AgentConfig {
     pub direct_port: u16,
     #[serde(default)]
     pub direct_password: String,
+    /// Clipboard sharing with clients (both ways).
+    #[serde(default = "default_true")]
+    pub allow_clipboard: bool,
+    /// Files sent by clients are saved in Downloads/Lunaris.
+    #[serde(default = "default_true")]
+    pub allow_file_transfer: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 pub fn default_direct_port() -> u16 {

@@ -234,6 +234,8 @@ fn make_default_config() -> AgentConfig {
         direct_enabled: false,
         direct_port: agent::pairing::default_direct_port(),
         direct_password: String::new(),
+        allow_clipboard: true,
+        allow_file_transfer: true,
     }
 }
 

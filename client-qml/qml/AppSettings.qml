@@ -317,6 +317,28 @@ Rectangle {
 
             Card {
                 visible: settings.section === "security"
+                title: I18n.t("What others may do")
+                subtitle: I18n.t("For computers controlling this one. Restarts remote control.")
+                CheckRow {
+                    text: I18n.t("Share the clipboard (both ways)")
+                    checked: !homeView || homeView.hostStatus.allow_clipboard !== false
+                    onToggled: {
+                        homeView.hostError = bridge.hostSetSharing(checked, homeView.hostStatus.allow_file_transfer !== false);
+                        homeView.refreshHost();
+                    }
+                }
+                CheckRow {
+                    text: I18n.t("Receive files (saved in Downloads/Lunaris)")
+                    checked: !homeView || homeView.hostStatus.allow_file_transfer !== false
+                    onToggled: {
+                        homeView.hostError = bridge.hostSetSharing(homeView.hostStatus.allow_clipboard !== false, checked);
+                        homeView.refreshHost();
+                    }
+                }
+            }
+
+            Card {
+                visible: settings.section === "security"
                 title: I18n.t("Wrong passwords")
                 Text {
                     Layout.fillWidth: true

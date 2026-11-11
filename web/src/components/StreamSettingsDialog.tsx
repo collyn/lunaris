@@ -4,6 +4,7 @@ import {
   bitrateLabel, mouseQueueLabel, readDisplayMode, readVolume, type DisplayMode,
 } from '../streamOptions';
 import { t } from '../i18n';
+import { readClipboardSync, readFileTransfer } from '../share';
 
 /** The settings the dialog edits (same names as the stored settings). */
 export type StreamSettingsValues = {
@@ -32,6 +33,11 @@ export type ViewerSettings = {
   /** Statistics overlay (in a session only). */
   showStats?: boolean;
   setShowStats?: (v: boolean) => void;
+  /** Clipboard both ways / sending files with the remote computer. */
+  clipboardSync: boolean;
+  setClipboardSync: (v: boolean) => void;
+  fileTransfer: boolean;
+  setFileTransfer: (v: boolean) => void;
 };
 
 type Props = {
@@ -58,12 +64,13 @@ type Props = {
   viewer?: ViewerSettings;
 };
 
-type Category = 'video' | 'display' | 'audio' | 'host' | 'input';
+type Category = 'video' | 'display' | 'audio' | 'sharing' | 'host' | 'input';
 
 const CATEGORIES: { key: Category; label: string; icon: ReactNode }[] = [
   { key: 'video', label: 'Video', icon: <><rect x="3" y="4" width="18" height="12" rx="1.5" /><path d="M8 20h8M12 16v4" /></> },
   { key: 'display', label: 'Display', icon: <><rect x="3" y="5" width="18" height="12" rx="1.5" /><path d="M7 21h10M9 9l-2 2 2 2M15 9l2 2-2 2" /></> },
   { key: 'audio', label: 'Audio', icon: <><path d="M4 9v6h4l5 4V5L8 9H4z" /><path d="M16 9a3.5 3.5 0 0 1 0 6M18.5 6.5a7 7 0 0 1 0 11" /></> },
+  { key: 'sharing', label: 'Clipboard & files', icon: <><rect x="8" y="3" width="8" height="4" rx="1" /><path d="M8 5H6a1 1 0 0 0-1 1v14a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V6a1 1 0 0 0-1-1h-2" /></> },
   { key: 'host', label: 'Remote computer', icon: <><rect x="4" y="4" width="16" height="6" rx="1" /><rect x="4" y="14" width="16" height="6" rx="1" /><path d="M8 7h.01M8 17h.01" /></> },
   { key: 'input', label: 'Input', icon: <><rect x="3" y="6" width="18" height="12" rx="2" /><path d="M7 10h.01M11 10h.01M15 10h.01M7 14h10" /></> },
 ];
@@ -95,7 +102,13 @@ const useStoredViewer = (): ViewerSettings => {
   const [displayMode, setMode] = useState<DisplayMode>(readDisplayMode);
   const [muted, setMutedState] = useState<boolean>(() => localStorage.getItem('lunaris_stream_muted') === 'true');
   const [volume, setVol] = useState<number>(readVolume);
+  const [clipboardSync, setClip] = useState<boolean>(readClipboardSync);
+  const [fileTransfer, setFiles] = useState<boolean>(readFileTransfer);
   return {
+    clipboardSync,
+    setClipboardSync: (v) => { setClip(v); localStorage.setItem('lunaris_clipboard_sync', String(v)); },
+    fileTransfer,
+    setFileTransfer: (v) => { setFiles(v); localStorage.setItem('lunaris_file_transfer', String(v)); },
     displayMode,
     setDisplayMode: (m) => { setMode(m); localStorage.setItem('lunaris_display_mode', m); },
     muted,
@@ -238,6 +251,23 @@ export default function StreamSettingsDialog({
                       onChange={(e) => viewer.setVolume(Number(e.target.value))}
                       aria-label={t('Volume')}
                     />
+                  </Row>
+                </div>
+              </>
+            )}
+
+            {category === 'sharing' && (
+              <>
+                <h3 className="ssd-section">{t('Clipboard')}</h3>
+                <div className="ssd-card">
+                  <Row title={t('Sync clipboard')} hint={t('Text you copy here can be pasted on the remote computer, and the other way round. In the browser, paste with Ctrl+V in the stream; on http pages copied remote text arrives with your next key press or click.')}>
+                    <Switch label={t('Sync clipboard')} checked={viewer.clipboardSync} onChange={viewer.setClipboardSync} />
+                  </Row>
+                </div>
+                <h3 className="ssd-section">{t('Files')}</h3>
+                <div className="ssd-card">
+                  <Row title={t('Send files')} hint={t('Drop files on the stream or use the send button in the toolbar; they are saved in Downloads/Lunaris on the remote computer.')}>
+                    <Switch label={t('Send files')} checked={viewer.fileTransfer} onChange={viewer.setFileTransfer} />
                   </Row>
                 </div>
               </>

@@ -491,6 +491,12 @@ ApplicationWindow {
             }
         }
 
+        onShareStatus: (message) => {
+            shareToast.text = I18n.t(message);
+            shareToast.opacity = 1;
+            shareToastTimer.restart();
+        }
+
         onStreamFailed: (message) => {
             console.log("Stream failed: " + message);
             bridge.stopStream();
@@ -1012,6 +1018,16 @@ ApplicationWindow {
         showStats: window.showStats
         hideLocalCursor: window.hideLocalCursor
         
+        onSendFilesRequested: {
+            if (!ViewPrefs.fileTransfer) {
+                shareToast.text = I18n.t("File transfer is turned off in Settings");
+                shareToast.opacity = 1;
+                shareToastTimer.restart();
+                return;
+            }
+            sendFilesDialog.open();
+        }
+
         onFullscreenToggled: {
             if (window.visibility === Window.FullScreen) {
                 window.visibility = Window.Windowed;
@@ -1074,6 +1090,80 @@ ApplicationWindow {
                 homeView.forceActiveFocus();
             }
         }
+    }
+
+    // Files dropped on the stream go to the remote computer.
+    DropArea {
+        anchors.fill: parent
+        enabled: window.isStreamMode
+        keys: ["text/uri-list"]
+        onEntered: (drag) => { dropHint.visible = ViewPrefs.fileTransfer; }
+        onExited: dropHint.visible = false
+        onDropped: (drop) => {
+            dropHint.visible = false;
+            if (!drop.hasUrls) return;
+            if (!ViewPrefs.fileTransfer) {
+                shareToast.text = I18n.t("File transfer is turned off in Settings");
+                shareToast.opacity = 1;
+                shareToastTimer.restart();
+                return;
+            }
+            bridge.sendFiles(drop.urls.map(function (u) { return u.toString(); }).join("\n"));
+            drop.accept();
+        }
+    }
+    Rectangle {
+        id: dropHint
+        visible: false
+        anchors.fill: parent
+        anchors.margins: 16
+        z: 900
+        radius: 16
+        color: Qt.rgba(37 / 255, 99 / 255, 235 / 255, 0.18)
+        border.color: Theme.live.accent
+        border.width: 2
+        Text {
+            anchors.centerIn: parent
+            text: I18n.t("Drop to send to the remote computer (Downloads/Lunaris)")
+            color: "#ffffff"
+            font.pixelSize: 18
+            font.weight: Font.DemiBold
+        }
+    }
+
+    Platform.FileDialog {
+        id: sendFilesDialog
+        title: I18n.t("Send files to the remote computer")
+        fileMode: Platform.FileDialog.OpenFiles
+        onAccepted: bridge.sendFiles(files.map(function (u) { return u.toString(); }).join("\n"))
+    }
+
+    // Clipboard/file sharing news (progress, saved, errors).
+    Rectangle {
+        id: shareToast
+        property alias text: shareToastText.text
+        visible: opacity > 0 && window.isStreamMode
+        opacity: 0
+        z: 950
+        anchors.bottom: parent.bottom
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.bottomMargin: 72
+        width: Math.min(parent.width - 48, shareToastText.implicitWidth + 36)
+        height: 40
+        radius: 20
+        color: Qt.rgba(17 / 255, 17 / 255, 20 / 255, 0.92)
+        border.color: Theme.live.borderStrong
+        Behavior on opacity { NumberAnimation { duration: 200 } }
+        Text {
+            id: shareToastText
+            anchors.centerIn: parent
+            width: parent.width - 32
+            horizontalAlignment: Text.AlignHCenter
+            elide: Text.ElideMiddle
+            color: Theme.live.textStrong
+            font.pixelSize: 13
+        }
+        Timer { id: shareToastTimer; interval: 4000; onTriggered: shareToast.opacity = 0 }
     }
 
     // Pointer Lock Banner Notification
@@ -1264,6 +1354,12 @@ ApplicationWindow {
         function onDisplayModeChanged() { bridge.saveStore("view_prefs", ViewPrefs.toJson()); }
         function onAudioEnabledChanged() { window.applyAudio(); }
         function onVolumeChanged() { window.applyAudio(); }
+        function onClipboardSyncChanged() { window.applySharing(); }
+        function onFileTransferChanged() { window.applySharing(); }
+    }
+    function applySharing() {
+        bridge.setShareOptions(ViewPrefs.clipboardSync, ViewPrefs.fileTransfer);
+        bridge.saveStore("view_prefs", ViewPrefs.toJson());
     }
     function applyAudio() {
         bridge.setAudio(ViewPrefs.audioEnabled, ViewPrefs.volume);
@@ -1273,6 +1369,7 @@ ApplicationWindow {
     Component.onCompleted: {
         ViewPrefs.fromJson(bridge.loadStore("view_prefs"));
         bridge.setAudio(ViewPrefs.audioEnabled, ViewPrefs.volume);
+        bridge.setShareOptions(ViewPrefs.clipboardSync, ViewPrefs.fileTransfer);
 
         // Center window procedurally on startup to avoid permanent bindings
         window.x = (Screen.width - window.width) / 2;

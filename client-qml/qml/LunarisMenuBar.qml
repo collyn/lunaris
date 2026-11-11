@@ -15,6 +15,8 @@ Item {
     signal fullscreenToggled()
     signal lockToggled()
     signal statsToggled()
+    // "Send file" button (main.qml opens the file dialog).
+    signal sendFilesRequested()
     signal cursorHideToggled()
     signal settingsChanged(string res, int fps, string codec, int bitrate, int queueLimit, bool disableCuda, string renderBackend, string inputProtocol)
     signal exitTriggered()
@@ -509,6 +511,28 @@ Item {
                 }
                 onClicked: {
                     menuContainer.statsToggled();
+                    if (!menuContainer.isPinned) autoHideTimer.restart();
+                }
+            }
+
+            // Send files to the remote computer
+            Button {
+                id: sendFileButton
+                width: 28
+                height: 28
+                padding: 0
+                anchors.verticalCenter: parent.verticalCenter
+                LunarisToolTip { text: I18n.t("Send files to the remote computer (or drop them on the stream)") }
+                background: Rectangle {
+                    anchors.fill: parent
+                    color: sendFileButton.hovered ? Theme.live.ink(0.12) : "transparent"
+                    radius: 14
+                }
+                contentItem: Item {
+                    Icon { anchors.centerIn: parent; name: "upload"; size: 16; color: Theme.live.text }
+                }
+                onClicked: {
+                    menuContainer.sendFilesRequested();
                     if (!menuContainer.isPinned) autoHideTimer.restart();
                 }
             }

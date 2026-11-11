@@ -834,6 +834,10 @@ pub mod qobject {
         #[qsignal]
         fn stream_failed(self: Pin<&mut StreamBridge>, message: QString);
 
+        /// Clipboard/file sharing news for the user (progress, saved, error).
+        #[qsignal]
+        fn share_status(self: Pin<&mut StreamBridge>, message: QString);
+
         #[qinvokable]
         unsafe fn set_video_sink(self: Pin<&mut StreamBridge>, sink: *mut QVideoSink);
 
@@ -1036,6 +1040,11 @@ pub mod qobject {
         #[qinvokable]
         fn host_use_server(self: Pin<&mut StreamBridge>, server: QString, token: QString) -> QString;
 
+        /// Whether clients may share the clipboard / send files to this
+        /// computer; returns an error message or "".
+        #[qinvokable]
+        fn host_set_sharing(self: Pin<&mut StreamBridge>, clipboard: bool, files: bool) -> QString;
+
         /// Sets the port for direct connections; returns an error message or "".
         #[qinvokable]
         fn host_set_port(self: Pin<&mut StreamBridge>, port: i32) -> QString;
@@ -1060,6 +1069,15 @@ pub mod qobject {
         /// Stream sound on/off and volume (0-100), applied right away.
         #[qinvokable]
         fn set_audio(self: Pin<&mut StreamBridge>, enabled: bool, volume: i32);
+
+        /// Clipboard sync and file transfer on/off (this device's settings).
+        #[qinvokable]
+        fn set_share_options(self: Pin<&mut StreamBridge>, clipboard: bool, files: bool);
+
+        /// Sends files (newline-separated paths or file:// URLs) to the
+        /// remote computer; progress comes through share_status.
+        #[qinvokable]
+        fn send_files(self: Pin<&mut StreamBridge>, files: QString);
 
         /// A small JSON store of the app ("app_settings", "peers"); "" if none.
         #[qinvokable]
@@ -1218,6 +1236,7 @@ impl qobject::StreamBridge {
     }
 
     pub fn stop_stream(mut self: Pin<&mut Self>) {
+        crate::share::detach();
         println!("Stopping stream and releasing signaling runtime...");
         qobject::set_cuda_stream_active(false);
         qobject::set_d3d11_stream_active(false);
@@ -1414,6 +1433,9 @@ impl qobject::StreamBridge {
         if let Some(message) = failure {
             self.as_mut().stream_failed(QString::from(&message));
             return;
+        }
+        if let Some(message) = crate::share::take_status() {
+            self.as_mut().share_status(QString::from(&message));
         }
         let stats = { STREAM_STATS.lock().unwrap().clone() };
         if let Some(s) = stats {
@@ -2629,6 +2651,10 @@ impl qobject::StreamBridge {
         QString::from(&result.unwrap_or_else(|e| format!("error: {}", e)))
     }
 
+    pub fn host_set_sharing(self: Pin<&mut Self>, clipboard: bool, files: bool) -> QString {
+        QString::from(&crate::host::set_sharing(clipboard, files).err().unwrap_or_default())
+    }
+
     pub fn host_set_port(self: Pin<&mut Self>, port: i32) -> QString {
         let result = u16::try_from(port)
             .map_err(|_| "Use a port from 1024 to 65535".to_string())
@@ -2657,6 +2683,32 @@ impl qobject::StreamBridge {
 
     pub fn set_audio(self: Pin<&mut Self>, enabled: bool, volume: i32) {
         crate::audio::set_output(enabled, volume.clamp(0, 100) as u32);
+    }
+
+    pub fn set_share_options(self: Pin<&mut Self>, clipboard: bool, files: bool) {
+        crate::share::set_options(clipboard, files);
+    }
+
+    pub fn send_files(self: Pin<&mut Self>, files: QString) {
+        let paths: Vec<std::path::PathBuf> = files
+            .to_string()
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .map(|l| {
+                url::Url::parse(l)
+                    .ok()
+                    .filter(|u| u.scheme() == "file")
+                    .and_then(|u| u.to_file_path().ok())
+                    .unwrap_or_else(|| std::path::PathBuf::from(l))
+            })
+            .collect();
+        if paths.is_empty() {
+            return;
+        }
+        let mut rust_obj = self.rust_mut();
+        let rt = rust_obj.get_or_init_runtime();
+        rt.spawn(crate::share::send_files(paths));
     }
 
     pub fn load_store(self: Pin<&mut Self>, name: QString) -> QString {
@@ -4221,6 +4273,8 @@ async fn setup_peer_connection(
             "mouse_relative" => {
                 *mr_c.lock().unwrap() = Some(channel_ref);
             }
+            "clipboard" => crate::share::attach_clipboard(channel_ref),
+            "file" => crate::share::attach_files(channel_ref),
             "general" | "cursor" => {
                 d.on_message(Box::new(move |msg: DataChannelMessage| {
                     Box::pin(async move {

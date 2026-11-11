@@ -13,6 +13,7 @@ pub mod host;
 pub mod local_server;
 pub mod input;
 pub mod protocol;
+pub mod share;
 
 use bridge::{AppArgs, PendingDashboardEvent, APP_ARGS};
 
