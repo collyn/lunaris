@@ -315,12 +315,17 @@ impl qobject::AgentBridge {
     }
 
     fn emit_direct_config(mut self: Pin<&mut Self>, config: &AgentConfig) {
-        let addresses = {
-            let mut rust_obj = self.as_mut().rust_mut();
-            rust_obj
-                .get_or_init_runtime()
-                .block_on(crate::direct::local_addresses())
-        };
+        // The GUI thread may already be inside a tokio runtime (block_on would
+        // panic there), so list the addresses on a thread of its own.
+        let addresses = std::thread::spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map(|rt| rt.block_on(crate::direct::local_addresses()))
+                .unwrap_or_default()
+        })
+        .join()
+        .unwrap_or_default();
         self.as_mut().direct_config_loaded(
             config.direct_enabled,
             config.direct_port as i32,
