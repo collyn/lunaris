@@ -232,7 +232,10 @@ pub fn use_server(server: &str, token: &str) -> Result<String, String> {
         let norm = |u: &str| u.replace("://localhost", "://127.0.0.1").to_ascii_lowercase();
         norm(a) == norm(b)
     };
-    if !current.is_empty() && !config.server_token.trim().is_empty() && !same(&current, &ws_url) {
+    // The app's own server only got the agent because nothing else had it:
+    // the server the user signed in to takes over.
+    let own_server = same(&current, &crate::local_server::agent_url());
+    if !current.is_empty() && !config.server_token.trim().is_empty() && !same(&current, &ws_url) && !own_server {
         return Ok(format!("elsewhere {}", current));
     }
     if same(&current, &ws_url) && config.server_token == token {

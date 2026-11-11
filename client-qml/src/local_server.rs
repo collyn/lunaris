@@ -141,7 +141,7 @@ pub fn start() -> Result<(), String> {
     spawn(settings.port)?;
     // This computer's agent registers with its own server (when it has no
     // server yet) once the server has written its agent token.
-    std::thread::spawn(move || connect_local_agent(settings.port));
+    std::thread::spawn(connect_local_agent);
     Ok(())
 }
 
@@ -170,13 +170,18 @@ fn spawn(port: u16) -> Result<(), String> {
     Ok(())
 }
 
+/// The app's server as this computer's agent reaches it.
+pub fn agent_url() -> String {
+    format!("ws://127.0.0.1:{}", load_settings().port)
+}
+
 /// Points this computer's agent at the app's server when it has none.
-fn connect_local_agent(port: u16) {
+fn connect_local_agent() {
     let token_file = data_dir().join("server_token.txt");
     for _ in 0..50 {
         let token = read_trimmed(token_file.clone());
         if !token.is_empty() {
-            if let Err(e) = crate::host::use_server_if_none(&format!("ws://127.0.0.1:{}", port), &token) {
+            if let Err(e) = crate::host::use_server_if_none(&agent_url(), &token) {
                 tracing::warn!("Could not register this computer with its server: {}", e);
             }
             return;
