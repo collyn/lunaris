@@ -161,6 +161,8 @@ fn main() {
     println!("cargo:rerun-if-changed=qml/LunarisMenuBar.qml");
     println!("cargo:rerun-if-changed=qml/Settings.qml");
     println!("cargo:rerun-if-changed=qml/resources.qrc");
+    // Every QML file is compiled into the resources.
+    println!("cargo:rerun-if-changed=qml");
     println!("cargo:rerun-if-changed=qml/Theme.qml");
     println!("cargo:rerun-if-changed=qml/Dashboard.qml");
 }

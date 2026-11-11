@@ -9,6 +9,7 @@ use cxx_qt_lib::{QQmlApplicationEngine, QUrl};
 pub mod audio;
 pub mod bridge;
 pub mod decoder;
+pub mod host;
 pub mod input;
 pub mod protocol;
 
@@ -568,6 +569,9 @@ pub fn run() {
     bridge::qobject::register_native_video_item_types();
 
     // 2. Create QQmlApplicationEngine
+    // Remote control of this computer, when it was left on.
+    host::start_if_enabled();
+
     let mut engine = QQmlApplicationEngine::new();
 
     // 3. Load QML resources
@@ -583,4 +587,5 @@ pub fn run() {
 
     // Clean up local agent if running
     bridge::stop_local_agent();
+    host::shutdown();
 }

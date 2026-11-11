@@ -344,6 +344,12 @@ fn direct_target_path() -> std::path::PathBuf {
     get_config_path().with_file_name("direct_connection.json")
 }
 
+/// File of a JSON store the UI keeps (`load_store`/`save_store`).
+fn store_path(name: &str) -> Option<std::path::PathBuf> {
+    matches!(name, "app_settings" | "peers")
+        .then(|| get_config_path().with_file_name(format!("{}.json", name)))
+}
+
 fn load_direct_target() -> Option<DirectTarget> {
     serde_json::from_str(&std::fs::read_to_string(direct_target_path()).ok()?).ok()
 }
@@ -1005,6 +1011,38 @@ pub mod qobject {
 
         #[qinvokable]
         fn get_local_hostname(self: Pin<&mut StreamBridge>) -> QString;
+
+        /// Remote control of this computer, as JSON: enabled, running, port,
+        /// password, addresses, hostname, error.
+        #[qinvokable]
+        fn host_status(self: Pin<&mut StreamBridge>) -> QString;
+
+        /// Turns remote control on; returns an error message or "".
+        #[qinvokable]
+        fn host_start(self: Pin<&mut StreamBridge>) -> QString;
+
+        /// Turns remote control off; returns an error message or "".
+        #[qinvokable]
+        fn host_stop(self: Pin<&mut StreamBridge>) -> QString;
+
+        /// Sets the access password ("" = a new random one); returns an
+        /// error message or "".
+        #[qinvokable]
+        fn host_set_password(self: Pin<&mut StreamBridge>, password: QString) -> QString;
+
+        /// Sets the port for direct connections; returns an error message or "".
+        #[qinvokable]
+        fn host_set_port(self: Pin<&mut StreamBridge>, port: i32) -> QString;
+
+        /// A small JSON store of the app ("app_settings", "peers"); "" if none.
+        #[qinvokable]
+        fn load_store(self: Pin<&mut StreamBridge>, name: QString) -> QString;
+
+        #[qinvokable]
+        fn save_store(self: Pin<&mut StreamBridge>, name: QString, json: QString);
+
+        #[qinvokable]
+        fn app_version(self: Pin<&mut StreamBridge>) -> QString;
 
         /// Last direct connection (address "host:port" and password), "" if none.
         #[qinvokable]
@@ -2539,6 +2577,58 @@ impl qobject::StreamBridge {
         } else {
             false
         }
+    }
+
+    pub fn host_status(self: Pin<&mut Self>) -> QString {
+        QString::from(&crate::host::status_json())
+    }
+
+    pub fn host_start(self: Pin<&mut Self>) -> QString {
+        QString::from(&crate::host::start().err().unwrap_or_default())
+    }
+
+    pub fn host_stop(self: Pin<&mut Self>) -> QString {
+        QString::from(&crate::host::stop().err().unwrap_or_default())
+    }
+
+    pub fn host_set_password(self: Pin<&mut Self>, password: QString) -> QString {
+        let password = password.to_string();
+        let password = (!password.trim().is_empty()).then_some(password);
+        QString::from(&crate::host::set_password(password).err().unwrap_or_default())
+    }
+
+    pub fn host_set_port(self: Pin<&mut Self>, port: i32) -> QString {
+        let result = u16::try_from(port)
+            .map_err(|_| "Use a port from 1024 to 65535".to_string())
+            .and_then(crate::host::set_port);
+        QString::from(&result.err().unwrap_or_default())
+    }
+
+    pub fn load_store(self: Pin<&mut Self>, name: QString) -> QString {
+        let data = store_path(&name.to_string())
+            .and_then(|path| std::fs::read_to_string(path).ok())
+            .unwrap_or_default();
+        QString::from(&data)
+    }
+
+    pub fn save_store(self: Pin<&mut Self>, name: QString, json: QString) {
+        let Some(path) = store_path(&name.to_string()) else { return };
+        let json = json.to_string();
+        if serde_json::from_str::<serde_json::Value>(&json).is_err() {
+            return;
+        }
+        if std::fs::write(&path, json).is_ok() {
+            // "peers" may hold access passwords: owner-only.
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+            }
+        }
+    }
+
+    pub fn app_version(self: Pin<&mut Self>) -> QString {
+        QString::from(env!("CARGO_PKG_VERSION"))
     }
 
     pub fn saved_direct_address(self: Pin<&mut Self>) -> QString {

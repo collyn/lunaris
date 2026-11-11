@@ -3,3 +3,15 @@ Dashboard 1.0 Dashboard.qml
 Settings 1.0 Settings.qml
 LunarisMenuBar 1.0 LunarisMenuBar.qml
 LunarisComboBox 1.0 LunarisComboBox.qml
+Home 1.0 Home.qml
+AppSettings 1.0 AppSettings.qml
+Icon 1.0 Icon.qml
+IconButton 1.0 IconButton.qml
+PrimaryButton 1.0 PrimaryButton.qml
+SecondaryButton 1.0 SecondaryButton.qml
+Toggle 1.0 Toggle.qml
+CheckRow 1.0 CheckRow.qml
+RadioRow 1.0 RadioRow.qml
+InputField 1.0 InputField.qml
+DialogFrame 1.0 DialogFrame.qml
+ThemedMenu 1.0 ThemedMenu.qml

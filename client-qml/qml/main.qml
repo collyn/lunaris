@@ -46,21 +46,10 @@ ApplicationWindow {
                 }
             }
             Platform.MenuItem {
-                text: dashboardView.localAgentRunning ? "Stop Local Agent" : "Start Local Agent"
-                onTriggered: {
-                    if (dashboardView.localAgentRunning) {
-                        bridge.stopLocalAgent();
-                    } else {
-                        if (dashboardView.localAgentHostname && dashboardView.serverUrl && dashboardView.agentToken) {
-                            bridge.startLocalAgent(dashboardView.serverUrl, dashboardView.agentToken, dashboardView.localAgentHostname);
-                        } else {
-                            window.show()
-                            window.raise()
-                            window.requestActivate()
-                            dashboardView.showPairingPage = true
-                        }
-                    }
-                }
+                text: "Allow remote control"
+                checkable: true
+                checked: homeView.hostStatus.enabled
+                onTriggered: homeView.setRemoteControl(!homeView.hostStatus.enabled)
             }
             Platform.MenuItem {
                 text: "Autostart on Boot"
@@ -512,8 +501,8 @@ ApplicationWindow {
                 return;
             }
             window.isStreamMode = false;
-            dashboardView.authError = message;
-            dashboardView.forceActiveFocus();
+            homeView.showError(message);
+            homeView.forceActiveFocus();
         }
 
         onCapabilitiesUpdated: (displaysJson, encodersJson, gpuInfo, hostOs) => {
@@ -1076,8 +1065,9 @@ ApplicationWindow {
                 Qt.quit();
             } else {
                 window.isStreamMode = false;
-                bridge.fetchHosts();
-                dashboardView.forceActiveFocus();
+                if (homeView.dashboard.isLoggedIn) bridge.fetchHosts();
+                homeView.setStatus("", false);
+                homeView.forceActiveFocus();
             }
         }
     }
@@ -1230,9 +1220,9 @@ ApplicationWindow {
         }
     }
 
-    // Dashboard View
-    Dashboard {
-        id: dashboardView
+    // Home: this computer, remote computers, settings
+    Home {
+        id: homeView
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.bottom: parent.bottom
@@ -1258,6 +1248,8 @@ ApplicationWindow {
     }
 
     property bool isStreamMode: false
+    // The server sign-in and computer list (inside Home's Server tab).
+    readonly property var dashboardView: homeView.dashboard
     property int streamWidth: 1920
     property int streamHeight: 1080
 

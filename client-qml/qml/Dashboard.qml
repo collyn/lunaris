@@ -21,6 +21,10 @@ Rectangle {
     property bool authLoading: false
     // Login screen shows "connect directly by IP" instead of the server sign-in.
     property bool directMode: false
+    // Shown inside the Home "Server" tab: Home has its own address box and
+    // brand, and the window isn't dragged from here.
+    property bool embedded: false
+    clip: embedded
 
     // Direct connection (no server): the agent's address ("host" or
     // "host:port", default port 8091) and its access password.
@@ -175,12 +179,14 @@ Rectangle {
             anchors.fill: parent
 
             Component.onCompleted: {
-                serverInput.forceActiveFocus();
+                // Inside Home the address box keeps the focus.
+                if (!dashboardRoot.embedded) serverInput.forceActiveFocus();
             }
 
-            // Central glass card
+            // Central glass card (near the top inside Home, where space is short)
             Rectangle {
-                anchors.centerIn: parent
+                anchors.horizontalCenter: parent.horizontalCenter
+                y: dashboardRoot.embedded ? 16 : Math.max(0, (parent.height - height) / 2)
                 width: 420
                 height: (dashboardRoot.directMode ? 420 : 480) + (dashboardRoot.authError !== "" ? 24 : 0)
                 radius: 20
@@ -200,7 +206,7 @@ Rectangle {
 
                     // Logo Title
                     Text {
-                        text: dashboardRoot.directMode ? "Connect directly" : "Welcome back"
+                        text: dashboardRoot.directMode ? "Connect directly" : (dashboardRoot.embedded ? "Sign in to a Lunaris server" : "Welcome back")
                         font.pixelSize: 22
                         font.weight: Font.DemiBold
                         color: Theme.textStrong
@@ -208,7 +214,7 @@ Rectangle {
                     }
 
                     Text {
-                        text: dashboardRoot.directMode ? "To a computer on your network or VPN, no server needed" : "Access your remote desktop network"
+                        text: dashboardRoot.directMode ? "To a computer on your network or VPN, no server needed" : (dashboardRoot.embedded ? "See and connect to the computers registered on your server" : "Access your remote desktop network")
                         font.pixelSize: 13
                         color: Theme.textMuted
                         anchors.horizontalCenter: parent.horizontalCenter
@@ -424,6 +430,7 @@ Rectangle {
 
                     // Switch between server sign-in and direct connection
                     Text {
+                        visible: !dashboardRoot.embedded
                         anchors.horizontalCenter: parent.horizontalCenter
                         text: dashboardRoot.directMode ? "Sign in to a Lunaris server instead" : "Connect directly by IP address"
                         color: modeSwitchMa.containsMouse ? Theme.accentFg : Theme.textMuted
@@ -470,6 +477,7 @@ Rectangle {
                 // Allow dragging the window by holding and dragging the navbar
                 DragHandler {
                     target: null
+                    enabled: !dashboardRoot.embedded
                     onActiveChanged: {
                         if (active) {
                             window.startSystemMove();
@@ -479,6 +487,7 @@ Rectangle {
 
                 // Brand Title & Tech Pill
                 Row {
+                    visible: !dashboardRoot.embedded
                     anchors.left: parent.left
                     anchors.leftMargin: 24
                     anchors.verticalCenter: parent.verticalCenter
@@ -525,6 +534,7 @@ Rectangle {
                     // Theme toggle: system -> light -> dark
                     Button {
                         id: themeBtn
+                        visible: !dashboardRoot.embedded
                         anchors.verticalCenter: parent.verticalCenter
                         hoverEnabled: true
                         onClicked: Theme.mode = Theme.mode === "system" ? "light" : (Theme.mode === "light" ? "dark" : "system")
@@ -616,7 +626,7 @@ Rectangle {
                 anchors.top: parent.top
                 anchors.topMargin: 64 // Below navbar
                 anchors.bottom: parent.bottom
-                anchors.margins: 40
+                anchors.margins: dashboardRoot.embedded ? 20 : 40
 
                 Loader {
                     anchors.fill: parent

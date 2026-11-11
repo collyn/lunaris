@@ -16,10 +16,10 @@ use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 
 mod bridge;
 mod buffer;
-mod direct;
+pub mod direct;
 mod hub;
 mod input;
-mod pairing;
+pub mod pairing;
 mod vdisplay;
 mod video;
 
