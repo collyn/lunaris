@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { CHROMAS, CODECS, DEFAULT_BITRATE, DEFAULT_CODEC, FPS_OPTIONS, MOUSE_QUEUES, mouseQueueLabel } from './streamOptions';
+import { LANGUAGES, getLang, setLang, t, type Lang } from './i18n';
+import StreamSettingsDialog from './components/StreamSettingsDialog';
+import { DEFAULT_BITRATE, DEFAULT_CODEC } from './streamOptions';
 import { StreamPlayer } from './components/StreamPlayer';
 import { AdminUsers } from './components/AdminUsers';
 import { AdminGroups } from './components/AdminGroups';
@@ -707,6 +709,15 @@ function App() {
           <span className="brand-name">Lunaris</span>
         </div>
         <div className="nav-actions">
+          <select
+            className="lang-select"
+            value={getLang()}
+            onChange={(e) => setLang(e.target.value as Lang)}
+            aria-label={t('Language')}
+            title={t('Language')}
+          >
+            {LANGUAGES.map(l => <option key={l.value} value={l.value}>{l.label}</option>)}
+          </select>
           <button
             type="button"
             className="icon-btn"
@@ -779,7 +790,7 @@ function App() {
                 </div>
 
                 <div className="form-group">
-                  <label htmlFor="username">Username</label>
+                  <label htmlFor="username">{t('Username')}</label>
                   <input
                     type="text"
                     id="username"
@@ -792,7 +803,7 @@ function App() {
                 </div>
 
                 <div className="form-group">
-                  <label htmlFor="password">Password</label>
+                  <label htmlFor="password">{t('Password')}</label>
                   <input
                     type="password"
                     id="password"
@@ -830,7 +841,7 @@ function App() {
                       <line x1="8" y1="21" x2="16" y2="21" />
                       <line x1="12" y1="17" x2="12" y2="21" />
                     </svg>
-                    Devices
+                    {t('Devices')}
                   </button>
                   <button
                     className={`nav-tab ${activeTab === 'users' ? 'active' : ''}`}
@@ -840,7 +851,7 @@ function App() {
                       <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
                       <circle cx="12" cy="7" r="4" />
                     </svg>
-                    Users
+                    {t('Users')}
                   </button>
                   <button
                     className={`nav-tab ${activeTab === 'groups' ? 'active' : ''}`}
@@ -852,7 +863,7 @@ function App() {
                       <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
                       <path d="M16 3.13a4 4 0 0 1 0 7.75" />
                     </svg>
-                    Groups
+                    {t('Groups')}
                   </button>
                   <button
                     className={`nav-tab ${activeTab === 'turn_servers' ? 'active' : ''}`}
@@ -863,7 +874,7 @@ function App() {
                       <polyline points="2 17 12 22 22 17" />
                       <polyline points="2 12 12 17 22 12" />
                     </svg>
-                    TURN Servers
+                    {t('TURN Servers')}
                   </button>
                 </div>
               )}
@@ -885,7 +896,7 @@ function App() {
                           Back to Directory
                         </button>
                         <div className="breadcrumbs">
-                          <span className="breadcrumb-item">Device Directory</span>
+                          <span className="breadcrumb-item">{t('Device Directory')}</span>
                           <span className="breadcrumb-separator">/</span>
                           <span className="breadcrumb-item active">{viewingHost.name}</span>
                         </div>
@@ -1061,8 +1072,8 @@ function App() {
                     <>
                       <div className="section-header">
                         <div>
-                          <h1 className="section-title">Device Directory</h1>
-                          <p className="section-subtitle">Manage and connect to active remote agent streams</p>
+                          <h1 className="section-title">{t('Device Directory')}</h1>
+                          <p className="section-subtitle">{t('Manage and connect to active remote agent streams')}</p>
                         </div>
                         <div style={{ display: 'flex', gap: '0.75rem' }}>
                           <button
@@ -1082,7 +1093,7 @@ function App() {
                             >
                               <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67" />
                             </svg>
-                            Sync Devices
+                            {t('Sync Devices')}
                           </button>
                         </div>
                       </div>
@@ -1095,9 +1106,9 @@ function App() {
                             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                               <path d="M12 5v14M5 12h14" />
                             </svg>
-                            Add a host agent
+                            {t('Add a host agent')}
                           </span>
-                          <span className="setup-panel-hint">Server URL and connection token</span>
+                          <span className="setup-panel-hint">{t('Server URL and connection token')}</span>
                         </summary>
                         <div className="setup-panel-grid">
                           <div className="setup-field">
@@ -1162,9 +1173,9 @@ function App() {
                       ) : hosts.length === 0 ? (
                         <div className="empty-card">
                           <div className="empty-icon">🖥️</div>
-                          <h3>No agents connected</h3>
-                          <p>There are no host agents registered with the server.</p>
-                          <p className="empty-hint">Agents will appear here automatically once they connect.</p>
+                          <h3>{t('No agents connected')}</h3>
+                          <p>{t('There are no host agents registered with the server.')}</p>
+                          <p className="empty-hint">{t('Agents will appear here automatically once they connect.')}</p>
                         </div>
                       ) : (
                         <div className="hosts-card-grid">
@@ -1190,14 +1201,14 @@ function App() {
 
                                 <div className="host-card-body">
                                   <div className="host-meta-item">
-                                    <span className="meta-label">IP Address</span>
-                                    <span className="meta-value">{host.ip_address || 'Signaling Tunnel'}</span>
+                                    <span className="meta-label">{t('IP Address')}</span>
+                                    <span className="meta-value">{host.ip_address || t('Signaling Tunnel')}</span>
                                   </div>
                                   <div className="host-meta-item">
-                                    <span className="meta-label">Status</span>
+                                    <span className="meta-label">{t('Status')}</span>
                                     <div className="host-status-badge">
                                       <span className={`status-indicator ${host.status.toLowerCase()}`}></span>
-                                      <span className="status-label">{host.status}</span>
+                                      <span className="status-label">{t(host.status)}</span>
                                     </div>
                                   </div>
                                 </div>
@@ -1209,7 +1220,7 @@ function App() {
                                       className="btn-primary host-card-connect"
                                       onClick={() => connectToHost(host)}
                                     >
-                                      Connect
+                                      {t('Connect')}
                                     </button>
                                   )}
                                   {isOnline && (
@@ -1302,102 +1313,18 @@ function App() {
       )}
 
       {settingsHost && (
-        <div className="stream-settings-overlay" style={{ zIndex: 1200 }} onMouseDown={(e) => { if (e.target === e.currentTarget) setSettingsHost(null); }}>
-          <div className="stream-settings-card wide">
-            <h2>Stream Settings</h2>
-            <p className="subtitle">Defaults used when connecting to {settingsHost.name}</p>
-            <div className="settings-grid">
-              <div className="settings-group">
-                <label htmlFor="hostResolution">Resolution</label>
-                <select id="hostResolution" value={draftHostSettings.resolution} onChange={(e) => updateDraftHostSettings('resolution', e.target.value)}>
-                  <option value="1080p">1080p (1920x1080)</option>
-                  <option value="720p">720p (1280x720)</option>
-                  <option value="540p">540p (960x540)</option>
-                </select>
-              </div>
-              <div className="settings-group">
-                <label htmlFor="hostFps">Frame Rate</label>
-                <select id="hostFps" value={draftHostSettings.fps} onChange={(e) => updateDraftHostSettings('fps', Number(e.target.value))}>
-                  {FPS_OPTIONS.map(f => <option key={f} value={f}>{f} FPS</option>)}
-                </select>
-              </div>
-              <div className="settings-group">
-                <label htmlFor="hostCodec">Video Codec</label>
-                <select id="hostCodec" value={draftHostSettings.codec} onChange={(e) => updateDraftHostSettings('codec', e.target.value)}>
-                  {CODECS.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
-                </select>
-              </div>
-              <div className="settings-group">
-                <label htmlFor="hostChroma">Chroma</label>
-                <select id="hostChroma" value={draftHostSettings.chroma} onChange={(e) => updateDraftHostSettings('chroma', e.target.value)}>
-                  {CHROMAS.map(c => <option key={c.value} value={c.value}>{c.label}{c.value === '444' ? ' (H.264 only)' : ''}</option>)}
-                </select>
-              </div>
-              <div className="settings-group">
-                <label htmlFor="hostEncoder">Encoder Backend</label>
-                <select id="hostEncoder" value={draftHostSettings.encoder} onChange={(e) => updateDraftHostSettings('encoder', e.target.value)}>
-                  <option value="auto">Auto (Recommended)</option>
-                  <option value="native">Native GPU</option>
-                  <option value="ffmpeg">FFmpeg GPU</option>
-                  <option value="nvenc">NVENC</option>
-                  <option value="amf">AMF</option>
-                  <option value="qsv">QSV</option>
-                  <option value="vaapi">VAAPI</option>
-                  <option value="software">Software</option>
-                </select>
-              </div>
-              <div className="settings-group full-width">
-                <label htmlFor="hostDisplay">Display</label>
-                <select id="hostDisplay" value={draftHostSettings.display} onChange={(e) => updateDraftHostSettings('display', e.target.value)}>
-                  <option value="default">Default</option>
-                  {hostAvailableDisplays.map(d => (
-                    <option key={d.id} value={d.id}>
-                      {d.name} ({d.width}x{d.height} @ {d.refresh_rate.toFixed(0)}Hz){d.is_primary ? ' ★' : ''}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div className="settings-group full-width span-all">
-                <label htmlFor="hostBitrate">Bitrate (Kbps)</label>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-                  <input id="hostBitrate" type="range" min={1000} max={150000} step={500} value={draftHostSettings.bitrate} onChange={(e) => updateDraftHostSettings('bitrate', Number(e.target.value))} style={{ flex: 1 }} />
-                  <span style={{ minWidth: '70px', textAlign: 'right', fontWeight: 'bold', color: 'var(--accent-cyan)' }}>{(draftHostSettings.bitrate / 1000).toFixed(1)} Mbps</span>
-                </div>
-              </div>
-              <div className="settings-group full-width">
-                <label htmlFor="hostMouseQueue">Mouse Queue Limit</label>
-                <select id="hostMouseQueue" value={draftHostSettings.mouseQueueLimit} onChange={(e) => updateDraftHostSettings('mouseQueueLimit', Number(e.target.value))}>
-                  {MOUSE_QUEUES.map(q => <option key={q} value={q}>{mouseQueueLabel(q)}{q === 256 ? ' (Recommended)' : ''}</option>)}
-                </select>
-              </div>
-              <div className="settings-group full-width">
-                <label htmlFor="hostInputProtocol">Input Protocol</label>
-                <select id="hostInputProtocol" value={draftHostSettings.inputProtocol} onChange={(e) => updateDraftHostSettings('inputProtocol', e.target.value)}>
-                  <option value="webrtc">WebRTC Data Channels (SCTP)</option>
-                  <option value="webtransport" disabled={typeof (window as any).WebTransport === 'undefined'}>WebTransport QUIC Datagrams {typeof (window as any).WebTransport === 'undefined' ? '(Unsupported)' : '(Experimental)'}</option>
-                </select>
-              </div>
-              {!!(window as any).__TAURI__ && (
-                <div className="settings-checkbox-group">
-                  <input id="hostNativeClient" type="checkbox" checked={draftHostSettings.useNativeClient} onChange={(e) => updateDraftHostSettings('useNativeClient', e.target.checked)} />
-                  <label htmlFor="hostNativeClient">Use native client binary</label>
-                </div>
-              )}
-              <div className="settings-checkbox-group">
-                <input id="hostCanvasRenderer" type="checkbox" checked={draftHostSettings.useCanvasRenderer} disabled={typeof (window as any).MediaStreamTrackProcessor === 'undefined'} onChange={(e) => updateDraftHostSettings('useCanvasRenderer', e.target.checked)} />
-                <label htmlFor="hostCanvasRenderer">Use Canvas Renderer {typeof (window as any).MediaStreamTrackProcessor === 'undefined' ? '(Unsupported)' : ''}</label>
-              </div>
-              <div className="settings-checkbox-group">
-                <input id="hostVirtualDisplay" type="checkbox" checked={draftHostSettings.virtualDisplay} onChange={(e) => updateDraftHostSettings('virtualDisplay', e.target.checked)} />
-                <label htmlFor="hostVirtualDisplay">Create Virtual Display</label>
-              </div>
-            </div>
-            <div className="settings-actions">
-              <button onClick={() => setSettingsHost(null)} className="btn-secondary">Cancel</button>
-              <button onClick={applyHostSettings} className="btn-primary">Save Settings</button>
-            </div>
-          </div>
-        </div>
+        <StreamSettingsDialog
+          hostName={settingsHost.name}
+          values={draftHostSettings}
+          onChange={(key, value) => updateDraftHostSettings(key, value)}
+          onCancel={() => setSettingsHost(null)}
+          onSave={applyHostSettings}
+          displays={hostAvailableDisplays.map(d => ({
+            id: d.id,
+            label: `${d.name} (${d.width}x${d.height} @ ${d.refresh_rate.toFixed(0)}Hz)${d.is_primary ? ' ★' : ''}`,
+          }))}
+          showNativeClient={!!(window as any).__TAURI__}
+        />
       )}
 
       </main>

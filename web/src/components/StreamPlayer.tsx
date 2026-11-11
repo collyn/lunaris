@@ -1,5 +1,7 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { BITRATES, CHROMAS, bitrateLabel } from '../streamOptions';
+import StreamSettingsDialog, { type StreamSettingsValues } from './StreamSettingsDialog';
+import { t } from '../i18n';
 
 const getBackendHost = () => {
   const savedHost = localStorage.getItem('lunaris_server_host');
@@ -2625,6 +2627,107 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     }
   };
 
+  // ---- Settings dialog (StreamSettingsDialog) ----
+  const draftSettingsValues: StreamSettingsValues = {
+    resolution: draftResolution,
+    fps: draftFps,
+    codec: draftCodec,
+    chroma: draftChroma,
+    bitrate: draftBitrate,
+    mouseQueueLimit: draftMouseQueueLimit,
+    inputProtocol: draftInputProtocol,
+    encoder: draftEncoder,
+    display: draftDisplay,
+    virtualDisplay: draftVirtualDisplay,
+    useCanvasRenderer: draftUseCanvasRenderer,
+    useNativeClient: draftUseNativeClient,
+  };
+
+  const setDraftSettingValue = <K extends keyof StreamSettingsValues>(key: K, value: StreamSettingsValues[K]) => {
+    switch (key) {
+      case 'resolution': setDraftResolution(value as string); break;
+      case 'fps': setDraftFps(value as number); break;
+      case 'codec': setDraftCodec(value as string); break;
+      case 'chroma': setDraftChroma(value === '444' ? '444' : '420'); break;
+      case 'bitrate': setDraftBitrate(value as number); break;
+      case 'mouseQueueLimit': setDraftMouseQueueLimit(value as number); break;
+      case 'inputProtocol': setDraftInputProtocol(value as string); break;
+      case 'encoder': setDraftEncoder(value as string); break;
+      case 'display': setDraftDisplay(value as string); break;
+      case 'virtualDisplay': setDraftVirtualDisplay(value as boolean); break;
+      case 'useCanvasRenderer': setDraftUseCanvasRenderer(value as boolean); break;
+      case 'useNativeClient': setDraftUseNativeClient(value as boolean); break;
+    }
+  };
+
+  const cancelDraftSettings = () => {
+    setDraftResolution(activeResolution);
+    setDraftFps(activeFps);
+    setDraftBitrate(activeBitrate);
+    setDraftCodec(activeCodec);
+    setDraftMouseQueueLimit(mouseQueueLimit);
+    setDraftUseNativeClient(useNativeClient);
+    setDraftInputProtocol(activeInputProtocol);
+    setDraftUseCanvasRenderer(useCanvasRenderer);
+    setDraftEncoder(activeEncoder);
+    setDraftDisplay(activeDisplay);
+    setDraftVirtualDisplay(activeVirtualDisplay);
+    setDraftChroma(activeChroma);
+    setShowSettingsModal(false);
+  };
+
+  const applyDraftSettings = () => {
+    // Save options to localStorage
+    localStorage.setItem('lunaris_stream_res', draftResolution);
+    localStorage.setItem('lunaris_stream_fps', String(draftFps));
+    localStorage.setItem('lunaris_stream_bitrate', String(draftBitrate));
+    localStorage.setItem('lunaris_stream_codec', draftCodec);
+    localStorage.setItem('lunaris_mouse_queue_limit', String(draftMouseQueueLimit));
+    localStorage.setItem('lunaris_tauri_use_native', String(draftUseNativeClient));
+    localStorage.setItem('lunaris_input_protocol', draftInputProtocol);
+    localStorage.setItem('lunaris_canvas_renderer', String(draftUseCanvasRenderer));
+    localStorage.setItem('lunaris_stream_encoder', draftEncoder);
+    localStorage.setItem('lunaris_stream_display', draftDisplay);
+    localStorage.setItem('lunaris_stream_virtual_display', String(draftVirtualDisplay));
+    localStorage.setItem('lunaris_stream_chroma', draftChroma);
+    
+    // Check if settings requiring reconnect changed
+    const reconnectNeeded = 
+      draftResolution !== activeResolution ||
+      draftCodec !== activeCodec ||
+      draftUseNativeClient !== useNativeClient ||
+      draftInputProtocol !== activeInputProtocol ||
+      draftUseCanvasRenderer !== useCanvasRenderer ||
+      draftEncoder !== activeEncoder ||
+      draftDisplay !== activeDisplay ||
+      draftVirtualDisplay !== activeVirtualDisplay ||
+      draftChroma !== activeChroma;
+
+    setMouseQueueLimit(draftMouseQueueLimit);
+
+    // Always update FPS/bitrate (dynamic, no reconnect needed)
+    setActiveFps(draftFps);
+    setActiveBitrate(draftBitrate);
+
+    if (reconnectNeeded) {
+      // Update active values to trigger reconnect
+      setActiveResolution(draftResolution);
+      setActiveCodec(draftCodec);
+      setUseNativeClient(draftUseNativeClient);
+      setActiveInputProtocol(draftInputProtocol);
+      setUseCanvasRenderer(draftUseCanvasRenderer);
+      setActiveEncoder(draftEncoder);
+      setActiveDisplay(draftDisplay);
+      setActiveVirtualDisplay(draftVirtualDisplay);
+      setActiveChroma(draftChroma);
+      
+      // Reset states for connection indicator
+      setStatus("Connecting...");
+    }
+    
+    setShowSettingsModal(false);
+  };
+
   const updateSetting = (key: string, value: any) => {
     if (key === 'res') {
       localStorage.setItem('lunaris_stream_res', value);
@@ -3859,256 +3962,35 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
 
         {/* Settings Modal Overlay */}
         {showSettingsModal && (
-          <div className="stream-settings-overlay" style={{ zIndex: 200 }}>
-            <div className="stream-settings-card wide">
-              <h2>Stream Settings</h2>
-              <p className="subtitle">Adjust quality settings for this session</p>
-              
-              <div className="settings-grid">
-                <div className="settings-group">
-                  <label htmlFor="resolution">Resolution</label>
-                  <select 
-                    id="resolution" 
-                    value={draftResolution} 
-                    onChange={(e) => setDraftResolution(e.target.value)}
-                  >
-                    <option value="1080p">1080p (1920x1080)</option>
-                    <option value="720p">720p (1280x720)</option>
-                    <option value="540p">540p (960x540)</option>
-                  </select>
-                </div>
-
-                <div className="settings-group">
-                  <label htmlFor="fps">Frame Rate</label>
-                  <select 
-                    id="fps" 
-                    value={draftFps} 
-                    onChange={(e) => setDraftFps(Number(e.target.value))}
-                  >
-                    <option value={240}>240 FPS</option>
-                    <option value={144}>144 FPS</option>
-                    <option value={120}>120 FPS</option>
-                    <option value={90}>90 FPS</option>
-                    <option value={75}>75 FPS</option>
-                    <option value={60}>60 FPS</option>
-                    <option value={30}>30 FPS</option>
-                  </select>
-                </div>
-
-                <div className="settings-group">
-                  <label htmlFor="codec">Video Codec</label>
-                  <select 
-                    id="codec" 
-                    value={draftCodec} 
-                    onChange={(e) => setDraftCodec(e.target.value)}
-                  >
-                    <option value="auto">
-                      Auto (Best Available: {resolveAutoCodec().toUpperCase()})
-                    </option>
-                    <option value="h264" disabled={!supportedCodecs.h264}>
-                      {getCodecLabel("H.264", browserCodecs.h264, hostH264Supported)}
-                    </option>
-                    <option value="h265" disabled={!supportedCodecs.h265}>
-                      {getCodecLabel("H.265 (HEVC)", browserCodecs.h265, hostH265Supported)}
-                    </option>
-                    <option value="av1" disabled={!supportedCodecs.av1}>
-                      {getCodecLabel("AV1", browserCodecs.av1, hostAv1Supported)}
-                    </option>
-                  </select>
-                  {draftCodec === 'auto' && (
-                    <p style={{ margin: '0.25rem 0 0', fontSize: '0.75rem', color: 'var(--text-muted, #888)' }}>
-                      Browser: H264={browserCodecs.h264?'✓':'✗'} H265={browserCodecs.h265?'✓':'✗'} AV1={browserCodecs.av1?'✓':'✗'}
-                    </p>
-                  )}
-                </div>
-
-                <div className="settings-group full-width span-all">
-                  <label htmlFor="bitrate">Bitrate (Kbps)</label>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-                    <input 
-                      type="range" 
-                      id="bitrate" 
-                      min={1000} 
-                      max={150000} 
-                      step={500}
-                      value={draftBitrate} 
-                      onChange={(e) => setDraftBitrate(Number(e.target.value))}
-                      style={{ flex: 1 }}
-                    />
-                    <span style={{ minWidth: '70px', textAlign: 'right', fontWeight: 'bold', color: 'var(--accent-cyan)' }}>
-                      {(draftBitrate / 1000).toFixed(1)} Mbps
-                    </span>
-                  </div>
-                </div>
-                <div className="settings-group full-width">
-                  <label htmlFor="mouseQueueLimit">Mouse Queue Limit (Backpressure)</label>
-                  <select 
-                    id="mouseQueueLimit" 
-                    value={draftMouseQueueLimit} 
-                    onChange={(e) => setDraftMouseQueueLimit(Number(e.target.value))}
-                  >
-                    <option value={0}>0 B (Strict No Queue - High Lag Risk)</option>
-                    <option value={64}>64 B (Ultra Low Buffer)</option>
-                    <option value={256}>256 B (Recommended - Smooth & Responsive)</option>
-                    <option value={1024}>1024 B (Moderate Buffer)</option>
-                    <option value={4096}>4096 B (High Buffer)</option>
-                    <option value={16384}>16384 B (Previous Default - High Latency Risk)</option>
-                  </select>
-                </div>
-                <div className="settings-group full-width">
-                  <label htmlFor="inputProtocol">Input Protocol (WebTransport reduces mouse/keyboard latency)</label>
-                  <select 
-                    id="inputProtocol" 
-                    value={draftInputProtocol} 
-                    onChange={(e) => setDraftInputProtocol(e.target.value)}
-                  >
-                    <option value="webrtc">WebRTC Data Channels (Standard)</option>
-                    <option value="webtransport" disabled={typeof (window as any).WebTransport === 'undefined'}>
-                      WebTransport QUIC Datagrams {typeof (window as any).WebTransport === 'undefined' ? "(Unsupported by browser)" : "(Experimental - Faster Mouse)"}
-                    </option>
-                  </select>
-                </div>
-                {!!(window as any).__TAURI__ && (
-                  <div className="settings-checkbox-group">
-                    <input 
-                      type="checkbox" 
-                      id="useNativeClient"
-                      checked={typeof window.RTCPeerConnection === 'undefined' ? true : draftUseNativeClient} 
-                      disabled={typeof window.RTCPeerConnection === 'undefined'}
-                      onChange={(e) => setDraftUseNativeClient(e.target.checked)}
-                      style={{ cursor: typeof window.RTCPeerConnection === 'undefined' ? 'not-allowed' : 'pointer' }}
-                    />
-                    <label htmlFor="useNativeClient" style={{ cursor: typeof window.RTCPeerConnection === 'undefined' ? 'not-allowed' : 'pointer' }}>
-                      Use native client binary {typeof window.RTCPeerConnection === 'undefined' ? "(Forced: Webview WebRTC unsupported on Linux WebKitGTK)" : "(bypasses WebView-based WebRTC, recommended for Desktop)"}
-                    </label>
-                  </div>
-                )}
-                <div className="settings-checkbox-group">
-                  <input 
-                    type="checkbox" 
-                    id="useCanvasRenderer"
-                    checked={draftUseCanvasRenderer} 
-                    disabled={typeof (window as any).MediaStreamTrackProcessor === 'undefined' || isIOSOrSafari}
-                    onChange={(e) => setDraftUseCanvasRenderer(e.target.checked)}
-                    style={{ cursor: (typeof (window as any).MediaStreamTrackProcessor === 'undefined' || isIOSOrSafari) ? 'not-allowed' : 'pointer' }}
-                  />
-                  <label htmlFor="useCanvasRenderer" style={{ cursor: (typeof (window as any).MediaStreamTrackProcessor === 'undefined' || isIOSOrSafari) ? 'not-allowed' : 'pointer' }}>
-                    Use Canvas Renderer {typeof (window as any).MediaStreamTrackProcessor === 'undefined' ? "(Unsupported by browser)" : isIOSOrSafari ? "(Disabled on iOS/Safari due to WebKit limits)" : "(Highly recommended - zero latency & no stutter)"}
-                  </label>
-                </div>
-                <div className="settings-group full-width">
-                  <label htmlFor="chromaSubsampling">Chroma (colour detail)</label>
-                  <select id="chromaSubsampling" value={draftChroma} onChange={(e) => setDraftChroma(e.target.value === '444' ? '444' : '420')}>
-                    <option value="420">4:2:0 — default, lowest bandwidth</option>
-                    <option value="444">4:4:4 — sharp coloured text (H.264, host NVENC or CPU)</option>
-                  </select>
-                </div>
-                <div className="settings-checkbox-group">
-                  <input
-                    type="checkbox"
-                    id="virtualDisplay"
-                    checked={draftVirtualDisplay}
-                    onChange={(e) => setDraftVirtualDisplay(e.target.checked)}
-                  />
-                  <label htmlFor="virtualDisplay">
-                    Create Virtual Display (Linux: xrandr virtual output, Windows: IddSampleDriver required)
-                  </label>
-                </div>
-                <div className="settings-group full-width span-all">
-                  <label>Virtual Screen (host high-refresh output)</label>
-                  <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
-                    <select
-                      value={vdRefresh}
-                      onChange={(e) => { const v = Number(e.target.value); setVdRefresh(v); localStorage.setItem('lunaris_vd_refresh', String(v)); }}
-                      disabled={vdBusy}
-                    >
-                      <option value={240}>240 Hz</option>
-                      <option value={144}>144 Hz</option>
-                      <option value={120}>120 Hz</option>
-                      <option value={60}>60 Hz</option>
-                    </select>
-                    <button type="button" className="btn-secondary" disabled={vdBusy} onClick={() => configureVirtualScreen(true)}>Enable</button>
-                    <button type="button" className="btn-secondary" disabled={vdBusy} onClick={() => configureVirtualScreen(false)}>Disable</button>
-                  </div>
-                  {vdStatus && <div style={{ fontSize: '0.8rem', opacity: 0.85, marginTop: '0.35rem' }}>{vdStatus}</div>}
-                  <div style={{ fontSize: '0.75rem', opacity: 0.6, marginTop: '0.25rem' }}>
-                    After enabling, pick the new display below and stream it. Requires one-time host setup (scripts/virtual-display).
-                  </div>
-                </div>
-                {availableDisplays.length > 0 && (
-                  <div className="settings-group full-width">
-                    <label htmlFor="display">Display</label>
-                    <select
-                      id="display"
-                      value={draftDisplay}
-                      onChange={(e) => setDraftDisplay(e.target.value)}
-                    >
-                      <option value="default">Default</option>
-                      {availableDisplays.map(d => (
-                        <option key={d.id} value={d.id}>
-                          {d.name} ({d.width}x{d.height} @ {d.refresh_rate.toFixed(0)}Hz){d.is_primary ? ' ★' : ''}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                )}
-              </div>
-
-              <div className="settings-actions">
-                <button
-                  onClick={() => {
-                    setDraftMouseQueueLimit(mouseQueueLimit);
-                    setDraftUseNativeClient(useNativeClient);
-                    setDraftInputProtocol(activeInputProtocol);
-                    setDraftUseCanvasRenderer(useCanvasRenderer);
-                    setDraftEncoder(activeEncoder);
-                    setDraftDisplay(activeDisplay);
-                    setDraftVirtualDisplay(activeVirtualDisplay);
-                    setDraftChroma(activeChroma);
-                    setShowSettingsModal(false);
-                  }}
-                  className="btn-secondary"
-                >
-                  Cancel
-                </button>
-                <button 
-                  onClick={() => {
-                    setActiveResolution(draftResolution);
-                    setActiveFps(draftFps);
-                    setActiveBitrate(draftBitrate);
-                    setActiveCodec(draftCodec);
-                    setMouseQueueLimit(draftMouseQueueLimit);
-                    setUseNativeClient(draftUseNativeClient);
-                    setActiveInputProtocol(draftInputProtocol);
-                    setUseCanvasRenderer(draftUseCanvasRenderer);
-                    setActiveEncoder(draftEncoder);
-                    setActiveDisplay(draftDisplay);
-                    setActiveVirtualDisplay(draftVirtualDisplay);
-                    setActiveChroma(draftChroma);
-                    
-                    localStorage.setItem('lunaris_stream_res', draftResolution);
-                    localStorage.setItem('lunaris_stream_fps', String(draftFps));
-                    localStorage.setItem('lunaris_stream_bitrate', String(draftBitrate));
-                    localStorage.setItem('lunaris_stream_codec', draftCodec);
-                    localStorage.setItem('lunaris_mouse_queue_limit', String(draftMouseQueueLimit));
-                    localStorage.setItem('lunaris_tauri_use_native', String(draftUseNativeClient));
-                    localStorage.setItem('lunaris_input_protocol', draftInputProtocol);
-                    localStorage.setItem('lunaris_canvas_renderer', String(draftUseCanvasRenderer));
-                    localStorage.setItem('lunaris_stream_encoder', draftEncoder);
-                    localStorage.setItem('lunaris_stream_display', draftDisplay);
-                    localStorage.setItem('lunaris_stream_virtual_display', String(draftVirtualDisplay));
-                    localStorage.setItem('lunaris_stream_chroma', draftChroma);
-                    
-                    setShowSettingsModal(false);
-                    addLog(`Applied settings: res=${draftResolution}, fps=${draftFps}, bitrate=${draftBitrate}Kbps, codec=${draftCodec}, mouseQueueLimit=${draftMouseQueueLimit}B, useNative=${draftUseNativeClient}, inputProtocol=${draftInputProtocol}, useCanvasRenderer=${draftUseCanvasRenderer}, encoder=${draftEncoder}, display=${draftDisplay}, virtualDisplay=${draftVirtualDisplay}`);
-                  }}
-                  className="btn-primary"
-                >
-                  Save Settings
-                </button>
-              </div>
-            </div>
-          </div>
+          <StreamSettingsDialog
+            hostName={hostName}
+            values={draftSettingsValues}
+            onChange={setDraftSettingValue}
+            onCancel={cancelDraftSettings}
+            onSave={applyDraftSettings}
+            saveLabel={t('Apply')}
+            footerNote={t('Applies to this session.')}
+            displays={availableDisplays.map(d => ({
+              id: d.id,
+              label: `${d.name} (${d.width}x${d.height} @ ${Math.round(d.refresh_rate)}Hz)${d.is_primary ? ' ★' : ''}`,
+            }))}
+            unsupportedCodecs={(['h264', 'h265', 'av1'] as const).filter(c => !supportedCodecs[c])}
+          codecLabels={{
+            auto: `${t('Auto')} (${resolveAutoCodec().toUpperCase()})`,
+            h264: getCodecLabel('H.264', browserCodecs.h264, hostH264Supported),
+            h265: getCodecLabel('H.265', browserCodecs.h265, hostH265Supported),
+            av1: getCodecLabel('AV1', browserCodecs.av1, hostAv1Supported),
+          }}
+          encoders={availableEncoders}
+            virtualScreen={{
+              hz: vdRefresh,
+              setHz: (v) => { setVdRefresh(v); localStorage.setItem('lunaris_vd_refresh', String(v)); },
+              busy: vdBusy,
+              status: vdStatus || undefined,
+              set: configureVirtualScreen,
+            }}
+            showNativeClient={typeof window.RTCPeerConnection !== 'undefined' && !!(window as any).__TAURI__}
+          />
         )}
 
         {/* Content Area */}
@@ -4230,304 +4112,35 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     <div className="stream-container is-live" ref={containerRef}>
       {/* Settings Modal Overlay */}
       {showSettingsModal && (
-        <div className="stream-settings-overlay" style={{ zIndex: 200 }}>
-          <div className="stream-settings-card wide">
-            <h2>Stream Settings</h2>
-            <p className="subtitle">Adjust quality settings for this session</p>
-            
-            <div className="settings-grid">
-              <div className="settings-group">
-                <label htmlFor="resolution">Resolution</label>
-                <select 
-                  id="resolution" 
-                  value={draftResolution} 
-                  onChange={(e) => setDraftResolution(e.target.value)}
-                >
-                  <option value="1080p">1080p (1920x1080)</option>
-                  <option value="720p">720p (1280x720)</option>
-                  <option value="540p">540p (960x540)</option>
-                </select>
-              </div>
-
-              <div className="settings-group">
-                <label htmlFor="fps">Frame Rate</label>
-                <select 
-                  id="fps" 
-                  value={draftFps} 
-                  onChange={(e) => setDraftFps(Number(e.target.value))}
-                >
-                  <option value={240}>240 FPS</option>
-                  <option value={144}>144 FPS</option>
-                  <option value={120}>120 FPS</option>
-                  <option value={90}>90 FPS</option>
-                  <option value={75}>75 FPS</option>
-                  <option value={60}>60 FPS</option>
-                  <option value={30}>30 FPS</option>
-                </select>
-              </div>
-
-              <div className="settings-group">
-                <label htmlFor="codec">Video Codec</label>
-                <select 
-                  id="codec" 
-                  value={draftCodec} 
-                  onChange={(e) => setDraftCodec(e.target.value)}
-                >
-                  <option value="h264" disabled={!supportedCodecs.h264}>
-                    {getCodecLabel("H.264", browserCodecs.h264, hostH264Supported)}
-                  </option>
-                  <option value="h265" disabled={!supportedCodecs.h265}>
-                    {getCodecLabel("H.265 (HEVC)", browserCodecs.h265, hostH265Supported)}
-                  </option>
-                  <option value="av1" disabled={!supportedCodecs.av1}>
-                    {getCodecLabel("AV1", browserCodecs.av1, hostAv1Supported)}
-                  </option>
-                </select>
-              </div>
-
-              <div className="settings-group">
-                <label htmlFor="encoder">Encoder Backend</label>
-                <select 
-                  id="encoder" 
-                  value={draftEncoder} 
-                  onChange={(e) => setDraftEncoder(e.target.value)}
-                >
-                  <option value="auto">Auto (Recommended)</option>
-                  <option value="native">Native GPU</option>
-                  <option value="ffmpeg">FFmpeg GPU</option>
-                  <option value="software">Software</option>
-                  <option disabled>──────────</option>
-                  {availableEncoders
-                    .filter(enc => !['auto', 'native', 'ffmpeg', 'software'].includes(enc))
-                    .map(enc => (
-                      <option key={enc} value={enc}>{enc.replace(/_/g, ' ').toUpperCase()}</option>
-                    ))}
-                  {availableEncoders.length === 0 && (
-                    <>
-                      <option value="native_nvenc_d3d11">Native NVENC D3D11</option>
-                      <option value="native_amf_d3d11">Native AMF D3D11</option>
-                      <option value="ffmpeg_nvenc">FFmpeg NVENC</option>
-                      <option value="ffmpeg_amf">FFmpeg AMF</option>
-                      <option value="ffmpeg_qsv">FFmpeg QSV</option>
-                    </>
-                  )}
-                </select>
-                <small style={{ color: 'var(--text-muted)', marginTop: '0.35rem', display: 'block' }}>
-                  Active: {activeEncoderStatus.encoder} ({activeEncoderStatus.hwType})
-                </small>
-              </div>
-
-              {availableDisplays.length > 0 && (
-                <div className="settings-group full-width">
-                  <label htmlFor="display">Display</label>
-                  <select 
-                    id="display" 
-                    value={draftDisplay} 
-                    onChange={(e) => setDraftDisplay(e.target.value)}
-                  >
-                    <option value="default">Default</option>
-                    {availableDisplays.map(d => (
-                      <option key={d.id} value={d.id}>
-                        {d.name} ({d.width}x{d.height} @ {d.refresh_rate.toFixed(0)}Hz){d.is_primary ? ' ★' : ''}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              )}
-
-              <div className="settings-group full-width span-all">
-                <label htmlFor="bitrate">Bitrate (Kbps)</label>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-                  <input 
-                    type="range" 
-                    id="bitrate" 
-                    min={1000} 
-                    max={150000} 
-                    step={500}
-                    value={draftBitrate} 
-                    onChange={(e) => setDraftBitrate(Number(e.target.value))}
-                    style={{ flex: 1 }}
-                  />
-                  <span style={{ minWidth: '70px', textAlign: 'right', fontWeight: 'bold', color: 'var(--accent-cyan)' }}>
-                    {(draftBitrate / 1000).toFixed(1)} Mbps
-                  </span>
-                </div>
-              </div>
-
-              <div className="settings-group full-width">
-                <label htmlFor="mouseQueueLimit">Mouse Queue Limit (Backpressure)</label>
-                <select
-                  id="mouseQueueLimit"
-                  value={draftMouseQueueLimit}
-                  onChange={(e) => setDraftMouseQueueLimit(Number(e.target.value))}
-                >
-                  <option value={0}>0 B (Strict No Queue - High Lag Risk)</option>
-                  <option value={64}>64 B (Ultra Low Buffer)</option>
-                  <option value={256}>256 B (Recommended - Smooth & Responsive)</option>
-                  <option value={1024}>1024 B (Moderate Buffer)</option>
-                  <option value={4096}>4096 B (High Buffer)</option>
-                  <option value={16384}>16384 B (Previous Default - High Latency Risk)</option>
-                </select>
-              </div>
-              <div className="settings-group full-width">
-                <label htmlFor="inputProtocol">Input Protocol (WebTransport reduces mouse/keyboard latency)</label>
-                <select 
-                  id="inputProtocol" 
-                  value={draftInputProtocol} 
-                  onChange={(e) => setDraftInputProtocol(e.target.value)}
-                >
-                  <option value="webrtc">WebRTC Data Channels (Standard)</option>
-                  <option value="webtransport" disabled={typeof (window as any).WebTransport === 'undefined'}>
-                    WebTransport QUIC Datagrams {typeof (window as any).WebTransport === 'undefined' ? "(Unsupported by browser)" : "(Experimental - Faster Mouse)"}
-                  </option>
-                </select>
-              </div>
-              {!!(window as any).__TAURI__ && (
-                <div className="settings-checkbox-group">
-                  <input 
-                    type="checkbox" 
-                    id="useNativeClient"
-                    checked={typeof window.RTCPeerConnection === 'undefined' ? true : draftUseNativeClient} 
-                    disabled={typeof window.RTCPeerConnection === 'undefined'}
-                    onChange={(e) => setDraftUseNativeClient(e.target.checked)}
-                    style={{ cursor: typeof window.RTCPeerConnection === 'undefined' ? 'not-allowed' : 'pointer' }}
-                  />
-                  <label htmlFor="useNativeClient" style={{ cursor: typeof window.RTCPeerConnection === 'undefined' ? 'not-allowed' : 'pointer' }}>
-                    Use native client binary {typeof window.RTCPeerConnection === 'undefined' ? "(Forced: Webview WebRTC unsupported on Linux WebKitGTK)" : "(bypasses WebView-based WebRTC, recommended for Desktop)"}
-                  </label>
-                </div>
-              )}
-              <div className="settings-checkbox-group">
-                <input 
-                  type="checkbox" 
-                  id="useCanvasRenderer"
-                  checked={draftUseCanvasRenderer} 
-                  disabled={typeof (window as any).MediaStreamTrackProcessor === 'undefined' || isIOSOrSafari}
-                  onChange={(e) => setDraftUseCanvasRenderer(e.target.checked)}
-                  style={{ cursor: (typeof (window as any).MediaStreamTrackProcessor === 'undefined' || isIOSOrSafari) ? 'not-allowed' : 'pointer' }}
-                />
-                <label htmlFor="useCanvasRenderer" style={{ cursor: (typeof (window as any).MediaStreamTrackProcessor === 'undefined' || isIOSOrSafari) ? 'not-allowed' : 'pointer' }}>
-                  Use Canvas Renderer {typeof (window as any).MediaStreamTrackProcessor === 'undefined' ? "(Unsupported by browser)" : isIOSOrSafari ? "(Disabled on iOS/Safari due to WebKit limits)" : "(Highly recommended - zero latency & no stutter)"}
-                </label>
-              </div>
-              <div className="settings-group full-width">
-                <label htmlFor="chromaSubsampling">Chroma (colour detail)</label>
-                <select id="chromaSubsampling" value={draftChroma} onChange={(e) => setDraftChroma(e.target.value === '444' ? '444' : '420')}>
-                  <option value="420">4:2:0 — default, lowest bandwidth</option>
-                  <option value="444">4:4:4 — sharp coloured text (H.264, host NVENC or CPU)</option>
-                </select>
-              </div>
-              <div className="settings-checkbox-group">
-                <input 
-                  type="checkbox" 
-                  id="virtualDisplay"
-                  checked={draftVirtualDisplay} 
-                  onChange={(e) => setDraftVirtualDisplay(e.target.checked)}
-                />
-                <label htmlFor="virtualDisplay">
-                  Create Virtual Display (Linux: xrandr virtual output, Windows: IddSampleDriver required)
-                </label>
-              </div>
-              <div className="settings-group full-width span-all">
-                <label>Virtual Screen (host high-refresh output)</label>
-                <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
-                  <select
-                    value={vdRefresh}
-                    onChange={(e) => { const v = Number(e.target.value); setVdRefresh(v); localStorage.setItem('lunaris_vd_refresh', String(v)); }}
-                    disabled={vdBusy}
-                  >
-                    <option value={240}>240 Hz</option>
-                    <option value={144}>144 Hz</option>
-                    <option value={120}>120 Hz</option>
-                    <option value={60}>60 Hz</option>
-                  </select>
-                  <button type="button" className="btn-secondary" disabled={vdBusy} onClick={() => configureVirtualScreen(true)}>Enable</button>
-                  <button type="button" className="btn-secondary" disabled={vdBusy} onClick={() => configureVirtualScreen(false)}>Disable</button>
-                </div>
-                {vdStatus && <div style={{ fontSize: '0.8rem', opacity: 0.85, marginTop: '0.35rem' }}>{vdStatus}</div>}
-              </div>
-            </div>
-
-            <div className="settings-actions">
-              <button 
-                onClick={() => {
-                  setDraftResolution(activeResolution);
-                  setDraftFps(activeFps);
-                  setDraftBitrate(activeBitrate);
-                  setDraftCodec(activeCodec);
-                  setDraftMouseQueueLimit(mouseQueueLimit);
-                  setDraftUseNativeClient(useNativeClient);
-                  setDraftInputProtocol(activeInputProtocol);
-                  setDraftUseCanvasRenderer(useCanvasRenderer);
-                  setDraftEncoder(activeEncoder);
-                  setDraftDisplay(activeDisplay);
-                  setDraftVirtualDisplay(activeVirtualDisplay);
-                  setDraftChroma(activeChroma);
-                  setShowSettingsModal(false);
-                }} 
-                className="btn-secondary"
-              >
-                Cancel
-              </button>
-              <button 
-                onClick={() => {
-                  // Save options to localStorage
-                  localStorage.setItem('lunaris_stream_res', draftResolution);
-                  localStorage.setItem('lunaris_stream_fps', String(draftFps));
-                  localStorage.setItem('lunaris_stream_bitrate', String(draftBitrate));
-                  localStorage.setItem('lunaris_stream_codec', draftCodec);
-                  localStorage.setItem('lunaris_mouse_queue_limit', String(draftMouseQueueLimit));
-                  localStorage.setItem('lunaris_tauri_use_native', String(draftUseNativeClient));
-                  localStorage.setItem('lunaris_input_protocol', draftInputProtocol);
-                  localStorage.setItem('lunaris_canvas_renderer', String(draftUseCanvasRenderer));
-                  localStorage.setItem('lunaris_stream_encoder', draftEncoder);
-                  localStorage.setItem('lunaris_stream_display', draftDisplay);
-                  localStorage.setItem('lunaris_stream_virtual_display', String(draftVirtualDisplay));
-                  localStorage.setItem('lunaris_stream_chroma', draftChroma);
-                  
-                  // Check if settings requiring reconnect changed
-                  const reconnectNeeded = 
-                    draftResolution !== activeResolution ||
-                    draftCodec !== activeCodec ||
-                    draftUseNativeClient !== useNativeClient ||
-                    draftInputProtocol !== activeInputProtocol ||
-                    draftUseCanvasRenderer !== useCanvasRenderer ||
-                    draftEncoder !== activeEncoder ||
-                    draftDisplay !== activeDisplay ||
-                    draftVirtualDisplay !== activeVirtualDisplay ||
-                    draftChroma !== activeChroma;
-
-                  setMouseQueueLimit(draftMouseQueueLimit);
-
-                  // Always update FPS/bitrate (dynamic, no reconnect needed)
-                  setActiveFps(draftFps);
-                  setActiveBitrate(draftBitrate);
-
-                  if (reconnectNeeded) {
-                    // Update active values to trigger reconnect
-                    setActiveResolution(draftResolution);
-                    setActiveCodec(draftCodec);
-                    setUseNativeClient(draftUseNativeClient);
-                    setActiveInputProtocol(draftInputProtocol);
-                    setUseCanvasRenderer(draftUseCanvasRenderer);
-                    setActiveEncoder(draftEncoder);
-                    setActiveDisplay(draftDisplay);
-                    setActiveVirtualDisplay(draftVirtualDisplay);
-                    setActiveChroma(draftChroma);
-                    
-                    // Reset states for connection indicator
-                    setStatus("Connecting...");
-                  }
-                  
-                  setShowSettingsModal(false);
-                }} 
-                className="btn-primary"
-              >
-                Apply
-              </button>
-            </div>
-          </div>
-        </div>
+        <StreamSettingsDialog
+          hostName={hostName}
+          values={draftSettingsValues}
+          onChange={setDraftSettingValue}
+          onCancel={cancelDraftSettings}
+          onSave={applyDraftSettings}
+          saveLabel={t('Apply')}
+          footerNote={t('Applies to this session.')}
+          displays={availableDisplays.map(d => ({
+            id: d.id,
+            label: `${d.name} (${d.width}x${d.height} @ ${Math.round(d.refresh_rate)}Hz)${d.is_primary ? ' ★' : ''}`,
+          }))}
+          unsupportedCodecs={(['h264', 'h265', 'av1'] as const).filter(c => !supportedCodecs[c])}
+          codecLabels={{
+            auto: `${t('Auto')} (${resolveAutoCodec().toUpperCase()})`,
+            h264: getCodecLabel('H.264', browserCodecs.h264, hostH264Supported),
+            h265: getCodecLabel('H.265', browserCodecs.h265, hostH265Supported),
+            av1: getCodecLabel('AV1', browserCodecs.av1, hostAv1Supported),
+          }}
+          encoders={availableEncoders}
+          virtualScreen={{
+            hz: vdRefresh,
+            setHz: (v) => { setVdRefresh(v); localStorage.setItem('lunaris_vd_refresh', String(v)); },
+            busy: vdBusy,
+            status: vdStatus || undefined,
+            set: configureVirtualScreen,
+          }}
+          showNativeClient={typeof window.RTCPeerConnection !== 'undefined' && !!(window as any).__TAURI__}
+        />
       )}
 
       {/* Pull tab to show header when hidden */}
