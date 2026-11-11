@@ -2,6 +2,7 @@
 <qresource prefix="/">
     <file>qmldir</file>
     <file>Theme.qml</file>
+    <file>I18n.qml</file>
     <file>StreamOptions.qml</file>
     <file>main.qml</file>
     <file>LunarisMenuBar.qml</file>
@@ -9,6 +10,7 @@
     <file>Dashboard.qml</file>
     <file>Settings.qml</file>
     <file>Home.qml</file>
+    <file>ThemedCombo.qml</file>
     <file>LocalServerCard.qml</file>
     <file>AppSettings.qml</file>
     <file>Icon.qml</file>

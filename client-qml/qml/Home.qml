@@ -64,6 +64,7 @@ Rectangle {
             } catch (e) { console.log("app_settings: " + e); }
         }
         Theme.mode = home.prefs.theme || "system";
+        I18n.lang = home.prefs.language === "vi" ? "vi" : "en";
         window.closeToTray = home.prefs.closeToTray !== false;
         var storedPeers = bridge.loadStore("peers");
         if (storedPeers !== "") {
@@ -82,6 +83,7 @@ Rectangle {
         next[key] = value;
         home.prefs = next;
         if (key === "theme") Theme.mode = value;
+        if (key === "language") I18n.lang = value;
         bridge.saveStore("app_settings", JSON.stringify(home.prefs));
     }
 
@@ -204,14 +206,14 @@ Rectangle {
             // Tried for this sign-in: don't retry every refresh.
             home.agentSyncedFor = home.agentSyncKeyPending;
             if (!success) {
-                home.hostServerNote = "Couldn't add this computer to the server: " + errorMsg;
+                home.hostServerNote = I18n.t("Couldn't add this computer to the server: %1").arg(errorMsg);
                 return;
             }
             var result = String(bridge.hostUseServer(serverDashboard.serverUrl, tok));
             if (result.indexOf("elsewhere ") === 0) {
-                home.hostServerNote = "Listed on another server (" + result.slice(10) + "), not on the one signed in to.";
+                home.hostServerNote = I18n.t("Listed on another server (%1), not on the one signed in to.").arg(result.slice(10));
             } else if (result.indexOf("error: ") === 0) {
-                home.hostServerNote = "Couldn't add this computer to the server: " + result.slice(7);
+                home.hostServerNote = I18n.t("Couldn't add this computer to the server: %1").arg(result.slice(7));
             } else {
                 home.hostServerNote = "";
                 hostsRefreshSoon.restart();
@@ -330,7 +332,7 @@ Rectangle {
     function requestConnect(text) {
         var addr = normalizeAddress(text);
         if (addr === "") {
-            setStatus("Enter the address of the computer to control", true);
+            setStatus(I18n.t("Enter the address of the computer to control"), true);
             addressInput.forceActiveFocus();
             return;
         }
@@ -346,7 +348,7 @@ Rectangle {
         rememberPeer(addr, password, remember);
         var peer = findPeer(addr);
         var name = (peer && peer.name) ? peer.name : displayAddress(addr);
-        setStatus("Connecting to " + name + "…", false);
+        setStatus(I18n.t("Connecting to %1…").arg(name), false);
         bridge.saveDirectTarget(addr, remember ? password : "");
         home.startSessionRequested(
             "ws://" + addr, password, "direct", name, 0,
@@ -479,8 +481,8 @@ Rectangle {
                 anchors.verticalCenter: parent.verticalCenter
             }
             Item { width: 8; height: 1 }
-            TopTab { text: "Home"; iconName: "home"; current: home.page === "home"; onClicked: home.page = "home" }
-            TopTab { text: "Settings"; iconName: "settings"; current: home.page === "settings"; onClicked: home.page = "settings" }
+            TopTab { text: I18n.t("Home"); iconName: "home"; current: home.page === "home"; onClicked: home.page = "home" }
+            TopTab { text: I18n.t("Settings"); iconName: "settings"; current: home.page === "settings"; onClicked: home.page = "settings" }
         }
 
         // Right: the server (if any) and its web console
@@ -499,8 +501,8 @@ Rectangle {
                 onClicked: { home.page = "home"; home.peerTab = "server"; }
                 ToolTip.visible: hovered
                 ToolTip.delay: 400
-                ToolTip.text: home.serverStatus.running ? "Server running at " + home.serverStatus.lan_url
-                    : (serverDashboard.isLoggedIn ? "Signed in to " + serverDashboard.serverUrl : "No server: start one on this computer or sign in to one")
+                ToolTip.text: home.serverStatus.running ? I18n.t("Server running at %1").arg(home.serverStatus.lan_url)
+                    : (serverDashboard.isLoggedIn ? I18n.t("Signed in to %1").arg(serverDashboard.serverUrl) : I18n.t("No server: start one on this computer or sign in to one"))
                 background: Rectangle {
                     radius: 15
                     color: serverChip.hovered ? Theme.surface2 : "transparent"
@@ -518,8 +520,8 @@ Rectangle {
                         }
                         Text {
                             anchors.verticalCenter: parent.verticalCenter
-                            text: home.serverStatus.running ? "Server on this computer"
-                                : (serverDashboard.isLoggedIn ? "Signed in to a server" : "No server")
+                            text: home.serverStatus.running ? I18n.t("Server on this computer")
+                                : (serverDashboard.isLoggedIn ? I18n.t("Signed in to a server") : I18n.t("No server"))
                             color: Theme.textMuted
                             font.pixelSize: 12
                         }
@@ -533,10 +535,10 @@ Rectangle {
                 implicitHeight: 32
                 leftPadding: 14
                 rightPadding: 14
-                text: "Web console"
+                text: I18n.t("Web console")
                 ToolTip.visible: hovered
                 ToolTip.delay: 400
-                ToolTip.text: "Manage users, groups and computers in your browser (" + home.webConsoleUrl() + ")"
+                ToolTip.text: I18n.t("Manage users, groups and computers in your browser (%1)").arg(home.webConsoleUrl())
                 onClicked: home.openWebConsole()
             }
         }
@@ -568,8 +570,8 @@ Rectangle {
                 elide: Text.ElideRight
                 width: home.width - 220
                 text: home.statusText !== "" ? home.statusText
-                    : (home.hostStatus.running ? "Ready. Others can control this computer with its address and password."
-                                               : "Ready. Remote control of this computer is off.")
+                    : (home.hostStatus.running ? I18n.t("Ready. Others can control this computer with its address and password.")
+                                               : I18n.t("Ready. Remote control of this computer is off."))
             }
         }
         Text {
@@ -626,10 +628,10 @@ Rectangle {
                         ColumnLayout {
                             spacing: 4
                             Layout.fillWidth: true
-                            Text { text: "This computer"; color: Theme.textStrong; font.pixelSize: 19; font.weight: Font.DemiBold }
+                            Text { text: I18n.t("This computer"); color: Theme.textStrong; font.pixelSize: 19; font.weight: Font.DemiBold }
                             Text {
                                 Layout.fillWidth: true
-                                text: "Others can control it with this address and password."
+                                text: I18n.t("Others can control it with this address and password.")
                                 color: Theme.textMuted
                                 font.pixelSize: 12
                                 wrapMode: Text.WordWrap
@@ -652,9 +654,9 @@ Rectangle {
                                 ColumnLayout {
                                     spacing: 1
                                     Layout.fillWidth: true
-                                    Text { text: "Allow remote control"; color: Theme.textStrong; font.pixelSize: 13; font.weight: Font.Medium }
+                                    Text { text: I18n.t("Allow remote control"); color: Theme.textStrong; font.pixelSize: 13; font.weight: Font.Medium; Layout.fillWidth: true; elide: Text.ElideRight }
                                     Text {
-                                        text: home.hostStatus.running ? "On" : (home.hostStatus.enabled ? "Starting…" : "Off")
+                                        text: home.hostStatus.running ? I18n.t("On") : (home.hostStatus.enabled ? I18n.t("Starting…") : I18n.t("Off"))
                                         color: home.hostStatus.running ? Theme.success : Theme.textSubtle
                                         font.pixelSize: 11
                                     }
@@ -680,7 +682,7 @@ Rectangle {
                             ColumnLayout {
                                 Layout.fillWidth: true
                                 spacing: 2
-                                Text { text: "Address"; color: Theme.textMuted; font.pixelSize: 12; font.weight: Font.Medium }
+                                Text { text: I18n.t("Address"); color: Theme.textMuted; font.pixelSize: 12; font.weight: Font.Medium }
                                 RowLayout {
                                     Layout.fillWidth: true
                                     spacing: 2
@@ -694,9 +696,9 @@ Rectangle {
                                     }
                                     IconButton {
                                         iconName: "copy"
-                                        tip: "Copy address"
+                                        tip: I18n.t("Copy address")
                                         visible: home.hostStatus.addresses.length > 0
-                                        onClicked: { clipboardHelper.copy(home.hostAddress(0)); home.setStatus("Address copied", false); }
+                                        onClicked: { clipboardHelper.copy(home.hostAddress(0)); home.setStatus(I18n.t("Address copied"), false); }
                                     }
                                 }
                                 Text {
@@ -709,7 +711,7 @@ Rectangle {
                                 Text {
                                     visible: home.hostStatus.addresses.length > 1
                                     Layout.topMargin: 4
-                                    text: (home.showAllAddresses ? "Hide other addresses" : "+" + (home.hostStatus.addresses.length - 1) + " other address" + (home.hostStatus.addresses.length > 2 ? "es" : ""))
+                                    text: home.showAllAddresses ? I18n.t("Hide other addresses") : I18n.t(home.hostStatus.addresses.length > 2 ? "+%1 other addresses" : "+%1 other address").arg(home.hostStatus.addresses.length - 1)
                                     color: moreAddrMa.containsMouse ? Theme.accentFg : Theme.textMuted
                                     font.pixelSize: 12
                                     MouseArea {
@@ -729,14 +731,14 @@ Rectangle {
                                         Text { Layout.fillWidth: true; text: parent.full; color: Theme.text; font.pixelSize: 13; elide: Text.ElideRight }
                                         IconButton {
                                             iconName: "copy"; iconSize: 14; implicitWidth: 26; implicitHeight: 26
-                                            tip: "Copy address"
-                                            onClicked: { clipboardHelper.copy(parent.full); home.setStatus("Address copied", false); }
+                                            tip: I18n.t("Copy address")
+                                            onClicked: { clipboardHelper.copy(parent.full); home.setStatus(I18n.t("Address copied"), false); }
                                         }
                                     }
                                 }
                                 Text {
                                     visible: home.hostStatus.addresses.length === 0
-                                    text: "No network connection"
+                                    text: I18n.t("No network connection")
                                     color: Theme.textSubtle
                                     font.pixelSize: 13
                                 }
@@ -745,7 +747,7 @@ Rectangle {
                             ColumnLayout {
                                 Layout.fillWidth: true
                                 spacing: 2
-                                Text { text: "Password"; color: Theme.textMuted; font.pixelSize: 12; font.weight: Font.Medium }
+                                Text { text: I18n.t("Password"); color: Theme.textMuted; font.pixelSize: 12; font.weight: Font.Medium }
                                 Text {
                                     Layout.fillWidth: true
                                     text: home.passwordVisible ? home.hostStatus.password : home.hostStatus.password.replace(/./g, "•")
@@ -760,27 +762,27 @@ Rectangle {
                                     Layout.leftMargin: -6
                                     IconButton {
                                         iconName: home.passwordVisible ? "eyeOff" : "eye"
-                                        tip: home.passwordVisible ? "Hide password" : "Show password"
+                                        tip: home.passwordVisible ? I18n.t("Hide password") : I18n.t("Show password")
                                         onClicked: home.passwordVisible = !home.passwordVisible
                                     }
                                     IconButton {
                                         iconName: "copy"
-                                        tip: "Copy password"
-                                        onClicked: { clipboardHelper.copy(home.hostStatus.password); home.setStatus("Password copied", false); }
+                                        tip: I18n.t("Copy password")
+                                        onClicked: { clipboardHelper.copy(home.hostStatus.password); home.setStatus(I18n.t("Password copied"), false); }
                                     }
                                     IconButton {
                                         iconName: "refresh"
-                                        tip: "New random password"
+                                        tip: I18n.t("New random password")
                                         onClicked: {
                                             if (home.setHostPassword("") === "") {
                                                 home.passwordVisible = true;
-                                                home.setStatus("New password set. Computers using the old one can no longer connect.", false);
+                                                home.setStatus(I18n.t("New password set. Computers using the old one can no longer connect."), false);
                                             }
                                         }
                                     }
                                     IconButton {
                                         iconName: "edit"
-                                        tip: "Set your own password"
+                                        tip: I18n.t("Set your own password")
                                         onClicked: customPasswordDialog.open()
                                     }
                                 }
@@ -817,7 +819,7 @@ Rectangle {
                                 id: inputNote
                                 anchors.fill: parent
                                 anchors.margins: 12
-                                text: "The other computer will see this screen but can't use the keyboard and mouse yet: Lunaris has no access to /dev/uinput. Install the Lunaris package, or run the AppImage once with --setup-host, then sign out and in again."
+                                text: I18n.t("The other computer will see this screen but can't use the keyboard and mouse yet: Lunaris has no access to /dev/uinput. Install the Lunaris package, or run the AppImage once with --setup-host, then sign out and in again.")
                                 color: Theme.text
                                 font.pixelSize: 11
                                 wrapMode: Text.WordWrap
@@ -847,7 +849,7 @@ Rectangle {
                         Icon { name: "shield"; size: 14; color: Theme.textSubtle; Layout.alignment: Qt.AlignTop }
                         Text {
                             Layout.fillWidth: true
-                            text: "Direct connections: for your network or a VPN. Video and input are encrypted."
+                            text: I18n.t("Direct connections: for your network or a VPN. Video and input are encrypted.")
                             color: Theme.textSubtle
                             font.pixelSize: 11
                             wrapMode: Text.WordWrap
@@ -885,7 +887,7 @@ Rectangle {
                         anchors.margins: 20
                         spacing: 14
 
-                        Text { text: "Control a remote computer"; color: Theme.textStrong; font.pixelSize: 17; font.weight: Font.DemiBold }
+                        Text { text: I18n.t("Control a remote computer"); color: Theme.textStrong; font.pixelSize: 17; font.weight: Font.DemiBold }
 
                         RowLayout {
                             Layout.fillWidth: true
@@ -912,21 +914,21 @@ Rectangle {
                                     Text {
                                         anchors.verticalCenter: parent.verticalCenter
                                         visible: addressInput.text.length === 0
-                                        text: "Address, e.g. 192.168.1.20"
+                                        text: I18n.t("Address, e.g. 192.168.1.20")
                                         color: Theme.textSubtle
                                         font.pixelSize: 15
                                     }
                                 }
                             }
                             PrimaryButton {
-                                text: "Connect"
+                                text: I18n.t("Connect")
                                 implicitHeight: 42
                                 onClicked: home.requestConnect(addressInput.text)
                             }
                         }
                         Text {
                             Layout.fillWidth: true
-                            text: "Enter the address shown under \"This computer\" on the other computer. Computers on a Lunaris server are under Server below."
+                            text: I18n.t("Enter the address shown under \"This computer\" on the other computer. Computers on a Lunaris server are under Server below.")
                             color: Theme.textSubtle
                             font.pixelSize: 11
                             wrapMode: Text.WordWrap
@@ -950,9 +952,9 @@ Rectangle {
                         anchors.left: parent.left
                         anchors.bottom: parent.bottom
                         spacing: 6
-                        PeerTab { text: "Recent"; iconName: "clock"; current: home.peerTab === "recent"; onClicked: home.peerTab = "recent" }
-                        PeerTab { text: "Favorites"; iconName: "star"; current: home.peerTab === "favorites"; onClicked: home.peerTab = "favorites" }
-                        PeerTab { text: "Server"; iconName: "server"; current: home.peerTab === "server"; onClicked: home.peerTab = "server" }
+                        PeerTab { text: I18n.t("Recent"); iconName: "clock"; current: home.peerTab === "recent"; onClicked: home.peerTab = "recent" }
+                        PeerTab { text: I18n.t("Favorites"); iconName: "star"; current: home.peerTab === "favorites"; onClicked: home.peerTab = "favorites" }
+                        PeerTab { text: I18n.t("Server"); iconName: "server"; current: home.peerTab === "server"; onClicked: home.peerTab = "server" }
                     }
 
                     Rectangle {
@@ -978,7 +980,7 @@ Rectangle {
                             clip: true
                             onTextChanged: home.searchText = text
                             Accessible.name: "Search computers"
-                            Text { visible: searchInput.text.length === 0; text: "Search"; color: Theme.textSubtle; font.pixelSize: 12; anchors.verticalCenter: parent.verticalCenter }
+                            Text { visible: searchInput.text.length === 0; text: I18n.t("Search"); color: Theme.textSubtle; font.pixelSize: 12; anchors.verticalCenter: parent.verticalCenter }
                         }
                     }
                 }
@@ -1025,8 +1027,8 @@ Rectangle {
                         }
                         Text {
                             anchors.horizontalCenter: parent.horizontalCenter
-                            text: home.searchText !== "" ? "No computer matches \"" + home.searchText + "\""
-                                : (home.peerTab === "favorites" ? "No favorites yet" : "No recent connections")
+                            text: home.searchText !== "" ? I18n.t("No computer matches \"%1\"").arg(home.searchText)
+                                : (home.peerTab === "favorites" ? I18n.t("No favorites yet") : I18n.t("No recent connections"))
                             color: Theme.textMuted
                             font.pixelSize: 14
                             font.weight: Font.Medium
@@ -1034,8 +1036,8 @@ Rectangle {
                         Text {
                             anchors.horizontalCenter: parent.horizontalCenter
                             visible: home.searchText === ""
-                            text: home.peerTab === "favorites" ? "Add a computer to favorites from its ⋮ menu."
-                                                              : "Computers you connect to will show up here."
+                            text: home.peerTab === "favorites" ? I18n.t("Add a computer to favorites from its ⋮ menu.")
+                                                              : I18n.t("Computers you connect to will show up here.")
                             color: Theme.textSubtle
                             font.pixelSize: 12
                         }
@@ -1074,7 +1076,7 @@ Rectangle {
                     anchors.fill: undefined
                     visible: home.peerTab === "server"
                     onStartSessionRequested: (server, token, hostId, hostName, appId, res, fps, codec, bitrate, queueLimit, disableCuda, renderBackend, inputProtocol, encoder, displayId, virtualDisplay) => {
-                        home.setStatus("Connecting to " + hostName + "…", false);
+                        home.setStatus(I18n.t("Connecting to %1…").arg(hostName), false);
                         home.startSessionRequested(server, token, hostId, hostName, appId, res, fps, codec, bitrate, queueLimit, disableCuda, renderBackend, inputProtocol, encoder, displayId, virtualDisplay);
                     }
                 }
@@ -1138,7 +1140,7 @@ Rectangle {
                     anchors.horizontalCenter: parent.horizontalCenter
                     width: card.width - 24
                     horizontalAlignment: Text.AlignHCenter
-                    text: card.peer.name ? card.peer.name : (card.peer.os || "Computer")
+                    text: card.peer.name ? card.peer.name : (card.peer.os || I18n.t("Computer"))
                     color: Qt.rgba(1, 1, 1, 0.85)
                     font.pixelSize: 12
                     elide: Text.ElideRight
@@ -1174,26 +1176,26 @@ Rectangle {
             IconButton {
                 id: moreBtn
                 iconName: "more"
-                tip: "More"
+                tip: I18n.t("More")
                 onClicked: peerMenu.popup(moreBtn, 0, moreBtn.height)
             }
         }
 
         ThemedMenu {
             id: peerMenu
-            MenuItem { text: "Connect"; onTriggered: home.requestConnect(card.peer.address) }
+            MenuItem { text: I18n.t("Connect"); onTriggered: home.requestConnect(card.peer.address) }
             MenuItem {
-                text: card.peer.favorite ? "Remove from favorites" : "Add to favorites"
+                text: card.peer.favorite ? I18n.t("Remove from favorites") : I18n.t("Add to favorites")
                 onTriggered: home.updatePeer(card.peer.address, { favorite: !card.peer.favorite })
             }
-            MenuItem { text: "Rename…"; onTriggered: renameDialog.openFor(card.peer) }
+            MenuItem { text: I18n.t("Rename…"); onTriggered: renameDialog.openFor(card.peer) }
             MenuItem {
-                text: "Forget password"
+                text: I18n.t("Forget password")
                 enabled: !!card.peer.password
                 onTriggered: home.updatePeer(card.peer.address, { password: "" })
             }
             MenuSeparator {}
-            MenuItem { text: "Remove"; onTriggered: home.removePeer(card.peer.address) }
+            MenuItem { text: I18n.t("Remove"); onTriggered: home.removePeer(card.peer.address) }
         }
     }
 
@@ -1229,22 +1231,22 @@ Rectangle {
         }
         contentItem: ColumnLayout {
             spacing: 12
-            Text { text: "Password for " + home.displayAddress(passwordDialog.address); color: Theme.textStrong; font.pixelSize: 16; font.weight: Font.DemiBold }
+            Text { text: I18n.t("Password for %1").arg(home.displayAddress(passwordDialog.address)); color: Theme.textStrong; font.pixelSize: 16; font.weight: Font.DemiBold }
             Text {
                 Layout.fillWidth: true
-                text: "Enter the password shown under \"This computer\" on that computer."
+                text: I18n.t("Enter the password shown under \"This computer\" on that computer.")
                 color: Theme.textMuted
                 font.pixelSize: 12
                 wrapMode: Text.WordWrap
             }
-            InputField { id: pwField; placeholder: "Password"; password: true; onAccepted: passwordDialog.accept() }
-            CheckRow { id: rememberBox; text: "Remember password"; checked: true }
+            InputField { id: pwField; placeholder: I18n.t("Password"); password: true; onAccepted: passwordDialog.accept() }
+            CheckRow { id: rememberBox; text: I18n.t("Remember password"); checked: true }
             RowLayout {
                 Layout.fillWidth: true
                 spacing: 8
                 Item { Layout.fillWidth: true }
-                SecondaryButton { text: "Cancel"; onClicked: passwordDialog.close() }
-                PrimaryButton { text: "Connect"; onClicked: passwordDialog.accept() }
+                SecondaryButton { text: I18n.t("Cancel"); onClicked: passwordDialog.close() }
+                PrimaryButton { text: I18n.t("Connect"); onClicked: passwordDialog.accept() }
             }
         }
     }
@@ -1264,14 +1266,14 @@ Rectangle {
         }
         contentItem: ColumnLayout {
             spacing: 12
-            Text { text: "Rename " + home.displayAddress(renameDialog.address); color: Theme.textStrong; font.pixelSize: 16; font.weight: Font.DemiBold }
-            InputField { id: nameField; placeholder: "Name, e.g. Office PC"; onAccepted: renameDialog.accept() }
+            Text { text: I18n.t("Rename %1").arg(home.displayAddress(renameDialog.address)); color: Theme.textStrong; font.pixelSize: 16; font.weight: Font.DemiBold }
+            InputField { id: nameField; placeholder: I18n.t("Name, e.g. Office PC"); onAccepted: renameDialog.accept() }
             RowLayout {
                 Layout.fillWidth: true
                 spacing: 8
                 Item { Layout.fillWidth: true }
-                SecondaryButton { text: "Cancel"; onClicked: renameDialog.close() }
-                PrimaryButton { text: "Save"; onClicked: renameDialog.accept() }
+                SecondaryButton { text: I18n.t("Cancel"); onClicked: renameDialog.close() }
+                PrimaryButton { text: I18n.t("Save"); onClicked: renameDialog.accept() }
             }
         }
     }
@@ -1284,27 +1286,27 @@ Rectangle {
             var err = home.setHostPassword(customField.text);
             if (err !== "") { error = err; return; }
             home.passwordVisible = true;
-            home.setStatus("Password changed. Computers using the old one can no longer connect.", false);
+            home.setStatus(I18n.t("Password changed. Computers using the old one can no longer connect."), false);
             close();
         }
         contentItem: ColumnLayout {
             spacing: 12
-            Text { text: "Set the password"; color: Theme.textStrong; font.pixelSize: 16; font.weight: Font.DemiBold }
+            Text { text: I18n.t("Set the password"); color: Theme.textStrong; font.pixelSize: 16; font.weight: Font.DemiBold }
             Text {
                 Layout.fillWidth: true
-                text: "Anyone with this computer's address and this password can control it. Use at least 6 characters."
+                text: I18n.t("Anyone with this computer's address and this password can control it. Use at least 6 characters.")
                 color: Theme.textMuted
                 font.pixelSize: 12
                 wrapMode: Text.WordWrap
             }
-            InputField { id: customField; placeholder: "New password"; onAccepted: customPasswordDialog.accept() }
+            InputField { id: customField; placeholder: I18n.t("New password"); onAccepted: customPasswordDialog.accept() }
             Text { visible: customPasswordDialog.error !== ""; text: customPasswordDialog.error; color: Theme.danger; font.pixelSize: 12 }
             RowLayout {
                 Layout.fillWidth: true
                 spacing: 8
                 Item { Layout.fillWidth: true }
-                SecondaryButton { text: "Cancel"; onClicked: customPasswordDialog.close() }
-                PrimaryButton { text: "Save"; onClicked: customPasswordDialog.accept() }
+                SecondaryButton { text: I18n.t("Cancel"); onClicked: customPasswordDialog.close() }
+                PrimaryButton { text: I18n.t("Save"); onClicked: customPasswordDialog.accept() }
             }
         }
     }

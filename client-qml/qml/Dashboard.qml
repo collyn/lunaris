@@ -255,7 +255,7 @@ Rectangle {
                         Column {
                             width: parent.width
                             spacing: 6
-                            Text { text: "Computer address"; color: Theme.textMuted; font.pixelSize: 12; font.weight: Font.Medium }
+                            Text { text: I18n.t("Computer address"); color: Theme.textMuted; font.pixelSize: 12; font.weight: Font.Medium }
                             Rectangle {
                                 width: parent.width; height: 38; color: Theme.surface; radius: Theme.radiusSm; border.color: directAddressInput.activeFocus ? Theme.accent : Theme.borderStrong
                                 border.width: 1
@@ -283,7 +283,7 @@ Rectangle {
                         Column {
                             width: parent.width
                             spacing: 6
-                            Text { text: "Access password (shown in the agent window)"; color: Theme.textMuted; font.pixelSize: 12; font.weight: Font.Medium }
+                            Text { text: I18n.t("Access password (shown in the agent window)"); color: Theme.textMuted; font.pixelSize: 12; font.weight: Font.Medium }
                             Rectangle {
                                 width: parent.width; height: 38; color: Theme.surface; radius: Theme.radiusSm; border.color: directPasswordInput.activeFocus ? Theme.accent : Theme.borderStrong
                                 border.width: 1
@@ -314,7 +314,7 @@ Rectangle {
                         Column {
                             width: parent.width
                             spacing: 6
-                            Text { text: "Signaling Server Host"; color: Theme.textMuted; font.pixelSize: 12; font.weight: Font.Medium }
+                            Text { text: I18n.t("Signaling Server Host"); color: Theme.textMuted; font.pixelSize: 12; font.weight: Font.Medium }
                             Rectangle {
                                 width: parent.width; height: 38; color: Theme.surface; radius: Theme.radiusSm; border.color: serverInput.activeFocus ? Theme.accent : Theme.borderStrong
                                 border.width: 1
@@ -337,7 +337,7 @@ Rectangle {
                         Column {
                             width: parent.width
                             spacing: 6
-                            Text { text: "Username"; color: Theme.textMuted; font.pixelSize: 12; font.weight: Font.Medium }
+                            Text { text: I18n.t("Username"); color: Theme.textMuted; font.pixelSize: 12; font.weight: Font.Medium }
                             Rectangle {
                                 width: parent.width; height: 38; color: Theme.surface; radius: Theme.radiusSm; border.color: usernameInput.activeFocus ? Theme.accent : Theme.borderStrong
                                 border.width: 1
@@ -360,7 +360,7 @@ Rectangle {
                         Column {
                             width: parent.width
                             spacing: 6
-                            Text { text: "Password"; color: Theme.textMuted; font.pixelSize: 12; font.weight: Font.Medium }
+                            Text { text: I18n.t("Password"); color: Theme.textMuted; font.pixelSize: 12; font.weight: Font.Medium }
                             Rectangle {
                                 width: parent.width; height: 38; color: Theme.surface; radius: Theme.radiusSm; border.color: passwordInput.activeFocus ? Theme.accent : Theme.borderStrong
                                 border.width: 1
@@ -408,7 +408,7 @@ Rectangle {
                         contentItem: Item {
                             anchors.fill: parent
                             Text {
-                                text: "Connect"
+                                text: I18n.t("Connect")
                                 color: Theme.textOnAccent
                                 font.weight: Font.DemiBold
                                 font.pixelSize: 13
@@ -526,7 +526,7 @@ Rectangle {
                     }
 
                     Text {
-                        text: "Lunaris"
+                        text: I18n.t("Lunaris")
                         font.pixelSize: 15
                         font.weight: Font.DemiBold
                         color: Theme.textStrong
@@ -681,13 +681,13 @@ Rectangle {
                     anchors.left: parent.left
                     spacing: 4
                     Text {
-                        text: "Device Directory"
+                        text: I18n.t("Device Directory")
                         font.pixelSize: 24
                         font.bold: true
                         color: Theme.textStrong
                     }
                     Text {
-                        text: "Manage and connect to active remote agent streams"
+                        text: I18n.t("Manage and connect to active remote agent streams")
                         font.pixelSize: 13
                         color: Theme.textSubtle
                     }
@@ -712,7 +712,7 @@ Rectangle {
                             border.width: 1
                         }
                         contentItem: Text {
-                            text: "Sync Devices"
+                            text: I18n.t("Sync Devices")
                             color: Theme.text
                             font.bold: true
                             font.pixelSize: 13
@@ -818,13 +818,13 @@ Rectangle {
 
                                     Row {
                                         width: parent.width
-                                        Text { text: "IP Address"; font.pixelSize: 11; color: Theme.textSubtle; width: 80 }
+                                        Text { text: I18n.t("IP Address"); font.pixelSize: 11; color: Theme.textSubtle; width: 80 }
                                         Text { text: modelData.ip_address || "Connected via Agent"; font.pixelSize: 11; font.bold: true; font.family: "monospace"; color: Theme.text }
                                     }
 
                                     Row {
                                         width: parent.width
-                                        Text { text: "Status"; font.pixelSize: 11; color: Theme.textSubtle; width: 80 }
+                                        Text { text: I18n.t("Status"); font.pixelSize: 11; color: Theme.textSubtle; width: 80 }
                                         Row {
                                             spacing: 6
                                             Rectangle {
@@ -855,7 +855,7 @@ Rectangle {
                                         color: connectBtn.hovered ? Theme.accentHover : Theme.accent
                                     }
                                     contentItem: Text {
-                                        text: "Connect"
+                                        text: I18n.t("Connect")
                                         color: Theme.textOnAccent
                                         font.pixelSize: 13
                                         font.weight: Font.DemiBold
@@ -879,7 +879,7 @@ Rectangle {
                                         hoverEnabled: true
                                         ToolTip.visible: hovered
                                         ToolTip.delay: 400
-                                        ToolTip.text: "Open in the browser"
+                                        ToolTip.text: I18n.t("Open in the browser")
                                         Accessible.name: "Open in the browser"
                                         onClicked: dashboardRoot.openHostInBrowser(modelData)
                                         background: Rectangle {
@@ -997,8 +997,8 @@ Rectangle {
                 anchors.centerIn: parent
                 visible: dashboardRoot.hostsList.length === 0 && !dashboardRoot.hostsLoading
                 spacing: 16
-                Text { text: "No agents connected yet"; font.pixelSize: 16; font.bold: true; color: Theme.textMuted; anchors.horizontalCenter: parent.horizontalCenter }
-                Text { text: "Agents will appear here automatically once registered"; font.pixelSize: 12; color: Theme.textSubtle; anchors.horizontalCenter: parent.horizontalCenter }
+                Text { text: I18n.t("No agents connected yet"); font.pixelSize: 16; font.bold: true; color: Theme.textMuted; anchors.horizontalCenter: parent.horizontalCenter }
+                Text { text: I18n.t("Agents will appear here automatically once registered"); font.pixelSize: 12; color: Theme.textSubtle; anchors.horizontalCenter: parent.horizontalCenter }
             }
         }
     }
@@ -1064,7 +1064,7 @@ Rectangle {
                     anchors.verticalCenter: backBtn.verticalCenter
                     Row {
                         spacing: 6
-                        Text { text: "Device Directory"; font.pixelSize: 12; color: Theme.textSubtle }
+                        Text { text: I18n.t("Device Directory"); font.pixelSize: 12; color: Theme.textSubtle }
                         Text { text: "/"; font.pixelSize: 12; color: Theme.textSubtle }
                         Text { text: dashboardRoot.selectedHost.name; font.pixelSize: 12; font.bold: true; color: Theme.accentFg }
                     }
@@ -1073,7 +1073,7 @@ Rectangle {
 
             Text {
                 id: appsTitle
-                text: "Applications Directory"
+                text: I18n.t("Applications Directory")
                 font.pixelSize: 22
                 font.bold: true
                 color: Theme.textStrong
@@ -1305,7 +1305,7 @@ Rectangle {
                 anchors.centerIn: parent
                 visible: dashboardRoot.appsList.length === 0 && !dashboardRoot.appsLoading
                 spacing: 12
-                Text { text: "No games/apps available"; font.pixelSize: 14; color: Theme.textMuted; anchors.horizontalCenter: parent.horizontalCenter }
+                Text { text: I18n.t("No games/apps available"); font.pixelSize: 14; color: Theme.textMuted; anchors.horizontalCenter: parent.horizontalCenter }
             }
         }
     }
@@ -1364,7 +1364,7 @@ Rectangle {
                 spacing: 7
 
                 Text {
-                    text: "Delete Host"
+                    text: I18n.t("Delete Host")
                     color: Theme.textStrong
                     font.pixelSize: 18
                     font.bold: true
@@ -1390,7 +1390,7 @@ Rectangle {
 
                 Button {
                     id: cancelDeleteBtn
-                    text: "Cancel"
+                    text: I18n.t("Cancel")
                     onClicked: dashboardRoot.pendingDeleteHost = null
                     background: Rectangle {
                         implicitWidth: 96; implicitHeight: 36; radius: 8
@@ -1403,7 +1403,7 @@ Rectangle {
 
                 Button {
                     id: confirmDeleteBtn
-                    text: "Delete Host"
+                    text: I18n.t("Delete Host")
                     onClicked: {
                         if (dashboardRoot.pendingDeleteHost) {
                             dashboardRoot.hostsLoading = true;

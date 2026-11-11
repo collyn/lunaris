@@ -99,7 +99,7 @@ Rectangle {
                 hoverEnabled: true
                 implicitHeight: 30
                 implicitWidth: segText.implicitWidth + 22
-                Accessible.name: modelData.label
+                Accessible.name: I18n.t(modelData.label)
                 onClicked: seg.picked(modelData.value)
                 background: Rectangle {
                     color: segBtn.active ? Theme.accentA(0.18) : (segBtn.hovered ? Theme.surface2 : Theme.bg)
@@ -109,7 +109,7 @@ Rectangle {
                 }
                 contentItem: Text {
                     id: segText
-                    text: modelData.label
+                    text: I18n.t(modelData.label)
                     color: segBtn.active ? Theme.accentFg : Theme.text
                     font.pixelSize: 12
                     font.weight: segBtn.active ? Font.DemiBold : Font.Normal
@@ -139,7 +139,7 @@ Rectangle {
             anchors.rightMargin: 12
             spacing: 2
 
-            Text { text: "Settings"; color: Theme.textStrong; font.pixelSize: 19; font.weight: Font.DemiBold; leftPadding: 10; bottomPadding: 14 }
+            Text { text: I18n.t("Settings"); color: Theme.textStrong; font.pixelSize: 19; font.weight: Font.DemiBold; leftPadding: 10; bottomPadding: 14 }
 
             Repeater {
                 model: settings.sections
@@ -150,7 +150,7 @@ Rectangle {
                     implicitHeight: 38
                     hoverEnabled: true
                     onClicked: settings.section = modelData.key
-                    Accessible.name: modelData.label
+                    Accessible.name: I18n.t(modelData.label)
                     background: Rectangle {
                         radius: Theme.radiusSm
                         color: navBtn.current ? Theme.accentA(0.12) : (navBtn.hovered ? Theme.surface2 : "transparent")
@@ -160,7 +160,7 @@ Rectangle {
                         leftPadding: 12
                         spacing: 12
                         Icon { name: modelData.icon; size: 17; color: navBtn.current ? Theme.accentFg : Theme.textMuted; anchors.verticalCenter: parent.verticalCenter }
-                        Text { text: modelData.label; color: navBtn.current ? Theme.textStrong : Theme.text; font.pixelSize: 14; font.weight: navBtn.current ? Font.DemiBold : Font.Normal; anchors.verticalCenter: parent.verticalCenter }
+                        Text { text: I18n.t(modelData.label); color: navBtn.current ? Theme.textStrong : Theme.text; font.pixelSize: 14; font.weight: navBtn.current ? Font.DemiBold : Font.Normal; anchors.verticalCenter: parent.verticalCenter }
                     }
                 }
             }
@@ -189,19 +189,19 @@ Rectangle {
             // ===================== General =====================
             Card {
                 visible: settings.section === "general"
-                title: "Remote control of this computer"
-                subtitle: "While on, other computers can control this one with its address and password (Home)."
+                title: I18n.t("Remote control of this computer")
+                subtitle: I18n.t("While on, other computers can control this one with its address and password (Home).")
                 SettingRow {
-                    label: homeView && homeView.hostStatus.running ? "On" : (homeView && homeView.hostStatus.enabled ? "Starting…" : "Off")
-                    hint: "Starts again with the app."
+                    label: homeView && homeView.hostStatus.running ? I18n.t("On") : (homeView && homeView.hostStatus.enabled ? I18n.t("Starting…") : I18n.t("Off"))
+                    hint: I18n.t("Starts again with the app.")
                     PrimaryButton {
                         visible: !(homeView && homeView.hostStatus.enabled)
-                        text: "Turn on"
+                        text: I18n.t("Turn on")
                         onClicked: homeView.setRemoteControl(true)
                     }
                     SecondaryButton {
                         visible: !!(homeView && homeView.hostStatus.enabled)
-                        text: "Turn off"
+                        text: I18n.t("Turn off")
                         danger: true
                         onClicked: homeView.setRemoteControl(false)
                     }
@@ -210,9 +210,19 @@ Rectangle {
 
             Card {
                 visible: settings.section === "general"
-                title: "Theme"
+                title: I18n.t("Language")
                 Segmented {
-                    options: [{ value: "system", label: "Follow system" }, { value: "light", label: "Light" }, { value: "dark", label: "Dark" }]
+                    options: I18n.languages
+                    value: I18n.lang
+                    onPicked: (v) => settings.setPref("language", v)
+                }
+            }
+
+            Card {
+                visible: settings.section === "general"
+                title: I18n.t("Theme")
+                Segmented {
+                    options: [{ value: "system", label: I18n.t("Follow system") }, { value: "light", label: I18n.t("Light") }, { value: "dark", label: I18n.t("Dark") }]
                     value: settings.pref("theme") || "system"
                     onPicked: (v) => settings.setPref("theme", v)
                 }
@@ -220,9 +230,9 @@ Rectangle {
 
             Card {
                 visible: settings.section === "general"
-                title: "Startup"
+                title: I18n.t("Startup")
                 CheckRow {
-                    text: "Start Lunaris when I sign in"
+                    text: I18n.t("Start Lunaris when I sign in")
                     checked: bridge.isAutostartEnabled()
                     onToggled: {
                         bridge.setAutostartEnabled(checked);
@@ -230,7 +240,7 @@ Rectangle {
                     }
                 }
                 CheckRow {
-                    text: "Keep running in the system tray when the window is closed"
+                    text: I18n.t("Keep running in the system tray when the window is closed")
                     checked: settings.pref("closeToTray") !== false
                     onToggled: {
                         settings.setPref("closeToTray", checked);
@@ -241,19 +251,19 @@ Rectangle {
 
             Card {
                 visible: settings.section === "general"
-                title: "Updates"
+                title: I18n.t("Updates")
                 SettingRow {
                     label: "Lunaris " + bridge.appVersion()
-                    hint: "Checks GitHub for a newer release."
-                    SecondaryButton { text: "Check now"; onClicked: bridge.checkForUpdates() }
+                    hint: I18n.t("Checks GitHub for a newer release.")
+                    SecondaryButton { text: I18n.t("Check now"); onClicked: bridge.checkForUpdates() }
                 }
             }
 
             // ===================== Security =====================
             Card {
                 visible: settings.section === "security"
-                title: "Access password"
-                subtitle: "Anyone with this computer's address and this password can control it."
+                title: I18n.t("Access password")
+                subtitle: I18n.t("Anyone with this computer's address and this password can control it.")
                 RowLayout {
                     Layout.fillWidth: true
                     spacing: 8
@@ -266,14 +276,14 @@ Rectangle {
                     }
                     IconButton {
                         iconName: homeView && homeView.passwordVisible ? "eyeOff" : "eye"
-                        tip: homeView && homeView.passwordVisible ? "Hide password" : "Show password"
+                        tip: homeView && homeView.passwordVisible ? I18n.t("Hide password") : I18n.t("Show password")
                         onClicked: homeView.passwordVisible = !homeView.passwordVisible
                     }
                 }
                 RowLayout {
                     spacing: 8
                     SecondaryButton {
-                        text: "New random password"
+                        text: I18n.t("New random password")
                         onClicked: { if (homeView.setHostPassword("") === "") homeView.passwordVisible = true; }
                     }
                     InputField {
@@ -282,12 +292,12 @@ Rectangle {
                         implicitWidth: 180
                         implicitHeight: 34
                         fontSize: 13
-                        placeholder: "Or type a password"
+                        placeholder: I18n.t("Or type a password")
                         onAccepted: savePwBtn.clicked()
                     }
                     SecondaryButton {
                         id: savePwBtn
-                        text: "Save"
+                        text: I18n.t("Save")
                         enabled: securityPassword.text.trim().length > 0
                         onClicked: {
                             if (homeView.setHostPassword(securityPassword.text) === "") {
@@ -307,10 +317,10 @@ Rectangle {
 
             Card {
                 visible: settings.section === "security"
-                title: "Wrong passwords"
+                title: I18n.t("Wrong passwords")
                 Text {
                     Layout.fillWidth: true
-                    text: "After 5 wrong passwords in a minute from the same address, that address has to wait a minute before trying again."
+                    text: I18n.t("After 5 wrong passwords in a minute from the same address, that address has to wait a minute before trying again.")
                     color: Theme.textMuted
                     font.pixelSize: 12
                     wrapMode: Text.WordWrap
@@ -320,11 +330,11 @@ Rectangle {
             // ===================== Network =====================
             Card {
                 visible: settings.section === "network"
-                title: "Direct connections"
-                subtitle: "Port other computers use to reach this one. Allow it in the firewall to connect from your network."
+                title: I18n.t("Direct connections")
+                subtitle: I18n.t("Port other computers use to reach this one. Allow it in the firewall to connect from your network.")
                 SettingRow {
-                    label: "Port"
-                    hint: "Default 8091. With another port, other computers connect to address:port."
+                    label: I18n.t("Port")
+                    hint: I18n.t("Default 8091. With another port, other computers connect to address:port.")
                     RowLayout {
                         spacing: 8
                         InputField {
@@ -339,7 +349,7 @@ Rectangle {
                         }
                         SecondaryButton {
                             id: savePortBtn
-                            text: "Save"
+                            text: I18n.t("Save")
                             enabled: homeView && portField.text !== String(homeView.hostStatus.port)
                             onClicked: settings.portError = homeView.setHostPort(parseInt(portField.text))
                         }
@@ -357,10 +367,10 @@ Rectangle {
 
             Card {
                 visible: settings.section === "network"
-                title: "Server port"
+                title: I18n.t("Server port")
                 SettingRow {
-                    label: "Port"
-                    hint: "Default 8090. Change it if another program uses that port."
+                    label: I18n.t("Port")
+                    hint: I18n.t("Default 8090. Change it if another program uses that port.")
                     RowLayout {
                         spacing: 8
                         InputField {
@@ -375,7 +385,7 @@ Rectangle {
                         }
                         SecondaryButton {
                             id: saveServerPortBtn
-                            text: "Save"
+                            text: I18n.t("Save")
                             enabled: homeView && serverPortField.text !== String(homeView.serverStatus.port)
                             onClicked: homeView.setServerPort(parseInt(serverPortField.text))
                         }
@@ -385,20 +395,20 @@ Rectangle {
 
             Card {
                 visible: settings.section === "network"
-                title: "Signed-in server"
-                subtitle: "A server lets you reach computers outside your network and manage users, groups and computers from its web page."
+                title: I18n.t("Signed-in server")
+                subtitle: I18n.t("A server lets you reach computers outside your network and manage users, groups and computers from its web page.")
                 SettingRow {
-                    label: homeView && homeView.dashboard.isLoggedIn ? "Signed in as " + homeView.dashboard.username : "Not signed in"
-                    hint: homeView && homeView.dashboard.isLoggedIn ? homeView.dashboard.serverUrl : "Sign in from Home > Server."
+                    label: homeView && homeView.dashboard.isLoggedIn ? I18n.t("Signed in as %1").arg(homeView.dashboard.username) : I18n.t("Not signed in")
+                    hint: homeView && homeView.dashboard.isLoggedIn ? homeView.dashboard.serverUrl : I18n.t("Sign in from Home > Server.")
                     RowLayout {
                         spacing: 8
                         SecondaryButton {
                             visible: !!(homeView && homeView.dashboard.isLoggedIn)
-                            text: "Open web page"
+                            text: I18n.t("Open web page")
                             onClicked: homeView.openWebConsole(homeView.dashboard.serverUrl)
                         }
                         SecondaryButton {
-                            text: homeView && homeView.dashboard.isLoggedIn ? "Sign out" : "Sign in"
+                            text: homeView && homeView.dashboard.isLoggedIn ? I18n.t("Sign out") : I18n.t("Sign in")
                             onClicked: {
                                 if (homeView.dashboard.isLoggedIn) {
                                     bridge.logout();
@@ -418,11 +428,11 @@ Rectangle {
             // ===================== Display =====================
             Card {
                 visible: settings.section === "display"
-                title: "New connections"
-                subtitle: "Used when you connect to a computer by its address. You can change them during a session from the menu at the top of the screen."
+                title: I18n.t("New connections")
+                subtitle: I18n.t("Used when you connect to a computer by its address. You can change them during a session from the menu at the top of the screen.")
 
                 SettingRow {
-                    label: "Resolution"
+                    label: I18n.t("Resolution")
                     Segmented {
                         options: StreamOptions.resolutions
                         value: settings.pref("res")
@@ -430,7 +440,7 @@ Rectangle {
                     }
                 }
                 SettingRow {
-                    label: "Frame rate"
+                    label: I18n.t("Frame rate")
                     Segmented {
                         options: StreamOptions.fps.map(function (f) { return { value: f, label: String(f) }; })
                         value: settings.pref("fps")
@@ -438,8 +448,8 @@ Rectangle {
                     }
                 }
                 SettingRow {
-                    label: "Bitrate (Mbps)"
-                    hint: "Higher looks sharper but needs a faster network."
+                    label: I18n.t("Bitrate (Mbps)")
+                    hint: I18n.t("Higher looks sharper but needs a faster network.")
                     Segmented {
                         options: StreamOptions.bitrates.map(function (b) { return { value: b, label: String(b / 1000) }; })
                         value: settings.pref("bitrate")
@@ -447,8 +457,8 @@ Rectangle {
                     }
                 }
                 SettingRow {
-                    label: "Video codec"
-                    hint: "Auto: H.265 when the other computer encodes it in hardware, else H.264."
+                    label: I18n.t("Video codec")
+                    hint: I18n.t("Auto: H.265 when the other computer encodes it in hardware, else H.264.")
                     Segmented {
                         options: StreamOptions.codecs
                         value: StreamOptions.codecPart(settings.pref("codec"))
@@ -456,8 +466,8 @@ Rectangle {
                     }
                 }
                 SettingRow {
-                    label: "Chroma"
-                    hint: "4:4:4 keeps coloured text sharp; H.264 only, encoded on NVIDIA or the CPU."
+                    label: I18n.t("Chroma")
+                    hint: I18n.t("4:4:4 keeps coloured text sharp; H.264 only, encoded on NVIDIA or the CPU.")
                     Segmented {
                         options: StreamOptions.chromas
                         value: StreamOptions.chromaPart(settings.pref("codec"))
@@ -465,10 +475,10 @@ Rectangle {
                     }
                 }
                 SettingRow {
-                    label: "Video decoding"
-                    hint: "Software is slower; use it if the picture stays black."
+                    label: I18n.t("Video decoding")
+                    hint: I18n.t("Software is slower; use it if the picture stays black.")
                     Segmented {
-                        options: [{ value: "auto_gpu", label: "GPU" }, { value: "software", label: "Software" }]
+                        options: [{ value: "auto_gpu", label: I18n.t("GPU") }, { value: "software", label: I18n.t("Software") }]
                         value: settings.pref("renderBackend")
                         onPicked: (v) => settings.setPref("renderBackend", v)
                     }
@@ -479,12 +489,12 @@ Rectangle {
             Card {
                 visible: settings.section === "about"
                 title: "Lunaris " + bridge.appVersion()
-                subtitle: "Low-latency remote desktop. Free software under the GNU GPL v3 or later."
+                subtitle: I18n.t("Low-latency remote desktop. Free software under the GNU GPL v3 or later.")
                 RowLayout {
                     spacing: 8
-                    SecondaryButton { text: "Website"; onClicked: Qt.openUrlExternally("https://github.com/collyn/lunaris") }
-                    SecondaryButton { text: "Report a problem"; onClicked: Qt.openUrlExternally("https://github.com/collyn/lunaris/issues") }
-                    SecondaryButton { text: "Releases"; onClicked: Qt.openUrlExternally("https://github.com/collyn/lunaris/releases") }
+                    SecondaryButton { text: I18n.t("Website"); onClicked: Qt.openUrlExternally("https://github.com/collyn/lunaris") }
+                    SecondaryButton { text: I18n.t("Report a problem"); onClicked: Qt.openUrlExternally("https://github.com/collyn/lunaris/issues") }
+                    SecondaryButton { text: I18n.t("Releases"); onClicked: Qt.openUrlExternally("https://github.com/collyn/lunaris/releases") }
                 }
             }
         }

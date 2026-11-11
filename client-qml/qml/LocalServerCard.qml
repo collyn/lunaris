@@ -32,7 +32,7 @@ Rectangle {
             Icon { name: "server"; size: 20; color: card.running ? Theme.success : Theme.accentFg }
             Text {
                 Layout.fillWidth: true
-                text: "Server on this computer"
+                text: I18n.t("Server on this computer")
                 color: Theme.textStrong
                 font.pixelSize: 16
                 font.weight: Font.DemiBold
@@ -46,7 +46,7 @@ Rectangle {
                 Text {
                     id: stateText
                     anchors.centerIn: parent
-                    text: card.running ? "Running" : "Starting…"
+                    text: card.running ? I18n.t("Running") : I18n.t("Starting…")
                     color: card.running ? Theme.success : Theme.textMuted
                     font.pixelSize: 11
                     font.weight: Font.DemiBold
@@ -57,8 +57,8 @@ Rectangle {
         Text {
             Layout.fillWidth: true
             text: card.running
-                ? "Other computers sign in and register at the address below. Manage users, groups and computers in the web console."
-                : "Run a Lunaris server here to manage users, groups and computers from a web page, and to connect computers on different networks."
+                ? I18n.t("Other computers sign in and register at the address below. Manage users, groups and computers in the web console.")
+                : I18n.t("Run a Lunaris server here to manage users, groups and computers from a web page, and to connect computers on different networks.")
             color: Theme.textMuted
             font.pixelSize: 12
             wrapMode: Text.WordWrap
@@ -70,7 +70,7 @@ Rectangle {
             visible: card.running
             Layout.fillWidth: true
             spacing: 2
-            Text { text: "Server address"; color: Theme.textMuted; font.pixelSize: 11; font.weight: Font.Medium }
+            Text { text: I18n.t("Server address"); color: Theme.textMuted; font.pixelSize: 11; font.weight: Font.Medium }
             RowLayout {
                 Layout.fillWidth: true
                 spacing: 2
@@ -84,8 +84,8 @@ Rectangle {
                 }
                 IconButton {
                     iconName: "copy"
-                    tip: "Copy server address"
-                    onClicked: { homeView.copyText(card.st.lan_url); homeView.setStatus("Server address copied", false); }
+                    tip: I18n.t("Copy server address")
+                    onClicked: { homeView.copyText(card.st.lan_url); homeView.setStatus(I18n.t("Server address copied"), false); }
                 }
             }
         }
@@ -95,7 +95,7 @@ Rectangle {
             visible: card.running && (card.st.admin_password || "") !== ""
             Layout.fillWidth: true
             spacing: 2
-            Text { text: "Admin sign-in (change the password in the web console)"; color: Theme.textMuted; font.pixelSize: 11; font.weight: Font.Medium; Layout.fillWidth: true; wrapMode: Text.WordWrap }
+            Text { text: I18n.t("Admin sign-in (change the password in the web console)"); color: Theme.textMuted; font.pixelSize: 11; font.weight: Font.Medium; Layout.fillWidth: true; wrapMode: Text.WordWrap }
             RowLayout {
                 Layout.fillWidth: true
                 spacing: 2
@@ -109,13 +109,13 @@ Rectangle {
                 }
                 IconButton {
                     iconName: card.adminPasswordVisible ? "eyeOff" : "eye"
-                    tip: card.adminPasswordVisible ? "Hide password" : "Show password"
+                    tip: card.adminPasswordVisible ? I18n.t("Hide password") : I18n.t("Show password")
                     onClicked: card.adminPasswordVisible = !card.adminPasswordVisible
                 }
                 IconButton {
                     iconName: "copy"
-                    tip: "Copy password"
-                    onClicked: { homeView.copyText(card.st.admin_password); homeView.setStatus("Admin password copied", false); }
+                    tip: I18n.t("Copy password")
+                    onClicked: { homeView.copyText(card.st.admin_password); homeView.setStatus(I18n.t("Admin password copied"), false); }
                 }
             }
         }
@@ -135,22 +135,22 @@ Rectangle {
             PrimaryButton {
                 visible: !card.running
                 enabled: !(homeView && homeView.serverBusy)
-                text: homeView && homeView.serverBusy ? "Starting…" : "Start server"
+                text: homeView && homeView.serverBusy ? I18n.t("Starting…") : I18n.t("Start server")
                 onClicked: homeView.setServer(true)
             }
             PrimaryButton {
                 visible: card.running
-                text: "Open web console"
+                text: I18n.t("Open web console")
                 onClicked: homeView.openWebConsole(card.st.local_url)
             }
             SecondaryButton {
                 visible: card.running && !card.signedInHere && (card.st.admin_password || "") !== ""
-                text: "Show its computers here"
+                text: I18n.t("Show its computers here")
                 onClicked: homeView.signInLocal()
             }
             SecondaryButton {
                 visible: card.running && card.st.ours
-                text: "Stop"
+                text: I18n.t("Stop")
                 danger: true
                 onClicked: homeView.setServer(false)
             }
@@ -159,7 +159,7 @@ Rectangle {
         Text {
             Layout.fillWidth: true
             visible: card.running && !card.st.ours
-            text: "This server was started outside the app (port " + card.st.port + ")."
+            text: I18n.t("This server was started outside the app (port %1).").arg(card.st.port)
             color: Theme.textSubtle
             font.pixelSize: 11
             wrapMode: Text.WordWrap
