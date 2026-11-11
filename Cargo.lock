@@ -53,10 +53,6 @@ dependencies = [
  "bytes",
  "clap",
  "common",
- "cxx",
- "cxx-qt",
- "cxx-qt-build",
- "cxx-qt-lib",
  "dirs",
  "ffmpeg-sys-next",
  "futures-util",
@@ -81,6 +77,27 @@ dependencies = [
  "webrtc",
  "wtransport",
  "zip",
+]
+
+[[package]]
+name = "agent-app"
+version = "0.2.2"
+dependencies = [
+ "agent",
+ "cxx",
+ "cxx-qt",
+ "cxx-qt-build",
+ "cxx-qt-lib",
+ "hostname",
+ "log",
+ "once_cell",
+ "reqwest",
+ "serde",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "urlencoding",
+ "uuid",
 ]
 
 [[package]]

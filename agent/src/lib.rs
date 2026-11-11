@@ -23,8 +23,6 @@ pub mod pairing;
 mod vdisplay;
 mod video;
 
-#[cfg(feature = "gui")]
-pub mod agent_gui;
 
 pub static CONNECTED_TO_SERVER: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
@@ -175,11 +173,28 @@ fn probe_encoders() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 }
 
 /// Runs the agent with command-line arguments (the first one is the program
-/// name), as the `agent` binary and `lunaris agent` do.
+/// name), headless, as `lunaris agent` does.
 pub fn run<I, T>(args: I) -> std::process::ExitCode
 where
     I: IntoIterator<Item = T>,
     T: Into<std::ffi::OsString> + Clone,
+{
+    run_with_gui::<I, T, fn() -> std::io::Stderr>(args, None)
+}
+
+/// A desktop window around the agent: where log output goes, and the
+/// function that runs the window (the standalone `agent` binary has one).
+pub struct Gui<W> {
+    pub log_writer: W,
+    pub run: fn(minimized: bool),
+}
+
+/// Like [`run`]; without `--cli` (or `--pair`) it opens `gui` instead.
+pub fn run_with_gui<I, T, W>(args: I, gui: Option<Gui<W>>) -> std::process::ExitCode
+where
+    I: IntoIterator<Item = T>,
+    T: Into<std::ffi::OsString> + Clone,
+    W: for<'a> tracing_subscriber::fmt::MakeWriter<'a> + Send + Sync + 'static,
 {
     let args = match Args::try_parse_from(args) {
         Ok(args) => args,
@@ -192,7 +207,7 @@ where
             return std::process::ExitCode::FAILURE;
         }
     };
-    match runtime.block_on(main_async(args)) {
+    match runtime.block_on(main_async(args, gui)) {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("error: {e}");
@@ -201,7 +216,10 @@ where
     }
 }
 
-async fn main_async(args: Args) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+async fn main_async<W>(args: Args, gui: Option<Gui<W>>) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
+where
+    W: for<'a> tracing_subscriber::fmt::MakeWriter<'a> + Send + Sync + 'static,
+{
     if args.probe_encoders {
         return probe_encoders();
     }
@@ -228,10 +246,9 @@ async fn main_async(args: Args) -> Result<(), Box<dyn std::error::Error + Send +
         info!("Configuration imported and merged successfully!");
     }
 
-    #[cfg(feature = "gui")]
-    {
+    if let Some(gui) = gui {
         if !args.cli && !args.pair {
-            // Init tracing logger with custom MakeWriter to stream logs to GUI
+            // Log output goes to the window.
             let _ = tracing_subscriber::registry()
                 .with(tracing_subscriber::EnvFilter::new(
                     std::env::var("RUST_LOG").unwrap_or_else(|_| {
@@ -247,13 +264,13 @@ async fn main_async(args: Args) -> Result<(), Box<dyn std::error::Error + Send +
                 ))
                 .with(
                     tracing_subscriber::fmt::layer()
-                        .with_writer(agent_gui::ChannelMakeWriter)
+                        .with_writer(gui.log_writer)
                         .with_ansi(false),
                 )
                 .try_init();
 
             info!("Launching Lunaris Agent in Desktop GUI mode...");
-            agent_gui::run_gui(args.minimized);
+            (gui.run)(args.minimized);
             return Ok(());
         }
     }

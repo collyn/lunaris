@@ -16,7 +16,7 @@ trap 'rm -rf "$WORK"' EXIT
 APPDIR="$WORK/AppDir"
 
 install -Dm755 "$BIN" "$APPDIR/usr/bin/lunaris-agent"
-install -Dm644 "$ROOT/agent/qml/icons/icon.png" "$APPDIR/usr/share/icons/hicolor/256x256/apps/lunaris-agent.png"
+install -Dm644 "$ROOT/agent-app/qml/icons/icon.png" "$APPDIR/usr/share/icons/hicolor/256x256/apps/lunaris-agent.png"
 install -d "$APPDIR/usr/share/applications"
 cat > "$APPDIR/usr/share/applications/lunaris-agent.desktop" <<'EOF'
 [Desktop Entry]
@@ -71,7 +71,7 @@ exec "$HERE/usr/bin/lunaris-agent" "$@"
 EOF
 chmod 755 "$WORK/AppRun"
 
-export QML_SOURCES_PATHS="$ROOT/agent/qml"
+export QML_SOURCES_PATHS="$ROOT/agent-app/qml"
 export EXTRA_QT_MODULES="waylandclient"
 export EXTRA_PLATFORM_PLUGINS="libqwayland-egl.so;libqwayland-generic.so"
 export LDAI_COMP=zstd

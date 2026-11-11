@@ -8,7 +8,7 @@ license.workspace = true
 client-qml = { path = "../client-qml" }
 # The app is also the host agent (`lunaris agent`) and the server
 # (`lunaris server`); the standalone agent and server binaries remain.
-agent = { path = "../agent", default-features = false }
+agent = { path = "../agent" }
 server = { path = "../server" }
 
 [features]

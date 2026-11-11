@@ -61,7 +61,7 @@ build_all() {
     fi
     if ! build_rust; then
         echo "[Rust] Build FAILED (see errors above)." >&2
-        echo "       Host-only build (server + agent): cargo build --release -p server -p agent" >&2
+        echo "       Host-only build (server + agent): cargo build --release -p server -p agent-app" >&2
         exit 1
     fi
     echo "=================================================="

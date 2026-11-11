@@ -41,7 +41,7 @@ else
 fi
 
 # NvFBC and CUDA are loaded at runtime (dlopen), so one binary runs everywhere.
-CARGO_ARGS="--release -p agent --target-dir /target"
+CARGO_ARGS="--release -p agent-app --target-dir /target"
 if [[ -n "${LUNARIS_MEDIA_PATH:-}" ]]; then
     RUN_ARGS+=(-v "$(cd "$LUNARIS_MEDIA_PATH" && pwd):/lunaris-media:ro")
     cat > "$TARGET_DIR/media-patch.toml" <<'EOF'

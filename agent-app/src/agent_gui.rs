@@ -6,8 +6,8 @@ use std::sync::atomic::Ordering;
 use cxx_qt::CxxQtType;
 use cxx_qt_lib::{QQmlApplicationEngine, QString, QUrl};
 
-use crate::pairing::{load_config, save_config as save_config_file, AgentConfig, import_config_file};
-use crate::{run_agent, AGENT_ACTIVE, CONNECTED_TO_SERVER, LAST_ERROR};
+use agent::pairing::{load_config, save_config as save_config_file, AgentConfig, import_config_file};
+use agent::{run_agent, AGENT_ACTIVE, CONNECTED_TO_SERVER, LAST_ERROR};
 
 // ---------------------------------------------------------------------------
 // Log channel (identical to the old gui.rs — consumed by main.rs)
@@ -232,7 +232,7 @@ fn make_default_config() -> AgentConfig {
         close_to_tray: false,
         virtual_display_output: None,
         direct_enabled: false,
-        direct_port: crate::pairing::default_direct_port(),
+        direct_port: agent::pairing::default_direct_port(),
         direct_password: String::new(),
     }
 }
@@ -248,7 +248,7 @@ fn agent_hostname() -> String {
 // ---------------------------------------------------------------------------
 impl qobject::AgentBridge {
     pub fn load_config(mut self: Pin<&mut Self>) {
-        let config = load_config(crate::pairing::config_path()).unwrap_or_else(|_| make_default_config());
+        let config = load_config(agent::pairing::config_path()).unwrap_or_else(|_| make_default_config());
         let name = agent_hostname();
         self.as_mut().config_loaded(
             QString::from(&config.server_url),
@@ -267,15 +267,15 @@ impl qobject::AgentBridge {
         autostart: bool,
         close_to_tray: bool,
     ) {
-        let mut config = load_config(crate::pairing::config_path()).unwrap_or_else(|_| make_default_config());
+        let mut config = load_config(agent::pairing::config_path()).unwrap_or_else(|_| make_default_config());
         config.server_url = server_url.to_string();
         config.server_token = server_token.to_string();
         config.autostart = autostart;
         config.close_to_tray = close_to_tray;
 
-        crate::pairing::set_autostart_enabled_impl(autostart);
+        agent::pairing::set_autostart_enabled_impl(autostart);
 
-        match save_config_file(&config, crate::pairing::config_path()) {
+        match save_config_file(&config, agent::pairing::config_path()) {
             Ok(()) => self.as_mut().config_saved(true, QString::from("")),
             Err(e) => self.as_mut().config_saved(
                 false,
@@ -285,27 +285,27 @@ impl qobject::AgentBridge {
     }
 
     pub fn load_direct_config(mut self: Pin<&mut Self>) {
-        let config = load_config(crate::pairing::config_path()).unwrap_or_else(|_| make_default_config());
+        let config = load_config(agent::pairing::config_path()).unwrap_or_else(|_| make_default_config());
         self.as_mut().emit_direct_config(&config);
     }
 
     pub fn set_direct_enabled(mut self: Pin<&mut Self>, enabled: bool) {
-        let mut config = load_config(crate::pairing::config_path()).unwrap_or_else(|_| make_default_config());
+        let mut config = load_config(agent::pairing::config_path()).unwrap_or_else(|_| make_default_config());
         config.direct_enabled = enabled;
         if enabled {
-            crate::pairing::ensure_direct_password(&mut config);
+            agent::pairing::ensure_direct_password(&mut config);
         }
         self.as_mut().save_direct_config(config);
     }
 
     pub fn regenerate_direct_password(mut self: Pin<&mut Self>) {
-        let mut config = load_config(crate::pairing::config_path()).unwrap_or_else(|_| make_default_config());
-        config.direct_password = crate::pairing::generate_direct_password();
+        let mut config = load_config(agent::pairing::config_path()).unwrap_or_else(|_| make_default_config());
+        config.direct_password = agent::pairing::generate_direct_password();
         self.as_mut().save_direct_config(config);
     }
 
     fn save_direct_config(mut self: Pin<&mut Self>, config: AgentConfig) {
-        match save_config_file(&config, crate::pairing::config_path()) {
+        match save_config_file(&config, agent::pairing::config_path()) {
             Ok(()) => self.as_mut().emit_direct_config(&config),
             Err(e) => self.as_mut().config_saved(
                 false,
@@ -321,7 +321,7 @@ impl qobject::AgentBridge {
             tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
-                .map(|rt| rt.block_on(crate::direct::local_addresses()))
+                .map(|rt| rt.block_on(agent::direct::local_addresses()))
                 .unwrap_or_default()
         })
         .join()
@@ -341,7 +341,7 @@ impl qobject::AgentBridge {
             return;
         }
         let path_str = path.to_string();
-        match import_config_file(&path_str, crate::pairing::config_path()) {
+        match import_config_file(&path_str, agent::pairing::config_path()) {
             Ok(()) => {
                 log::info!("Successfully imported configuration from {:?}", path);
                 self.as_mut().import_completed(true, QString::from(""));
@@ -360,7 +360,7 @@ impl qobject::AgentBridge {
             return;
         }
 
-        let config = match load_config(crate::pairing::config_path()) {
+        let config = match load_config(agent::pairing::config_path()) {
             Ok(c) => c,
             Err(e) => {
                 log::error!("Failed to load config: {:?}", e);

@@ -34,7 +34,7 @@ build() {
   export CARGO_HOME="$srcdir/cargo-home"
   bash scripts/packaging/build-ffmpeg-static.sh "$srcdir/ffmpeg"
   export PKG_CONFIG_PATH="$srcdir/ffmpeg/lib/pkgconfig" QMAKE=/usr/bin/qmake6
-  cargo build --release --frozen -p agent --features static-ffmpeg
+  cargo build --release --frozen -p agent-app --features static-ffmpeg
   cargo build --release --frozen -p client-desktop --features static-ffmpeg
 }
 

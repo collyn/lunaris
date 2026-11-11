@@ -10,6 +10,7 @@ on:
       - 'server/**'
       - 'Dockerfile'
       - 'agent/**'
+      - 'agent-app/**'
       - 'client-qml/**'
       - 'client-desktop/**'
     tags:
@@ -427,7 +428,7 @@ jobs:
           # the MSVC runtime, so it runs on a clean Windows install.
           New-Item -ItemType Directory -Force -Path lunaris-agent
           Copy-Item target/release/agent.exe -Destination lunaris-agent/lunaris-agent.exe
-          & "${env:QT_ROOT_DIR}/bin/windeployqt.exe" --qmldir agent/qml --no-translations --no-opengl-sw --compiler-runtime lunaris-agent/lunaris-agent.exe
+          & "${env:QT_ROOT_DIR}/bin/windeployqt.exe" --qmldir agent-app/qml --no-translations --no-opengl-sw --compiler-runtime lunaris-agent/lunaris-agent.exe
           if ($LASTEXITCODE -ne 0) { throw "windeployqt failed" }
           Copy-Item "C:/vcpkg/installed/x64-windows/bin/*.dll" -Destination lunaris-agent/
           Copy-Item "C:/ffmpeg/bin/*.dll" -Destination lunaris-agent/

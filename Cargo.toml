@@ -2,6 +2,7 @@
 members = [
     "server",
     "agent",
+    "agent-app",
     "common",
     "client-desktop",
     "client-qml",

@@ -14,7 +14,7 @@ install -Dm755 "$BIN" "$DEST/usr/bin/$NAME"
 install -Dm644 "$HERE/$NAME.desktop" "$DEST/usr/share/applications/$NAME.desktop"
 case "$KIND" in
     agent)
-        install -Dm644 "$ROOT/agent/qml/icons/icon.png" "$DEST/usr/share/icons/hicolor/256x256/apps/$NAME.png"
+        install -Dm644 "$ROOT/agent-app/qml/icons/icon.png" "$DEST/usr/share/icons/hicolor/256x256/apps/$NAME.png"
         # Remote keyboard/mouse via /dev/uinput (same files as scripts/linux-host).
         install -Dm644 "$ROOT/scripts/linux-host/60-lunaris-input.rules" "$DEST/usr/lib/udev/rules.d/60-lunaris-input.rules"
         install -Dm644 "$ROOT/scripts/linux-host/60-lunaris.conf" "$DEST/usr/lib/modules-load.d/lunaris.conf"

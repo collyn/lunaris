@@ -12,7 +12,7 @@ path = "src/lib.rs"
 common = { path = "../common" }
 # "This computer": the agent configuration and addresses (the app runs the
 # agent itself as `lunaris agent`).
-agent = { path = "../agent", default-features = false }
+agent = { path = "../agent" }
 tokio = { version = "1.0", features = ["full"] }
 tokio-tungstenite = { version = "0.21", features = ["native-tls", "rustls-tls-native-roots"] }
 webrtc = "0.17.1"

@@ -68,7 +68,7 @@ build_ffmpeg() {
 
 build_binaries() {
     export PKG_CONFIG_PATH="$FFMPEG_PREFIX/lib/pkgconfig" QMAKE=/usr/bin/qmake6
-    cargo build --release --locked -p agent --features static-ffmpeg --target-dir "$TARGET"
+    cargo build --release --locked -p agent-app --features static-ffmpeg --target-dir "$TARGET"
     cargo build --release --locked -p client-desktop --features static-ffmpeg --target-dir "$TARGET"
     for b in agent client-desktop; do
         if ldd "$TARGET/release/$b" | grep -qE 'libav(codec|util)|libx264'; then
