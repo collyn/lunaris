@@ -157,6 +157,10 @@ fn linux_nvidia_cuda_present() -> bool {
 }
 
 fn handle_single_instance() -> bool {
+    // Development/testing: run a second, independent client.
+    if std::env::var_os("LUNARIS_ALLOW_SECOND_INSTANCE").is_some() {
+        return false;
+    }
     let args: Vec<String> = std::env::args().collect();
     let message = if args.len() >= 2 && args[1].starts_with("lunaris://") {
         format!("CONNECT {}\n", args[1])

@@ -638,6 +638,32 @@ function App() {
     }, 3000);
   };
 
+  // Remote control of `host` in the Lunaris desktop app (lunaris:// link),
+  // with this page's stream settings.
+  const openInDesktopApp = (host: Host) => {
+    const protocol = getBackendProtocol();
+    const serverHost = getBackendHost();
+    const rawRes = localStorage.getItem('lunaris_stream_res') || '1080p';
+    const res = rawRes === '720p' ? '1280x720' : rawRes === '540p' ? '960x540' : (rawRes.includes('x') ? rawRes : '1920x1080');
+    const params = new URLSearchParams({
+      host_id: host.id,
+      server: `${protocol.ws}//${serverHost}`,
+      token: token || '',
+      res,
+      fps: localStorage.getItem('lunaris_stream_fps') || '60',
+      bitrate: localStorage.getItem('lunaris_stream_bitrate') || '8000',
+      codec: localStorage.getItem('lunaris_stream_codec') || 'auto',
+      mouse_queue_limit: localStorage.getItem('lunaris_mouse_queue_limit') || '256',
+      host_name: host.name,
+      app_id: '0',
+      encoder: localStorage.getItem('lunaris_stream_encoder') || 'auto',
+      display: localStorage.getItem('lunaris_stream_display') || 'default',
+      virtual_display: String(localStorage.getItem('lunaris_stream_virtual_display') === 'true'),
+      input_protocol: localStorage.getItem('lunaris_input_protocol') || 'webrtc',
+    });
+    window.location.href = `lunaris://connect?${params.toString()}`;
+  };
+
   // Connect straight to a computer's desktop (app 0, the only one an agent
   // offers) in this browser.
   const connectToHost = (host: Host) => {
@@ -1179,6 +1205,20 @@ function App() {
                                       onClick={() => connectToHost(host)}
                                     >
                                       Connect
+                                    </button>
+                                  )}
+                                  {isOnline && (
+                                    <button
+                                      type="button"
+                                      className="host-action-btn"
+                                      title="Open in the Lunaris app"
+                                      aria-label="Open in the Lunaris app"
+                                      onClick={() => openInDesktopApp(host)}
+                                    >
+                                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                        <rect x="3" y="4" width="18" height="12" rx="1.5" />
+                                        <path d="M8 20h8M12 16v4" />
+                                      </svg>
                                     </button>
                                   )}
                                   <button
