@@ -1,15 +1,18 @@
 import QtQuick
 import QtQuick.Controls
 
+// Stream settings for one computer, shown as a page over the window (the
+// fields scroll; Cancel / Save stay at the bottom).
 Rectangle {
     id: settingsRoot
-    width: 480
-    height: 760
-    radius: Theme.radiusLg
-    color: Theme.live.surface
-    border.color: Theme.live.border
-    border.width: 1
+    color: Theme.live.bg
     visible: false
+    // Name of the computer being configured (page title).
+    property string hostName: ""
+
+    // Esc goes back like the Back button.
+    Keys.onEscapePressed: settingsRoot.close()
+    onVisibleChanged: if (visible) forceActiveFocus()
 
     // Same choices as the web client (StreamOptions).
     property var fpsPresets: StreamOptions.fps
@@ -152,20 +155,35 @@ Rectangle {
     // Subtle header background area highlight for premium look
     Rectangle {
         id: headerHighlight
-        width: parent.width - 2
+        width: parent.width
         height: 72
         anchors.top: parent.top
-        anchors.topMargin: 1
-        anchors.horizontalCenter: parent.horizontalCenter
-        radius: 15
-        color: Theme.live.ink(0.02)
-        
-        // Hide the rounded bottom corners of the header highlight to keep it top-only
-        Rectangle {
-            width: parent.width
-            height: 15
-            anchors.bottom: parent.bottom
-            color: Theme.live.ink(0.02)
+        color: Theme.live.surface
+
+        // Back to the computer list
+        Button {
+            id: backButton
+            anchors.left: parent.left
+            anchors.leftMargin: 16
+            anchors.verticalCenter: parent.verticalCenter
+            hoverEnabled: true
+            onClicked: settingsRoot.close()
+            Accessible.name: "Back"
+            contentItem: Text {
+                text: "←  Back"
+                color: backButton.hovered ? Theme.live.textStrong : Theme.live.text
+                font.pixelSize: 13
+                font.weight: Font.Medium
+                verticalAlignment: Text.AlignVCenter
+                horizontalAlignment: Text.AlignHCenter
+            }
+            background: Rectangle {
+                implicitWidth: 84
+                implicitHeight: 34
+                radius: Theme.radiusSm
+                color: backButton.hovered ? Theme.live.surface3 : "transparent"
+                border.color: Theme.live.border
+            }
         }
         
         // A thin separator line under the header
@@ -180,7 +198,7 @@ Rectangle {
     // Header
     Text {
         id: headerTitle
-        text: "Stream settings"
+        text: settingsRoot.hostName !== "" ? "Stream settings — " + settingsRoot.hostName : "Stream settings"
         font.pixelSize: 17
         font.weight: Font.DemiBold
         color: Theme.live.textStrong
@@ -200,13 +218,24 @@ Rectangle {
         anchors.topMargin: 6
     }
 
-    // Grid layout for fields
-    Grid {
-        anchors.top: headerSubtitle.bottom
+    // Fields, scrolling when the window is short
+    Flickable {
+        id: fieldsFlick
+        anchors.top: headerHighlight.bottom
         anchors.left: parent.left
         anchors.right: parent.right
-        anchors.bottom: buttonRow.top
-        anchors.margins: 32
+        anchors.bottom: footer.top
+        contentWidth: width
+        contentHeight: fieldsGrid.height + 56
+        clip: true
+        boundsBehavior: Flickable.StopAtBounds
+        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+    Grid {
+        id: fieldsGrid
+        y: 28
+        x: Math.max(24, (fieldsFlick.width - width) / 2)
+        width: 440
         columns: 2
         rowSpacing: 12
         columnSpacing: 20
@@ -834,12 +863,24 @@ Rectangle {
         }
     }
 
-    // Button Row
+    }
+
+    // Footer: Cancel / Save, always visible
+    Rectangle {
+        id: footer
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        height: 72
+        color: Theme.live.surface
+        Rectangle { anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; height: 1; color: Theme.live.ink(0.06) }
+    }
+
     Row {
         id: buttonRow
-        anchors.bottom: parent.bottom
+        anchors.verticalCenter: footer.verticalCenter
         anchors.right: parent.right
-        anchors.margins: 28
+        anchors.rightMargin: Math.max(24, (settingsRoot.width - fieldsGrid.width) / 2 - 20)
         spacing: 12
 
         Button {

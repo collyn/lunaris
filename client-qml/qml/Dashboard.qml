@@ -914,6 +914,7 @@ Rectangle {
                                                 dashboardRoot.configVirtualDisplay = false;
                                             }
                                             dashboardRoot.activeConfigHost = modelData;
+                                            settingsModal.hostName = modelData.name;
                                             settingsModal.setCurrentSettings(dashboardRoot.configRes, dashboardRoot.configFps, dashboardRoot.configCodec, dashboardRoot.configBitrate, dashboardRoot.configQueueLimit, dashboardRoot.configDisableCuda, dashboardRoot.configInputProtocol, dashboardRoot.configEncoder, dashboardRoot.configDisplay, dashboardRoot.configVirtualDisplay, dashboardRoot.configRenderBackend);
                                             // Fetch encoder/display capabilities from agent
                                             if (dashboardRoot.serverUrl && dashboardRoot.token && modelData.id) {
@@ -1423,9 +1424,12 @@ Rectangle {
     }
 
     // Settings Modal
+    // A full-window page (over the app's top bar too), not a dialog that a
+    // small window cuts off.
     Settings {
         id: settingsModal
-        anchors.centerIn: parent
+        parent: Overlay.overlay
+        anchors.fill: parent
         z: 1000
 
         onApplySettings: (res, fps, codec, bitrate, queueLimit, disableCuda, renderBackend, inputProtocol, encoder, displayId, virtualDisplay) => {
