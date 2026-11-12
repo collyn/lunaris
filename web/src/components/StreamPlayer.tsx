@@ -204,6 +204,8 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
 
   // Mobile gesture and keyboard refs
   const keyboardInputRef = useRef<HTMLInputElement>(null);
+  /** When a finger last touched the picture (performance.now()). */
+  const lastTouchAtRef = useRef(0);
   const viewportWrapperRef = useRef<HTMLDivElement>(null);
   const localCursorRef = useRef<HTMLDivElement>(null);
   const localCursorImageRef = useRef<HTMLImageElement>(null);
@@ -2898,6 +2900,18 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     const cursorKind = normalizeHostCursorKind(kind);
     hostCursorPosRef.current = { x, y, visible, kind: cursorKind, inWindowMoveSize };
 
+    // Touchpad on a phone: only the cursor drawn here (shaped like the
+    // host's) is shown, as with a mouse on a PC. When no finger is on the
+    // screen it follows the host's cursor, so the two don't drift apart.
+    if (touchModeRef.current === 'trackpad' && !isHardwareMouseActiveRef.current) {
+      if (cursorEl) cursorEl.style.display = 'none';
+      if (visible && performance.now() - lastTouchAtRef.current > 600) {
+        localCursorPosRef.current = { x, y };
+      }
+      updateVirtualCursorDOMRef.current();
+      return;
+    }
+
     if (
       !cursorEl
       || !video
@@ -3386,14 +3400,19 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     };
     const onStart = (e: TouchEvent) => {
       if (!accept(e)) return;
+      lastTouchAtRef.current = performance.now();
       isHardwareMouseActiveRef.current = false;
       gesturesRef.current?.start(points(e.touches));
     };
     const onMove = (e: TouchEvent) => {
-      if (accept(e)) gesturesRef.current?.move(points(e.touches));
+      if (!accept(e)) return;
+      lastTouchAtRef.current = performance.now();
+      gesturesRef.current?.move(points(e.touches));
     };
     const onEnd = (e: TouchEvent) => {
-      if (accept(e)) gesturesRef.current?.end(points(e.touches));
+      if (!accept(e)) return;
+      lastTouchAtRef.current = performance.now();
+      gesturesRef.current?.end(points(e.touches));
     };
     const onCancel = (e: TouchEvent) => {
       if (accept(e)) gesturesRef.current?.end(points(e.touches), true);
