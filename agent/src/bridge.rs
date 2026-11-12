@@ -1732,6 +1732,9 @@ fn handle_inbound_packet(
 
             injector.keyboard_key(key, is_press);
         }
+        InboundPacket::Text { text } => {
+            injector.type_text(&text);
+        }
         _ => {}
     }
 }

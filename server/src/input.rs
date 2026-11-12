@@ -317,11 +317,18 @@ impl InboundPacket {
                         flags: KeyFlags::empty(),
                     })
                 } else if ty == 1 {
-                    if buffer.remaining() < 1 {
+                    // Text (phone keyboards): u16 big-endian byte length, then UTF-8.
+                    if buffer.remaining() < 2 {
                         return None;
                     }
-                    let len = buffer.get_u8();
-                    let text = buffer.get_utf8_raw(len as usize).ok()?.to_owned();
+                    let len = buffer.get_u16() as usize;
+                    // The length is in bytes (get_utf8_raw counts characters).
+                    if buffer.remaining() < len {
+                        return None;
+                    }
+                    let mut raw = vec![0u8; len];
+                    buffer.get_u8_array(&mut raw);
+                    let text = String::from_utf8(raw).ok()?;
                     Some(InboundPacket::Text { text })
                 } else {
                     None

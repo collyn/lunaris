@@ -365,11 +365,18 @@ impl InboundPacket {
                         flags: KeyFlags::empty(),
                     })
                 } else if ty == 1 {
-                    if buffer.remaining() < 1 {
+                    // Text (phone keyboards): u16 big-endian byte length, then UTF-8.
+                    if buffer.remaining() < 2 {
                         return None;
                     }
-                    let len = buffer.get_u8();
-                    let text = buffer.get_utf8_raw(len as usize).ok()?.to_owned();
+                    let len = buffer.get_u16() as usize;
+                    // The length is in bytes (get_utf8_raw counts characters).
+                    if buffer.remaining() < len {
+                        return None;
+                    }
+                    let mut raw = vec![0u8; len];
+                    buffer.get_u8_array(&mut raw);
+                    let text = String::from_utf8(raw).ok()?;
                     Some(InboundPacket::Text { text })
                 } else {
                     None
@@ -434,5 +441,33 @@ impl InboundPacket {
         let num_str: String = value_str.chars().take_while(|c| c.is_ascii_digit()).collect();
 
         num_str.parse::<u32>().ok()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The web client's text event: type 1, u16 big-endian length, UTF-8.
+    fn text_packet(text: &str) -> Vec<u8> {
+        let mut v = vec![1u8];
+        v.extend_from_slice(&(text.len() as u16).to_be_bytes());
+        v.extend_from_slice(text.as_bytes());
+        v
+    }
+
+    #[test]
+    fn text_from_a_phone_keyboard() {
+        let packet = InboundPacket::deserialize(TransportChannel(TransportChannelId::KEYBOARD), &text_packet("việt"));
+        match packet {
+            Some(InboundPacket::Text { text }) => assert_eq!(text, "việt"),
+            other => panic!("unexpected {:?}", other.is_some()),
+        }
+    }
+
+    #[test]
+    fn short_text_packet_is_rejected() {
+        assert!(InboundPacket::deserialize(TransportChannel(TransportChannelId::KEYBOARD), &[1, 0]).is_none());
+        assert!(InboundPacket::deserialize(TransportChannel(TransportChannelId::KEYBOARD), &[1, 0, 9, b'a']).is_none());
     }
 }
