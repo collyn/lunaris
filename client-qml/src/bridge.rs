@@ -76,6 +76,9 @@ pub struct AppArgs {
 }
 
 pub static APP_ARGS: std::sync::OnceLock<AppArgs> = std::sync::OnceLock::new();
+/// Saved computers that answered the last check (`probe_peer`).
+static PEER_ONLINE: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, bool>>> =
+    std::sync::LazyLock::new(Default::default);
 pub static ACTIVE_CONFIG: std::sync::Mutex<Option<AppArgs>> = std::sync::Mutex::new(None);
 
 pub const RENDER_BACKEND_AUTO_GPU: &str = "auto_gpu";
@@ -1182,6 +1185,15 @@ pub mod qobject {
 
         #[qinvokable]
         fn save_direct_target(self: Pin<&mut StreamBridge>, address: QString, password: QString);
+
+        /// Checks in the background whether a saved computer ("host:port")
+        /// answers; `peer_online` gives the result.
+        #[qinvokable]
+        fn probe_peer(self: Pin<&mut StreamBridge>, address: QString);
+
+        /// 1 reachable, 0 not, -1 not checked yet.
+        #[qinvokable]
+        fn peer_online(self: Pin<&mut StreamBridge>, address: QString) -> i32;
 
         #[qinvokable]
         fn is_autostart_enabled(self: Pin<&mut StreamBridge>) -> bool;
@@ -2970,6 +2982,31 @@ impl qobject::StreamBridge {
 
     pub fn saved_direct_password(self: Pin<&mut Self>) -> QString {
         QString::from(&load_direct_target().map(|t| t.password).unwrap_or_default())
+    }
+
+    pub fn probe_peer(self: Pin<&mut Self>, address: QString) {
+        let address = address.to_string();
+        let mut rust_obj = self.rust_mut();
+        let rt = rust_obj.get_or_init_runtime();
+        rt.spawn(async move {
+            let ok = matches!(
+                tokio::time::timeout(
+                    std::time::Duration::from_millis(1500),
+                    tokio::net::TcpStream::connect(address.as_str()),
+                )
+                .await,
+                Ok(Ok(_))
+            );
+            PEER_ONLINE.lock().unwrap().insert(address, ok);
+        });
+    }
+
+    pub fn peer_online(self: Pin<&mut Self>, address: QString) -> i32 {
+        match PEER_ONLINE.lock().unwrap().get(&address.to_string()) {
+            Some(true) => 1,
+            Some(false) => 0,
+            None => -1,
+        }
     }
 
     pub fn save_direct_target(self: Pin<&mut Self>, address: QString, password: QString) {

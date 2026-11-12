@@ -513,6 +513,7 @@ ApplicationWindow {
 
         onCapabilitiesUpdated: (displaysJson, encodersJson, gpuInfo, hostOs) => {
             dashboardView.settingsModal.updateCapabilities(displaysJson, encodersJson);
+            homeView.peerCapabilities(displaysJson, encodersJson, hostOs);
         }
     }
 

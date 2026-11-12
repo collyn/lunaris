@@ -350,12 +350,80 @@ Rectangle {
         var name = (peer && peer.name) ? peer.name : displayAddress(addr);
         setStatus(I18n.t("Connecting to %1…").arg(name), false);
         bridge.saveDirectTarget(addr, remember ? password : "");
+        var s = streamSettingsFor(peer);
         home.startSessionRequested(
             "ws://" + addr, password, "direct", name, 0,
-            home.prefs.res, home.prefs.fps, home.prefs.codec, home.prefs.bitrate, 256,
-            home.prefs.renderBackend === "software", home.prefs.renderBackend,
-            "webrtc", "auto", "default", false);
+            s.res, s.fps, s.codec, s.bitrate, s.queueLimit,
+            s.renderBackend === "software", s.renderBackend,
+            s.inputProtocol, s.encoder, s.displayId, s.virtualDisplay);
     }
+
+    // Stream settings for a saved computer: its own (gear on the card) or
+    // the defaults from Settings > Display.
+    function streamSettingsFor(peer) {
+        var d = {
+            res: home.prefs.res, fps: home.prefs.fps, codec: home.prefs.codec,
+            bitrate: home.prefs.bitrate, queueLimit: 256, renderBackend: home.prefs.renderBackend,
+            inputProtocol: "webrtc", encoder: "auto", displayId: "default", virtualDisplay: false
+        };
+        return Object.assign(d, (peer && peer.settings) || {});
+    }
+
+    // Files / stream settings of a saved computer need its password: ask
+    // for it first when it isn't saved.
+    function withPassword(address, action) {
+        var peer = findPeer(address);
+        if (peer && peer.password) action(peer.password);
+        else passwordDialog.openFor(address, action);
+    }
+
+    function openPeerFiles(address) {
+        withPassword(address, function (password) {
+            var peer = findPeer(address);
+            fileManager.openFor("ws://" + address, password, "direct",
+                (peer && peer.name) ? peer.name : displayAddress(address));
+        });
+    }
+
+    function openPeerSettings(address) {
+        withPassword(address, function (password) {
+            var peer = findPeer(address);
+            var s = streamSettingsFor(peer);
+            peerSettings.address = address;
+            peerSettings.password = password;
+            peerSettings.hostName = (peer && peer.name) ? peer.name : displayAddress(address);
+            peerSettings.setCurrentSettings(s.res, s.fps, s.codec, s.bitrate, s.queueLimit,
+                s.renderBackend === "software", s.inputProtocol, s.encoder, s.displayId,
+                s.virtualDisplay, s.renderBackend);
+            bridge.fetchCapabilities("ws://" + address, password, "direct");
+            peerSettings.open();
+        });
+    }
+
+    // From main.qml: what the computer whose settings are open can do.
+    function peerCapabilities(displaysJson, encodersJson, hostOs) {
+        if (!peerSettings.visible || peerSettings.address === "") return;
+        peerSettings.updateCapabilities(displaysJson, encodersJson);
+        if (hostOs) updatePeer(peerSettings.address, { os: hostOs });
+    }
+
+    // Online status of the saved computers (a TCP check of their port).
+    property int onlineTick: 0
+    function peerOnline(address) {
+        onlineTick; // re-evaluate when the checks come back
+        return bridge.peerOnline(address);
+    }
+    Timer {
+        interval: 10000
+        running: home.visible && home.peerTab !== "server"
+        repeat: true
+        triggeredOnStart: true
+        onTriggered: {
+            for (var i = 0; i < home.peers.length; i++) bridge.probePeer(home.peers[i].address);
+            onlineRefresh.restart();
+        }
+    }
+    Timer { id: onlineRefresh; interval: 1700; onTriggered: home.onlineTick++ }
 
     function copyText(text) { clipboardHelper.copy(text); }
 
@@ -1165,6 +1233,15 @@ Rectangle {
             anchors.leftMargin: 12
             anchors.rightMargin: 6
             spacing: 6
+            Rectangle {
+                readonly property int online: home.peerOnline(card.peer.address || "")
+                visible: online >= 0
+                width: 8; height: 8; radius: 4
+                color: online === 1 ? "#22c55e" : Theme.textMuted
+                ToolTip.visible: dotMa.containsMouse
+                ToolTip.text: online === 1 ? I18n.t("Online") : I18n.t("Offline")
+                MouseArea { id: dotMa; anchors.fill: parent; hoverEnabled: true }
+            }
             Text {
                 Layout.fillWidth: true
                 text: home.displayAddress(card.peer.address || "")
@@ -1172,6 +1249,16 @@ Rectangle {
                 font.pixelSize: 13
                 font.weight: Font.DemiBold
                 elide: Text.ElideRight
+            }
+            IconButton {
+                iconName: "folder"
+                tip: I18n.t("Files")
+                onClicked: home.openPeerFiles(card.peer.address)
+            }
+            IconButton {
+                iconName: "settings"
+                tip: I18n.t("Stream settings")
+                onClicked: home.openPeerSettings(card.peer.address)
             }
             IconButton {
                 id: moreBtn
@@ -1188,6 +1275,8 @@ Rectangle {
                 text: card.peer.favorite ? I18n.t("Remove from favorites") : I18n.t("Add to favorites")
                 onTriggered: home.updatePeer(card.peer.address, { favorite: !card.peer.favorite })
             }
+            MenuItem { text: I18n.t("Files"); onTriggered: home.openPeerFiles(card.peer.address) }
+            MenuItem { text: I18n.t("Stream settings"); onTriggered: home.openPeerSettings(card.peer.address) }
             MenuItem { text: I18n.t("Rename…"); onTriggered: renameDialog.openFor(card.peer) }
             MenuItem {
                 text: I18n.t("Forget password")
@@ -1217,8 +1306,11 @@ Rectangle {
     DialogFrame {
         id: passwordDialog
         property string address: ""
-        function openFor(addr) {
+        // What to do with the password (connect when unset).
+        property var action: null
+        function openFor(addr, then) {
             address = addr;
+            action = then || null;
             pwField.text = "";
             rememberBox.checked = true;
             open();
@@ -1227,7 +1319,13 @@ Rectangle {
         function accept() {
             if (pwField.text.trim() === "") return;
             close();
-            home.connectTo(address, pwField.text.trim(), rememberBox.checked);
+            var pw = pwField.text.trim();
+            if (action) {
+                if (rememberBox.checked) home.rememberPeer(address, pw, true);
+                action(pw);
+            } else {
+                home.connectTo(address, pw, rememberBox.checked);
+            }
         }
         contentItem: ColumnLayout {
             spacing: 12
@@ -1308,6 +1406,25 @@ Rectangle {
                 SecondaryButton { text: I18n.t("Cancel"); onClicked: customPasswordDialog.close() }
                 PrimaryButton { text: I18n.t("Save"); onClicked: customPasswordDialog.accept() }
             }
+        }
+    }
+
+    // Stream settings of a saved computer (gear on its card), kept with it.
+    Settings {
+        id: peerSettings
+        property string address: ""
+        property string password: ""
+        anchors.fill: parent
+        z: 1000
+        onApplySettings: (res, fps, codec, bitrate, queueLimit, disableCuda, renderBackend, inputProtocol, encoder, displayId, virtualDisplay) => {
+            home.updatePeer(peerSettings.address, { settings: {
+                res: res, fps: fps, codec: codec, bitrate: bitrate, queueLimit: queueLimit,
+                renderBackend: renderBackend, inputProtocol: inputProtocol, encoder: encoder,
+                displayId: displayId, virtualDisplay: virtualDisplay
+            } });
+        }
+        onConfigureVirtualDisplay: (enable, refreshHz) => {
+            bridge.configureVirtualDisplay("ws://" + peerSettings.address, peerSettings.password, "direct", enable, 1920, 1080, refreshHz);
         }
     }
 }
