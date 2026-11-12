@@ -10,7 +10,7 @@
 //! (files.rs).
 
 use std::sync::{mpsc as std_mpsc, Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 use serde_json::json;
@@ -115,7 +115,10 @@ fn clipboard_thread(set_rx: std_mpsc::Receiver<String>, changed_tx: tokio::sync:
             }
             Err(std_mpsc::RecvTimeoutError::Timeout) => {
                 if let Ok(text) = clipboard.get_text() {
-                    if text != last && !text.is_empty() && text.len() <= MAX_CLIPBOARD_BYTES {
+                    if text != last && is_own_clipboard(&text) {
+                        // Put there to type text (type_text below), not copied.
+                        last = text;
+                    } else if text != last && !text.is_empty() && text.len() <= MAX_CLIPBOARD_BYTES {
                         last = text.clone();
                         if changed_tx.send(text).is_err() {
                             return;
@@ -125,5 +128,136 @@ fn clipboard_thread(set_rx: std_mpsc::Receiver<String>, changed_tx: tokio::sync:
             }
             Err(std_mpsc::RecvTimeoutError::Disconnected) => return,
         }
+    }
+}
+
+// ------------------------------------------------------------- typing text
+
+/// Text from the client's keyboard (phones send characters, not keys). On
+/// Wayland the input device can only press keys of the compositor's layout,
+/// so characters it doesn't have (Vietnamese, …) are pasted: put on the
+/// clipboard, Ctrl+V, and the previous clipboard is put back once typing
+/// pauses. Everything else goes through the injector.
+pub fn type_text(injector: &lunaris_media::input::InputInjector, text: &str) {
+    let wayland = std::env::var("XDG_SESSION_TYPE").unwrap_or_default() == "wayland";
+    if !wayland || text.is_ascii() {
+        injector.type_text(text);
+        return;
+    }
+    // ASCII runs as keys, the rest pasted, in order.
+    let mut run = String::new();
+    let mut run_ascii = true;
+    for ch in text.chars() {
+        if !run.is_empty() && ch.is_ascii() != run_ascii {
+            type_run(injector, &run, run_ascii);
+            run.clear();
+        }
+        run_ascii = ch.is_ascii();
+        run.push(ch);
+    }
+    if !run.is_empty() {
+        type_run(injector, &run, run_ascii);
+    }
+}
+
+fn type_run(injector: &lunaris_media::input::InputInjector, run: &str, ascii: bool) {
+    if ascii {
+        injector.type_text(run);
+    } else if !paste(injector, run) {
+        injector.type_text(run);
+    }
+}
+
+/// Clipboard contents the agent set itself (to paste, or restored after),
+/// which the clipboard thread must not report to the client.
+static OWN_CLIPBOARD: Mutex<Vec<(String, Instant)>> = Mutex::new(Vec::new());
+const OWN_CLIPBOARD_FOR: Duration = Duration::from_secs(5);
+
+fn note_own_clipboard(text: &str) {
+    if let Ok(mut own) = OWN_CLIPBOARD.lock() {
+        own.retain(|(_, at)| at.elapsed() < OWN_CLIPBOARD_FOR);
+        own.push((text.to_string(), Instant::now()));
+    }
+}
+
+fn is_own_clipboard(text: &str) -> bool {
+    OWN_CLIPBOARD
+        .lock()
+        .map(|own| own.iter().any(|(t, at)| t == text && at.elapsed() < OWN_CLIPBOARD_FOR))
+        .unwrap_or(false)
+}
+
+struct Paster {
+    clipboard: arboard::Clipboard,
+    /// What was on the clipboard before typing started (put back later).
+    saved: Option<String>,
+    last_paste: Instant,
+}
+
+static PASTER: Mutex<Option<Paster>> = Mutex::new(None);
+/// Puts the clipboard back this long after the last paste.
+const RESTORE_AFTER: Duration = Duration::from_millis(700);
+
+fn paste(injector: &lunaris_media::input::InputInjector, text: &str) -> bool {
+    let Ok(mut guard) = PASTER.lock() else { return false };
+    if guard.is_none() {
+        match arboard::Clipboard::new() {
+            Ok(clipboard) => {
+                *guard = Some(Paster { clipboard, saved: None, last_paste: Instant::now() });
+                spawn_clipboard_restorer();
+            }
+            Err(e) => {
+                warn!("Cannot paste typed text: clipboard unavailable: {}", e);
+                return false;
+            }
+        }
+    }
+    let p = guard.as_mut().unwrap();
+    if p.saved.is_none() {
+        p.saved = Some(p.clipboard.get_text().unwrap_or_default());
+    }
+    note_own_clipboard(text);
+    if let Err(e) = p.clipboard.set_text(text.to_string()) {
+        warn!("Cannot paste typed text: {}", e);
+        return false;
+    }
+    p.last_paste = Instant::now();
+    drop(guard);
+    // Let the clipboard reach the compositor before the app asks for it.
+    std::thread::sleep(Duration::from_millis(30));
+    injector.keyboard_key(17, true); // Ctrl
+    injector.keyboard_key(86, true); // V
+    injector.keyboard_key(86, false);
+    injector.keyboard_key(17, false);
+    injector.flush();
+    true
+}
+
+fn spawn_clipboard_restorer() {
+    let _ = std::thread::Builder::new().name("lunaris-paste-restore".into()).spawn(|| loop {
+        std::thread::sleep(Duration::from_millis(200));
+        let Ok(mut guard) = PASTER.lock() else { return };
+        let Some(p) = guard.as_mut() else { return };
+        if p.saved.is_some() && p.last_paste.elapsed() >= RESTORE_AFTER {
+            let saved = p.saved.take().unwrap_or_default();
+            note_own_clipboard(&saved);
+            if saved.is_empty() {
+                let _ = p.clipboard.clear();
+            } else if let Err(e) = p.clipboard.set_text(saved) {
+                warn!("Could not put the clipboard back after typing: {}", e);
+            }
+        }
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn own_clipboard_text_is_recognised() {
+        note_own_clipboard("ệ");
+        assert!(is_own_clipboard("ệ"));
+        assert!(!is_own_clipboard("something the user copied"));
     }
 }
