@@ -3497,20 +3497,46 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   // keyboard commits it (so Vietnamese Telex/VNI and other input methods
   // compose properly); the field keeps two placeholder characters so the
   // delete key still reports deletions when nothing was typed.
+  // The latest senders, for listeners attached once (re-attaching them on
+  // every render reset the field mid-word, which dropped what the phone's
+  // keyboard was composing).
+  const typeRemoteRef = useRef(typeRemote);
+  typeRemoteRef.current = typeRemote;
+  const pressKeyRemoteRef = useRef(pressKeyRemote);
+  pressKeyRemoteRef.current = pressKeyRemote;
+
   useEffect(() => {
     const el = keyboardInputRef.current;
     if (!el) return;
     const FILL = '  ';
     let composing = false;
+    const typeRemote = (text: string) => typeRemoteRef.current(text);
+    const pressKeyRemote = (vk: number) => pressKeyRemoteRef.current(vk);
     const reset = () => {
+      if (composing) return;
       el.value = FILL;
       try { el.setSelectionRange(FILL.length, FILL.length); } catch { /* not focused */ }
     };
     reset();
-    const onCompositionStart = () => { composing = true; };
+    // What of the word being composed was already sent: the remote side
+    // shows each letter right away (like RustDesk), corrected as the
+    // keyboard changes the word (Telex: v, vi, vie, viê, việt).
+    let sent = '';
+    const follow = (now: string) => {
+      const a = [...sent];
+      const b = [...now];
+      let same = 0;
+      while (same < a.length && same < b.length && a[same] === b[same]) same++;
+      for (let i = same; i < a.length; i++) pressKeyRemote(8);
+      if (same < b.length) typeRemote(b.slice(same).join(''));
+      sent = now;
+    };
+    const onCompositionStart = () => { composing = true; sent = ''; };
+    const onCompositionUpdate = (e: CompositionEvent) => follow(e.data ?? '');
     const onCompositionEnd = (e: CompositionEvent) => {
+      follow(e.data ?? '');
+      sent = '';
       composing = false;
-      if (e.data) typeRemote(e.data);
       reset();
     };
     const onInput = (e: Event) => {
@@ -3546,16 +3572,18 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       }
     };
     el.addEventListener('compositionstart', onCompositionStart);
+    el.addEventListener('compositionupdate', onCompositionUpdate);
     el.addEventListener('compositionend', onCompositionEnd);
     el.addEventListener('input', onInput);
     el.addEventListener('keydown', onKeyDown);
     return () => {
       el.removeEventListener('compositionstart', onCompositionStart);
+      el.removeEventListener('compositionupdate', onCompositionUpdate);
       el.removeEventListener('compositionend', onCompositionEnd);
       el.removeEventListener('input', onInput);
       el.removeEventListener('keydown', onKeyDown);
     };
-  });
+  }, [status]);
 
   // Keep the keys bar just above the phone's on-screen keyboard.
   const [keysBarBottom, setKeysBarBottom] = useState(0);
