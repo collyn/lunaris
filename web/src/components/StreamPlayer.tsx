@@ -5,6 +5,14 @@ import { t } from '../i18n';
 import { WebShare, readClipboardSync, readFileTransfer } from '../share';
 import { GamepadSender } from '../gamepad';
 import FileManager from './FileManager';
+import { TouchGestures, type GestureActions, type TouchPoint } from '../touchGestures';
+
+/** Windows virtual-key codes for the phone keys bar and keyboard keys. */
+const PHONE_KEY_CODES: Record<string, number> = {
+  Backspace: 8, Tab: 9, Enter: 13, Escape: 27, PageUp: 33, PageDown: 34, End: 35, Home: 36,
+  ArrowLeft: 37, ArrowUp: 38, ArrowRight: 39, ArrowDown: 40, Insert: 45, Delete: 46,
+  F1: 112, F2: 113, F3: 114, F4: 115, F5: 116, F6: 117, F7: 118, F8: 119, F9: 120, F10: 121, F11: 122, F12: 123,
+};
 
 const getBackendHost = () => {
   const savedHost = localStorage.getItem('lunaris_server_host');
@@ -196,23 +204,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
 
   // Mobile gesture and keyboard refs
   const keyboardInputRef = useRef<HTMLInputElement>(null);
-  const initialTouchDistanceRef = useRef<number>(0);
-  const initialZoomScaleRef = useRef<number>(1);
-  const initialZoomPanRef = useRef<{ x: number, y: number }>({ x: 0, y: 0 });
-  const initialTouchMidpointRef = useRef<{ x: number, y: number }>({ x: 0, y: 0 });
-  const touchStartPosRef = useRef<{ x: number, y: number }>({ x: 0, y: 0 });
-  const touchStartTimeRef = useRef<number>(0);
-  const lastTouchTapTimeRef = useRef<number>(0);
-  const isDraggingRef = useRef<boolean>(false);
   const viewportWrapperRef = useRef<HTMLDivElement>(null);
-  const touchStartInitialPosRef = useRef<{ x: number, y: number }>({ x: 0, y: 0 });
-  const longPressTimerRef = useRef<any | null>(null);
-  const longPressTriggeredRef = useRef<boolean>(false);
-  const clickUpTimerRef = useRef<any | null>(null);
-  const wasMultiTouchRef = useRef<boolean>(false);
-  const isDirectClickPendingRef = useRef<boolean>(false);
-  const twoFingerTouchStartTimeRef = useRef<number>(0);
-  const isTwoFingerTapPendingRef = useRef<boolean>(false);
   const localCursorRef = useRef<HTMLDivElement>(null);
   const localCursorImageRef = useRef<HTMLImageElement>(null);
   const localCursorImageMetricsRef = useRef<HostCursorImageMetrics | null>(null);
@@ -231,8 +223,6 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   });
   const isHardwareMouseActiveRef = useRef<boolean>(false);
   const localCursorPosRef = useRef<{ x: number, y: number }>({ x: 960, y: 540 });
-  const initialLocalCursorPosRef = useRef<{ x: number, y: number }>({ x: 960, y: 540 });
-  const hasCenteredThisTouchRef = useRef<boolean>(false);
   const mouseAccumulatorXRef = useRef<number>(0);
   const mouseAccumulatorYRef = useRef<number>(0);
   const latestAbsoluteMousePosRef = useRef<{ clientX: number, clientY: number } | null>(null);
@@ -594,7 +584,12 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
   const [isHeaderVisible, setIsHeaderVisible] = useState<boolean>(true);
   const [isHeaderPinned, setIsHeaderPinned] = useState<boolean>(() => localStorage.getItem('lunaris_header_pinned') === 'true');
-  const [showStats, setShowStats] = useState<boolean>(() => localStorage.getItem('lunaris_show_stats') !== 'false');
+  // Stats are on by default, except on phones where they would cover the picture.
+  const [showStats, setShowStats] = useState<boolean>(() => {
+    const stored = localStorage.getItem('lunaris_show_stats');
+    if (stored !== null) return stored !== 'false';
+    return !(window.matchMedia?.('(pointer: coarse)').matches && Math.min(window.innerWidth, window.innerHeight) < 600);
+  });
 
   // How the picture fits the window (Display settings): 'fit' keeps the whole
   // picture, 'fill' covers the window (edges cropped), 'stretch' ignores the
@@ -3134,19 +3129,6 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   }, []);
 
   // Mobile Touch Helpers & Handlers
-  const getDistance = (t1: React.Touch | Touch, t2: React.Touch | Touch) => {
-    const dx = t1.clientX - t2.clientX;
-    const dy = t1.clientY - t2.clientY;
-    return Math.sqrt(dx * dx + dy * dy);
-  };
-
-  const getMidpoint = (t1: React.Touch | Touch, t2: React.Touch | Touch) => {
-    return {
-      x: (t1.clientX + t2.clientX) / 2,
-      y: (t1.clientY + t2.clientY) / 2
-    };
-  };
-
   const sendTouchAbsolutePos = (clientX: number, clientY: number) => {
     const video = videoRef.current;
     const activeVideo = getActiveVideoElement();
@@ -3222,652 +3204,356 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     }
   };
 
+  // ---- Touch control (touchGestures.ts, like RustDesk's mobile mouse) ----
+  // Zoom as last rendered (the element's on-screen box matches it) and as
+  // last requested by a gesture (state updates land on the next render).
+  const renderedZoomRef = useRef({ scale: 1, pan: { x: 0, y: 0 } });
+  const viewZoomRef = useRef({ scale: 1, pan: { x: 0, y: 0 } });
+  renderedZoomRef.current = { scale: zoomScale, pan: zoomPan };
+  viewZoomRef.current = { scale: zoomScale, pan: zoomPan };
+  const pinchStartRef = useRef<{ scale: number; pan: { x: number; y: number }; mid: { x: number; y: number } } | null>(null);
+  const touchScrollRef = useRef({ x: 0, y: 0 });
+
+  /** The picture's layout without zoom, in screen pixels. */
+  const touchLayout = () => {
+    const video = videoRef.current;
+    const wrapper = viewportWrapperRef.current;
+    if (!video || !wrapper) return null;
+    const rect = video.getBoundingClientRect();
+    const r = renderedZoomRef.current;
+    if (rect.width <= 0 || rect.height <= 0 || r.scale <= 0) return null;
+    const activeVideo = getActiveVideoElement();
+    const vidW = activeVideo?.videoWidth && activeVideo.videoWidth > 0 ? activeVideo.videoWidth : (video as any).width || 1920;
+    const vidH = activeVideo?.videoHeight && activeVideo.videoHeight > 0 ? activeVideo.videoHeight : (video as any).height || 1080;
+    const baseW = rect.width / r.scale;
+    const baseH = rect.height / r.scale;
+    return {
+      originX: rect.left - r.pan.x,
+      originY: rect.top - r.pan.y,
+      box: fitVideoBox(baseW, baseH, vidW, vidH),
+      vidW,
+      vidH,
+      wrapper: wrapper.getBoundingClientRect(),
+    };
+  };
+
+  /** Sets the zoom, keeping the picture over the viewport. */
+  const setTouchView = (scale: number, pan: { x: number; y: number }) => {
+    const L = touchLayout();
+    if (!L || scale <= 1) {
+      viewZoomRef.current = { scale: 1, pan: { x: 0, y: 0 } };
+      setZoomScale(1);
+      setZoomPan({ x: 0, y: 0 });
+      return;
+    }
+    const clampAxis = (value: number, origin: number, start: number, size: number, viewLo: number, viewHi: number) => {
+      // Picture edges on screen: origin + pan + scale * start ... + scale * size.
+      const a = viewLo - origin - scale * start;
+      const b = viewHi - scale * size - origin - scale * start;
+      return Math.max(Math.min(a, b), Math.min(Math.max(a, b), value));
+    };
+    const clamped = {
+      x: clampAxis(pan.x, L.originX, L.box.x, L.box.w, L.wrapper.left, L.wrapper.right),
+      y: clampAxis(pan.y, L.originY, L.box.y, L.box.h, L.wrapper.top, L.wrapper.bottom),
+    };
+    viewZoomRef.current = { scale, pan: clamped };
+    setZoomScale(scale);
+    setZoomPan(clamped);
+  };
+
+  const sendMouseAbsoluteNorm = (xNorm: number, yNorm: number) => {
+    const channel = channelsRef.current["mouse_absolute"];
+    if (!channel || channel.readyState !== "open") return;
+    const buffer = new ArrayBuffer(13);
+    const view = new DataView(buffer);
+    view.setUint8(0, 1); // Type 1: MousePosition
+    view.setInt16(1, Math.round(Math.max(0, Math.min(1, xNorm)) * 4096), false);
+    view.setInt16(3, Math.round(Math.max(0, Math.min(1, yNorm)) * 4096), false);
+    view.setInt16(5, 4096, false);
+    view.setInt16(7, 4096, false);
+    view.setUint32(9, (mouseSeqRef.current++) >>> 0, false);
+    channel.send(buffer);
+  };
+
+  const sendScrollSteps = (dx: number, dy: number) => {
+    const channel = channelsRef.current["mouse_reliable"];
+    if (!channel || channel.readyState !== "open" || (dx === 0 && dy === 0)) return;
+    const buffer = new ArrayBuffer(3);
+    const view = new DataView(buffer);
+    view.setUint8(0, 4); // Type 4: Scroll
+    view.setInt8(1, Math.max(-127, Math.min(127, dx)));
+    view.setInt8(2, Math.max(-127, Math.min(127, dy)));
+    channel.send(buffer);
+  };
+
+  const touchActions: GestureActions = {
+    moveBy: (dx, dy) => {
+      const L = touchLayout();
+      if (!L) return;
+      const z = viewZoomRef.current;
+      // The cursor moves as far as the finger on the picture, a bit
+      // further on fast swipes.
+      const speed = Math.hypot(dx, dy);
+      const gain = speed > 6 ? Math.min(2, 1 + (speed - 6) * 0.05) : 1;
+      const hostPerPx = L.vidW / (z.scale * L.box.w);
+      const cur = localCursorPosRef.current;
+      const x = Math.max(0, Math.min(L.vidW - 1, cur.x + dx * gain * hostPerPx));
+      const y = Math.max(0, Math.min(L.vidH - 1, cur.y + dy * gain * hostPerPx));
+      localCursorPosRef.current = { x, y };
+      sendMouseAbsoluteNorm(x / L.vidW, y / L.vidH);
+      if (z.scale > 1) {
+        // Zoomed in: the view follows the cursor when it nears an edge.
+        const margin = 48;
+        const sx = L.originX + z.pan.x + z.scale * (L.box.x + (x / L.vidW) * L.box.w);
+        const sy = L.originY + z.pan.y + z.scale * (L.box.y + (y / L.vidH) * L.box.h);
+        let px = z.pan.x;
+        let py = z.pan.y;
+        if (sx < L.wrapper.left + margin) px += L.wrapper.left + margin - sx;
+        else if (sx > L.wrapper.right - margin) px -= sx - (L.wrapper.right - margin);
+        if (sy < L.wrapper.top + margin) py += L.wrapper.top + margin - sy;
+        else if (sy > L.wrapper.bottom - margin) py -= sy - (L.wrapper.bottom - margin);
+        if (px !== z.pan.x || py !== z.pan.y) setTouchView(z.scale, { x: px, y: py });
+      }
+      updateVirtualCursorDOM();
+    },
+    moveTo: (x, y) => sendTouchAbsolutePos(x, y),
+    button: (button, down) => sendMouseClickAction(button, down),
+    scroll: (dx, dy) => {
+      // A notch per 30 px of finger travel; the content follows the fingers.
+      const acc = touchScrollRef.current;
+      acc.x -= dx;
+      acc.y += dy;
+      const sx = Math.trunc(acc.x / 30);
+      const sy = Math.trunc(acc.y / 30);
+      acc.x -= sx * 30;
+      acc.y -= sy * 30;
+      sendScrollSteps(sx, sy);
+    },
+    pan: (dx, dy) => {
+      const z = viewZoomRef.current;
+      if (z.scale > 1) setTouchView(z.scale, { x: z.pan.x + dx, y: z.pan.y + dy });
+    },
+    pinchStart: (mid) => {
+      const z = viewZoomRef.current;
+      pinchStartRef.current = { scale: z.scale, pan: { ...z.pan }, mid };
+    },
+    pinch: (ratio, midNow) => {
+      const start = pinchStartRef.current;
+      const L = touchLayout();
+      if (!start || !L) return;
+      const scale = Math.max(1, Math.min(5, start.scale * ratio));
+      // The picture point under the fingers when the pinch began stays
+      // under them (and follows them as they move).
+      const lx = (start.mid.x - L.originX - start.pan.x) / start.scale;
+      const ly = (start.mid.y - L.originY - start.pan.y) / start.scale;
+      setTouchView(scale, { x: midNow.x - L.originX - scale * lx, y: midNow.y - L.originY - scale * ly });
+    },
+    pinchEnd: () => { pinchStartRef.current = null; },
+    haptic: (ms) => { try { navigator.vibrate?.(ms); } catch { /* not supported */ } },
+  };
+  const touchActionsRef = useRef(touchActions);
+  touchActionsRef.current = touchActions;
+  const gesturesRef = useRef<TouchGestures | null>(null);
+  if (!gesturesRef.current) {
+    // Calls through the ref so the gestures always use this render's helpers.
+    const forward = {} as GestureActions;
+    (Object.keys(touchActions) as (keyof GestureActions)[]).forEach((k) => {
+      (forward as any)[k] = (...args: unknown[]) => (touchActionsRef.current as any)[k](...args);
+    });
+    gesturesRef.current = new TouchGestures(touchMode, forward);
+  }
+
+  useEffect(() => {
+    const g = gesturesRef.current;
+    if (!g) return;
+    g.reset();
+    g.mode = touchMode;
+  }, [touchMode]);
+
   useEffect(() => {
     const wrapper = viewportWrapperRef.current;
     if (!wrapper) return;
 
-    const bypassSelectors = '.stream-header-bar, .stream-header-pull-tab, .mobile-footer-bar, .mobile-footer-pull-tab, .mobile-controls-drawer, .stream-settings-overlay';
-
-    const onTouchStart = (e: TouchEvent) => {
-      if (e.target && (e.target as HTMLElement).closest(bypassSelectors)) {
-        return; // Allow button clicks inside menu/header to propagate normally
-      }
-      handleTouchStart(e as unknown as React.TouchEvent<HTMLDivElement>);
+    const bypassSelectors = '.stream-header-bar, .stream-header-pull-tab, .mobile-footer-bar, .mobile-footer-pull-tab, .mobile-controls-drawer, .stream-settings-overlay, .mobile-keys-bar';
+    const points = (list: TouchList): TouchPoint[] =>
+      Array.from(list).map((t) => ({ id: t.identifier, x: t.clientX, y: t.clientY }));
+    const accept = (e: TouchEvent) => {
+      if (e.target && (e.target as HTMLElement).closest(bypassSelectors)) return false;
+      if (status !== "Streaming") return false;
+      // No emulated mouse events, page scrolling or browser zoom.
+      e.preventDefault();
+      return true;
+    };
+    const onStart = (e: TouchEvent) => {
+      if (!accept(e)) return;
+      isHardwareMouseActiveRef.current = false;
+      gesturesRef.current?.start(points(e.touches));
+    };
+    const onMove = (e: TouchEvent) => {
+      if (accept(e)) gesturesRef.current?.move(points(e.touches));
+    };
+    const onEnd = (e: TouchEvent) => {
+      if (accept(e)) gesturesRef.current?.end(points(e.touches));
+    };
+    const onCancel = (e: TouchEvent) => {
+      if (accept(e)) gesturesRef.current?.end(points(e.touches), true);
     };
 
-    const onTouchMove = (e: TouchEvent) => {
-      if (e.target && (e.target as HTMLElement).closest(bypassSelectors)) {
-        return;
-      }
-      handleTouchMove(e as unknown as React.TouchEvent<HTMLDivElement>);
-    };
-
-    const onTouchEnd = (e: TouchEvent) => {
-      if (e.target && (e.target as HTMLElement).closest(bypassSelectors)) {
-        return;
-      }
-      handleTouchEnd(e as unknown as React.TouchEvent<HTMLDivElement>);
-    };
-
-    wrapper.addEventListener('touchstart', onTouchStart, { passive: false });
-    wrapper.addEventListener('touchmove', onTouchMove, { passive: false });
-    wrapper.addEventListener('touchend', onTouchEnd, { passive: false });
+    wrapper.addEventListener('touchstart', onStart, { passive: false });
+    wrapper.addEventListener('touchmove', onMove, { passive: false });
+    wrapper.addEventListener('touchend', onEnd, { passive: false });
+    wrapper.addEventListener('touchcancel', onCancel, { passive: false });
 
     return () => {
-      wrapper.removeEventListener('touchstart', onTouchStart);
-      wrapper.removeEventListener('touchmove', onTouchMove);
-      wrapper.removeEventListener('touchend', onTouchEnd);
+      wrapper.removeEventListener('touchstart', onStart);
+      wrapper.removeEventListener('touchmove', onMove);
+      wrapper.removeEventListener('touchend', onEnd);
+      wrapper.removeEventListener('touchcancel', onCancel);
+      gesturesRef.current?.reset();
     };
-  }, [status, touchMode, zoomScale, zoomPan, useTouchOffset]);
-
-  const handleTouchStart = (e: React.TouchEvent<HTMLDivElement>) => {
-    if (status !== "Streaming") return;
-    
-    if (isHardwareMouseActiveRef.current) {
-      isHardwareMouseActiveRef.current = false;
-    }
-    
-    // Prevent browser from emulating mouse events (mousemove, mousedown, click)
-    e.preventDefault();
-
-    const video = videoRef.current;
-    if (!video) return;
-
-    mouseAccumulatorXRef.current = 0;
-    mouseAccumulatorYRef.current = 0;
-
-    if (e.touches.length === 1) {
-      hasCenteredThisTouchRef.current = false;
-      // If there's a pending click-up timer from a previous tap,
-      // it means the left mouse button is currently held down on the host.
-      let wasPendingClickUp = false;
-      if (clickUpTimerRef.current) {
-        clearTimeout(clickUpTimerRef.current);
-        clickUpTimerRef.current = null;
-        wasPendingClickUp = true;
-      }
-
-      const touch = e.touches[0];
-      const now = performance.now();
-      
-      wasMultiTouchRef.current = false; // Reset multi-touch flag
-
-      const isDoubleTap = now - lastTouchTapTimeRef.current < 500;
-      if (isDoubleTap) {
-        lastTouchTapTimeRef.current = 0; // Prevent chaining of double tap
-      }
-
-      touchStartPosRef.current = { x: touch.clientX, y: touch.clientY };
-      touchStartInitialPosRef.current = { x: touch.clientX, y: touch.clientY };
-      touchStartTimeRef.current = now;
-      initialZoomPanRef.current = { ...zoomPan };
-      longPressTriggeredRef.current = false;
-
-      if (touchMode === "trackpad") {
-        isDraggingRef.current = false;
-        
-        // Cancel any existing long press timer
-        if (longPressTimerRef.current) {
-          clearTimeout(longPressTimerRef.current);
-          longPressTimerRef.current = null;
-        }
-
-        if (isDoubleTap) {
-          // Double-Tap and Hold gesture: trigger drag instantly (0ms delay)
-          isDraggingRef.current = true;
-          if (!wasPendingClickUp) {
-            sendMouseClickAction(1, true); // left click down
-          }
-          if (navigator.vibrate) {
-            navigator.vibrate(40); // Haptic feedback
-          }
-        } else {
-          if (wasPendingClickUp) {
-            sendMouseClickAction(1, false);
-          }
-          // Single touch down: Start long press timer (600ms) for right click
-          longPressTimerRef.current = setTimeout(() => {
-            const mouseReliableChannel = channelsRef.current["mouse_reliable"];
-            if (mouseReliableChannel && mouseReliableChannel.readyState === "open") {
-              sendMouseClickAction(3, true); // right click down
-              setTimeout(() => sendMouseClickAction(3, false), 30); // right click up
-              
-              // Haptic feedback for successful right click trigger
-              if (navigator.vibrate) {
-                navigator.vibrate(50);
-              }
-              longPressTriggeredRef.current = true;
-            }
-          }, 600);
-        }
-      } else {
-        // Direct Mode: Mark click as pending instead of clicking down immediately
-        isDirectClickPendingRef.current = true;
-
-        // Start long press timer for right click
-        if (longPressTimerRef.current) {
-          clearTimeout(longPressTimerRef.current);
-        }
-        longPressTimerRef.current = setTimeout(() => {
-          const mouseReliableChannel = channelsRef.current["mouse_reliable"];
-          if (mouseReliableChannel && mouseReliableChannel.readyState === "open") {
-            sendTouchAbsolutePos(touch.clientX, touch.clientY);
-            sendMouseClickAction(3, true);  // right click down
-            setTimeout(() => sendMouseClickAction(3, false), 30); // right click up
-            
-            if (navigator.vibrate) {
-              navigator.vibrate(50);
-            }
-            longPressTriggeredRef.current = true;
-            isDirectClickPendingRef.current = false; // Cancel left click down
-          }
-        }, 600);
-      }
-    } else if (e.touches.length === 2) {
-      wasMultiTouchRef.current = true; // Mark as multi-touch gesture
-      isDirectClickPendingRef.current = false; // Cancel any pending direct left click
-
-      // Cancel long press timer for multi-touch gestures
-      if (longPressTimerRef.current) {
-        clearTimeout(longPressTimerRef.current);
-        longPressTimerRef.current = null;
-      }
-      isDraggingRef.current = false;
-
-      initialTouchDistanceRef.current = getDistance(e.touches[0], e.touches[1]);
-      initialZoomScaleRef.current = zoomScale;
-      initialZoomPanRef.current = { ...zoomPan };
-      initialTouchMidpointRef.current = getMidpoint(e.touches[0], e.touches[1]);
-      initialLocalCursorPosRef.current = { ...localCursorPosRef.current };
-
-      // For 2-finger tap right click detection
-      twoFingerTouchStartTimeRef.current = performance.now();
-      isTwoFingerTapPendingRef.current = true;
-    }
-  };
-
-  const handleTouchMove = (e: React.TouchEvent<HTMLDivElement>) => {
-    if (status !== "Streaming") return;
-    
-    // Always prevent default page scrolling or browser navigation inside the player
-    e.preventDefault();
-
-    const video = videoRef.current;
-    if (!video) return;
-    const activeVideo = getActiveVideoElement();
-
-    if (e.touches.length === 1) {
-      const touch = e.touches[0];
-      const dx = touch.clientX - touchStartPosRef.current.x;
-      const dy = touch.clientY - touchStartPosRef.current.y;
-      
-      const totalDx = touch.clientX - touchStartInitialPosRef.current.x;
-      const totalDy = touch.clientY - touchStartInitialPosRef.current.y;
-      const totalMovement = Math.sqrt(totalDx * totalDx + totalDy * totalDy);
-
-      // Cancel right click (600ms) timer if movement > 15px
-      if (totalMovement > 15 && longPressTimerRef.current) {
-        clearTimeout(longPressTimerRef.current);
-        longPressTimerRef.current = null;
-      }
-
-      if (zoomScale > 1) {
-        if (touchMode === "trackpad") {
-          const wrapper = viewportWrapperRef.current;
-          if (wrapper) {
-            const wrapperRect = wrapper.getBoundingClientRect();
-            const W_wrapper = wrapperRect.width;
-            const H_wrapper = wrapperRect.height;
-
-            const vidWidth = activeVideo?.videoWidth && activeVideo.videoWidth > 0 ? activeVideo.videoWidth : (video as any).width || 1920;
-            const vidHeight = activeVideo?.videoHeight && activeVideo.videoHeight > 0 ? activeVideo.videoHeight : (video as any).height || 1080;
-
-            const wrapperAspectRatio = W_wrapper / H_wrapper;
-            const vidAspectRatio = vidWidth / vidHeight;
-
-            let W_base = W_wrapper;
-            let H_base = H_wrapper;
-            let offsetX = 0;
-            let offsetY = 0;
-
-            if (wrapperAspectRatio > vidAspectRatio) {
-              H_base = H_wrapper;
-              W_base = H_wrapper * vidAspectRatio;
-              offsetX = (W_wrapper - W_base) / 2;
-            } else {
-              W_base = W_wrapper;
-              H_base = W_wrapper / vidAspectRatio;
-              offsetY = (H_wrapper - H_base) / 2;
-            }
-
-            const actualVidWidth = W_base * zoomScale;
-            const actualVidHeight = H_base * zoomScale;
-
-            // Apply trackpad acceleration
-            const distance = Math.sqrt(dx * dx + dy * dy);
-            let accel = 1.0;
-            if (distance > 2) {
-              accel = Math.min(3.0, 1.0 + (distance - 2) * 0.15);
-            }
-            const s = 2.2 * accel;
-
-            // Convert client screen delta (dx, dy) to host resolution delta
-            const rawDeltaX = (dx * s / actualVidWidth) * vidWidth;
-            const rawDeltaY = (dy * s / actualVidHeight) * vidHeight;
-
-            // Add accumulated sub-pixel movements
-            const totalDeltaX = rawDeltaX + mouseAccumulatorXRef.current;
-            const totalDeltaY = rawDeltaY + mouseAccumulatorYRef.current;
-
-            // Round to integer deltas
-            const relX = Math.round(totalDeltaX);
-            const relY = Math.round(totalDeltaY);
-
-            // Store the fractional remainders
-            mouseAccumulatorXRef.current = totalDeltaX - relX;
-            mouseAccumulatorYRef.current = totalDeltaY - relY;
-
-            // Update local cursor position estimate in host coordinates
-            let newX = localCursorPosRef.current.x + relX;
-            let newY = localCursorPosRef.current.y + relY;
-
-            newX = Math.max(0, Math.min(vidWidth, newX));
-            newY = Math.max(0, Math.min(vidHeight, newY));
-
-            localCursorPosRef.current = { x: newX, y: newY };
-
-            // Send absolute mouse position to host instead of relative in trackpad mode to avoid drift
-            const mouseAbsoluteChannel = channelsRef.current["mouse_absolute"];
-            if (mouseAbsoluteChannel && mouseAbsoluteChannel.readyState === "open" && (relX !== 0 || relY !== 0)) {
-              const xNorm = newX / vidWidth;
-              const yNorm = newY / vidHeight;
-              const x16 = Math.round(xNorm * 4096.0);
-              const y16 = Math.round(yNorm * 4096.0);
-
-              const buffer = new ArrayBuffer(13);
-              const view = new DataView(buffer);
-              view.setUint8(0, 1); // Type 1: MousePosition (Absolute)
-              view.setInt16(1, x16, false);
-              view.setInt16(3, y16, false);
-              view.setInt16(5, 4096, false); // referenceWidth
-              view.setInt16(7, 4096, false); // referenceHeight
-              const seq = (mouseSeqRef.current++) >>> 0;
-              view.setUint32(9, seq, false);
-              mouseAbsoluteChannel.send(buffer);
-            }
-
-            // Viewport horizontal panning keeps cursor centered
-            const targetVisualX = W_wrapper / 2;
-            let newPanX = targetVisualX - (newX / vidWidth) * actualVidWidth - offsetX * zoomScale;
-
-            const limitX1 = -offsetX * zoomScale;
-            const limitX2 = W_wrapper - actualVidWidth - offsetX * zoomScale;
-            const minPanX = Math.min(limitX1, limitX2);
-            const maxPanX = Math.max(limitX1, limitX2);
-
-            const clampedPanX = Math.max(minPanX, Math.min(maxPanX, newPanX));
-            const clampedPanY = zoomPan.y; // Keep Y-axis locked to current pan
-
-            setZoomPan({ x: clampedPanX, y: clampedPanY });
-
-            // Sync visual cursor DOM directly and instantly
-            const cursorEl = localCursorRef.current;
-            if (cursorEl) {
-              const leftWrapper = (newX / vidWidth) * actualVidWidth + offsetX * zoomScale + clampedPanX;
-              const topWrapper = (newY / vidHeight) * actualVidHeight + offsetY * zoomScale + clampedPanY;
-              cursorEl.style.left = `${leftWrapper}px`;
-              cursorEl.style.top = `${topWrapper}px`;
-            }
-
-            touchStartPosRef.current = { x: touch.clientX, y: touch.clientY };
-          }
-        } else {
-          // Direct Mode with Zoom: standard panning using initial reference
-          setZoomPan({
-            x: initialZoomPanRef.current.x + totalDx,
-            y: initialZoomPanRef.current.y + totalDy
-          });
-        }
-      } else if (touchMode === "trackpad") {
-        const rect = video.getBoundingClientRect();
-        if (rect.width > 0 && rect.height > 0) {
-          const vidWidth = activeVideo?.videoWidth && activeVideo.videoWidth > 0 ? activeVideo.videoWidth : (video as any).width || 1920;
-          const vidHeight = activeVideo?.videoHeight && activeVideo.videoHeight > 0 ? activeVideo.videoHeight : (video as any).height || 1080;
-
-          // Apply trackpad acceleration
-          const distance = Math.sqrt(dx * dx + dy * dy);
-          let accel = 1.0;
-          if (distance > 2) {
-            accel = Math.min(3.0, 1.0 + (distance - 2) * 0.15);
-          }
-          const s = 2.2 * accel;
-
-          // Convert client screen delta (dx, dy) to host resolution delta
-          const rawDeltaX = (dx * s / rect.width) * vidWidth;
-          const rawDeltaY = (dy * s / rect.height) * vidHeight;
-
-          // Add accumulated sub-pixel movements
-          const totalDeltaX = rawDeltaX + mouseAccumulatorXRef.current;
-          const totalDeltaY = rawDeltaY + mouseAccumulatorYRef.current;
-
-          // Round to integer deltas
-          const relX = Math.round(totalDeltaX);
-          const relY = Math.round(totalDeltaY);
-
-          // Store the fractional remainders
-          mouseAccumulatorXRef.current = totalDeltaX - relX;
-          mouseAccumulatorYRef.current = totalDeltaY - relY;
-
-          // Update local cursor position estimate in host coordinates
-          let newX = localCursorPosRef.current.x + relX;
-          let newY = localCursorPosRef.current.y + relY;
-
-          newX = Math.max(0, Math.min(vidWidth, newX));
-          newY = Math.max(0, Math.min(vidHeight, newY));
-
-          localCursorPosRef.current = { x: newX, y: newY };
-
-          // Send absolute mouse position to host instead of relative in trackpad mode to avoid drift
-          const mouseAbsoluteChannel = channelsRef.current["mouse_absolute"];
-          if (mouseAbsoluteChannel && mouseAbsoluteChannel.readyState === "open" && (relX !== 0 || relY !== 0)) {
-            const xNorm = newX / vidWidth;
-            const yNorm = newY / vidHeight;
-            const x16 = Math.round(xNorm * 4096.0);
-            const y16 = Math.round(yNorm * 4096.0);
-
-            const buffer = new ArrayBuffer(13);
-            const view = new DataView(buffer);
-            view.setUint8(0, 1); // Type 1: MousePosition (Absolute)
-            view.setInt16(1, x16, false);
-            view.setInt16(3, y16, false);
-            view.setInt16(5, 4096, false); // referenceWidth
-            view.setInt16(7, 4096, false); // referenceHeight
-            const seq = (mouseSeqRef.current++) >>> 0;
-            view.setUint32(9, seq, false);
-            mouseAbsoluteChannel.send(buffer);
-          }
-
-          updateVirtualCursorDOM();
-          touchStartPosRef.current = { x: touch.clientX, y: touch.clientY };
-        }
-      } else {
-        // Direct Touchscreen Mode:
-        if (isDirectClickPendingRef.current) {
-          if (totalMovement > 15) {
-            // Drag started: send left click down at initial touch point first
-            sendTouchAbsolutePos(touchStartInitialPosRef.current.x, touchStartInitialPosRef.current.y);
-            sendMouseClickAction(1, true);
-            isDirectClickPendingRef.current = false;
-          }
-        }
-        
-        if (!isDirectClickPendingRef.current) {
-          sendTouchAbsolutePos(touch.clientX, touch.clientY);
-        }
-      }
-    } else if (e.touches.length === 2) {
-      const dist = getDistance(e.touches[0], e.touches[1]);
-      if (initialTouchDistanceRef.current > 0) {
-        const factor = dist / initialTouchDistanceRef.current;
-        const newScale = Math.max(1, Math.min(5, initialZoomScaleRef.current * factor));
-
-        // If scale changes significantly, or fingers move, cancel 2-finger tap right click
-        if (Math.abs(factor - 1) > 0.08) {
-          isTwoFingerTapPendingRef.current = false;
-        }
-
-        const rect = video.getBoundingClientRect();
-        const wrapper = viewportWrapperRef.current;
-        if (rect.width > 0 && rect.height > 0 && wrapper) {
-          const wrapperRect = wrapper.getBoundingClientRect();
-          const W_wrapper = wrapperRect.width;
-          const H_wrapper = wrapperRect.height;
-
-          const vidWidth = activeVideo?.videoWidth && activeVideo.videoWidth > 0 ? activeVideo.videoWidth : (video as any).width || 1920;
-          const vidHeight = activeVideo?.videoHeight && activeVideo.videoHeight > 0 ? activeVideo.videoHeight : (video as any).height || 1080;
-
-          const wrapperAspectRatio = W_wrapper / H_wrapper;
-          const vidAspectRatio = vidWidth / vidHeight;
-
-          let W_base = W_wrapper;
-          let H_base = H_wrapper;
-          let offsetX = 0;
-          let offsetY = 0;
-
-          if (wrapperAspectRatio > vidAspectRatio) {
-            H_base = H_wrapper;
-            W_base = H_wrapper * vidAspectRatio;
-            offsetX = (W_wrapper - W_base) / 2;
-          } else {
-            W_base = W_wrapper;
-            H_base = W_wrapper / vidAspectRatio;
-            offsetY = (H_wrapper - H_base) / 2;
-          }
-
-          const actualVidWidth = W_base * newScale;
-          const actualVidHeight = H_base * newScale;
-
-          const currentMidpoint = getMidpoint(e.touches[0], e.touches[1]);
-          const dxMid = currentMidpoint.x - initialTouchMidpointRef.current.x;
-          const dyMid = currentMidpoint.y - initialTouchMidpointRef.current.y;
-          if (Math.sqrt(dxMid * dxMid + dyMid * dyMid) > 15) {
-            isTwoFingerTapPendingRef.current = false;
-          }
-
-          if (newScale === 1) {
-            setZoomScale(1);
-            setZoomPan({ x: 0, y: 0 });
-          } else {
-            // Apply mathematically correct combined Zoom & Pan formula in opposite direction:
-            const midStartX = initialTouchMidpointRef.current.x - wrapperRect.left;
-            const midStartY = initialTouchMidpointRef.current.y - wrapperRect.top;
-            const midCurrentX = currentMidpoint.x - wrapperRect.left;
-            const midCurrentY = currentMidpoint.y - wrapperRect.top;
-
-            const dxMid = midCurrentX - midStartX;
-            const dyMid = midCurrentY - midStartY;
-
-            const scaleRatio = newScale / initialZoomScaleRef.current;
-            const newPanX = (midStartX - dxMid) - (midStartX - initialZoomPanRef.current.x) * scaleRatio;
-            const newPanY = (midStartY - dyMid) - (midStartY - initialZoomPanRef.current.y) * scaleRatio;
-
-            // Boundary clamping so the zoomed view doesn't pan off-screen (unified Math.min/max range)
-            const limitX1 = -offsetX * newScale;
-            const limitX2 = W_wrapper - actualVidWidth - offsetX * newScale;
-            const minPanX = Math.min(limitX1, limitX2);
-            const maxPanX = Math.max(limitX1, limitX2);
-
-            const limitY1 = -offsetY * newScale;
-            const limitY2 = H_wrapper - actualVidHeight - offsetY * newScale;
-            const minPanY = Math.min(limitY1, limitY2);
-            const maxPanY = Math.max(limitY1, limitY2);
-
-            const clampedPanX = Math.max(minPanX, Math.min(maxPanX, newPanX));
-            const clampedPanY = Math.max(minPanY, Math.min(maxPanY, newPanY));
-
-            setZoomScale(newScale);
-            setZoomPan({ x: clampedPanX, y: clampedPanY });
-
-            // Calculate start visual coordinate of the cursor relative to wrapper
-            const V_startX = (initialLocalCursorPosRef.current.x / vidWidth) * (W_base * initialZoomScaleRef.current) + offsetX * initialZoomScaleRef.current + initialZoomPanRef.current.x;
-            const V_startY = (initialLocalCursorPosRef.current.y / vidHeight) * (H_base * initialZoomScaleRef.current) + offsetY * initialZoomScaleRef.current + initialZoomPanRef.current.y;
-
-            // Derive the new remote coordinates to keep the visual cursor locked on screen
-            let newX = ((V_startX - offsetX * newScale - clampedPanX) / (W_base * newScale)) * vidWidth;
-            let newY = ((V_startY - offsetY * newScale - clampedPanY) / (H_base * newScale)) * vidHeight;
-
-            newX = Math.max(0, Math.min(vidWidth, newX));
-            newY = Math.max(0, Math.min(vidHeight, newY));
-
-            localCursorPosRef.current = { x: newX, y: newY };
-
-            // Send mouse absolute position
-            const mouseAbsoluteChannel = channelsRef.current["mouse_absolute"];
-            if (mouseAbsoluteChannel && mouseAbsoluteChannel.readyState === "open") {
-              const xNorm = newX / vidWidth;
-              const yNorm = newY / vidHeight;
-              const x16 = Math.round(xNorm * 4096.0);
-              const y16 = Math.round(yNorm * 4096.0);
-
-              const buffer = new ArrayBuffer(13);
-              const view = new DataView(buffer);
-              view.setUint8(0, 1); // Type 1: MousePosition
-              view.setInt16(1, x16, false);
-              view.setInt16(3, y16, false);
-              view.setInt16(5, 4096, false); // referenceWidth
-              view.setInt16(7, 4096, false); // referenceHeight
-              const seq = (mouseSeqRef.current++) >>> 0;
-              view.setUint32(9, seq, false);
-              mouseAbsoluteChannel.send(buffer);
-            }
-
-            // Sync visual cursor DOM directly and instantly
-            const cursorEl = localCursorRef.current;
-            if (cursorEl) {
-              const leftWrapper = (newX / vidWidth) * actualVidWidth + offsetX * newScale + clampedPanX;
-              const topWrapper = (newY / vidHeight) * actualVidHeight + offsetY * newScale + clampedPanY;
-              cursorEl.style.left = `${leftWrapper}px`;
-              cursorEl.style.top = `${topWrapper}px`;
-            }
-          }
-        }
-      }
-    }
-  };
-
-  const handleTouchEnd = (e: React.TouchEvent<HTMLDivElement>) => {
-    if (status !== "Streaming") return;
-    
-    // Prevent browser from emulating mouseup and click events
-    e.preventDefault();
-
-    if (longPressTimerRef.current) {
-      clearTimeout(longPressTimerRef.current);
-      longPressTimerRef.current = null;
-    }
-
-    if (longPressTriggeredRef.current) {
-      longPressTriggeredRef.current = false;
-      return; // Already triggered right click during hold
-    }
-
-    if (touchMode === "trackpad") {
-      if (isDraggingRef.current) {
-        isDraggingRef.current = false;
-        sendMouseClickAction(1, false); // left click up
-        return;
-      }
-
-      // Handle two-finger tap for right-click in trackpad mode
-      if (wasMultiTouchRef.current) {
-        const duration = performance.now() - twoFingerTouchStartTimeRef.current;
-        if (isTwoFingerTapPendingRef.current && duration < 350) {
-          const mouseReliableChannel = channelsRef.current["mouse_reliable"];
-          if (mouseReliableChannel && mouseReliableChannel.readyState === "open") {
-            sendMouseClickAction(3, true); // right click down
-            setTimeout(() => sendMouseClickAction(3, false), 30); // right click up
-            if (navigator.vibrate) {
-              navigator.vibrate(50);
-            }
-          }
-        }
-        isTwoFingerTapPendingRef.current = false;
-        return;
-      }
-    } else {
-      // Ignore clicks if the touch session was a multi-touch (zoom/pan) gesture in Direct Mode
-      if (wasMultiTouchRef.current) {
-        return;
-      }
-    }
-
-    const touch = e.changedTouches[0];
-    const duration = performance.now() - touchStartTimeRef.current;
-    const dx = touch.clientX - touchStartInitialPosRef.current.x;
-    const dy = touch.clientY - touchStartInitialPosRef.current.y;
-    const movement = Math.sqrt(dx * dx + dy * dy);
-
-    if (touchMode === "trackpad") {
-      // Forgiving dynamic tap threshold to accommodate quick finger wobbles on touch screens
-      const maxTapMovement = duration < 250 ? 40 : 25;
-      const isTap = duration < 450 && movement < maxTapMovement;
-      const mouseReliableChannel = channelsRef.current["mouse_reliable"];
-
-      if (isTap) {
-        lastTouchTapTimeRef.current = performance.now(); // Record tap completion time
-        if (mouseReliableChannel && mouseReliableChannel.readyState === "open") {
-          sendMouseClickAction(1, true);
-          if (clickUpTimerRef.current) {
-            clearTimeout(clickUpTimerRef.current);
-          }
-          clickUpTimerRef.current = setTimeout(() => {
-            sendMouseClickAction(1, false);
-            clickUpTimerRef.current = null;
-          }, 35);
-        }
-      }
-    } else {
-      // Direct Touchscreen Mode:
-      if (isDirectClickPendingRef.current) {
-        // Tap: send complete click (down + up)
-        sendTouchAbsolutePos(touch.clientX, touch.clientY);
-        sendMouseClickAction(1, true);
-        setTimeout(() => sendMouseClickAction(1, false), 35);
-        isDirectClickPendingRef.current = false;
-      } else {
-        // Drag end: release left click
-        sendTouchAbsolutePos(touch.clientX, touch.clientY);
-        sendMouseClickAction(1, false);
-      }
-    }
-  };
+  }, [status]);
 
   // Mobile Virtual Keyboard Handlers
-  const handleVirtualKeyboardInput = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const text = e.target.value;
-    if (text.length > 0) {
-      const keyboardChannel = channelsRef.current["keyboard"];
-      if (keyboardChannel && keyboardChannel.readyState === "open") {
-        const utf8Encoder = new TextEncoder();
-        const encodedText = utf8Encoder.encode(text);
-        const buffer = new ArrayBuffer(3 + encodedText.length);
-        const view = new DataView(buffer);
-        view.setUint8(0, 1); // Type 1: Text Event
-        view.setUint16(1, encodedText.length, false);
-        new Uint8Array(buffer, 3).set(encodedText);
-        keyboardChannel.send(buffer);
-      }
-      e.target.value = "";
+  // ---- Phone keyboard ----
+  // Modifiers on the keys bar apply to the next key (then let go).
+  const modifierKeysRef = useRef(modifierKeys);
+  modifierKeysRef.current = modifierKeys;
+
+  const sendTextRemote = (text: string) => {
+    const keyboardChannel = channelsRef.current["keyboard"];
+    if (!keyboardChannel || keyboardChannel.readyState !== "open" || !text) return;
+    const encodedText = new TextEncoder().encode(text);
+    const buffer = new ArrayBuffer(3 + encodedText.length);
+    const view = new DataView(buffer);
+    view.setUint8(0, 1); // Type 1: Text Event
+    view.setUint16(1, encodedText.length, false);
+    new Uint8Array(buffer, 3).set(encodedText);
+    keyboardChannel.send(buffer);
+  };
+
+  /** Presses and releases `vk` with the keys bar's modifiers (plus `extra`). */
+  const pressKeyRemote = (vk: number, extra: Partial<typeof modifierKeys> = {}) => {
+    const m = { ...modifierKeysRef.current };
+    (Object.keys(extra) as (keyof typeof m)[]).forEach((k) => { if (extra[k]) m[k] = true; });
+    const held: [boolean, number, number][] = [[m.ctrl, 17, 2], [m.alt, 18, 4], [m.shift, 16, 1], [m.meta, 91, 8]];
+    let bits = 0;
+    for (const [on, mvk, bit] of held) {
+      if (!on) continue;
+      bits |= bit;
+      sendRawKeyEvent(mvk, true, bits);
+    }
+    sendRawKeyEvent(vk, true, bits);
+    sendRawKeyEvent(vk, false, bits);
+    for (const [on, mvk, bit] of [...held].reverse()) {
+      if (!on) continue;
+      bits &= ~bit;
+      sendRawKeyEvent(mvk, false, bits);
+    }
+    if (m.ctrl || m.alt || m.shift || m.meta) {
+      const none = { ctrl: false, alt: false, shift: false, meta: false };
+      modifierKeysRef.current = none;
+      setModifierKeys(none);
     }
   };
 
-  const handleVirtualKeyboardKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    const key = e.key;
-    if (key === "Backspace" || key === "Enter" || key === "Tab" || key === "Escape") {
-      sendSpecialKeyRemote(key);
-      e.preventDefault();
+  /** Typed text: a shortcut when Ctrl/Alt/Win is on (Ctrl+C), else text. */
+  const typeRemote = (text: string) => {
+    const m = modifierKeysRef.current;
+    if ((m.ctrl || m.alt || m.meta) && [...text].length === 1) {
+      const c = text.toUpperCase();
+      if (/^[A-Z0-9]$/.test(c)) {
+        pressKeyRemote(c.charCodeAt(0));
+        return;
+      }
     }
+    sendTextRemote(text);
   };
 
   const sendSpecialKeyRemote = (key: string) => {
-    let vk = 0;
-    if (key === "Backspace") vk = 8;
-    else if (key === "Tab") vk = 9;
-    else if (key === "Enter") vk = 13;
-    else if (key === "Escape") vk = 27;
-    else if (key === "Delete") vk = 46;
-
-    if (vk > 0) {
-      let modifiers = 0;
-      if (modifierKeys.shift) modifiers |= 1;
-      if (modifierKeys.ctrl) modifiers |= 2;
-      if (modifierKeys.alt) modifiers |= 4;
-      if (modifierKeys.meta) modifiers |= 8;
-
-      sendRawKeyEvent(vk, true, modifiers);
-      setTimeout(() => sendRawKeyEvent(vk, false, modifiers), 30);
-    }
+    const vk = PHONE_KEY_CODES[key];
+    if (vk) pressKeyRemote(vk);
   };
+
+  // The hidden field the phone's keyboard types into. Text is sent once the
+  // keyboard commits it (so Vietnamese Telex/VNI and other input methods
+  // compose properly); the field keeps two placeholder characters so the
+  // delete key still reports deletions when nothing was typed.
+  useEffect(() => {
+    const el = keyboardInputRef.current;
+    if (!el) return;
+    const FILL = '  ';
+    let composing = false;
+    const reset = () => {
+      el.value = FILL;
+      try { el.setSelectionRange(FILL.length, FILL.length); } catch { /* not focused */ }
+    };
+    reset();
+    const onCompositionStart = () => { composing = true; };
+    const onCompositionEnd = (e: CompositionEvent) => {
+      composing = false;
+      if (e.data) typeRemote(e.data);
+      reset();
+    };
+    const onInput = (e: Event) => {
+      const ie = e as InputEvent;
+      if (composing || ie.isComposing) return;
+      switch (ie.inputType) {
+        case 'deleteContentBackward':
+        case 'deleteWordBackward':
+          pressKeyRemote(8);
+          break;
+        case 'deleteContentForward':
+          pressKeyRemote(46);
+          break;
+        case 'insertLineBreak':
+        case 'insertParagraph':
+          pressKeyRemote(13);
+          break;
+        default: {
+          const text = ie.data ?? (el.value.startsWith(FILL) ? el.value.slice(FILL.length) : el.value.trim());
+          if (text) typeRemote(text);
+        }
+      }
+      reset();
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (composing || e.isComposing) return;
+      // Keys a keyboard reports as keys (a Bluetooth keyboard, or Enter and
+      // delete on most phone keyboards).
+      const vk = PHONE_KEY_CODES[e.key];
+      if (vk) {
+        e.preventDefault();
+        pressKeyRemote(vk);
+      }
+    };
+    el.addEventListener('compositionstart', onCompositionStart);
+    el.addEventListener('compositionend', onCompositionEnd);
+    el.addEventListener('input', onInput);
+    el.addEventListener('keydown', onKeyDown);
+    return () => {
+      el.removeEventListener('compositionstart', onCompositionStart);
+      el.removeEventListener('compositionend', onCompositionEnd);
+      el.removeEventListener('input', onInput);
+      el.removeEventListener('keydown', onKeyDown);
+    };
+  });
+
+  // Keep the keys bar just above the phone's on-screen keyboard.
+  const [keysBarBottom, setKeysBarBottom] = useState(0);
+  useEffect(() => {
+    if (!isKeyboardActive) return;
+    const vv = window.visualViewport;
+    if (!vv) return;
+    const update = () => setKeysBarBottom(Math.max(0, window.innerHeight - (vv.height + vv.offsetTop)));
+    update();
+    vv.addEventListener('resize', update);
+    vv.addEventListener('scroll', update);
+    return () => {
+      vv.removeEventListener('resize', update);
+      vv.removeEventListener('scroll', update);
+    };
+  }, [isKeyboardActive]);
+  const [showFnKeys, setShowFnKeys] = useState(false);
 
   // Send mouse position (absolute) — used only when pointer is NOT locked.
   // When pointer IS locked, the prediction cursor useEffect handles input via
@@ -4511,7 +4197,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
             localStorage.setItem('lunaris_stream_muted', String(newValue));
           }}
           className={`stream-action-btn ${!isMuted ? 'active' : ''}`}
-          title={isMuted ? "Unmute Audio" : "Mute Audio"}
+          title={isMuted ? t('Sound off') : t('Sound on')} aria-label={isMuted ? t('Sound off') : t('Sound on')}
         >
           {isMuted ? (
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
@@ -4597,6 +4283,12 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
         <input
           ref={keyboardInputRef}
           type="text"
+          autoCapitalize="off"
+          autoCorrect="off"
+          autoComplete="off"
+          spellCheck={false}
+          enterKeyHint="enter"
+          aria-label={t('Keyboard')}
           style={{
             position: 'absolute',
             top: '-100px',
@@ -4607,9 +4299,6 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
             zIndex: -100,
             pointerEvents: 'none'
           }}
-          value=""
-          onChange={handleVirtualKeyboardInput}
-          onKeyDown={handleVirtualKeyboardKeyDown}
           onBlur={() => setIsKeyboardActive(false)}
         />
 
@@ -4764,213 +4453,200 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
         {/* Mobile controls drawer & footer menu bar for touch screens */}
         {isStreaming && (
           <>
-            {/* Mobile Controls Drawer */}
+            {/* Phone controls sheet: how touch controls the computer, quick
+                actions, and the way to the full stream settings. */}
             {showMobileMenu && (
-              <div 
-                className="mobile-controls-drawer"
+              <div
+                className="mobile-sheet-backdrop"
+                onClick={(e) => { e.stopPropagation(); setShowMobileMenu(false); }}
                 onTouchStart={(e) => e.stopPropagation()}
                 onTouchMove={(e) => e.stopPropagation()}
                 onTouchEnd={(e) => e.stopPropagation()}
                 onMouseDown={(e) => e.stopPropagation()}
                 onMouseUp={(e) => e.stopPropagation()}
-                onClick={(e) => e.stopPropagation()}
               >
-                <div className="drawer-header">
-                  <h4>Touch & Keyboard Controls</h4>
-                </div>
-
-                <div className="drawer-section">
-                  <span className="section-label">Mouse Mode</span>
-                  <div className="mode-toggle-grid">
-                    <button 
-                      onClick={() => {
-                        setTouchMode('direct');
-                        localStorage.setItem('lunaris_mobile_touch_mode', 'direct');
-                      }}
-                      className={`btn-toggle-option ${touchMode === 'direct' ? 'active' : ''}`}
-                    >
-                      Touchscreen
-                    </button>
-                    <button 
-                      onClick={() => {
-                        setTouchMode('trackpad');
-                        localStorage.setItem('lunaris_mobile_touch_mode', 'trackpad');
-                      }}
-                      className={`btn-toggle-option ${touchMode === 'trackpad' ? 'active' : ''}`}
-                    >
-                      Trackpad
+                <div
+                  className="mobile-controls-drawer mobile-sheet"
+                  role="dialog"
+                  aria-label={t('Controls')}
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <div className="mobile-sheet-handle" aria-hidden="true" />
+                  <div className="mobile-sheet-header">
+                    <h4>{t('Controls')}</h4>
+                    <button type="button" className="mobile-sheet-close" aria-label={t('Close')} onClick={() => setShowMobileMenu(false)}>
+                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"><path d="M6 6l12 12M18 6L6 18" /></svg>
                     </button>
                   </div>
-                </div>
 
-                {touchMode === 'direct' && (
-                  <div className="drawer-section">
-                    <span className="section-label">Finger/Cursor Offset</span>
-                    <div className="mode-toggle-grid">
-                      <button 
+                  <div className="mobile-sheet-label">{t('Touch control')}</div>
+                  <div className="mobile-segmented" role="radiogroup" aria-label={t('Touch control')}>
+                    {([
+                      ['trackpad', t('Touchpad'), t('Move the cursor like a laptop touchpad')],
+                      ['direct', t('Direct touch'), t('Click where you touch')],
+                    ] as const).map(([mode, label, hint]) => (
+                      <button
+                        key={mode}
+                        type="button"
+                        role="radio"
+                        aria-checked={touchMode === mode}
+                        className={`mobile-segment ${touchMode === mode ? 'active' : ''}`}
                         onClick={() => {
-                          setUseTouchOffset(true);
-                          localStorage.setItem('lunaris_mobile_touch_offset', 'true');
+                          setTouchMode(mode);
+                          localStorage.setItem('lunaris_mobile_touch_mode', mode);
                         }}
-                        className={`btn-toggle-option ${useTouchOffset ? 'active' : ''}`}
                       >
-                        Enabled (-40px)
+                        <span className="mobile-segment-title">{label}</span>
+                        <span className="mobile-segment-hint">{hint}</span>
                       </button>
-                      <button 
-                        onClick={() => {
-                          setUseTouchOffset(false);
-                          localStorage.setItem('lunaris_mobile_touch_offset', 'false');
-                        }}
-                        className={`btn-toggle-option ${!useTouchOffset ? 'active' : ''}`}
-                      >
-                        Disabled
-                      </button>
-                    </div>
+                    ))}
                   </div>
-                )}
 
-                <div className="drawer-section">
-                  <span className="section-label">Actions</span>
-                  <div className="action-buttons-grid">
-                    <button 
+                  <ul className="mobile-gesture-list">
+                    {(touchMode === 'trackpad'
+                      ? [
+                        [t('Drag one finger'), t('Move the cursor')],
+                        [t('Tap'), t('Click')],
+                        [t('Tap, then touch and drag'), t('Drag and drop')],
+                        [t('Long press or two-finger tap'), t('Right click')],
+                        [t('Drag two fingers'), t('Scroll')],
+                        [t('Pinch'), t('Zoom')],
+                      ]
+                      : [
+                        [t('Tap'), t('Click there')],
+                        [t('Tap, then touch and drag'), t('Drag and drop')],
+                        [t('Long press or two-finger tap'), t('Right click')],
+                        [t('Drag one finger'), t('Move around when zoomed in')],
+                        [t('Drag two fingers'), t('Scroll')],
+                        [t('Pinch'), t('Zoom')],
+                      ]).map(([gesture, effect]) => (
+                      <li key={gesture}><span>{gesture}</span><span>{effect}</span></li>
+                    ))}
+                  </ul>
+
+                  {touchMode === 'direct' && (
+                    <label className="mobile-sheet-switch">
+                      <span>
+                        <span className="mobile-sheet-switch-title">{t('Click above the finger')}</span>
+                        <span className="mobile-sheet-switch-hint">{t('The click lands 40 px above where you touch, so the finger does not hide it.')}</span>
+                      </span>
+                      <input
+                        type="checkbox"
+                        checked={useTouchOffset}
+                        onChange={(e) => {
+                          setUseTouchOffset(e.target.checked);
+                          localStorage.setItem('lunaris_mobile_touch_offset', String(e.target.checked));
+                        }}
+                      />
+                    </label>
+                  )}
+
+                  <div className="mobile-sheet-label">{t('Actions')}</div>
+                  <div className="mobile-action-grid">
+                    <button
+                      type="button"
+                      className={`mobile-action ${isKeyboardActive ? 'active' : ''}`}
                       onClick={() => {
-                        if (keyboardInputRef.current) {
-                          keyboardInputRef.current.focus();
-                          setIsKeyboardActive(true);
-                        }
+                        setShowMobileMenu(false);
+                        keyboardInputRef.current?.focus();
+                        setIsKeyboardActive(true);
                       }}
-                      className={`btn-action-option ${isKeyboardActive ? 'active' : ''}`}
                     >
-                      ⌨️ Keyboard
-                    </button>
-                    <button 
-                      onClick={() => {
-                        setZoomScale(1);
-                        setZoomPan({ x: 0, y: 0 });
-                      }}
-                      className="btn-action-option"
-                      disabled={zoomScale === 1}
-                    >
-                      🔄 Reset Zoom
+                      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="6" width="20" height="12" rx="2" /><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10" /></svg>
+                      <span>{t('Keyboard')}</span>
                     </button>
                     <button
+                      type="button"
+                      className="mobile-action"
+                      disabled={zoomScale === 1}
+                      onClick={() => { setZoomScale(1); setZoomPan({ x: 0, y: 0 }); }}
+                    >
+                      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="7" /><path d="M21 21l-4.3-4.3M8 11h6" /></svg>
+                      <span>{t('Reset zoom')}</span>
+                    </button>
+                    <button
+                      type="button"
+                      className={`mobile-action ${!isMuted ? 'active' : ''}`}
                       onClick={() => {
                         const newValue = !isMuted;
                         setIsMuted(newValue);
                         localStorage.setItem('lunaris_stream_muted', String(newValue));
                       }}
-                      className={`btn-action-option ${isMuted ? '' : 'active'}`}
                     >
-                      {isMuted ? '🔇 Unmute Audio' : '🔊 Mute Audio'}
+                      {isMuted ? (
+                        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M4 9v6h4l5 4V5L8 9H4z" /><path d="M22 9l-6 6M16 9l6 6" /></svg>
+                      ) : (
+                        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M4 9v6h4l5 4V5L8 9H4z" /><path d="M16 9a3.5 3.5 0 0 1 0 6M18.5 6.5a7 7 0 0 1 0 11" /></svg>
+                      )}
+                      <span>{isMuted ? t('Sound off') : t('Sound on')}</span>
+                    </button>
+                    <button type="button" className={`mobile-action ${isFullscreen ? 'active' : ''}`} onClick={toggleFullscreen}>
+                      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" /></svg>
+                      <span>{isFullscreen ? t('Exit full screen') : t('Full screen')}</span>
                     </button>
                     <button
-                      onClick={toggleFullscreen}
-                      className={`btn-action-option ${isFullscreen ? 'active' : ''}`}
+                      type="button"
+                      className="mobile-action"
+                      onClick={() => { setShowMobileMenu(false); setShowSettingsModal(true); }}
                     >
-                      {isFullscreen ? '⊡ Exit Fullscreen' : '⛶ Fullscreen'}
+                      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0" /><circle cx="16" cy="6" r="2" /><circle cx="10" cy="12" r="2" /><circle cx="18" cy="18" r="2" /></svg>
+                      <span>{t('Stream settings')}</span>
                     </button>
-                    <button 
-                      onClick={handleStopActiveStream}
-                      className="btn-action-option btn-danger-option"
-                    >
-                      🛑 Disconnect
+                    <button type="button" className="mobile-action danger" onClick={handleStopActiveStream}>
+                      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M12 3v9M6.3 7.5a8 8 0 1 0 11.4 0" /></svg>
+                      <span>{t('Disconnect')}</span>
                     </button>
                   </div>
                 </div>
+              </div>
+            )}
 
-                <div className="drawer-section">
-                  <span className="section-label">Stream Quality</span>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
-                    <select
-                      value={activeCodec}
-                      onChange={(e) => updateSetting('codec', e.target.value)}
-                      className="stream-select"
-                      style={{ width: '100%', fontSize: '0.8rem' }}
-                    >
-                      <option value="auto">🎬 Auto ({resolvedActiveCodec.toUpperCase()})</option>
-                      <option value="h264" disabled={!supportedCodecs.h264}>H264</option>
-                      <option value="h265" disabled={!supportedCodecs.h265}>H265</option>
-                      <option value="av1" disabled={!supportedCodecs.av1}>AV1</option>
-                    </select>
-                    <select
-                      value={activeResolution}
-                      onChange={(e) => updateSetting('res', e.target.value)}
-                      className="stream-select"
-                      style={{ width: '100%', fontSize: '0.8rem' }}
-                    >
-                      {RESOLUTIONS.map(r => <option key={r.value} value={r.value}>📺 {r.label}</option>)}
-                    </select>
-                    <select
-                      value={activeFps}
-                      onChange={(e) => updateSetting('fps', e.target.value)}
-                      className="stream-select"
-                      style={{ width: '100%', fontSize: '0.8rem' }}
-                    >
-                      <option value={240}>🎯 240 FPS</option>
-                      <option value={144}>🎯 144 FPS</option>
-                      <option value={120}>🎯 120 FPS</option>
-                      <option value={90}>🎯 90 FPS</option>
-                      <option value={60}>🎯 60 FPS</option>
-                      <option value={30}>🎯 30 FPS</option>
-                    </select>
-                  </div>
+            {/* Special keys above the phone keyboard (RustDesk-like). Buttons
+                keep the focus in the hidden field so the keyboard stays open. */}
+            {isKeyboardActive && (
+              <div
+                className="mobile-keys-bar"
+                style={{ bottom: keysBarBottom }}
+                onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                onTouchStart={(e) => e.stopPropagation()}
+                onTouchMove={(e) => e.stopPropagation()}
+                onTouchEnd={(e) => e.stopPropagation()}
+              >
+                <div className="mobile-keys-row">
+                  {([['ctrl', 'Ctrl'], ['alt', 'Alt'], ['shift', 'Shift'], ['meta', 'Win']] as const).map(([k, label]) => (
+                    <button
+                      key={k}
+                      type="button"
+                      className={`mobile-key mod ${modifierKeys[k] ? 'active' : ''}`}
+                      aria-pressed={modifierKeys[k]}
+                      onClick={() => setModifierKeys((prev) => {
+                        const next = { ...prev, [k]: !prev[k] };
+                        modifierKeysRef.current = next;
+                        return next;
+                      })}
+                    >{label}</button>
+                  ))}
+                  <span className="mobile-key-sep" />
+                  {showFnKeys
+                    ? Array.from({ length: 12 }, (_, i) => `F${i + 1}`).map((k) => (
+                      <button key={k} type="button" className="mobile-key" onClick={() => sendSpecialKeyRemote(k)}>{k}</button>
+                    ))
+                    : ([['Escape', 'Esc'], ['Tab', 'Tab'], ['ArrowLeft', '←'], ['ArrowUp', '↑'], ['ArrowDown', '↓'], ['ArrowRight', '→'],
+                      ['Home', 'Home'], ['End', 'End'], ['PageUp', 'PgUp'], ['PageDown', 'PgDn'], ['Delete', 'Del']] as const).map(([k, label]) => (
+                      <button key={k} type="button" className="mobile-key" aria-label={k} onClick={() => sendSpecialKeyRemote(k)}>{label}</button>
+                    ))}
+                  <button type="button" className={`mobile-key ${showFnKeys ? 'active' : ''}`} onClick={() => setShowFnKeys((v) => !v)}>
+                    {showFnKeys ? '⇠' : 'F1–12'}
+                  </button>
+                  <button type="button" className="mobile-key" onClick={() => pressKeyRemote(46, { ctrl: true, alt: true })}>Ctrl+Alt+Del</button>
+                  <button
+                    type="button"
+                    className="mobile-key hide"
+                    aria-label={t('Hide keyboard')}
+                    title={t('Hide keyboard')}
+                    onClick={() => { keyboardInputRef.current?.blur(); setIsKeyboardActive(false); }}
+                  >⌄</button>
                 </div>
-
-                {isKeyboardActive && (
-                  <div className="drawer-section modifier-keys-section">
-                    <span className="section-label">Modifier Keys</span>
-                    <div className="modifiers-grid">
-                      <button 
-                        onClick={() => {
-                          setModifierKeys(prev => ({ ...prev, ctrl: !prev.ctrl }));
-                          sendRawKeyEvent(17, !modifierKeys.ctrl, 0);
-                        }}
-                        className={`btn-modifier-key ${modifierKeys.ctrl ? 'active' : ''}`}
-                      >
-                        Ctrl
-                      </button>
-                      <button 
-                        onClick={() => {
-                          setModifierKeys(prev => ({ ...prev, alt: !prev.alt }));
-                          sendRawKeyEvent(18, !modifierKeys.alt, modifierKeys.ctrl ? 2 : 0);
-                        }}
-                        className={`btn-modifier-key ${modifierKeys.alt ? 'active' : ''}`}
-                      >
-                        Alt
-                      </button>
-                      <button 
-                        onClick={() => {
-                          setModifierKeys(prev => ({ ...prev, shift: !prev.shift }));
-                          sendRawKeyEvent(16, !modifierKeys.shift, (modifierKeys.ctrl ? 2 : 0) | (modifierKeys.alt ? 4 : 0));
-                        }}
-                        className={`btn-modifier-key ${modifierKeys.shift ? 'active' : ''}`}
-                      >
-                        Shift
-                      </button>
-                      <button 
-                        onClick={() => {
-                          setModifierKeys(prev => ({ ...prev, meta: !prev.meta }));
-                          sendRawKeyEvent(91, !modifierKeys.meta, (modifierKeys.ctrl ? 2 : 0) | (modifierKeys.alt ? 4 : 0) | (modifierKeys.shift ? 1 : 0));
-                        }}
-                        className={`btn-modifier-key ${modifierKeys.meta ? 'active' : ''}`}
-                      >
-                        Win
-                      </button>
-                      <button 
-                        onClick={() => sendSpecialKeyRemote("Escape")}
-                        className="btn-modifier-key"
-                      >
-                        Esc
-                      </button>
-                      <button 
-                        onClick={() => sendSpecialKeyRemote("Tab")}
-                        className="btn-modifier-key"
-                      >
-                        Tab
-                      </button>
-                    </div>
-                  </div>
-                )}
               </div>
             )}
 
@@ -5009,7 +4685,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
               <button 
                 onClick={onBack}
                 className="mobile-footer-btn"
-                title="Disconnect"
+                title={t('Disconnect')} aria-label={t('Disconnect')}
               >
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                   <line x1="18" y1="6" x2="6" y2="18"></line>
@@ -5021,7 +4697,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
               <button 
                 onClick={() => setShowSettingsModal(true)}
                 className="mobile-footer-btn"
-                title="Display Settings"
+                title={t('Stream settings')} aria-label={t('Stream settings')}
               >
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                   <rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect>
@@ -5044,7 +4720,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
                   }
                 }}
                 className={`mobile-footer-btn ${isKeyboardActive ? 'active' : ''}`}
-                title="Keyboard"
+                title={t('Keyboard')} aria-label={t('Keyboard')}
               >
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                   <rect x="2" y="4" width="20" height="16" rx="2" ry="2"></rect>
@@ -5060,7 +4736,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
                   localStorage.setItem('lunaris_mobile_touch_mode', nextMode);
                 }}
                 className={`mobile-footer-btn ${touchMode === 'trackpad' ? 'active-trackpad' : ''}`}
-                title={`Mouse Mode: ${touchMode === 'trackpad' ? 'Trackpad' : 'Touchscreen'}`}
+                title={touchMode === 'trackpad' ? t('Touchpad') : t('Direct touch')} aria-label={touchMode === 'trackpad' ? t('Touchpad') : t('Direct touch')}
               >
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                   <rect x="5" y="2" width="14" height="20" rx="7" ry="7"></rect>
@@ -5077,7 +4753,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
                   localStorage.setItem('lunaris_stream_muted', String(newValue));
                 }}
                 className={`mobile-footer-btn ${!isMuted ? 'active' : ''}`}
-                title={isMuted ? "Unmute Audio" : "Mute Audio"}
+                title={isMuted ? t('Sound off') : t('Sound on')} aria-label={isMuted ? t('Sound off') : t('Sound on')}
               >
                 {isMuted ? (
                   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
@@ -5097,7 +4773,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
               <button
                 onClick={toggleFullscreen}
                 className={`mobile-footer-btn ${isFullscreen ? 'active' : ''}`}
-                title={isFullscreen ? 'Exit Fullscreen' : 'Fullscreen'}
+                title={isFullscreen ? t('Exit full screen') : t('Full screen')} aria-label={isFullscreen ? t('Exit full screen') : t('Full screen')}
               >
                 {isFullscreen ? (
                   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
@@ -5138,7 +4814,8 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
               <button 
                 onClick={() => setShowMobileMenu(prev => !prev)}
                 className={`mobile-footer-btn ${showMobileMenu ? 'active' : ''}`}
-                title="Controls Menu"
+                title={t('Controls')}
+                aria-label={t('Controls')}
               >
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                   <circle cx="12" cy="5" r="1"></circle>
