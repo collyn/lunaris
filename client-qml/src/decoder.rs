@@ -371,7 +371,7 @@ impl HardwareDecoder {
             if self.hw_device_type == ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_D3D11VA
                 && crate::bridge::qobject::d3d11_render_failed()
             {
-                return "D3D11 present failed; using CPU/QVideoSink".to_string();
+                return "D3D11 direct present off (LUNARIS_D3D11_PRESENT=1) or failed; using CPU/QVideoSink".to_string();
             }
             return "GPU decode with CPU/QVideoSink present".to_string();
         }

@@ -16,6 +16,15 @@
 
 namespace {
 std::atomic_bool g_d3d11RenderFailed{false};
+
+// Drawing the decoder's textures directly is off unless LUNARIS_D3D11_PRESENT=1:
+// FFmpeg decodes on its own D3D11 device, and Qt's device cannot read that
+// device's textures (the copy below does nothing: a dark green picture).
+// Decoded frames then go through the CPU (QVideoSink), which is correct.
+bool d3d11PresentEnabled() {
+    static const bool enabled = qEnvironmentVariableIntValue("LUNARIS_D3D11_PRESENT") == 1;
+    return enabled;
+}
 bool g_d3d11StreamActive = false;
 D3D11VideoItem *g_activeItem = nullptr;
 
@@ -337,7 +346,7 @@ QSGNode *D3D11VideoItem::updatePaintNode(QSGNode *oldNode, UpdatePaintNodeData *
 
 void D3D11VideoItem::renderNative() {
 #if defined(Q_OS_WIN)
-    if (!g_d3d11StreamActive || g_d3d11RenderFailed.load(std::memory_order_acquire))
+    if (!g_d3d11StreamActive || d3d11_render_failed())
         return;
 
     QQuickWindow *window = this->window();
@@ -448,7 +457,7 @@ void D3D11VideoItem::renderNative() {
 extern "C" bool deliver_d3d11_frame(uint64_t texture_ptr, int array_index,
                                      int width, int height, uint32_t format) {
 #if defined(Q_OS_WIN)
-    if (!g_d3d11StreamActive || g_d3d11RenderFailed.load(std::memory_order_acquire))
+    if (!g_d3d11StreamActive || d3d11_render_failed())
         return false;
 
     {
@@ -473,7 +482,7 @@ extern "C" bool deliver_d3d11_frame(uint64_t texture_ptr, int array_index,
 }
 
 extern "C" bool d3d11_render_failed() {
-    return g_d3d11RenderFailed.load(std::memory_order_acquire);
+    return !d3d11PresentEnabled() || g_d3d11RenderFailed.load(std::memory_order_acquire);
 }
 
 extern "C" void set_d3d11_stream_active(bool active) {
