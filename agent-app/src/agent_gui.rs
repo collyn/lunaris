@@ -236,6 +236,8 @@ fn make_default_config() -> AgentConfig {
         direct_password: String::new(),
         allow_clipboard: true,
         allow_file_transfer: true,
+        // The standalone agent has no accept window: the password only.
+        approve_mode: "password".to_string(),
     }
 }
 
