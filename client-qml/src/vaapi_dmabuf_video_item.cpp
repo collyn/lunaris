@@ -226,7 +226,7 @@ bool VaapiDmabufVideoItem::ensureGlResources() {
             uniform sampler2D uvTexture;
             void main() {
                 float y = texture2D(yTexture, vTexCoord).r;
-                vec2 uv = texture2D(uvTexture, vTexCoord).ra - vec2(0.5, 0.5);
+                vec2 uv = texture2D(uvTexture, vTexCoord).rg - vec2(0.5, 0.5);
                 float r = y + 1.402 * uv.y;
                 float g = y - 0.344136 * uv.x - 0.714136 * uv.y;
                 float b = y + 1.772 * uv.x;
@@ -342,7 +342,7 @@ bool VaapiDmabufVideoItem::importPendingFrameLocked() {
                                        0x20203852 /* R8 */, g_pendingFrame.offset0, g_pendingFrame.pitch0,
                                        g_pendingFrame.modifier);
     void *newUvImage = createPlaneImage(display, g_pendingFrame.fd1, g_pendingFrame.width / 2, g_pendingFrame.height / 2,
-                                        0x38384752 /* GR88 */, g_pendingFrame.offset1, g_pendingFrame.pitch1,
+                                        0x38385247 /* GR88: U in red, V in green */, g_pendingFrame.offset1, g_pendingFrame.pitch1,
                                         g_pendingFrame.modifier);
     closeFrameFds(g_pendingFrame);
     g_pendingFrame.newFrame = false;
@@ -350,6 +350,9 @@ bool VaapiDmabufVideoItem::importPendingFrameLocked() {
     if (!newYImage || !newUvImage) {
         if (newYImage) eglDestroyImageKHRFn(display, static_cast<EGLImageKHR>(newYImage));
         if (newUvImage) eglDestroyImageKHRFn(display, static_cast<EGLImageKHR>(newUvImage));
+        std::cerr << "Lunaris: eglCreateImageKHR for the NV12 planes failed: EGL error 0x" << std::hex << eglGetError()
+                  << " (modifier 0x" << g_pendingFrame.modifier << std::dec << ", " << g_pendingFrame.width << "x"
+                  << g_pendingFrame.height << ", pitches " << g_pendingFrame.pitch0 << "/" << g_pendingFrame.pitch1 << ")" << std::endl;
         markDmabufFailed("eglCreateImageKHR failed for NV12 planes");
         return false;
     }

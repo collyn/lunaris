@@ -641,11 +641,12 @@ async fn run_session_logic(
                 display_id,
                 virtual_display,
                 chroma,
+                microphone,
                 ice_servers,
             } => {
                 info!(
-                    "Incoming session request from client: {} codec={:?} encoder={:?} res={:?}x{:?} fps={:?} bitrate={:?} display={:?} virtual_display={:?} chroma={:?}",
-                    client_id, codec, encoder, width, height, fps, bitrate, display_id, virtual_display, chroma
+                    "Incoming session request from client: {} codec={:?} encoder={:?} res={:?}x{:?} fps={:?} bitrate={:?} display={:?} virtual_display={:?} chroma={:?} microphone={:?}",
+                    client_id, codec, encoder, width, height, fps, bitrate, display_id, virtual_display, chroma, microphone
                 );
 
                 // Clean up previous active session
@@ -689,6 +690,7 @@ async fn run_session_logic(
                     display_id,
                     virtual_display,
                     chroma.as_deref() == Some("444"),
+                    microphone.unwrap_or(false),
                     ice_servers,
                 )
                 .await

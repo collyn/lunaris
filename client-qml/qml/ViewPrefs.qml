@@ -10,6 +10,8 @@ QtObject {
     property bool audioEnabled: true
     // 0-100
     property int volume: 100
+    // Ask the remote computer to record its microphone into the sound too.
+    property bool recordMicrophone: false
     // Clipboard both ways and sending files with the remote computer.
     property bool clipboardSync: true
     property bool fileTransfer: true
@@ -25,7 +27,7 @@ QtObject {
 
     function toJson() {
         return JSON.stringify({ displayMode: displayMode, audioEnabled: audioEnabled, volume: volume,
-                                clipboardSync: clipboardSync, fileTransfer: fileTransfer, gamepad: gamepad });
+                                recordMicrophone: recordMicrophone, clipboardSync: clipboardSync, fileTransfer: fileTransfer, gamepad: gamepad });
     }
     function fromJson(text) {
         if (!text) return;
@@ -34,6 +36,7 @@ QtObject {
             if (["fit", "fill", "stretch", "native"].indexOf(p.displayMode) !== -1) displayMode = p.displayMode;
             if (typeof p.audioEnabled === "boolean") audioEnabled = p.audioEnabled;
             if (typeof p.volume === "number") volume = Math.max(0, Math.min(100, Math.round(p.volume)));
+            if (typeof p.recordMicrophone === "boolean") recordMicrophone = p.recordMicrophone;
             if (typeof p.clipboardSync === "boolean") clipboardSync = p.clipboardSync;
             if (typeof p.fileTransfer === "boolean") fileTransfer = p.fileTransfer;
             if (typeof p.gamepad === "boolean") gamepad = p.gamepad;

@@ -221,6 +221,7 @@ async fn main() -> Result<()> {
         display_id: None,
         virtual_display: None,
         chroma: chroma.clone(),
+        microphone: None,
     })?;
     let offer = recv_until(&mut in_rx, Duration::from_secs(15), |m| {
         matches!(m, SignalingMessage::Sdp { sdp, .. } if matches!(sdp.ty, RtcSdpType::Offer)) || matches!(m, SignalingMessage::Error { .. })

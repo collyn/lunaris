@@ -131,6 +131,11 @@ export default function StreamSettingsDialog({
   codecLabels = {}, encoders = [], virtualScreen, showNativeClient, viewer: viewerProp,
 }: Props) {
   const [category, setCategory] = useState<Category>('video');
+  // Ask the remote computer to record its microphone too (sent with the
+  // next session request; the app keeps the same choice in view_prefs).
+  const [recordMic, setRecordMic] = useState<boolean>(() => {
+    try { return localStorage.getItem('lunaris_stream_microphone') === 'true'; } catch { return false; }
+  });
   const storedViewer = useStoredViewer();
   const viewer = viewerProp ?? storedViewer;
   const canvasSupported = typeof (window as any).MediaStreamTrackProcessor !== 'undefined';
@@ -254,6 +259,19 @@ export default function StreamSettingsDialog({
                       disabled={viewer.muted}
                       onChange={(e) => viewer.setVolume(Number(e.target.value))}
                       aria-label={t('Volume')}
+                    />
+                  </Row>
+                </div>
+                <h3 className="ssd-section">{t('Record')}</h3>
+                <div className="ssd-card">
+                  <Row title={t("Remote computer's microphone")} hint={t('Also send what its microphone hears, mixed with its sound. Applies when you next connect.')}>
+                    <Switch
+                      label={t("Remote computer's microphone")}
+                      checked={recordMic}
+                      onChange={(v) => {
+                        setRecordMic(v);
+                        try { localStorage.setItem('lunaris_stream_microphone', String(v)); } catch { /* private mode */ }
+                      }}
                     />
                   </Row>
                 </div>

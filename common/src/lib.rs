@@ -206,6 +206,9 @@ pub enum SignalingMessage {
         /// Chroma subsampling: "420" (default) or "444".
         #[serde(default, skip_serializing_if = "Option::is_none")]
         chroma: Option<String>,
+        /// Also record the host's microphone into the stream's sound.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        microphone: Option<bool>,
     },
     // Server notifying agent about session request
     IncomingSession {
@@ -222,6 +225,9 @@ pub enum SignalingMessage {
         /// Chroma subsampling requested by the client: "420" (default) or "444".
         #[serde(default, skip_serializing_if = "Option::is_none")]
         chroma: Option<String>,
+        /// Also record the host's microphone into the stream's sound.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        microphone: Option<bool>,
         ice_servers: Option<Vec<RtcIceServer>>,
     },
     /// Client: a file-transfer connection to `host_id`, separate from any

@@ -234,6 +234,7 @@ pub async fn setup_bridge_session(
     display_id: Option<String>,
     virtual_display: Option<bool>,
     yuv444: bool,
+    microphone: bool,
     ice_servers: Option<Vec<common::RtcIceServer>>,
 ) -> Result<Arc<BridgeSession>> {
     info!("Media library active: host cursor visible by default (toggle with Ctrl+Alt+Shift+N)");
@@ -838,6 +839,7 @@ pub async fn setup_bridge_session(
         preferred_encoder: encoder.clone(),
         virtual_display: virtual_display.unwrap_or(false),
         yuv444,
+        microphone,
     };
 
     let (pipeline, mut media_event_rx, pipeline_cmd_tx) =
@@ -1409,6 +1411,11 @@ pub async fn setup_bridge_session(
                                     }
                                     _ = &mut shutdown_rx => {
                                         info!("WebTransport accept loop received shutdown signal, exiting.");
+                                        // Close the session's connections too: an open
+                                        // connection keeps the UDP port until its idle
+                                        // timeout, and the next session then has to take
+                                        // a random port.
+                                        endpoint_arc.close(wtransport::VarInt::from_u32(0), b"session ended");
                                         break;
                                     }
                                 }

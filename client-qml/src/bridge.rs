@@ -1106,6 +1106,11 @@ pub mod qobject {
         #[qinvokable]
         fn set_audio(self: Pin<&mut StreamBridge>, enabled: bool, volume: i32);
 
+        /// Ask the remote computer to record its microphone too (from the
+        /// next session request).
+        #[qinvokable]
+        fn set_record_microphone(self: Pin<&mut StreamBridge>, on: bool);
+
         /// Clipboard sync and file transfer on/off (this device's settings).
         #[qinvokable]
         fn set_share_options(self: Pin<&mut StreamBridge>, clipboard: bool, files: bool);
@@ -2841,6 +2846,10 @@ impl qobject::StreamBridge {
 
     pub fn set_audio(self: Pin<&mut Self>, enabled: bool, volume: i32) {
         crate::audio::set_output(enabled, volume.clamp(0, 100) as u32);
+    }
+
+    pub fn set_record_microphone(self: Pin<&mut Self>, on: bool) {
+        crate::audio::set_record_microphone(on);
     }
 
     pub fn set_share_options(self: Pin<&mut Self>, clipboard: bool, files: bool) {
@@ -4886,6 +4895,7 @@ async fn run_webrtc_client_task(
         display_id,
         virtual_display: if virtual_display { Some(true) } else { None },
         chroma: request_chroma,
+        microphone: crate::audio::record_microphone().then_some(true),
     };
     let request_with_codec = move |codec: &str| -> ClientMessage {
         let mut sig = request_template.clone();

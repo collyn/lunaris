@@ -711,6 +711,7 @@ async fn handle_client_signaling(
             display_id,
             virtual_display,
             chroma,
+            microphone,
         } => {
             info!("Client {} requested session for host {} with settings: w={:?}, h={:?}, fps={:?}, bitrate={:?}, codec={:?}, app_id={:?}, virtual_display={:?}, chroma={:?}", client_id, host_id, width, height, fps, bitrate, codec, app_id, virtual_display, chroma);
 
@@ -765,6 +766,7 @@ async fn handle_client_signaling(
                         display_id: display_id.clone(),
                         virtual_display,
                         chroma: chroma.clone(),
+                        microphone,
                         ice_servers: Some(ice_servers),
                     });
                 if let Err(e) = agent_tx.send(incoming_msg) {

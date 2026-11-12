@@ -1322,7 +1322,8 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
               encoder: activeEncoder !== 'auto' ? activeEncoder : undefined,
               display_id: activeDisplay !== 'default' ? activeDisplay : undefined,
               virtual_display: activeVirtualDisplay ? true : undefined,
-              chroma: activeChroma === '444' ? '444' : undefined
+              chroma: activeChroma === '444' ? '444' : undefined,
+              microphone: (() => { try { return localStorage.getItem('lunaris_stream_microphone') === 'true'; } catch { return false; } })() ? true : undefined
             }
           }
         }));

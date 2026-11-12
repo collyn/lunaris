@@ -428,6 +428,22 @@ Rectangle {
                 }
             }
 
+            SectionTitle { visible: settingsRoot.category === "audio"; text: I18n.t("Record") }
+            Card {
+                visible: settingsRoot.category === "audio"
+                SettingRow {
+                    divider: false
+                    title: I18n.t("Remote computer's microphone")
+                    hint: I18n.t("Also send what its microphone hears, mixed with its sound. Applies when you next connect.")
+                    Toggle {
+                        anchors.right: parent.right
+                        checked: ViewPrefs.recordMicrophone
+                        onToggled: ViewPrefs.recordMicrophone = checked
+                        Accessible.name: I18n.t("Remote computer's microphone")
+                    }
+                }
+            }
+
             // ===== Clipboard & files (this device, applied right away) =====
             SectionTitle { visible: settingsRoot.category === "sharing"; text: I18n.t("Clipboard") }
             Card {

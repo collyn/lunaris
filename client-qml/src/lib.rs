@@ -9,6 +9,7 @@ use cxx_qt_lib::{QQmlApplicationEngine, QUrl};
 pub mod audio;
 pub mod bridge;
 pub mod decoder;
+pub mod display_gpu;
 pub mod files;
 pub mod gamepad;
 pub mod host;
@@ -492,7 +493,10 @@ pub fn run() {
                 // CUDA-GL: enable by default on NVIDIA hardware unless explicitly
                 // disabled.  The runtime will self-disable if CUDA init fails.
                 if !cuda_gl_disabled {
-                    let nvidia = linux_nvidia_cuda_present();
+                    // Interop needs the OpenGL context on the NVIDIA GPU: not
+                    // when the displays run on another one.
+                    let nvidia = linux_nvidia_cuda_present()
+                        && crate::display_gpu::display_on_nvidia_or_unknown();
                     let cuda_gl_on = cuda_gl_explicit
                         .as_deref()
                         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))

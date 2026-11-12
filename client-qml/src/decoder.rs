@@ -4,6 +4,8 @@ use ffmpeg_next::sys as ffi;
 // bindgen generates it as a global constant, while on others it is an enum variant (SwsFlags::SWS_BILINEAR).
 const SWS_BILINEAR: i32 = 2;
 const DRM_FORMAT_NV12: u32 = 0x3231_564e;
+const DRM_FORMAT_R8: u32 = 0x2020_3852; // 'R8  '
+const DRM_FORMAT_GR88: u32 = 0x3838_5247; // 'GR88'
 
 #[cfg(target_os = "linux")]
 extern "C" {
@@ -88,6 +90,8 @@ pub struct HardwareDecoder {
     /// range) it was made for.
     bgrx_sws_ctx: *mut ffi::SwsContext,
     bgrx_key: (i32, i32, i32, i32, i32),
+    /// Why VAAPI frames went through the CPU was logged once.
+    dmabuf_layout_logged: bool,
 }
 
 unsafe impl Send for HardwareDecoder {}
@@ -134,7 +138,8 @@ impl HardwareDecoder {
         let mut hw_device_type = ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_NONE;
         let hardware_decode_requested = !disable_cuda;
 
-        let mut candidates = Vec::new();
+        // (device type, device to open: None = FFmpeg's default)
+        let mut candidates: Vec<(ffi::AVHWDeviceType, Option<String>)> = Vec::new();
         if hardware_decode_requested {
             let cuda_disabled = std::env::var("LUNARIS_DISABLE_CUDA").is_ok();
             // Use the same logic as cuda_gl_requested() — auto-enable on
@@ -142,46 +147,62 @@ impl HardwareDecoder {
             let cuda_gl_on = Self::cuda_gl_requested();
 
             if cfg!(target_os = "linux") {
+                // Displays on another GPU than NVIDIA (e.g. an AMD card with
+                // the NVIDIA one driving no monitor): CUDA frames can't reach
+                // the app's OpenGL without a copy through the CPU, so decode
+                // with VAAPI on the display GPU first (frames go to OpenGL as
+                // DMA-BUFs). FFmpeg's default VAAPI device is renderD128,
+                // often an unrelated GPU.
+                let display = crate::display_gpu::display_gpu();
+                let display_node = display
+                    .as_ref()
+                    .filter(|g| g.vendor != crate::display_gpu::Vendor::Nvidia)
+                    .and_then(|g| g.render_node.clone());
+                if let Some(node) = &display_node {
+                    println!("Displays run on {:?} ({}): trying VAAPI decoding there first", display.as_ref().map(|g| g.vendor), node);
+                    candidates.push((ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_VAAPI, Some(node.clone())));
+                }
                 let prefer_cuda_decode = !cuda_disabled
                     && (cuda_gl_on || Self::linux_nvidia_cuda_present());
                 if prefer_cuda_decode {
-                    candidates.push(ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_CUDA);
+                    candidates.push((ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_CUDA, None));
                 }
-                candidates.push(ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_VAAPI);
-                candidates.push(ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_VDPAU);
+                candidates.push((ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_VAAPI, None));
+                candidates.push((ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_VDPAU, None));
                 if !prefer_cuda_decode && !cuda_disabled {
-                    candidates.push(ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_CUDA);
+                    candidates.push((ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_CUDA, None));
                 } else if cuda_disabled {
                     println!("CUDA hardware decoding is disabled.");
                 }
             } else if cfg!(target_os = "windows") {
                 if cuda_gl_on && !cuda_disabled {
-                    candidates.push(ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_CUDA);
+                    candidates.push((ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_CUDA, None));
                 }
-                candidates.push(ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_D3D11VA);
-                candidates.push(ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_DXVA2);
+                candidates.push((ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_D3D11VA, None));
+                candidates.push((ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_DXVA2, None));
                 if !cuda_gl_on && !cuda_disabled {
-                    candidates.push(ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_CUDA);
+                    candidates.push((ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_CUDA, None));
                 }
             } else if cfg!(target_os = "macos") {
-                candidates.push(ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_VIDEOTOOLBOX);
+                candidates.push((ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_VIDEOTOOLBOX, None));
             }
         } else {
             println!("All hardware decoding is disabled (Software/FFmpeg mode).");
         }
 
-        for &dev_type in &candidates {
+        for (dev_type, device) in &candidates {
+            let device_c = device.as_deref().and_then(|d| std::ffi::CString::new(d).ok());
             let err = unsafe {
                 ffi::av_hwdevice_ctx_create(
                     &mut hw_device_ctx,
-                    dev_type,
-                    std::ptr::null(),
+                    *dev_type,
+                    device_c.as_ref().map_or(std::ptr::null(), |c| c.as_ptr()),
                     std::ptr::null_mut(),
                     0,
                 )
             };
             if err >= 0 && !hw_device_ctx.is_null() {
-                hw_device_type = dev_type;
+                hw_device_type = *dev_type;
                 break;
             }
         }
@@ -232,6 +253,7 @@ impl HardwareDecoder {
             last_format: -1,
             bgrx_sws_ctx: std::ptr::null_mut(),
             bgrx_key: (0, 0, -1, -1, -1),
+            dmabuf_layout_logged: false,
         })
     }
 
@@ -250,16 +272,16 @@ impl HardwareDecoder {
 
     /// Whether the CUDA-GL native present path is requested.
     /// Explicit `LUNARIS_CLIENT_CUDA_GL=1` forces it on; `=0` forces it off.
-    /// When unset, auto-enable on Linux (where `lib.rs` detected OpenGL and
-    /// set the env var), otherwise off.
+    /// When unset, off: `lib.rs` sets it when OpenGL runs on an NVIDIA GPU.
     fn cuda_gl_requested() -> bool {
         match std::env::var("LUNARIS_CLIENT_CUDA_GL") {
             Ok(ref v) if v == "1" || v.eq_ignore_ascii_case("true") => true,
             Ok(_) => false, // explicit "0" / "false" / etc.
             Err(_) => {
-                // Not set at all — auto-enable on Linux where we know
-                // lib.rs attempted OpenGL setup.
-                cfg!(target_os = "linux")
+                // Not set: lib.rs found no OpenGL scenegraph or NVIDIA card,
+                // or CUDA-GL was turned off (LUNARIS_CLIENT_CUDA_GL=0 is
+                // cleared there). Interop only works with OpenGL on NVIDIA.
+                false
             }
         }
     }
@@ -813,6 +835,14 @@ impl HardwareDecoder {
             || !Self::dmabuf_gl_requested()
             || crate::bridge::qobject::dmabuf_render_failed()
         {
+            if self.hw_device_type == ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_VAAPI && !self.dmabuf_layout_logged {
+                self.dmabuf_layout_logged = true;
+                println!(
+                    "VAAPI frames go through the CPU: DMA-BUF present requested={} failed={}",
+                    Self::dmabuf_gl_requested(),
+                    crate::bridge::qobject::dmabuf_render_failed()
+                );
+            }
             return Ok(false);
         }
 
@@ -822,9 +852,16 @@ impl HardwareDecoder {
                 return Ok(false);
             }
 
+            // Without a destination format FFmpeg maps the surface into
+            // ordinary memory (NV12); ask for DMA-BUF handles instead.
+            (*mapped_frame).format = ffi::AVPixelFormat::AV_PIX_FMT_DRM_PRIME as i32;
             let map_err =
                 ffi::av_hwframe_map(mapped_frame, gpu_frame, ffi::AV_HWFRAME_MAP_READ as i32);
             if map_err < 0 {
+                if !self.dmabuf_layout_logged {
+                    self.dmabuf_layout_logged = true;
+                    println!("VAAPI frames can't be mapped as DMA-BUFs ({}); copying through the CPU", map_err);
+                }
                 ffi::av_frame_free(&mut (mapped_frame as *mut _));
                 return Ok(false);
             }
@@ -832,6 +869,10 @@ impl HardwareDecoder {
             if (*mapped_frame).format != ffi::AVPixelFormat::AV_PIX_FMT_DRM_PRIME as i32
                 || (*mapped_frame).data[0].is_null()
             {
+                if !self.dmabuf_layout_logged {
+                    self.dmabuf_layout_logged = true;
+                    println!("VAAPI frames go through the CPU: mapped format {} is not DRM PRIME", (*mapped_frame).format);
+                }
                 ffi::av_frame_free(&mut (mapped_frame as *mut _));
                 return Ok(false);
             }
@@ -842,14 +883,32 @@ impl HardwareDecoder {
                 return Ok(false);
             }
 
+            // NV12 comes as one layer with two planes, or (Mesa, which
+            // exports separate layers) as an R8 layer for Y and a GR88 layer
+            // for UV. Either way the renderer imports each plane on its own.
             let layer = (*desc).layers[0];
-            if layer.format != DRM_FORMAT_NV12 || layer.nb_planes < 2 {
+            let (plane0, plane1) = if layer.format == DRM_FORMAT_NV12 && layer.nb_planes >= 2 {
+                (layer.planes[0], layer.planes[1])
+            } else if (*desc).nb_layers >= 2
+                && layer.format == DRM_FORMAT_R8
+                && layer.nb_planes >= 1
+                && (*desc).layers[1].format == DRM_FORMAT_GR88
+                && (*desc).layers[1].nb_planes >= 1
+            {
+                (layer.planes[0], (*desc).layers[1].planes[0])
+            } else {
+                if !self.dmabuf_layout_logged {
+                    self.dmabuf_layout_logged = true;
+                    println!(
+                        "VAAPI frames can't be shown as DMA-BUFs (layers={}, first format={:#x}, planes={}); copying through the CPU",
+                        (*desc).nb_layers,
+                        layer.format,
+                        layer.nb_planes
+                    );
+                }
                 ffi::av_frame_free(&mut (mapped_frame as *mut _));
                 return Ok(false);
-            }
-
-            let plane0 = layer.planes[0];
-            let plane1 = layer.planes[1];
+            };
             if plane0.object_index < 0
                 || plane1.object_index < 0
                 || plane0.object_index as usize >= (*desc).objects.len()
@@ -880,7 +939,7 @@ impl HardwareDecoder {
             let delivered = crate::bridge::qobject::deliver_dmabuf_frame(
                 fd0,
                 fd1,
-                layer.format,
+                DRM_FORMAT_NV12,
                 modifier,
                 plane0.offset as i32,
                 plane0.pitch as i32,

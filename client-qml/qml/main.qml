@@ -633,14 +633,11 @@ ApplicationWindow {
                 id: videoOutput
                 anchors.fill: parent
                 fillMode: VideoOutput.Stretch
-                visible: !window.useCuda || !window.nativeVideoActive
-
-                onVisibleChanged: {
-                    if (visible && videoOutput.videoSink) {
-                        console.log("VideoOutput became visible, registering VideoSink: " + videoOutput.videoSink);
-                        bridge.setVideoSink(videoOutput.videoSink);
-                    }
-                }
+                // Always shown, under the native video items: they cover it
+                // while they present. Hiding it and showing it again (when a
+                // native path fails mid-stream and frames fall back to the
+                // video sink) left it black.
+                visible: true
             }
 
             GpuVideoItem {
@@ -1357,6 +1354,7 @@ ApplicationWindow {
         function onDisplayModeChanged() { bridge.saveStore("view_prefs", ViewPrefs.toJson()); }
         function onAudioEnabledChanged() { window.applyAudio(); }
         function onVolumeChanged() { window.applyAudio(); }
+        function onRecordMicrophoneChanged() { window.applyAudio(); }
         function onClipboardSyncChanged() { window.applySharing(); }
         function onFileTransferChanged() { window.applySharing(); }
         function onGamepadChanged() { window.applySharing(); }
@@ -1368,12 +1366,14 @@ ApplicationWindow {
     }
     function applyAudio() {
         bridge.setAudio(ViewPrefs.audioEnabled, ViewPrefs.volume);
+        bridge.setRecordMicrophone(ViewPrefs.recordMicrophone);
         bridge.saveStore("view_prefs", ViewPrefs.toJson());
     }
 
     Component.onCompleted: {
         ViewPrefs.fromJson(bridge.loadStore("view_prefs"));
         bridge.setAudio(ViewPrefs.audioEnabled, ViewPrefs.volume);
+        bridge.setRecordMicrophone(ViewPrefs.recordMicrophone);
         bridge.setShareOptions(ViewPrefs.clipboardSync, ViewPrefs.fileTransfer);
         bridge.setGamepadEnabled(ViewPrefs.gamepad);
 
