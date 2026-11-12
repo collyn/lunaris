@@ -628,6 +628,10 @@ pub mod qobject {
             height: i32,
         );
 
+        /// Colours of the frames the renderers draw (from the stream).
+        #[rust_name = "set_video_color"]
+        fn set_video_color(bt709: bool, full_range: bool);
+
         #[rust_name = "warp_cursor_helper"]
         fn warp_cursor_helper(x: i32, y: i32);
 

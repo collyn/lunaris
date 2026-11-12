@@ -1,3 +1,4 @@
+#include "video_helper.h"
 #include "gpu_video_item.h"
 #include <QQuickWindow>
 #include "host_cursor.h"
@@ -276,16 +277,18 @@ void GpuVideoItem::initCudaGL() {
         "out vec4 fragColor;\n"
         "uniform sampler2D yTexture;\n"
         "uniform sampler2D uvTexture;\n"
+        "uniform vec4 uRange;\n"
+        "uniform vec4 uCoef;\n"
         "in vec2 texCoord;\n"
         "void main() {\n"
         "    float y = texture(yTexture, texCoord).r;\n"
         "    vec2 uv = texture(uvTexture, texCoord).rg;\n"
-        "    y = y - (16.0 / 255.0);\n"
-        "    float cb = uv.r - (128.0 / 255.0);\n"
-        "    float cr = uv.g - (128.0 / 255.0);\n"
-        "    float r = 1.164 * y + 1.793 * cr;\n"
-        "    float g = 1.164 * y - 0.534 * cr - 0.213 * cb;\n"
-        "    float b = 1.164 * y + 2.115 * cb;\n"
+        "    y = (y - uRange.x) * uRange.y;\n"
+        "    float cb = (uv.r - (128.0 / 255.0)) * uRange.z;\n"
+        "    float cr = (uv.g - (128.0 / 255.0)) * uRange.z;\n"
+        "    float r = y + uCoef.x * cr;\n"
+        "    float g = y - uCoef.y * cb - uCoef.z * cr;\n"
+        "    float b = y + uCoef.w * cb;\n"
         "    fragColor = vec4(clamp(vec3(r, g, b), 0.0, 1.0), 1.0);\n"
         "}\n";
 
@@ -301,16 +304,18 @@ void GpuVideoItem::initCudaGL() {
     const char* fsLegacy =
         "uniform sampler2D yTexture;\n"
         "uniform sampler2D uvTexture;\n"
+        "uniform vec4 uRange;\n"
+        "uniform vec4 uCoef;\n"
         "varying vec2 texCoord;\n"
         "void main() {\n"
         "    float y = texture2D(yTexture, texCoord).r;\n"
         "    vec2 uv = texture2D(uvTexture, texCoord).rg;\n"
-        "    y = y - (16.0 / 255.0);\n"
-        "    float cb = uv.r - (128.0 / 255.0);\n"
-        "    float cr = uv.g - (128.0 / 255.0);\n"
-        "    float r = 1.164 * y + 1.793 * cr;\n"
-        "    float g = 1.164 * y - 0.534 * cr - 0.213 * cb;\n"
-        "    float b = 1.164 * y + 2.115 * cb;\n"
+        "    y = (y - uRange.x) * uRange.y;\n"
+        "    float cb = (uv.r - (128.0 / 255.0)) * uRange.z;\n"
+        "    float cr = (uv.g - (128.0 / 255.0)) * uRange.z;\n"
+        "    float r = y + uCoef.x * cr;\n"
+        "    float g = y - uCoef.y * cb - uCoef.z * cr;\n"
+        "    float b = y + uCoef.w * cb;\n"
         "    gl_FragColor = vec4(clamp(vec3(r, g, b), 0.0, 1.0), 1.0);\n"
         "}\n";
 
@@ -318,16 +323,18 @@ void GpuVideoItem::initCudaGL() {
         "precision mediump float;\n"
         "uniform sampler2D yTexture;\n"
         "uniform sampler2D uvTexture;\n"
+        "uniform vec4 uRange;\n"
+        "uniform vec4 uCoef;\n"
         "varying vec2 texCoord;\n"
         "void main() {\n"
         "    float y = texture2D(yTexture, texCoord).r;\n"
         "    vec2 uv = texture2D(uvTexture, texCoord).rg;\n"
-        "    y = y - (16.0 / 255.0);\n"
-        "    float cb = uv.r - (128.0 / 255.0);\n"
-        "    float cr = uv.g - (128.0 / 255.0);\n"
-        "    float r = 1.164 * y + 1.793 * cr;\n"
-        "    float g = 1.164 * y - 0.534 * cr - 0.213 * cb;\n"
-        "    float b = 1.164 * y + 2.115 * cb;\n"
+        "    y = (y - uRange.x) * uRange.y;\n"
+        "    float cb = (uv.r - (128.0 / 255.0)) * uRange.z;\n"
+        "    float cr = (uv.g - (128.0 / 255.0)) * uRange.z;\n"
+        "    float r = y + uCoef.x * cr;\n"
+        "    float g = y - uCoef.y * cb - uCoef.z * cr;\n"
+        "    float b = y + uCoef.w * cb;\n"
         "    gl_FragColor = vec4(clamp(vec3(r, g, b), 0.0, 1.0), 1.0);\n"
         "}\n";
 
@@ -678,6 +685,11 @@ void GpuVideoItem::renderNative() {
     gl->glActiveTexture(GL_TEXTURE1);
     gl->glBindTexture(GL_TEXTURE_2D, m_uvTexture);
     gl->glUniform1i(gl->glGetUniformLocation(m_program, "uvTexture"), 1);
+    {
+        const YuvCoefficients c = video_yuv_coefficients();
+        gl->glUniform4f(gl->glGetUniformLocation(m_program, "uRange"), c.y_offset, c.y_scale, c.c_scale, 0.0f);
+        gl->glUniform4f(gl->glGetUniformLocation(m_program, "uCoef"), c.rv, c.gu, c.gv, c.bu);
+    }
 
     if (m_vao) m_vao->bind();
     gl->glDrawArrays(GL_TRIANGLES, 0, 6);

@@ -77,6 +77,18 @@ pub struct BgrxFrame {
     pub stride: i32,
 }
 
+/// Matrix (BT.709 or not: BT.601) and range (full or studio) of a frame
+/// from its tags; untagged frames are BT.709 studio range, as decoders
+/// assume for HD video (and the agent's untagged encoders produce).
+pub fn frame_color(colorspace: i32, color_range: i32, format: i32) -> (bool, bool) {
+    let bt601 = colorspace == ffi::AVColorSpace::AVCOL_SPC_BT470BG as i32
+        || colorspace == ffi::AVColorSpace::AVCOL_SPC_SMPTE170M as i32;
+    let full = color_range == ffi::AVColorRange::AVCOL_RANGE_JPEG as i32
+        || format == ffi::AVPixelFormat::AV_PIX_FMT_YUVJ420P as i32
+        || format == ffi::AVPixelFormat::AV_PIX_FMT_YUVJ444P as i32;
+    (!bt601, full)
+}
+
 pub struct HardwareDecoder {
     codec_ctx: *mut ffi::AVCodecContext,
     hw_device_ctx: *mut ffi::AVBufferRef,
@@ -92,6 +104,8 @@ pub struct HardwareDecoder {
     bgrx_key: (i32, i32, i32, i32, i32),
     /// Why VAAPI frames went through the CPU was logged once.
     dmabuf_layout_logged: bool,
+    /// (BT.709, full range) of the last frame, to log changes.
+    last_color: Option<(bool, bool)>,
 }
 
 unsafe impl Send for HardwareDecoder {}
@@ -254,6 +268,7 @@ impl HardwareDecoder {
             bgrx_sws_ctx: std::ptr::null_mut(),
             bgrx_key: (0, 0, -1, -1, -1),
             dmabuf_layout_logged: false,
+            last_color: None,
         })
     }
 
@@ -440,6 +455,14 @@ impl HardwareDecoder {
         gpu_frame: *mut ffi::AVFrame,
     ) -> Result<DecodedFrame, anyhow::Error> {
         let format = unsafe { (*gpu_frame).format };
+        // The renderers convert YCbCr with the stream's own matrix and range.
+        let (bt709, full_range) =
+            unsafe { frame_color((*gpu_frame).colorspace as i32, (*gpu_frame).color_range as i32, format) };
+        if self.last_color != Some((bt709, full_range)) {
+            self.last_color = Some((bt709, full_range));
+            println!("Video colours: {} {} range", if bt709 { "BT.709" } else { "BT.601" }, if full_range { "full" } else { "studio" });
+        }
+        crate::bridge::qobject::set_video_color(bt709, full_range);
         let is_cuda = format == ffi::AVPixelFormat::AV_PIX_FMT_CUDA as i32;
         let cuda_gl_failed = crate::bridge::qobject::cuda_gl_render_failed();
         if cuda_gl_failed {
@@ -1022,5 +1045,24 @@ impl Drop for HardwareDecoder {
                 ffi::sws_freeContext(self.bgrx_sws_ctx);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod color_tests {
+    use super::{ffi, frame_color};
+
+    #[test]
+    fn tags_choose_matrix_and_range() {
+        let nv12 = ffi::AVPixelFormat::AV_PIX_FMT_NV12 as i32;
+        let unspec = ffi::AVColorSpace::AVCOL_SPC_UNSPECIFIED as i32;
+        let mpeg = ffi::AVColorRange::AVCOL_RANGE_MPEG as i32;
+        let jpeg = ffi::AVColorRange::AVCOL_RANGE_JPEG as i32;
+        let no_range = ffi::AVColorRange::AVCOL_RANGE_UNSPECIFIED as i32;
+        // Untagged: BT.709 studio.
+        assert_eq!(frame_color(unspec, no_range, nv12), (true, false));
+        assert_eq!(frame_color(ffi::AVColorSpace::AVCOL_SPC_BT709 as i32, jpeg, nv12), (true, true));
+        assert_eq!(frame_color(ffi::AVColorSpace::AVCOL_SPC_SMPTE170M as i32, mpeg, nv12), (false, false));
+        assert_eq!(frame_color(unspec, no_range, ffi::AVPixelFormat::AV_PIX_FMT_YUVJ420P as i32), (true, true));
     }
 }

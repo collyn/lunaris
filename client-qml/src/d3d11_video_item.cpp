@@ -1,4 +1,5 @@
 #include "d3d11_video_item.h"
+#include "video_helper.h"
 
 #include <QQuickWindow>
 #include <QSGNode>
@@ -62,6 +63,8 @@ static ID3D11SamplerState *g_sampler = nullptr;
 static ID3D11BlendState *g_blendState = nullptr;
 static ID3D11RasterizerState *g_rasterState = nullptr;
 static ID3D11DepthStencilState *g_depthState = nullptr;
+// YCbCr -> RGB coefficients of the stream (video_yuv_coefficients()).
+static ID3D11Buffer *g_colorCB = nullptr;
 
 // Separate Y + UV plane textures & SRVs for NV12 conversion.
 static ID3D11Texture2D *g_yTex = nullptr;
@@ -86,6 +89,7 @@ static void releaseAllD3d() {
     if (g_blendState) { g_blendState->Release(); g_blendState = nullptr; }
     if (g_rasterState) { g_rasterState->Release(); g_rasterState = nullptr; }
     if (g_depthState) { g_depthState->Release(); g_depthState = nullptr; }
+    if (g_colorCB) { g_colorCB->Release(); g_colorCB = nullptr; }
     if (g_quadVB) { g_quadVB->Release(); g_quadVB = nullptr; }
     if (g_inputLayout) { g_inputLayout->Release(); g_inputLayout = nullptr; }
     if (g_vs) { g_vs->Release(); g_vs = nullptr; }
@@ -137,16 +141,17 @@ static const char *kPixelShaderNv12 = R"(
 Texture2D    texY  : register(t0);
 Texture2D    texUV : register(t1);
 SamplerState samp  : register(s0);
+// range: Y offset, Y scale, Cb/Cr scale; coef: R=Y+x*Cr, G=Y-y*Cb-z*Cr, B=Y+w*Cb
+cbuffer Color : register(b0) { float4 range; float4 coef; };
 struct PS_IN { float4 pos : SV_POSITION; float2 uv : TEXCOORD; };
 float4 main(PS_IN input) : SV_TARGET {
-    float  y  = texY.Sample(samp, input.uv).r;
-    float2 uv = texUV.Sample(samp, input.uv).rg;
-    float c = 1.1640625 * (y - 0.0625);
-    float d = uv.x - 0.5;
-    float e = uv.y - 0.5;
-    float r = saturate(c + 1.79296875 * d);
-    float g = saturate(c - 0.2138671875 * d - 0.533203125 * e);
-    float b = saturate(c + 2.1171875 * e);
+    float  y  = (texY.Sample(samp, input.uv).r - range.x) * range.y;
+    float2 c  = (texUV.Sample(samp, input.uv).rg - 128.0 / 255.0) * range.z;
+    float cb = c.x;
+    float cr = c.y;
+    float r = saturate(y + coef.x * cr);
+    float g = saturate(y - coef.y * cb - coef.z * cr);
+    float b = saturate(y + coef.w * cb);
     return float4(r, g, b, 1);
 }
 )";
@@ -397,6 +402,22 @@ void D3D11VideoItem::renderNative() {
     g_qtContext->PSSetShaderResources(0, 1, &g_ySrv);
     g_qtContext->PSSetShaderResources(1, 1, &g_uvSrv);
     g_qtContext->PSSetSamplers(0, 1, &g_sampler);
+
+    {
+        const YuvCoefficients c = video_yuv_coefficients();
+        const float data[8] = { c.y_offset, c.y_scale, c.c_scale, 0.0f, c.rv, c.gu, c.gv, c.bu };
+        if (!g_colorCB) {
+            D3D11_BUFFER_DESC cbDesc = {};
+            cbDesc.ByteWidth = sizeof(data);
+            cbDesc.Usage = D3D11_USAGE_DEFAULT;
+            cbDesc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+            D3D11_SUBRESOURCE_DATA init = { data, 0, 0 };
+            g_qtDevice->CreateBuffer(&cbDesc, &init, &g_colorCB);
+        } else {
+            g_qtContext->UpdateSubresource(g_colorCB, 0, nullptr, data, 0, 0);
+        }
+        if (g_colorCB) g_qtContext->PSSetConstantBuffers(0, 1, &g_colorCB);
+    }
 
     float blendFactor[4] = {1,1,1,1};
     g_qtContext->OMSetBlendState(g_blendState, blendFactor, 0xFFFFFFFF);

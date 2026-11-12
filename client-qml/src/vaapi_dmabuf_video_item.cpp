@@ -1,3 +1,4 @@
+#include "video_helper.h"
 #include "vaapi_dmabuf_video_item.h"
 #include "d3d11_video_item.h"
 
@@ -224,12 +225,14 @@ bool VaapiDmabufVideoItem::ensureGlResources() {
             varying vec2 vTexCoord;
             uniform sampler2D yTexture;
             uniform sampler2D uvTexture;
+            uniform vec4 uRange;
+            uniform vec4 uCoef;
             void main() {
-                float y = texture2D(yTexture, vTexCoord).r;
-                vec2 uv = texture2D(uvTexture, vTexCoord).rg - vec2(0.5, 0.5);
-                float r = y + 1.402 * uv.y;
-                float g = y - 0.344136 * uv.x - 0.714136 * uv.y;
-                float b = y + 1.772 * uv.x;
+                float y = (texture2D(yTexture, vTexCoord).r - uRange.x) * uRange.y;
+                vec2 uv = (texture2D(uvTexture, vTexCoord).rg - vec2(128.0 / 255.0)) * uRange.z;
+                float r = y + uCoef.x * uv.y;
+                float g = y - uCoef.y * uv.x - uCoef.z * uv.y;
+                float b = y + uCoef.w * uv.x;
                 gl_FragColor = vec4(r, g, b, 1.0);
             }
         )";
@@ -421,6 +424,11 @@ void VaapiDmabufVideoItem::renderNative() {
     g_gl->glActiveTexture(GL_TEXTURE1);
     g_gl->glBindTexture(GL_TEXTURE_2D, m_uvTexture);
     g_gl->glUniform1i(g_gl->glGetUniformLocation(m_program, "uvTexture"), 1);
+    {
+        const YuvCoefficients c = video_yuv_coefficients();
+        g_gl->glUniform4f(g_gl->glGetUniformLocation(m_program, "uRange"), c.y_offset, c.y_scale, c.c_scale, 0.0f);
+        g_gl->glUniform4f(g_gl->glGetUniformLocation(m_program, "uCoef"), c.rv, c.gu, c.gv, c.bu);
+    }
     g_gl->glBindBuffer(GL_ARRAY_BUFFER, m_vbo);
     g_gl->glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
     g_gl->glEnableVertexAttribArray(0);

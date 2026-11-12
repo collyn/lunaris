@@ -17,6 +17,38 @@
 #include <iostream>
 #include <cmath>
 #include <vector>
+#include <atomic>
+
+// Untagged streams: BT.709 studio range, as decoders assume for HD video.
+static std::atomic<bool> g_colorBt709{true};
+static std::atomic<bool> g_colorFullRange{false};
+
+void set_video_color(bool bt709, bool full_range) {
+    g_colorBt709.store(bt709);
+    g_colorFullRange.store(full_range);
+}
+
+bool video_color_bt709() { return g_colorBt709.load(); }
+bool video_color_full_range() { return g_colorFullRange.load(); }
+
+YuvCoefficients video_yuv_coefficients() {
+    YuvCoefficients c{};
+    if (g_colorFullRange.load()) {
+        c.y_offset = 0.0f;
+        c.y_scale = 1.0f;
+        c.c_scale = 1.0f;
+    } else {
+        c.y_offset = 16.0f / 255.0f;
+        c.y_scale = 255.0f / 219.0f;
+        c.c_scale = 255.0f / 224.0f;
+    }
+    if (g_colorBt709.load()) {
+        c.rv = 1.5748f; c.gu = 0.187324f; c.gv = 0.468124f; c.bu = 1.8556f;
+    } else {
+        c.rv = 1.402f; c.gu = 0.344136f; c.gv = 0.714136f; c.bu = 1.772f;
+    }
+    return c;
+}
 
 void deliver_yuv_frame(QVideoSink* sink,
                        const uint8_t* y_data, int y_stride,
@@ -26,6 +58,8 @@ void deliver_yuv_frame(QVideoSink* sink,
     if (!sink) return;
 
     QVideoFrameFormat format(QSize(width, height), QVideoFrameFormat::Format_YUV420P);
+    format.setColorSpace(video_color_bt709() ? QVideoFrameFormat::ColorSpace_BT709 : QVideoFrameFormat::ColorSpace_BT601);
+    format.setColorRange(video_color_full_range() ? QVideoFrameFormat::ColorRange_Full : QVideoFrameFormat::ColorRange_Video);
     QVideoFrame frame(format);
 
     if (frame.map(QVideoFrame::WriteOnly)) {
