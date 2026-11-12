@@ -65,6 +65,8 @@ pub struct SignalingState {
     pub file_sessions: RwLock<HashMap<String, String>>,
     // client_id -> BridgeSession managed by server
     pub local_sessions: RwLock<HashMap<String, Arc<crate::bridge::BridgeSession>>>,
+    /// Computers added by address (the server connects to them).
+    pub links: crate::links::Links,
 }
 
 impl SignalingState {
@@ -82,7 +84,19 @@ impl SignalingState {
             client_connections: RwLock::new(HashMap::new()),
             file_sessions: RwLock::new(HashMap::new()),
             local_sessions: RwLock::new(HashMap::new()),
+            links: crate::links::Links::default(),
         }
+    }
+
+    /// A user's name, shown to the person at a computer asked to accept
+    /// that user's connection.
+    pub async fn username(&self, user_id: &str) -> Option<String> {
+        sqlx::query_scalar("SELECT username FROM users WHERE id = ?")
+            .bind(user_id)
+            .fetch_optional(&self.db)
+            .await
+            .ok()
+            .flatten()
     }
 
     pub async fn set_host_status(&self, host_id: &str, status: HostStatus) {
@@ -232,29 +246,93 @@ pub async fn client_ws_handler(
 }
 
 // --- Agent Connection Handler ---
+
+/// An agent connected (to /ws/agent, or the server to it: links.rs): it
+/// becomes the host's connection and shows online. Messages for it arrive on
+/// the returned queue; the id tells `agent_disconnected` which connection ended.
+pub(crate) async fn agent_connected(
+    state: &Arc<SignalingState>,
+    agent_id: &str,
+    agent_name: &str,
+    codec_support: Option<u32>,
+) -> (Uuid, mpsc::UnboundedReceiver<ServerToAgentMessage>) {
+    let (tx, rx) = mpsc::unbounded_channel::<ServerToAgentMessage>();
+    let conn_id = Uuid::new_v4();
+    state.agents.write().unwrap().insert(agent_id.to_string(), tx);
+    state.agent_connections.write().unwrap().insert(agent_id.to_string(), conn_id);
+    state.register_host_db(agent_id, agent_name, codec_support).await;
+    info!("Agent registered: {} ({})", agent_name, agent_id);
+    (conn_id, rx)
+}
+
+/// One message from a connected agent.
+pub(crate) async fn agent_message(state: &Arc<SignalingState>, agent_id: &str, msg: AgentMessage) {
+    match msg {
+        AgentMessage::Register { .. } => {
+            // Handled upon connection
+        }
+        AgentMessage::StatusUpdate { status } => {
+            state.set_host_status(agent_id, status).await;
+        }
+        AgentMessage::Signaling(sig) => {
+            handle_agent_signaling(sig, agent_id, state.clone()).await;
+        }
+    }
+}
+
+/// The agent connection `conn_id` ended: unless a newer one replaced it, the
+/// host goes offline and its clients are told.
+pub(crate) async fn agent_disconnected(state: &Arc<SignalingState>, agent_id: &str, conn_id: Uuid) {
+    info!("Agent disconnected: {}", agent_id);
+    let mut should_cleanup = false;
+    {
+        let mut conn_map = state.agent_connections.write().unwrap();
+        if conn_map.get(agent_id) == Some(&conn_id) {
+            conn_map.remove(agent_id);
+            state.agents.write().unwrap().remove(agent_id);
+            should_cleanup = true;
+        }
+    }
+    if !should_cleanup {
+        return;
+    }
+    state.set_host_status(agent_id, HostStatus::Offline).await;
+
+    // Clean up active client sessions related to this agent
+    let clients_to_disconnect: Vec<String> = state
+        .client_to_agent
+        .read()
+        .unwrap()
+        .iter()
+        .filter(|(_, a_id)| a_id.as_str() == agent_id)
+        .map(|(c_id, _)| c_id.clone())
+        .collect();
+
+    for client_id in clients_to_disconnect {
+        state.client_to_agent.write().unwrap().remove(&client_id);
+        // Find all connections for this client and send error to each
+        let conn_ids: Vec<String> = {
+            let conn_map = state.client_connections.read().unwrap();
+            conn_map.iter()
+                .filter(|(_, c_id)| *c_id == &client_id)
+                .map(|(conn_id, _)| conn_id.clone())
+                .collect()
+        };
+        let clients = state.clients.read().unwrap();
+        for conn_id in conn_ids {
+            if let Some(client_tx) = clients.get(&conn_id) {
+                let _ = client_tx.send(ServerToClientMessage::Signaling(SignalingMessage::Error {
+                    message: "Host disconnected".to_string(),
+                }));
+            }
+        }
+    }
+}
+
 async fn handle_agent_socket(socket: WebSocket, params: AgentParams, state: Arc<SignalingState>) {
     let (mut ws_sender, mut ws_receiver) = socket.split();
-    let (tx, mut rx) = mpsc::unbounded_channel::<ServerToAgentMessage>();
-
     let agent_id = params.id.clone();
-    let agent_name = params.name.clone();
-    let conn_id = Uuid::new_v4();
-
-    // Register active agent sender
-    {
-        state.agents.write().unwrap().insert(agent_id.clone(), tx);
-        state
-            .agent_connections
-            .write()
-            .unwrap()
-            .insert(agent_id.clone(), conn_id);
-    }
-
-    // Register host in DB as Online
-    state
-        .register_host_db(&agent_id, &agent_name, params.codec_support)
-        .await;
-    info!("Agent registered: {} ({})", agent_name, agent_id);
+    let (conn_id, mut rx) = agent_connected(&state, &agent_id, &params.name, params.codec_support).await;
 
     // Spawn a task to handle outbound messages to the agent (with heartbeat to prevent idle timeouts)
     let agent_id_clone = agent_id.clone();
@@ -300,76 +378,15 @@ async fn handle_agent_socket(socket: WebSocket, params: AgentParams, state: Arc<
                 break;
             }
         };
-
         if let Message::Text(text) = msg {
-            let agent_msg: AgentMessage = match serde_json::from_str(&text) {
-                Ok(m) => m,
-                Err(e) => {
-                    error!("Failed to parse agent message: {}", e);
-                    continue;
-                }
-            };
-
-            match agent_msg {
-                AgentMessage::Register { .. } => {
-                    // Handled upon connection
-                }
-                AgentMessage::StatusUpdate { status } => {
-                    state.set_host_status(&agent_id, status).await;
-                }
-                AgentMessage::Signaling(sig) => {
-                    handle_agent_signaling(sig, &agent_id, state.clone()).await;
-                }
+            match serde_json::from_str::<AgentMessage>(&text) {
+                Ok(agent_msg) => agent_message(&state, &agent_id, agent_msg).await,
+                Err(e) => error!("Failed to parse agent message: {}", e),
             }
         }
     }
 
-    // Connection closed
-    info!("Agent disconnected: {} ({})", agent_name, agent_id);
-    let mut should_cleanup = false;
-    {
-        let mut conn_map = state.agent_connections.write().unwrap();
-        if conn_map.get(&agent_id) == Some(&conn_id) {
-            conn_map.remove(&agent_id);
-            state.agents.write().unwrap().remove(&agent_id);
-            should_cleanup = true;
-        }
-    }
-
-    if should_cleanup {
-        state.set_host_status(&agent_id, HostStatus::Offline).await;
-
-        // Clean up active client sessions related to this agent
-        let clients_to_disconnect: Vec<String> = state
-            .client_to_agent
-            .read()
-            .unwrap()
-            .iter()
-            .filter(|(_, a_id)| **a_id == agent_id)
-            .map(|(c_id, _)| c_id.clone())
-            .collect();
-
-        for client_id in clients_to_disconnect {
-            state.client_to_agent.write().unwrap().remove(&client_id);
-            // Find all connections for this client and send error to each
-            let conn_ids: Vec<String> = {
-                let conn_map = state.client_connections.read().unwrap();
-                conn_map.iter()
-                    .filter(|(_, c_id)| *c_id == &client_id)
-                    .map(|(conn_id, _)| conn_id.clone())
-                    .collect()
-            };
-            let clients = state.clients.read().unwrap();
-            for conn_id in conn_ids {
-                if let Some(client_tx) = clients.get(&conn_id) {
-                    let _ = client_tx.send(ServerToClientMessage::Signaling(SignalingMessage::Error {
-                        message: "Host disconnected".to_string(),
-                    }));
-                }
-            }
-        }
-    }
-
+    agent_disconnected(&state, &agent_id, conn_id).await;
     send_task.abort();
 }
 
@@ -640,6 +657,14 @@ async fn handle_agent_signaling(sig: SignalingMessage, agent_id: &str, state: Ar
                 warn!("Server: Client {} NOT found in clients map! Cannot forward VirtualDisplayConfigured", target_id);
             }
         }
+        SignalingMessage::AccessRequest { target_id, status } => {
+            if let Some(client_tx) = state.clients.read().unwrap().get(&target_id) {
+                let _ = client_tx.send(ServerToClientMessage::Signaling(SignalingMessage::AccessRequest {
+                    target_id: agent_id.to_string(),
+                    status,
+                }));
+            }
+        }
         SignalingMessage::EncoderStatus { target_id, encoder, hw_type, gpu_info, requested_encoder, host_os, display_id, display_name } => {
             let clients = state.clients.read().unwrap();
             if let Some(client_tx) = clients.get(&target_id) {
@@ -677,9 +702,11 @@ async fn handle_client_signaling(
                     info!("Client {} requested file transfer with host {}", client_id, host_id);
                     let ice_servers = state.ice_servers_for_agent(&host_id).await;
                     state.file_sessions.write().unwrap().insert(conn_id.to_string(), host_id.clone());
+                    let requester = state.username(client_id).await;
                     let _ = agent_tx.send(ServerToAgentMessage::Signaling(SignalingMessage::IncomingFileSession {
                         client_id: conn_id.to_string(),
                         ice_servers: Some(ice_servers),
+                        requester,
                     }));
                 }
                 None => {
@@ -753,6 +780,7 @@ async fn handle_client_signaling(
 
             if let Some(agent_tx) = agent_tx_opt {
                 let ice_servers = state.ice_servers_for_agent(&host_id).await;
+                let requester = state.username(client_id).await;
                 let incoming_msg =
                     ServerToAgentMessage::Signaling(SignalingMessage::IncomingSession {
                         client_id: conn_id.to_string(),
@@ -768,6 +796,7 @@ async fn handle_client_signaling(
                         chroma: chroma.clone(),
                         microphone,
                         ice_servers: Some(ice_servers),
+                        requester,
                     });
                 if let Err(e) = agent_tx.send(incoming_msg) {
                     error!(

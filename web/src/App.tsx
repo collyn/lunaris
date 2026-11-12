@@ -16,7 +16,16 @@ interface Host {
   ip_address: string | null;
   server_codec_mode_support?: number;
   agent_connected?: boolean;
+  /** Added by address: the server connects to the computer ("host:port"). */
+  address?: string;
+  /** Why the server can't reach a computer added by address. */
+  link_error?: string;
+  /** Added without its password: each connection is accepted there. */
+  needs_approval?: boolean;
 }
+
+/** "host:8091" -> "host" (the default port isn't worth showing). */
+const shortAddress = (a: string) => a.replace(/:8091$/, '');
 
 type HostStreamSettings = {
   resolution: string;
@@ -593,6 +602,49 @@ function App() {
     };
   }, [settingsHost, token]);
 
+  // Add a computer by address (admins): the server connects to its agent.
+  const [addHostOpen, setAddHostOpen] = useState(false);
+  const [addHostAddress, setAddHostAddress] = useState('');
+  const [addHostPassword, setAddHostPassword] = useState('');
+  const [addHostBusy, setAddHostBusy] = useState(false);
+  const [addHostError, setAddHostError] = useState('');
+
+  const openAddHost = () => {
+    setAddHostAddress('');
+    setAddHostPassword('');
+    setAddHostError('');
+    setAddHostOpen(true);
+  };
+
+  const submitAddHost = async () => {
+    if (!token || addHostBusy) return;
+    if (!addHostAddress.trim()) { setAddHostError(t('Enter the address of the computer')); return; }
+    setAddHostBusy(true);
+    setAddHostError('');
+    try {
+      const response = await fetch(`${getBackendProtocol().http}//${getBackendHost()}/api/hosts/address`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ address: addHostAddress.trim(), password: addHostPassword.trim() || null }),
+      });
+      if (response.ok) {
+        setAddHostOpen(false);
+        fetchHosts();
+        // The first connection takes a moment.
+        window.setTimeout(fetchHosts, 2500);
+      } else if (response.status === 401) {
+        handleLogout();
+      } else {
+        const body = await response.json().catch(() => null);
+        setAddHostError(body?.error ? t(body.error) : t('Could not add the computer'));
+      }
+    } catch {
+      setAddHostError(t('Cannot reach the server'));
+    } finally {
+      setAddHostBusy(false);
+    }
+  };
+
   const handleDeleteHost = async (host: Host) => {
     if (!token || deleteHostLoading) return;
 
@@ -1095,6 +1147,14 @@ function App() {
                           <p className="section-subtitle">{t('Manage and connect to active remote agent streams')}</p>
                         </div>
                         <div style={{ display: 'flex', gap: '0.75rem' }}>
+                          {userRole === 'admin' && (
+                            <button onClick={openAddHost} className="btn-primary refresh-btn" title={t('Add a computer by its address')}>
+                              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                                <path d="M12 5v14M5 12h14" />
+                              </svg>
+                              {t('Add computer')}
+                            </button>
+                          )}
                           <button
                             onClick={fetchHosts}
                             disabled={hostsLoading}
@@ -1214,15 +1274,26 @@ function App() {
                                 <div className="host-card-header">
                                   <div>
                                     <h3 className="host-name">{host.name}</h3>
-                                    <span className="host-id">ID: {host.id.slice(0, 8)}...</span>
+                                    {!host.id.startsWith('address:') && (
+                                      <span className="host-id">ID: {host.id.slice(0, 8)}...</span>
+                                    )}
                                   </div>
                                 </div>
 
                                 <div className="host-card-body">
                                   <div className="host-meta-item">
                                     <span className="meta-label">{t('IP Address')}</span>
-                                    <span className="meta-value">{host.ip_address || t('Signaling Tunnel')}</span>
+                                    <span className="meta-value">{host.address ? shortAddress(host.address) : (host.ip_address || t('Signaling Tunnel'))}</span>
                                   </div>
+                                  {host.needs_approval && (
+                                    <div className="host-meta-item">
+                                      <span className="meta-label">{t('Access')}</span>
+                                      <span className="meta-value">{t('Accepted at the computer')}</span>
+                                    </div>
+                                  )}
+                                  {host.link_error && (
+                                    <div className="host-link-error" title={host.link_error}>{t(host.link_error)}</div>
+                                  )}
                                   <div className="host-meta-item">
                                     <span className="meta-label">{t('Status')}</span>
                                     <div className="host-status-badge">
@@ -1350,6 +1421,50 @@ function App() {
               </button>
             </div>
           </div>
+        </div>
+      )}
+
+      {addHostOpen && (
+        <div className="host-confirm-overlay" onMouseDown={(e) => { if (e.target === e.currentTarget && !addHostBusy) setAddHostOpen(false); }}>
+          <form
+            className="host-confirm-card add-host-card"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="addHostTitle"
+            onSubmit={(e) => { e.preventDefault(); submitAddHost(); }}
+          >
+            <div className="host-confirm-content">
+              <h2 id="addHostTitle">{t('Add computer')}</h2>
+              <p>{t('The server connects to the Lunaris app on that computer (remote control turned on). Its address and password are shown under "This computer" there.')}</p>
+            </div>
+            <div className="form-group">
+              <label htmlFor="addHostAddress">{t('Address')}</label>
+              <input
+                id="addHostAddress"
+                autoFocus
+                placeholder={t('e.g. 192.168.1.20')}
+                value={addHostAddress}
+                onChange={(e) => setAddHostAddress(e.target.value)}
+                autoComplete="off"
+              />
+            </div>
+            <div className="form-group">
+              <label htmlFor="addHostPassword">{t('Password (optional)')}</label>
+              <input
+                id="addHostPassword"
+                type="password"
+                value={addHostPassword}
+                onChange={(e) => setAddHostPassword(e.target.value)}
+                autoComplete="new-password"
+              />
+              <span className="form-hint">{t('Without the password, the person at that computer is asked to accept each connection.')}</span>
+            </div>
+            {addHostError && <div className="add-host-error">{addHostError}</div>}
+            <div className="host-confirm-actions">
+              <button type="button" className="btn-secondary" disabled={addHostBusy} onClick={() => setAddHostOpen(false)}>{t('Cancel')}</button>
+              <button type="submit" className="btn-primary" disabled={addHostBusy}>{addHostBusy ? t('Adding…') : t('Add')}</button>
+            </div>
+          </form>
         </div>
       )}
 

@@ -14,6 +14,7 @@ use common::{
 use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 
+pub mod approval;
 mod bridge;
 mod buffer;
 pub mod direct;
@@ -147,6 +148,12 @@ struct Args {
     /// Port for direct connections (default 8091)
     #[arg(long)]
     direct_port: Option<u16>,
+
+    /// The app shows the "accept this connection?" questions: they go to
+    /// stdout and the answers come on stdin (see approval.rs); logs go to
+    /// stderr.
+    #[arg(long)]
+    approval_stdio: bool,
 }
 
 /// `--probe-encoders`: open each codec's encoder for real and report it.
@@ -286,8 +293,15 @@ where
                 "info,agent=info,webrtc_sctp=off,dtls=error".into()
             }),
         ))
-        .with(tracing_subscriber::fmt::layer())
+        .with(tracing_subscriber::fmt::layer().with_writer(if args.approval_stdio {
+            tracing_subscriber::fmt::writer::BoxMakeWriter::new(std::io::stderr)
+        } else {
+            tracing_subscriber::fmt::writer::BoxMakeWriter::new(std::io::stdout)
+        }))
         .try_init();
+    if args.approval_stdio {
+        approval::attach_stdio();
+    }
 
     info!("Launching Lunaris Agent in CLI mode...");
 
@@ -352,11 +366,16 @@ pub async fn run_agent(
             }
         }
         let port = config.direct_port;
-        let password = config.direct_password.clone();
+        let direct_config = direct::DirectConfig {
+            port,
+            password: config.direct_password.clone(),
+            approve_mode: approval::ApproveMode::parse(&config.approve_mode),
+            name: name.clone(),
+        };
         let hub = hub.clone();
         let inbound_tx = inbound_tx.clone();
         tasks.0.push(tokio::spawn(async move {
-            if let Err(e) = direct::run_listener(port, password, hub, inbound_tx).await {
+            if let Err(e) = direct::run_listener(direct_config, hub, inbound_tx).await {
                 let msg = format!("Direct connections unavailable: cannot listen on port {}: {}", port, e);
                 error!("{}", msg);
                 if let Ok(mut last) = LAST_ERROR.lock() {
@@ -395,6 +414,34 @@ impl Drop for AbortOnDrop {
             task.abort();
         }
     }
+}
+
+/// Codecs this computer encodes in real time, as the server's
+/// `codec_support` bits. H.264 software is a practical fallback; H.265/AV1
+/// software is too slow for interactive remote desktop, so only advertise
+/// those when a realtime-capable hardware encoder exists.
+pub(crate) fn codec_support_bits() -> u32 {
+    // Probing the encoders takes a while: once per run.
+    static BITS: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *BITS.get_or_init(probe_codec_support)
+}
+
+fn probe_codec_support() -> u32 {
+    let encoders = lunaris_media::encode::list_available_encoders();
+    let h264 = codec_supported_for_realtime(&encoders, lunaris_media::VideoCodec::H264);
+    let h265 = codec_supported_for_realtime(&encoders, lunaris_media::VideoCodec::H265);
+    let av1 = codec_supported_for_realtime(&encoders, lunaris_media::VideoCodec::AV1);
+    let mut bits: u32 = 0;
+    if h264 {
+        bits |= 262145;
+    }
+    if h265 {
+        bits |= 1573632;
+    }
+    if av1 {
+        bits |= 6488064;
+    }
+    bits
 }
 
 /// Keeps a connection to the signaling server, reconnecting every 3 s.
@@ -437,26 +484,7 @@ async fn connect_server_once(
     hub: &Arc<hub::Hub>,
     inbound_tx: &mpsc::UnboundedSender<SignalingMessage>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    // Query codec support from lunaris-media encoders. H.264 software is a
-    // practical fallback; H.265/AV1 software is too slow for interactive remote
-    // desktop, so only advertise those when a realtime-capable hardware encoder exists.
-    let codec_support = {
-        let encoders = lunaris_media::encode::list_available_encoders();
-        let h264 = codec_supported_for_realtime(&encoders, lunaris_media::VideoCodec::H264);
-        let h265 = codec_supported_for_realtime(&encoders, lunaris_media::VideoCodec::H265);
-        let av1 = codec_supported_for_realtime(&encoders, lunaris_media::VideoCodec::AV1);
-        let mut bits: u32 = 0;
-        if h264 {
-            bits |= 262145;
-        }
-        if h265 {
-            bits |= 1573632;
-        }
-        if av1 {
-            bits |= 6488064;
-        }
-        Some(bits)
-    };
+    let codec_support = Some(codec_support_bits());
 
     let mut base_ws_url = config.server_url.clone();
     if base_ws_url.starts_with("http://") {
@@ -570,7 +598,7 @@ async fn run_session_logic(
     while let Some(sig) = inbound.recv().await {
         // Answers, candidates and ends of file sessions go to them.
         let sig = match sig {
-            SignalingMessage::IncomingFileSession { client_id, ice_servers } => {
+            SignalingMessage::IncomingFileSession { client_id, ice_servers, .. } => {
                 info!("File transfer session requested by {}", client_id);
                 if let Some(old) = file_sessions.remove(&client_id) {
                     let _ = old.close().await;
@@ -643,6 +671,7 @@ async fn run_session_logic(
                 chroma,
                 microphone,
                 ice_servers,
+                ..
             } => {
                 info!(
                     "Incoming session request from client: {} codec={:?} encoder={:?} res={:?}x{:?} fps={:?} bitrate={:?} display={:?} virtual_display={:?} chroma={:?} microphone={:?}",

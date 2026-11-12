@@ -112,6 +112,19 @@ pub async fn init_db(
     .execute(&pool)
     .await?;
 
+    // Computers added by address (links.rs): the server connects to them.
+    // The password is the agent's access password, kept to reconnect.
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS address_hosts (
+            address TEXT PRIMARY KEY,
+            password TEXT NOT NULL DEFAULT '',
+            host_id TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        );",
+    )
+    .execute(&pool)
+    .await?;
+
     // Perform migrations for hosts table if columns don't exist
     let columns: Vec<String> = sqlx::query_scalar("SELECT name FROM pragma_table_info('hosts')")
         .fetch_all(&pool)

@@ -317,6 +317,39 @@ Rectangle {
 
             Card {
                 visible: settings.section === "security"
+                title: I18n.t("Accepting connections")
+                subtitle: I18n.t("How someone gets in. Restarts remote control.")
+                Repeater {
+                    model: [
+                        { value: "password-click", label: I18n.t("With the password, or when I accept"), hint: I18n.t("Without the password, you are asked whether to let them in.") },
+                        { value: "password", label: I18n.t("Only with the password"), hint: I18n.t("Nobody is asked: for computers nobody sits at.") },
+                        { value: "click", label: I18n.t("Only when I accept"), hint: I18n.t("Every connection is asked about, even with the password.") }
+                    ]
+                    delegate: ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 0
+                        RadioRow {
+                            text: modelData.label
+                            checked: (homeView ? (homeView.hostStatus.approve_mode || "password-click") : "password-click") === modelData.value
+                            onClicked: {
+                                homeView.hostError = bridge.hostSetApproveMode(modelData.value);
+                                homeView.refreshHost();
+                            }
+                        }
+                        Text {
+                            Layout.fillWidth: true
+                            Layout.leftMargin: 28
+                            text: modelData.hint
+                            color: Theme.textMuted
+                            font.pixelSize: 11
+                            wrapMode: Text.WordWrap
+                        }
+                    }
+                }
+            }
+
+            Card {
+                visible: settings.section === "security"
                 title: I18n.t("What others may do")
                 subtitle: I18n.t("For computers controlling this one. Restarts remote control.")
                 CheckRow {

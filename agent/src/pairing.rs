@@ -47,6 +47,15 @@ pub struct AgentConfig {
     /// Files sent by clients are saved in Downloads/Lunaris.
     #[serde(default = "default_true")]
     pub allow_file_transfer: bool,
+    /// How connections are accepted: "password", "click" (the person here
+    /// accepts each one) or "password-click" (either; the default), as in
+    /// RustDesk.
+    #[serde(default = "default_approve_mode")]
+    pub approve_mode: String,
+}
+
+fn default_approve_mode() -> String {
+    "password-click".to_string()
 }
 
 fn default_true() -> bool {

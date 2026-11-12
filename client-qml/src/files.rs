@@ -264,7 +264,7 @@ pub fn close() {
 
 async fn connect(server_url: String, token: String, host_id: String) -> Result<(), String> {
     let encoded: String = url::form_urlencoded::byte_serialize(token.as_bytes()).collect();
-    let ws_url = format!("{}/ws/client?token={}", server_url.trim_end_matches('/').replacen("http", "ws", 1), encoded);
+    let ws_url = format!("{}/ws/client?token={}{}", server_url.trim_end_matches('/').replacen("http", "ws", 1), encoded, crate::host::client_name_query());
     let (ws, _) = tokio::time::timeout(Duration::from_secs(10), tokio_tungstenite::connect_async(ws_url.as_str()))
         .await
         .map_err(|_| "cannot reach the server".to_string())?
@@ -284,7 +284,7 @@ async fn connect(server_url: String, token: String, host_id: String) -> Result<(
 
     let mut pc: Option<Arc<RTCPeerConnection>> = None;
     let (ready_tx, mut ready_rx) = mpsc::unbounded_channel::<Arc<RTCDataChannel>>();
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(25);
+    let mut deadline = tokio::time::Instant::now() + Duration::from_secs(25);
     let channel = loop {
         tokio::select! {
             msg = ws_rx.next() => {
@@ -296,6 +296,18 @@ async fn connect(server_url: String, token: String, host_id: String) -> Result<(
                 let Ok(ServerToClientMessage::Signaling(sig)) = serde_json::from_str::<ServerToClientMessage>(&text) else { continue };
                 match sig {
                     SignalingMessage::Error { message } => return Err(message),
+                    SignalingMessage::AccessRequest { status, .. } => {
+                        if let Some(refusal) = crate::host::access_refusal(&status) {
+                            return Err(refusal);
+                        }
+                        if status == "waiting" {
+                            // The person there has 30 s to answer.
+                            deadline = tokio::time::Instant::now() + Duration::from_secs(50);
+                            with_state(|s| s.status = "Waiting for the person at the remote computer to accept…".into());
+                        } else {
+                            with_state(|s| s.status = "Connecting…".into());
+                        }
+                    }
                     SignalingMessage::Sdp { sdp, ice_servers, .. } if sdp.ty == RtcSdpType::Offer => {
                         let servers = ice_servers.unwrap_or_default().into_iter().map(|s| webrtc::ice_transport::ice_server::RTCIceServer {
                             urls: s.urls, username: s.username.unwrap_or_default(), credential: s.credential.unwrap_or_default(), ..Default::default()

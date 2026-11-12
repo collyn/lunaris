@@ -31,6 +31,8 @@ struct HostStatus {
     /// Clients may share the clipboard / send files to this computer.
     allow_clipboard: bool,
     allow_file_transfer: bool,
+    /// "password", "click" or "password-click" (agent/src/approval.rs).
+    approve_mode: String,
     error: String,
 }
 
@@ -131,6 +133,7 @@ pub fn status_json() -> String {
             input_ready: input_ready(),
             allow_clipboard: config.allow_clipboard,
             allow_file_transfer: config.allow_file_transfer,
+            approve_mode: config.approve_mode.clone(),
             error: String::new(),
         },
         Err(error) => HostStatus {
@@ -143,6 +146,7 @@ pub fn status_json() -> String {
             input_ready: input_ready(),
             allow_clipboard: true,
             allow_file_transfer: true,
+            approve_mode: "password-click".into(),
             error,
         },
     };
@@ -176,8 +180,11 @@ fn spawn_agent() -> Result<(), String> {
         .arg(pairing::config_path())
         .arg("--name")
         .arg(hostname())
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
+        // Questions to accept a connection come on stdout, answers go on
+        // stdin (agent/src/approval.rs); the logs go to stderr.
+        .arg("--approval-stdio")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
         .stderr(Stdio::null());
     #[cfg(windows)]
     {
@@ -185,9 +192,100 @@ fn spawn_agent() -> Result<(), String> {
         cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     }
     stop_with_parent(&mut cmd);
-    let child = spawn_child(cmd).map_err(|e| format!("cannot start the agent: {}", e))?;
+    let mut child = spawn_child(cmd).map_err(|e| format!("cannot start the agent: {}", e))?;
+    APPROVALS.lock().unwrap().clear();
+    *AGENT_STDIN.lock().unwrap() = child.stdin.take();
+    if let Some(stdout) = child.stdout.take() {
+        std::thread::Builder::new()
+            .name("agent-approvals".into())
+            .spawn(move || read_approvals(stdout))
+            .ok();
+    }
     *HOST_CHILD.lock().unwrap() = Some(child);
     Ok(())
+}
+
+// ---- Connections that the person at the other computer accepts ----
+
+/// `&name=…` for a client connection: who connects, as the person at the
+/// remote computer is asked about (agents ignore it with the password).
+pub fn client_name_query() -> String {
+    let user = std::env::var("USER").or_else(|_| std::env::var("USERNAME")).unwrap_or_default();
+    let who = if user.is_empty() { hostname() } else { format!("{}@{}", user, hostname()) };
+    format!("&name={}", url::form_urlencoded::byte_serialize(who.as_bytes()).collect::<String>())
+}
+
+/// What to tell the user for an `AccessRequest` status: None while the
+/// connection may go on ("waiting", "accepted").
+pub fn access_refusal(status: &str) -> Option<String> {
+    match status {
+        "waiting" | "accepted" => None,
+        "denied" => Some("The person at the remote computer declined the connection.".into()),
+        "timeout" => Some("Nobody accepted the connection at the remote computer in time.".into()),
+        "unattended" => Some("Nobody can accept connections at the remote computer: enter its password.".into()),
+        _ => Some("The remote computer refused the connection.".into()),
+    }
+}
+
+// ---- Accepting connections made without the password ----
+
+/// A question from the agent: let `requester` in? (approval.rs)
+#[derive(serde::Deserialize, Serialize, Clone)]
+struct Approval {
+    id: u64,
+    requester: String,
+    /// "control" or "files"
+    kind: String,
+    timeout_s: u64,
+}
+
+static APPROVALS: Mutex<Vec<Approval>> = Mutex::new(Vec::new());
+static AGENT_STDIN: Mutex<Option<std::process::ChildStdin>> = Mutex::new(None);
+
+fn read_approvals(stdout: std::process::ChildStdout) {
+    use std::io::BufRead;
+    for line in std::io::BufReader::new(stdout).lines() {
+        let Ok(line) = line else { break };
+        if let Some(json) = line.strip_prefix("@lunaris-approval ") {
+            if let Ok(q) = serde_json::from_str::<Approval>(json) {
+                APPROVALS.lock().unwrap().push(q);
+            }
+        } else if let Some(json) = line.strip_prefix("@lunaris-approval-cancel ") {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(json) {
+                let id = v.get("id").and_then(|i| i.as_u64()).unwrap_or(0);
+                APPROVALS.lock().unwrap().retain(|q| q.id != id);
+            }
+        }
+    }
+    // The agent stopped: nothing left to answer.
+    APPROVALS.lock().unwrap().clear();
+}
+
+/// The questions waiting for an answer, as JSON (oldest first).
+pub fn approvals_json() -> String {
+    serde_json::to_string(&*APPROVALS.lock().unwrap()).unwrap_or_else(|_| "[]".into())
+}
+
+/// Answers question `id`.
+pub fn answer_approval(id: u64, accept: bool) {
+    use std::io::Write;
+    APPROVALS.lock().unwrap().retain(|q| q.id != id);
+    if let Some(stdin) = AGENT_STDIN.lock().unwrap().as_mut() {
+        let _ = writeln!(stdin, "{{\"id\":{},\"accept\":{}}}", id, accept);
+        let _ = stdin.flush();
+    }
+}
+
+/// How connections are accepted ("password", "click", "password-click");
+/// restarts the app's agent.
+pub fn set_approve_mode(mode: &str) -> Result<(), String> {
+    if !matches!(mode, "password" | "click" | "password-click") {
+        return Err(format!("unknown mode {}", mode));
+    }
+    let mut config = load_or_create_config()?;
+    config.approve_mode = mode.to_string();
+    save(&config)?;
+    restart_if_ours()
 }
 
 /// Starts a child process from a thread that lives as long as the app.

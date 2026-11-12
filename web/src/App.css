@@ -804,6 +804,37 @@ body {
   padding-top: 0.35rem;
 }
 
+/* Add a computer by address: one column, fields under the text. */
+.add-host-card {
+  grid-template-columns: 1fr;
+  gap: 0.85rem;
+}
+
+.add-host-card .form-group {
+  margin: 0;
+}
+
+.add-host-card .form-hint {
+  display: block;
+  margin-top: 0.4rem;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  line-height: 1.4;
+}
+
+.add-host-error,
+.host-link-error {
+  color: #f87171;
+  font-size: 0.82rem;
+  line-height: 1.4;
+}
+
+.host-link-error {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .btn-danger {
   background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
   border: 1px solid rgba(239, 68, 68, 0.35);

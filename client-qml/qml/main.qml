@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls
+import QtQuick.Layouts
 import QtMultimedia
 import Qt.labs.platform as Platform
 import com.lunaris.client 1.0
@@ -1403,4 +1404,105 @@ ApplicationWindow {
     }
 
 
+    // ---------------------------------------------------------------
+    // Someone connected without the password: let them in? (the app's
+    // agent asks, see host.rs / agent approval.rs). Like AnyDesk's accept
+    // window and RustDesk's "accept via click".
+    // ---------------------------------------------------------------
+    Timer {
+        interval: 600
+        running: true
+        repeat: true
+        onTriggered: {
+            var list = [];
+            try { list = JSON.parse(bridge.hostApprovals()); } catch (e) { list = []; }
+            if (list.length === 0) {
+                if (approvalDialog.opened) approvalDialog.close();
+                approvalDialog.question = null;
+                return;
+            }
+            var q = list[0];
+            if (!approvalDialog.question || approvalDialog.question.id !== q.id) {
+                approvalDialog.question = q;
+                approvalDialog.secondsLeft = q.timeout_s || 30;
+                if (!window.visible) window.show();
+                window.raise();
+                window.requestActivate();
+                window.alert(0);
+                approvalDialog.open();
+            }
+        }
+    }
+
+    DialogFrame {
+        id: approvalDialog
+        property var question: null
+        property int secondsLeft: 30
+        width: 440
+        closePolicy: Popup.NoAutoClose
+        function answer(accept) {
+            if (question) bridge.hostAnswerApproval(question.id, accept);
+            question = null;
+            close();
+        }
+        Timer {
+            interval: 1000
+            repeat: true
+            running: approvalDialog.opened
+            onTriggered: if (approvalDialog.secondsLeft > 0) approvalDialog.secondsLeft--
+        }
+        contentItem: ColumnLayout {
+            spacing: 12
+            RowLayout {
+                spacing: 12
+                Rectangle {
+                    width: 40; height: 40; radius: 10
+                    color: Theme.accentA(0.15)
+                    Icon { anchors.centerIn: parent; name: "monitor"; size: 20; color: Theme.accentFg }
+                }
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    spacing: 2
+                    Text {
+                        Layout.fillWidth: true
+                        text: approvalDialog.question && approvalDialog.question.kind === "files"
+                            ? I18n.t("Someone wants to transfer files")
+                            : I18n.t("Someone wants to control this computer")
+                        color: Theme.textStrong
+                        font.pixelSize: 16
+                        font.weight: Font.DemiBold
+                        wrapMode: Text.WordWrap
+                    }
+                    Text {
+                        Layout.fillWidth: true
+                        text: approvalDialog.question ? approvalDialog.question.requester : ""
+                        color: Theme.text
+                        font.pixelSize: 13
+                        elide: Text.ElideRight
+                    }
+                }
+            }
+            Text {
+                Layout.fillWidth: true
+                text: approvalDialog.question && approvalDialog.question.kind === "files"
+                    ? I18n.t("They will be able to see, download and upload files on this computer.")
+                    : I18n.t("They will see your screen and can use the keyboard and mouse. Only accept people you know.")
+                color: Theme.textMuted
+                font.pixelSize: 12
+                wrapMode: Text.WordWrap
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 8
+                Text {
+                    Layout.fillWidth: true
+                    text: I18n.t("Declined automatically in %1 s").arg(approvalDialog.secondsLeft)
+                    color: Theme.textMuted
+                    font.pixelSize: 11
+                }
+                SecondaryButton { text: I18n.t("Decline"); onClicked: approvalDialog.answer(false) }
+                PrimaryButton { text: I18n.t("Accept"); onClicked: approvalDialog.answer(true) }
+            }
+        }
+    }
 }

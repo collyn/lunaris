@@ -38,6 +38,9 @@ num-derive = "0.4"
 num-traits = "0.2"
 # The web UI (web/dist) is embedded so the server ships as a single file.
 rust-embed = { version = "8", features = ["mime-guess"] }
+# links.rs: connecting to agents added by address
+tokio-tungstenite = "0.21"
+urlencoding = "2.1"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
@@ -46,8 +49,3 @@ libc = "0.2"
 windows-service = "0.7"
 
 
-
-[dev-dependencies]
-# examples/direct_probe.rs (end-to-end test of an agent's direct connections)
-tokio-tungstenite = "0.21"
-urlencoding = "2.1"

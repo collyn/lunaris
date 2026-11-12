@@ -19,6 +19,11 @@ pub struct Hub {
     agent_id: String,
     direct_clients: RwLock<HashMap<String, mpsc::UnboundedSender<ServerToClientMessage>>>,
     server: RwLock<Option<mpsc::UnboundedSender<AgentMessage>>>,
+    /// Servers that connected to this agent (`/ws/server` of direct.rs),
+    /// spoken to like the server: link id -> its outbound queue.
+    links: RwLock<HashMap<String, mpsc::UnboundedSender<AgentMessage>>>,
+    /// Client connection id (on a server) -> the link it came through.
+    link_clients: RwLock<HashMap<String, String>>,
 }
 
 impl Hub {
@@ -27,7 +32,33 @@ impl Hub {
             agent_id,
             direct_clients: RwLock::new(HashMap::new()),
             server: RwLock::new(None),
+            links: RwLock::new(HashMap::new()),
+            link_clients: RwLock::new(HashMap::new()),
         })
+    }
+
+    pub fn agent_id(&self) -> &str {
+        &self.agent_id
+    }
+
+    pub fn add_link(&self, link_id: String, tx: mpsc::UnboundedSender<AgentMessage>) {
+        self.links.write().unwrap().insert(link_id, tx);
+    }
+
+    /// Forgets a link; returns the client connections that came through it.
+    pub fn remove_link(&self, link_id: &str) -> Vec<String> {
+        self.links.write().unwrap().remove(link_id);
+        let mut clients = self.link_clients.write().unwrap();
+        let gone: Vec<String> = clients.iter().filter(|(_, l)| *l == link_id).map(|(c, _)| c.clone()).collect();
+        for c in &gone {
+            clients.remove(c);
+        }
+        gone
+    }
+
+    /// Replies to `client_id` go back through `link_id`.
+    pub fn link_client(&self, client_id: &str, link_id: &str) {
+        self.link_clients.write().unwrap().insert(client_id.to_string(), link_id.to_string());
     }
 
     /// The outbound queue of the current server connection, or None while
@@ -59,13 +90,25 @@ impl Hub {
                         // server rewrites agent replies for its clients.
                         let _ = tx.send(ServerToClientMessage::Signaling(with_target(sig, &self.agent_id)));
                     }
-                    None => self.send_to_server(AgentMessage::Signaling(sig)),
+                    None => {
+                        let link = self.link_clients.read().unwrap().get(&target).cloned();
+                        let link_tx = link.and_then(|l| self.links.read().unwrap().get(&l).cloned());
+                        match link_tx {
+                            Some(tx) => {
+                                let _ = tx.send(AgentMessage::Signaling(sig));
+                            }
+                            None => self.send_to_server(AgentMessage::Signaling(sig)),
+                        }
+                    }
                 }
             }
             None => {
                 // Not addressed (Error): tell everyone who might be waiting.
                 for tx in self.direct_clients.read().unwrap().values() {
                     let _ = tx.send(ServerToClientMessage::Signaling(sig.clone()));
+                }
+                for tx in self.links.read().unwrap().values() {
+                    let _ = tx.send(AgentMessage::Signaling(sig.clone()));
                 }
                 self.send_to_server(AgentMessage::Signaling(sig));
             }
@@ -111,7 +154,8 @@ pub fn target_of(sig: &SignalingMessage) -> Option<&str> {
         | CapabilitiesResponse { target_id, .. }
         | ConfigureVirtualDisplay { target_id, .. }
         | VirtualDisplayConfigured { target_id, .. }
-        | EncoderStatus { target_id, .. } => Some(target_id),
+        | EncoderStatus { target_id, .. }
+        | AccessRequest { target_id, .. } => Some(target_id),
         Error { .. } => None,
     }
 }
@@ -133,7 +177,8 @@ pub fn with_target(mut sig: SignalingMessage, target: &str) -> SignalingMessage 
         | CapabilitiesResponse { target_id, .. }
         | ConfigureVirtualDisplay { target_id, .. }
         | VirtualDisplayConfigured { target_id, .. }
-        | EncoderStatus { target_id, .. } => *target_id = target.to_string(),
+        | EncoderStatus { target_id, .. }
+        | AccessRequest { target_id, .. } => *target_id = target.to_string(),
         Error { .. } => {}
     }
     sig
@@ -173,10 +218,12 @@ pub fn from_direct_client(sig: SignalingMessage, conn_id: &str) -> Option<Signal
             chroma,
             microphone,
             ice_servers: None,
+            requester: None,
         }),
         RequestFileSession { .. } => Some(IncomingFileSession {
             client_id: conn_id.to_string(),
             ice_servers: None,
+            requester: None,
         }),
         Sdp {
             sdp,
@@ -285,6 +332,28 @@ mod tests {
 
         hub.route(AgentMessage::Signaling(SignalingMessage::Error { message: "x".into() }));
         assert!(direct_rx.try_recv().is_ok());
+        assert!(server_rx.try_recv().is_ok());
+    }
+
+    #[tokio::test]
+    async fn replies_to_link_clients_go_back_through_their_link() {
+        let hub = Hub::new("AGENT".into());
+        let (server_tx, mut server_rx) = mpsc::unbounded_channel();
+        let (link_tx, mut link_rx) = mpsc::unbounded_channel();
+        hub.set_server(Some(server_tx));
+        hub.add_link("link-1".into(), link_tx);
+        hub.link_client("conn-a", "link-1");
+
+        hub.route(AgentMessage::Signaling(ice("conn-a")));
+        match link_rx.try_recv().unwrap() {
+            // Servers rewrite the target themselves.
+            AgentMessage::Signaling(sig) => assert_eq!(target_of(&sig), Some("conn-a")),
+            other => panic!("unexpected {:?}", other),
+        }
+        assert!(server_rx.try_recv().is_err());
+
+        assert_eq!(hub.remove_link("link-1"), vec!["conn-a".to_string()]);
+        hub.route(AgentMessage::Signaling(ice("conn-a")));
         assert!(server_rx.try_recv().is_ok());
     }
 }

@@ -32,6 +32,27 @@ pub struct HostInfo {
     pub ip_address: Option<String>,
     pub server_codec_mode_support: Option<u32>,
     pub agent_connected: bool,
+    /// Added by address: the server connects to the computer itself
+    /// ("host:port"), instead of the computer connecting to the server.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub address: Option<String>,
+    /// Why the server can't reach a computer added by address.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link_error: Option<String>,
+    /// Added by address without its password: each connection has to be
+    /// accepted by the person at that computer.
+    #[serde(default)]
+    pub needs_approval: bool,
+}
+
+/// Adds a computer by address: the server connects to its agent (direct
+/// access port). Without the password the person at that computer accepts
+/// each connection.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct AddHostByAddressRequest {
+    pub address: String,
+    #[serde(default)]
+    pub password: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
@@ -229,6 +250,10 @@ pub enum SignalingMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         microphone: Option<bool>,
         ice_servers: Option<Vec<RtcIceServer>>,
+        /// Who asks (user name, computer name), shown to the person at the
+        /// host when the connection must be accepted there.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        requester: Option<String>,
     },
     /// Client: a file-transfer connection to `host_id`, separate from any
     /// stream (agent/src/files.rs). Sent on its own signaling connection.
@@ -240,6 +265,8 @@ pub enum SignalingMessage {
         client_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         ice_servers: Option<Vec<RtcIceServer>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        requester: Option<String>,
     },
     // SDP / ICE Exchange
     Sdp {
@@ -310,6 +337,13 @@ pub enum SignalingMessage {
         display_id: Option<String>,
         display_name: Option<String>,
     },
+    /// Agent -> client: the connection waits for the person at the host to
+    /// accept it (`status` "waiting"), or they did not ("denied", "timeout",
+    /// "unattended": nobody there can accept, a password is needed).
+    AccessRequest {
+        target_id: String,
+        status: String,
+    },
     // Errors
     Error {
         message: String,
@@ -320,7 +354,14 @@ pub enum SignalingMessage {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "event", content = "data")]
 pub enum AgentMessage {
-    Register { id: String, name: String },
+    Register {
+        id: String,
+        name: String,
+        /// Codecs the agent encodes (bits, as `codec_support` of /ws/agent).
+        /// Sent by agents the server connects to (`/ws/server` of direct.rs).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        codec_support: Option<u32>,
+    },
     StatusUpdate { status: HostStatus },
     Signaling(SignalingMessage),
 }

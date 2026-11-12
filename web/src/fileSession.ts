@@ -4,6 +4,7 @@
 // Protocol: agent/src/files.rs.
 
 import { t } from './i18n';
+import { ACCESS_REQUEST_TIMEOUT_S, accessRefusal } from './accessRequest';
 
 /** webrtc-rs (the agent) closes a channel on messages over 65535 bytes. */
 const CHUNK = 48 * 1024;
@@ -61,7 +62,7 @@ export class FileSession {
   /** Connects (signaling, WebRTC, the `files` channel) and says hello. */
   connect(timeoutMs = 20000): Promise<Hello> {
     return new Promise((resolve, reject) => {
-      const timer = window.setTimeout(() => { this.close(); reject(new Error(t('The remote computer did not answer'))); }, timeoutMs);
+      let timer = window.setTimeout(() => { this.close(); reject(new Error(t('The remote computer did not answer'))); }, timeoutMs);
       const fail = (e: Error) => { window.clearTimeout(timer); this.close(); reject(e); };
       const ws = new WebSocket(this.opts.wsUrl);
       this.ws = ws;
@@ -75,6 +76,16 @@ export class FileSession {
         if (msg.event !== 'Signaling' || !msg.data) return;
         const { type, payload } = msg.data;
         if (type === 'Error') { fail(new Error(payload?.message || t('Error'))); return; }
+        if (type === 'AccessRequest') {
+          const refusal = accessRefusal(String(payload?.status || ''));
+          if (refusal) { fail(new Error(refusal)); return; }
+          if (payload?.status === 'waiting') {
+            // The person there has a while to answer: wait for them.
+            window.clearTimeout(timer);
+            timer = window.setTimeout(() => { this.close(); reject(new Error(t('The remote computer did not answer'))); }, (ACCESS_REQUEST_TIMEOUT_S + 20) * 1000);
+          }
+          return;
+        }
         if (type === 'Sdp' && payload?.sdp?.ty === 'offer') {
           const servers = (payload.ice_servers || []) as { urls: string[]; username?: string; credential?: string }[];
           const pc = new RTCPeerConnection({ iceServers: servers.length ? servers : [{ urls: 'stun:stun.l.google.com:19302' }] });

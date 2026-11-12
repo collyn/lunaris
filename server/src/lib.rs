@@ -18,6 +18,7 @@ pub mod bridge;
 pub mod buffer;
 mod db;
 pub mod input;
+mod links;
 mod paths;
 mod service;
 mod tls;
@@ -249,6 +250,7 @@ pub(crate) async fn run_server(
 
     let turn = turn::TurnService::start_from_env().await;
     let signaling_state = Arc::new(SignalingState::new(pool.clone(), agent_token, turn));
+    links::start_saved(&signaling_state).await;
 
     // Configure CORS
     let cors = CorsLayer::new()
@@ -265,6 +267,7 @@ pub(crate) async fn run_server(
         .route("/api/auth/me", get(admin::get_current_user))
         .route("/api/hosts", get(hosts_handler))
         .route("/api/hosts/:id", delete(delete_host_handler))
+        .route("/api/hosts/address", post(add_host_by_address_handler))
         .route("/api/agent/token", get(agent_token_handler))
         .route("/api/server/ports", get(ports_handler))
         .route(
@@ -497,22 +500,98 @@ async fn hosts_handler(
                 ip_address: ip_address_clone,
                 server_codec_mode_support: server_codec_mode_support.map(|v| v as u32),
                 agent_connected: is_agent_online,
+                address: None,
+                link_error: None,
+                needs_approval: false,
             }
         };
         futures.push(fut);
     }
 
-    let hosts: Vec<HostInfo> = futures_util::future::join_all(futures).await;
+    let mut hosts: Vec<HostInfo> = futures_util::future::join_all(futures).await;
+
+    // Computers added by address: where they are, and why they can't be
+    // reached. Admins also see the ones that never answered yet.
+    for link in state.links.list() {
+        match hosts.iter_mut().find(|h| link.host_id.as_deref() == Some(h.id.as_str())) {
+            Some(h) => {
+                h.address = Some(link.address.clone());
+                h.link_error = link.error.clone();
+                h.needs_approval = link.needs_approval;
+            }
+            None if user.role == "admin" => hosts.push(HostInfo {
+                id: format!("address:{}", link.address),
+                name: link.address.clone(),
+                status: HostStatus::Offline,
+                ip_address: None,
+                server_codec_mode_support: None,
+                agent_connected: false,
+                address: Some(link.address.clone()),
+                link_error: link.error.clone().or_else(|| Some("connecting…".into())),
+                needs_approval: link.needs_approval,
+            }),
+            None => {}
+        }
+    }
 
     Ok((StatusCode::OK, Json(hosts)))
 }
 
+/// Adds a computer by address (admins): the server connects to its agent.
+/// Adding the same address again changes its password.
+async fn add_host_by_address_handler(
+    _admin: crate::auth::AdminUser,
+    State(state): State<Arc<SignalingState>>,
+    Json(req): Json<common::AddHostByAddressRequest>,
+) -> impl IntoResponse {
+    let Some(address) = links::normalize_address(&req.address) else {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": "Not a valid address" }))).into_response();
+    };
+    let password = req.password.unwrap_or_default().trim().to_string();
+    let saved = sqlx::query(
+        "INSERT INTO address_hosts (address, password) VALUES (?, ?)
+         ON CONFLICT(address) DO UPDATE SET password = excluded.password",
+    )
+    .bind(&address)
+    .bind(&password)
+    .execute(&state.db)
+    .await;
+    if let Err(e) = saved {
+        error!("Database error: {}", e);
+        return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": "Internal Database Error" }))).into_response();
+    }
+    let host_id: Option<String> = sqlx::query_scalar("SELECT host_id FROM address_hosts WHERE address = ?")
+        .bind(&address)
+        .fetch_optional(&state.db)
+        .await
+        .ok()
+        .flatten()
+        .flatten();
+    info!("Computer added by address: {} ({})", address, if password.is_empty() { "accepted there" } else { "password" });
+    links::start(&state, address.clone(), password, host_id);
+    (StatusCode::OK, Json(serde_json::json!({ "address": address }))).into_response()
+}
+
 async fn delete_host_handler(
+    _admin: crate::auth::AdminUser,
     host_id_path: axum::extract::Path<String>,
     State(state): State<Arc<SignalingState>>,
 ) -> impl IntoResponse {
     let host_id = host_id_path.0;
     info!("Unpairing host: {}", host_id);
+
+    // A computer added by address: stop connecting to it.
+    let address = host_id.strip_prefix("address:").map(str::to_owned).or_else(|| state.links.address_of(&host_id));
+    if let Some(address) = address {
+        state.links.stop(&address);
+        let _ = sqlx::query("DELETE FROM address_hosts WHERE address = ?")
+            .bind(&address)
+            .execute(&state.db)
+            .await;
+        if host_id.starts_with("address:") {
+            return StatusCode::OK.into_response();
+        }
+    }
 
     // Check if there are active local sessions and end them
     let session = {

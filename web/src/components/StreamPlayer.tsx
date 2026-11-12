@@ -6,6 +6,7 @@ import { WebShare, readClipboardSync, readFileTransfer } from '../share';
 import { GamepadSender } from '../gamepad';
 import FileManager from './FileManager';
 import { TouchGestures, type GestureActions, type TouchPoint } from '../touchGestures';
+import { accessRefusal } from '../accessRequest';
 
 /** Windows virtual-key codes for the phone keys bar and keyboard keys. */
 const PHONE_KEY_CODES: Record<string, number> = {
@@ -1427,6 +1428,20 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
             setErrorMsg("The remote host ended the streaming session.");
             break;
             
+          case "AccessRequest": {
+            // Added without its password: the person there accepts or not.
+            const refusal = accessRefusal(String(payload?.status || ''));
+            addLog(`Access request: ${payload?.status}`);
+            if (refusal) {
+              cleanup();
+              setErrorMsg(refusal);
+              setStatus("Error");
+            } else if (payload?.status === 'waiting') {
+              setStatus(t('Waiting for the person at the remote computer to accept…'));
+            }
+            break;
+          }
+
           case "Error":
             addLog(`Error from signaling: ${payload.message}`);
             setErrorMsg(payload.message);

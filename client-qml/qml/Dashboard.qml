@@ -759,6 +759,14 @@ Rectangle {
                     anchors.verticalCenter: parent.verticalCenter
                     spacing: 12
 
+                    // Add a computer by its address (the server connects to it)
+                    PrimaryButton {
+                        visible: dashboardRoot.isAdmin
+                        text: I18n.t("Add computer")
+                        anchors.verticalCenter: parent.verticalCenter
+                        onClicked: addHostDialog.openDialog()
+                    }
+
                     // Sync Devices Button
                     Button {
                         id: syncBtn
@@ -880,7 +888,20 @@ Rectangle {
                                     Row {
                                         width: parent.width
                                         Text { text: I18n.t("IP Address"); font.pixelSize: 11; color: Theme.textSubtle; width: 80 }
-                                        Text { text: modelData.ip_address || I18n.t("Connected via Agent"); font.pixelSize: 11; font.bold: true; font.family: "monospace"; color: Theme.text }
+                                        Text {
+                                            text: modelData.address ? String(modelData.address).replace(/:8091$/, "")
+                                                : (modelData.ip_address || I18n.t("Connected via Agent"))
+                                            font.pixelSize: 11; font.bold: true; font.family: "monospace"; color: Theme.text
+                                        }
+                                    }
+
+                                    Text {
+                                        visible: !!modelData.link_error
+                                        width: parent.width
+                                        text: modelData.link_error ? I18n.t(modelData.link_error) : ""
+                                        font.pixelSize: 11
+                                        color: Theme.danger
+                                        elide: Text.ElideRight
                                     }
 
                                     Row {
@@ -1499,6 +1520,74 @@ Rectangle {
         onConfigureVirtualDisplay: (enable, refreshHz) => {
             if (dashboardRoot.serverUrl && dashboardRoot.token && dashboardRoot.activeConfigHost && dashboardRoot.activeConfigHost.id) {
                 bridge.configureVirtualDisplay(dashboardRoot.serverUrl, dashboardRoot.token, dashboardRoot.activeConfigHost.id, enable, 1920, 1080, refreshHz);
+            }
+        }
+    }
+
+    // Add a computer by address: the server connects to the Lunaris app on
+    // it. Without its password, the person there accepts each connection.
+    ApiClient { id: addHostApi }
+    DialogFrame {
+        id: addHostDialog
+        width: 440
+        property bool busy: false
+        property string error: ""
+        function openDialog() {
+            addrField.text = "";
+            addPwField.text = "";
+            error = "";
+            open();
+            addrField.input.forceActiveFocus();
+        }
+        function submit() {
+            if (busy) return;
+            if (addrField.text.trim() === "") { error = I18n.t("Enter the address of the computer"); return; }
+            busy = true;
+            error = "";
+            addHostApi.call("POST", "/api/hosts/address",
+                { address: addrField.text.trim(), password: addPwField.text.trim() || null },
+                function (ok, data, err) {
+                    addHostDialog.busy = false;
+                    if (!ok) { addHostDialog.error = err; return; }
+                    addHostDialog.close();
+                    bridge.fetchHosts();
+                    addHostRefresh.restart();
+                });
+        }
+        Timer { id: addHostRefresh; interval: 2500; onTriggered: bridge.fetchHosts() }
+        contentItem: ColumnLayout {
+            spacing: 12
+            Text { text: I18n.t("Add computer"); color: Theme.textStrong; font.pixelSize: 16; font.weight: Font.DemiBold }
+            Text {
+                Layout.fillWidth: true
+                text: I18n.t("The server connects to the Lunaris app on that computer (remote control turned on). Its address and password are shown under \"This computer\" there.")
+                color: Theme.textMuted
+                font.pixelSize: 12
+                wrapMode: Text.WordWrap
+            }
+            InputField { id: addrField; placeholder: I18n.t("Address, e.g. 192.168.1.20"); onAccepted: addHostDialog.submit() }
+            InputField { id: addPwField; placeholder: I18n.t("Password (optional)"); password: true; onAccepted: addHostDialog.submit() }
+            Text {
+                Layout.fillWidth: true
+                text: I18n.t("Without the password, the person at that computer is asked to accept each connection.")
+                color: Theme.textMuted
+                font.pixelSize: 11
+                wrapMode: Text.WordWrap
+            }
+            Text {
+                visible: addHostDialog.error !== ""
+                Layout.fillWidth: true
+                text: addHostDialog.error
+                color: Theme.danger
+                font.pixelSize: 12
+                wrapMode: Text.WordWrap
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 8
+                Item { Layout.fillWidth: true }
+                SecondaryButton { text: I18n.t("Cancel"); onClicked: addHostDialog.close() }
+                PrimaryButton { text: addHostDialog.busy ? I18n.t("Adding…") : I18n.t("Add"); onClicked: addHostDialog.submit() }
             }
         }
     }

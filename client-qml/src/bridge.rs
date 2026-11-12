@@ -1084,6 +1084,19 @@ pub mod qobject {
         #[qinvokable]
         fn host_set_sharing(self: Pin<&mut StreamBridge>, clipboard: bool, files: bool) -> QString;
 
+        /// How connections are accepted: "password", "click" or
+        /// "password-click"; returns an error message or "".
+        #[qinvokable]
+        fn host_set_approve_mode(self: Pin<&mut StreamBridge>, mode: QString) -> QString;
+
+        /// Connections waiting to be accepted here, as JSON:
+        /// [{id, requester, kind, timeout_s}].
+        #[qinvokable]
+        fn host_approvals(self: Pin<&mut StreamBridge>) -> QString;
+
+        #[qinvokable]
+        fn host_answer_approval(self: Pin<&mut StreamBridge>, id: i32, accept: bool);
+
         /// Sets the port for direct connections; returns an error message or "".
         #[qinvokable]
         fn host_set_port(self: Pin<&mut StreamBridge>, port: i32) -> QString;
@@ -2828,6 +2841,18 @@ impl qobject::StreamBridge {
 
     pub fn host_set_sharing(self: Pin<&mut Self>, clipboard: bool, files: bool) -> QString {
         QString::from(&crate::host::set_sharing(clipboard, files).err().unwrap_or_default())
+    }
+
+    pub fn host_set_approve_mode(self: Pin<&mut Self>, mode: QString) -> QString {
+        QString::from(&crate::host::set_approve_mode(&mode.to_string()).err().unwrap_or_default())
+    }
+
+    pub fn host_approvals(self: Pin<&mut Self>) -> QString {
+        QString::from(&crate::host::approvals_json())
+    }
+
+    pub fn host_answer_approval(self: Pin<&mut Self>, id: i32, accept: bool) {
+        crate::host::answer_approval(id.max(0) as u64, accept);
     }
 
     pub fn host_set_port(self: Pin<&mut Self>, port: i32) -> QString {
@@ -4663,9 +4688,10 @@ async fn run_webrtc_client_task(
 ) -> Result<(), anyhow::Error> {
     let encoded_token: String = url::form_urlencoded::byte_serialize(token.as_bytes()).collect();
     let ws_url = format!(
-        "{}/ws/client?token={}",
+        "{}/ws/client?token={}{}",
         server_url.replace("http", "ws"),
-        encoded_token
+        encoded_token,
+        crate::host::client_name_query()
     );
     // Never log ws_url itself: it carries the session token.
     println!("Connecting to signaling server at: {}/ws/client", server_url.replace("http", "ws"));
@@ -5270,6 +5296,14 @@ async fn run_webrtc_client_task(
                     SignalingMessage::EndSession { .. } => {
                         println!("Stream session ended by remote host.");
                         break;
+                    }
+                    SignalingMessage::AccessRequest { status, .. } => {
+                        if let Some(refusal) = crate::host::access_refusal(&status) {
+                            return Err(anyhow::anyhow!(refusal));
+                        }
+                        if status == "waiting" {
+                            crate::share::set_status("Waiting for the person at the remote computer to accept…");
+                        }
                     }
                     SignalingMessage::Error { message } if peer_connection.is_none() => {
                         // e.g. "No agent connected" or the agent could not

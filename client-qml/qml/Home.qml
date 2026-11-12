@@ -1327,6 +1327,12 @@ Rectangle {
                 home.connectTo(address, pw, rememberBox.checked);
             }
         }
+        // No password: the person at that computer is asked to accept.
+        function askThem() {
+            close();
+            if (action) action("");
+            else home.connectTo(address, "", false);
+        }
         contentItem: ColumnLayout {
             spacing: 12
             Text { text: I18n.t("Password for %1").arg(home.displayAddress(passwordDialog.address)); color: Theme.textStrong; font.pixelSize: 16; font.weight: Font.DemiBold }
@@ -1342,6 +1348,13 @@ Rectangle {
             RowLayout {
                 Layout.fillWidth: true
                 spacing: 8
+                SecondaryButton {
+                    text: I18n.t("Ask to connect")
+                    ToolTip.visible: hovered
+                    ToolTip.delay: 400
+                    ToolTip.text: I18n.t("Without the password: the person at that computer is asked to accept.")
+                    onClicked: passwordDialog.askThem()
+                }
                 Item { Layout.fillWidth: true }
                 SecondaryButton { text: I18n.t("Cancel"); onClicked: passwordDialog.close() }
                 PrimaryButton { text: I18n.t("Connect"); onClicked: passwordDialog.accept() }
