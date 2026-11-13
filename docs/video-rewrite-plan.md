@@ -211,12 +211,15 @@ them):
   A Rec. 601 full-range request is honoured and tagged (Phase 2 is thereby
   complete on AMD; native NVENC and QSV still ignore the request).
 
+- Real streams from a Linux host (this machine, KDE Wayland) to the Windows
+  client, 1080p60, 10 Mbps, 14 s each: h264_vaapi (default), hevc_vaapi,
+  h264_nvenc, hevc_nvenc, libx264 — all 60 fps sent, no drops, 3.5-4.9 ms per
+  frame in hardware and 9.7 ms in libx264; picture correct on the client.
 - NVENC through FFmpeg (Linux) and libx264 / libx265 are on the tables too
   (`lunaris-media` `defb1ee`); all seven remaining tables were checked
   against `video.cpp` by a second, independent pass (132 options, no
   difference). Colour bars round trip on the RTX 2060 and in software:
-  within 2/255, expected profiles, no B-frames. Not yet run as a real stream
-  on a Linux host. NVENC 4:4:4 keeps `rgb_mode=yuv444` (BGRA input path).
+  within 2/255, expected profiles, no B-frames. NVENC 4:4:4 keeps `rgb_mode=yuv444` (BGRA input path).
 
 - The host offers H.265 and AV1 only when a hardware encoder for them really
   opens, on every platform (`probe_encoder`, now also on Windows; the guess
@@ -256,6 +259,15 @@ back to GDI, which no encoder accepts: no video. Sunshine wakes the display
 and keeps it awake (`SetThreadExecutionState`, `display_base.cpp:258`, `565`),
 syncs the thread desktop and retries (`display_base.cpp:84-93`). To port
 here.
+
+Requirement from the owner (2026-11-13): on Windows the agent has to run
+elevated, otherwise it cannot operate system applications such as Task
+Manager (Windows blocks input from a normal process into elevated windows),
+and the UAC / lock screen desktop needs more than that. Sunshine runs as a
+Windows service that starts the streaming process in the console session
+with the SYSTEM token (`tools/sunshinesvc.cpp`), which covers elevated
+windows, the secure desktop and start before logon. To port with this phase,
+together with the desktop switching of `syncThreadDesktop`.
 
 ### Phase 5 — HDR and 10-bit, end to end
 
