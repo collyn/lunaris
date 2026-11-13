@@ -182,14 +182,17 @@ Findings before the start (2026-11-13, RX 6600 XT):
   the CI build of FFmpeg already contains `h264_amf`, `hevc_amf`, `av1_amf`,
   the NVENC encoders, libx264 and SVT-AV1.
 
-First step done (`lunaris-media` `0514233`): the FFmpeg backend is compiled
-into the Windows host again and used when an FFmpeg encoder is asked for by
-name (`--encoder ffmpeg_amf`); the default selection is unchanged. On the
-RX 6600 XT `h264_amf` and `hevc_amf` open, then every frame fails in the old
-D3D11 conversion (`CreateVideoProcessorOutputView`: invalid parameter, on the
-NV12 texture of FFmpeg's frame pool). Sunshine renders into its own texture
-with its shaders and hands that to FFmpeg (`display_vram.cpp`); that is the
-next step, together with the option tables.
+Done so far (`lunaris-media` `0514233`, then the fix after it): the FFmpeg
+backend is compiled into the Windows host again and used when an FFmpeg
+encoder is asked for by name (`--encoder ffmpeg_amf`); the default selection
+is unchanged. Its D3D11 frames context was declared with fields FFmpeg does
+not have, so the pool textures had no bind flags; it now follows
+`hwcontext_d3d11va.h` and uses `D3D11_BIND_RENDER_TARGET` as Sunshine's
+`init_hwframes` (`display_vram.cpp:1157-1159`). On the RX 6600 XT `h264_amf`
+and `hevc_amf` then stream correctly (desktop and streamed copy within
+1/255), and the client presents HEVC through the Phase 1 D3D11 path.
+Next: Sunshine's option tables and session setup, capability probing, then
+FFmpeg AMF as the default for AMD and the removal of the native AMF encoder.
 
 Decision: AMF goes through FFmpeg as in Sunshine (`amdvce`,
 `video.cpp:983-1100`, D3D11 frames); the hand-written AMF encoder is removed
@@ -256,7 +259,7 @@ here.
 | Phase | State |
 |---|---|
 | Preparation: references, reports, Windows build and loopback test | done 2026-11-13 |
-| 1 | H.264 done and tested on Windows; other codecs wait for the host (Phase 3) |
+| 1 | H.264 and HEVC tested on Windows (HEVC with `--encoder ffmpeg_amf`); AV1 not decodable on this GPU's host side yet |
 | 2 | host and protocol done; see the phase for what is open |
-| 3 | findings recorded, not started |
+| 3 | started: FFmpeg AMF works on Windows when asked for by name |
 | 4–8 | not started |
