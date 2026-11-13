@@ -264,6 +264,17 @@ change during a stream recovers in about one second (before: the stream
 ended). Re-creating only the duplication on the old device was tried first
 and does not work.
 
+Frame pacing (2026-11-13, reported by the owner as stutter while dragging a
+window): the pipeline's fixed-rate ticker gave capture intervals of 2.4-32 ms
+at 60 fps on Windows (8-13 late frames per second). The Desktop Duplication
+backend now paces itself with Sunshine's frame pacing groups on a
+high-resolution timer (`display_base.cpp:226-345`, `misc.cpp:1824-1870`):
+12-21 ms, 0-2 late frames per second. Linux (PipeWire, already
+frame-driven) measures 9-24 ms on a 75 Hz desktop streamed at 60 fps — the
+rate mismatch itself; streaming at the display's rate is not offered yet.
+Not ported: process / GPU priorities (`misc.cpp:1228`, `display_base.cpp:689-718`),
+the dedicated capture thread.
+
 Not confirmed: the morning's failure (`DuplicateOutput` access denied after
 the machine sat idle, fixed by waking the display) could not be reproduced
 later — neither the new nor the old build failed with the monitor timed out
