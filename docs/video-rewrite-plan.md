@@ -191,8 +191,30 @@ not have, so the pool textures had no bind flags; it now follows
 `init_hwframes` (`display_vram.cpp:1157-1159`). On the RX 6600 XT `h264_amf`
 and `hevc_amf` then stream correctly (desktop and streamed copy within
 1/255), and the client presents HEVC through the Phase 1 D3D11 path.
-Next: Sunshine's option tables and session setup, capability probing, then
-FFmpeg AMF as the default for AMD and the removal of the native AMF encoder.
+
+Then (`lunaris-media` `610d8e6`, `8a7168e`, and the default switch after
+them):
+- `sunshine_tables.rs`: transcription of Sunshine's avcodec encoder tables
+  (`video.cpp:761-1473`), the config defaults they point at, and the session
+  helpers (profile, GOP, slices, bitrate/VBV, flags). Reviewed against the
+  source so far: `amdvce` and the AMF / NVENC constants (against the SDK
+  headers). The other tables are reviewed when their encoder is wired.
+- The FFmpeg AMF encoders are configured from that table and the session
+  setup of `make_avcodec_encode_session` (`video.cpp:2046-2305`).
+  Deviations: H.264 4:2:0 uses CAVLC / Constrained Baseline (the agent's SDP
+  offers `42002a`; High needs an SDP change — still to do), one slice per
+  frame (Lunaris clients send no slice count).
+- AMD hosts use FFmpeg AMF by default; the hand-written AMF encoder stays one
+  release as the H.264 fallback. Measured on the RX 6600 XT, 1280x720@60,
+  8 Mbps target: native 3.1-3.4 ms per frame and 8.3-10.9 Mbps; FFmpeg
+  2.4-2.7 ms and at or under 8 Mbps; both hold 60 fps. HEVC works by default.
+  A Rec. 601 full-range request is honoured and tagged (Phase 2 is thereby
+  complete on AMD; native NVENC and QSV still ignore the request).
+
+Still to do in this phase: the other encoders on the tables (VAAPI, NVENC and
+software on Linux; software and QSV on Windows), `probe_encoders` and what the
+host advertises, native NVENC as `src/nvenc` (bitrate, invalidation), H.264
+High over WebRTC, the IDR / invalidation flow, bitrate change without IDR.
 
 Decision: AMF goes through FFmpeg as in Sunshine (`amdvce`,
 `video.cpp:983-1100`, D3D11 frames); the hand-written AMF encoder is removed
@@ -261,5 +283,5 @@ here.
 | Preparation: references, reports, Windows build and loopback test | done 2026-11-13 |
 | 1 | H.264 and HEVC tested on Windows (HEVC with `--encoder ffmpeg_amf`); AV1 not decodable on this GPU's host side yet |
 | 2 | host and protocol done; see the phase for what is open |
-| 3 | started: FFmpeg AMF works on Windows when asked for by name |
+| 3 | AMD on Windows done (FFmpeg AMF with Sunshine's table, default); rest open |
 | 4–8 | not started |
