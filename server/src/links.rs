@@ -234,12 +234,12 @@ async fn connect_once(
                 msg = rx.recv() => {
                     let Some(msg): Option<ServerToAgentMessage> = msg else { break };
                     let Ok(json) = serde_json::to_string(&msg) else { continue };
-                    if write.send(WsMessage::Text(json)).await.is_err() {
+                    if write.send(WsMessage::Text(json.into())).await.is_err() {
                         break;
                     }
                 }
                 _ = ping.tick() => {
-                    if write.send(WsMessage::Ping(Vec::new())).await.is_err() {
+                    if write.send(WsMessage::Ping(Default::default())).await.is_err() {
                         break;
                     }
                 }

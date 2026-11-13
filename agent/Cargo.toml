@@ -15,7 +15,7 @@ ffmpeg-sys-next = { version = "8.1", optional = true, default-features = false }
 bitflags = "2"
 
 tokio = { version = "1.0", features = ["full"] }
-tokio-tungstenite = { version = "0.21", features = ["native-tls", "rustls-tls-native-roots"] }
+tokio-tungstenite = { version = "0.30", features = ["native-tls", "rustls-tls-native-roots"] }
 native-tls = "0.2"
 webrtc = "0.21.1"
 rtc = "0.21.1"
@@ -25,7 +25,7 @@ wtransport = { version = "0.7.1", features = ["self-signed"] }
 uuid = { version = "1.0", features = ["v4"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-base64 = "0.22"
+base64 = "0.23"
 anyhow = "1.0"
 once_cell = "1.18"
 thiserror = "2"
@@ -39,24 +39,23 @@ num-derive = "0.5"
 num-traits = "0.2"
 hostname = "0.4"
 urlencoding = "2.1"
-reqwest = { version = "0.12", features = ["json", "rustls-tls", "blocking", "stream"] }
-zip = "0.6"
-dirs = "5.0"
+reqwest = { version = "0.13", default-features = false, features = ["native-tls-no-alpn", "charset", "http2", "system-proxy", "json", "blocking", "stream"] }
+dirs = "7"
 # Clipboard sharing (X11, Wayland data-control, Windows, macOS).
 arboard = { version = "3", default-features = false, features = ["wayland-data-control"] }
 libc = "0.2"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # Virtual game controllers (uinput), same crate as lunaris-media.
-evdev = "0.11"
+evdev = "0.13"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 # Virtual game controllers through the ViGEmBus driver.
 vigem-client = "0.1.4"
 # win_service.rs: the service that runs the host as SYSTEM in the console
 # session (raw Win32 for the service itself, `windows-service` for install).
-windows-service = "0.7"
-windows = { version = "0.58", features = [
+windows-service = "0.8"
+windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_Security",
     "Win32_Storage_FileSystem",

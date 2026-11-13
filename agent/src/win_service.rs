@@ -262,9 +262,9 @@ unsafe fn allocate_proc_thread_attribute_list(
     let mut size: usize = 0;
     // Fails with ERROR_INSUFFICIENT_BUFFER; only `size` matters.
     let _ = InitializeProcThreadAttributeList(
-        LPPROC_THREAD_ATTRIBUTE_LIST(std::ptr::null_mut()),
+        Some(LPPROC_THREAD_ATTRIBUTE_LIST(std::ptr::null_mut())),
         attribute_count,
-        0,
+        Some(0),
         &mut size,
     );
 
@@ -275,7 +275,7 @@ unsafe fn allocate_proc_thread_attribute_list(
     }
     let list = LPPROC_THREAD_ATTRIBUTE_LIST(list);
 
-    if InitializeProcThreadAttributeList(list, attribute_count, 0, &mut size).is_err() {
+    if InitializeProcThreadAttributeList(Some(list), attribute_count, Some(0), &mut size).is_err() {
         let _ = HeapFree(heap, HEAP_FLAGS(0), Some(list.0));
         return None;
     }
@@ -413,9 +413,9 @@ unsafe fn run_termination_helper(console_token: HANDLE, pid: u32) -> bool {
     // and send it a Ctrl-C event.
     let mut process_info = PROCESS_INFORMATION::default();
     if CreateProcessAsUserW(
-        console_token,
+        Some(console_token),
         PCWSTR(module_wide.as_ptr()),
-        PWSTR(command_wide.as_mut_ptr()),
+        Some(PWSTR(command_wide.as_mut_ptr())),
         None,
         None,
         false,
@@ -629,9 +629,9 @@ unsafe extern "system" fn service_main(_argc: u32, _argv: *mut PWSTR) {
 
         let mut process_info = PROCESS_INFORMATION::default();
         if CreateProcessAsUserW(
-            console_token,
+            Some(console_token),
             PCWSTR(module_wide.as_ptr()),
-            PWSTR(command_wide.as_mut_ptr()),
+            Some(PWSTR(command_wide.as_mut_ptr())),
             None,
             None,
             true,

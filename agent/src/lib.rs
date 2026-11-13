@@ -539,7 +539,7 @@ async fn connect_server_once(
         while let Some(msg) = server_rx.recv().await {
             match serde_json::to_string(&msg) {
                 Ok(json) => {
-                    if let Err(e) = ws_write.send(WsMessage::Text(json)).await {
+                    if let Err(e) = ws_write.send(WsMessage::Text(json.into())).await {
                         error!("WebSocket write error: {:?}", e);
                         break;
                     }

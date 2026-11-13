@@ -301,7 +301,7 @@ async fn connect(server_url: String, token: String, host_id: String) -> Result<(
     tokio::spawn(async move {
         while let Some(sig) = out_rx.recv().await {
             let Ok(text) = serde_json::to_string(&ClientMessage::Signaling(sig)) else { continue };
-            if ws_tx.send(WsMessage::Text(text)).await.is_err() {
+            if ws_tx.send(WsMessage::Text(text.into())).await.is_err() {
                 break;
             }
         }

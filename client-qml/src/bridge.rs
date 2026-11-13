@@ -2129,7 +2129,7 @@ impl qobject::StreamBridge {
             });
 
             if let Ok(text) = serde_json::to_string(&get_app_msg) {
-                if let Err(e) = ws_stream.send(WsMessage::Text(text)).await {
+                if let Err(e) = ws_stream.send(WsMessage::Text(text.into())).await {
                     let err_msg = format!("Failed to send GetAppList request: {}", e);
                     PENDING_EVENTS
                         .lock()
@@ -2257,7 +2257,7 @@ impl qobject::StreamBridge {
             });
 
             if let Ok(text) = serde_json::to_string(&get_caps_msg) {
-                if let Err(e) = ws_stream.send(WsMessage::Text(text)).await {
+                if let Err(e) = ws_stream.send(WsMessage::Text(text.into())).await {
                     eprintln!("fetch_capabilities: Failed to send GetCapabilities: {}", e);
                     return;
                 }
@@ -2370,7 +2370,7 @@ impl qobject::StreamBridge {
                 refresh_hz,
             });
             if let Ok(text) = serde_json::to_string(&cfg_msg) {
-                if let Err(e) = ws_stream.send(WsMessage::Text(text)).await {
+                if let Err(e) = ws_stream.send(WsMessage::Text(text.into())).await {
                     eprintln!("configure_virtual_display: send failed: {}", e);
                     return;
                 }
@@ -2412,7 +2412,7 @@ impl qobject::StreamBridge {
                         target_id: host_id_str.clone(),
                     });
                     if let Ok(text) = serde_json::to_string(&get_caps) {
-                        if ws_stream.send(WsMessage::Text(text)).await.is_ok() {
+                        if ws_stream.send(WsMessage::Text(text.into())).await.is_ok() {
                             let caps = tokio::time::timeout(
                                 std::time::Duration::from_secs(5),
                                 async {
@@ -4931,7 +4931,7 @@ async fn run_webrtc_client_task(
     // Never log ws_url itself: it carries the session token.
     println!("Connecting to signaling server at: {}/ws/client", server_url.replace("http", "ws"));
 
-    let (ws_stream, _) = connect_async(url::Url::parse(&ws_url)?).await?;
+    let (ws_stream, _) = connect_async(ws_url.as_str()).await?;
     let (mut ws_write, mut ws_read) = ws_stream.split();
 
     let (outbox_tx, mut outbox_rx) = tokio::sync::mpsc::unbounded_channel::<ClientMessage>();
@@ -5167,7 +5167,7 @@ async fn run_webrtc_client_task(
     tokio::spawn(async move {
         while let Some(msg) = outbox_rx.recv().await {
             if let Ok(text) = serde_json::to_string(&msg) {
-                if let Err(e) = ws_write.send(WsMessage::Text(text)).await {
+                if let Err(e) = ws_write.send(WsMessage::Text(text.into())).await {
                     eprintln!("WS write error: {:?}", e);
                     break;
                 }

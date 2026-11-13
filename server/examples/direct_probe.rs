@@ -136,7 +136,7 @@ async fn main() -> Result<()> {
     // 2. Connect with the password.
     let t_connect = Instant::now();
     let url = format!("ws://{}/ws/client?token={}", addr, urlencoding::encode(password));
-    let (ws, _) = tokio_tungstenite::connect_async(url).await?;
+    let (ws, _) = tokio_tungstenite::connect_async(url.as_str()).await?;
     step("connect", true, format!("{} ms", t_connect.elapsed().as_millis()))?;
     let (mut ws_write, mut ws_read) = ws.split();
 
@@ -144,7 +144,7 @@ async fn main() -> Result<()> {
     tokio::spawn(async move {
         while let Some(sig) = out_rx.recv().await {
             let json = serde_json::to_string(&ClientMessage::Signaling(sig)).unwrap();
-            if ws_write.send(Message::Text(json)).await.is_err() {
+            if ws_write.send(Message::Text(json.into())).await.is_err() {
                 break;
             }
         }

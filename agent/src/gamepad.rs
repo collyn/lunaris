@@ -207,24 +207,24 @@ fn new_pad(id: u8) -> Result<Box<dyn VirtualPad>, String> {
 #[cfg(target_os = "linux")]
 mod linux {
     use super::{buttons as b, PadState, VirtualPad};
-    use evdev::uinput::{VirtualDevice, VirtualDeviceBuilder};
-    use evdev::{AbsInfo, AbsoluteAxisType as Abs, AttributeSet, BusType, EventType, InputEvent, InputId, Key, UinputAbsSetup};
+    use evdev::uinput::VirtualDevice;
+    use evdev::{AbsInfo, AbsoluteAxisCode as Abs, AttributeSet, BusType, EventType, InputEvent, InputId, KeyCode, UinputAbsSetup};
 
     /// Buttons in the order and codes of the kernel's xpad driver.
-    const KEYS: [(u32, Key); 11] = [
-        (b::A, Key::BTN_SOUTH),
-        (b::B, Key::BTN_EAST),
+    const KEYS: [(u32, KeyCode); 11] = [
+        (b::A, KeyCode::BTN_SOUTH),
+        (b::B, KeyCode::BTN_EAST),
         // xpad reports X as BTN_X (= BTN_NORTH) and Y as BTN_Y (= BTN_WEST);
         // SDL's mapping for 045e:028e expects exactly that.
-        (b::X, Key::BTN_NORTH),
-        (b::Y, Key::BTN_WEST),
-        (b::LB, Key::BTN_TL),
-        (b::RB, Key::BTN_TR),
-        (b::BACK | b::TOUCHPAD, Key::BTN_SELECT),
-        (b::START, Key::BTN_START),
-        (b::GUIDE, Key::BTN_MODE),
-        (b::LS, Key::BTN_THUMBL),
-        (b::RS, Key::BTN_THUMBR),
+        (b::X, KeyCode::BTN_NORTH),
+        (b::Y, KeyCode::BTN_WEST),
+        (b::LB, KeyCode::BTN_TL),
+        (b::RB, KeyCode::BTN_TR),
+        (b::BACK | b::TOUCHPAD, KeyCode::BTN_SELECT),
+        (b::START, KeyCode::BTN_START),
+        (b::GUIDE, KeyCode::BTN_MODE),
+        (b::LS, KeyCode::BTN_THUMBL),
+        (b::RS, KeyCode::BTN_THUMBR),
     ];
 
     pub struct XpadDevice {
@@ -237,14 +237,14 @@ mod linux {
             let err = |e: std::io::Error| {
                 format!("cannot create a virtual controller ({}); is /dev/uinput writable? (Lunaris installs a udev rule for it)", e)
             };
-            let mut keys = AttributeSet::<Key>::new();
+            let mut keys = AttributeSet::<KeyCode>::new();
             for (_, k) in KEYS {
                 keys.insert(k);
             }
             let stick = AbsInfo::new(0, -32768, 32767, 16, 128, 0);
             let trigger = AbsInfo::new(0, 0, 255, 0, 0, 0);
             let hat = AbsInfo::new(0, -1, 1, 0, 0, 0);
-            let dev = VirtualDeviceBuilder::new()
+            let dev = VirtualDevice::builder()
                 .map_err(err)?
                 .name(&format!("Microsoft X-Box 360 pad {}", id))
                 .input_id(InputId::new(BusType::BUS_USB, 0x045e, 0x028e, 0x0114))
@@ -287,7 +287,7 @@ mod linux {
             for (mask, key) in KEYS {
                 let now = s.buttons & mask != 0;
                 if self.last.is_none() || now != (old.buttons & mask != 0) {
-                    events.push(InputEvent::new(EventType::KEY, key.code(), now as i32));
+                    events.push(InputEvent::new(EventType::KEY.0, key.0, now as i32));
                 }
             }
             let axes = [
@@ -310,7 +310,7 @@ mod linux {
             ];
             for (axis, now, before) in axes {
                 if self.last.is_none() || now != before {
-                    events.push(InputEvent::new(EventType::ABSOLUTE, axis.0, now));
+                    events.push(InputEvent::new(EventType::ABSOLUTE.0, axis.0, now));
                 }
             }
             self.last = Some(*s);

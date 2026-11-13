@@ -14,7 +14,7 @@ common = { path = "../common" }
 # agent itself as `lunaris agent`).
 agent = { path = "../agent" }
 tokio = { version = "1.0", features = ["full"] }
-tokio-tungstenite = { version = "0.21", features = ["native-tls", "rustls-tls-native-roots"] }
+tokio-tungstenite = { version = "0.30", features = ["native-tls", "rustls-tls-native-roots"] }
 webrtc = "0.21.1"
 rtc = "0.21.1"
 async-trait = "0.1"
@@ -30,12 +30,12 @@ bytes = "1.0"
 futures-util = "0.3"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
+reqwest = { version = "0.13", default-features = false, features = ["native-tls-no-alpn", "charset", "http2", "system-proxy", "json"] }
 hostname = "0.4"
-dirs = "5.0"
+dirs = "7"
 # Clipboard sharing with the remote computer.
 arboard = { version = "3", default-features = false, features = ["wayland-data-control"] }
-png = "0.17"
+png = "0.18"
 # Game controllers of this computer, sent to the remote one.
 gilrs = "0.11"
 

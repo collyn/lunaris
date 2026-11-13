@@ -244,7 +244,7 @@ fn spawn_writer<T: serde::Serialize + Send + 'static>(
                     let Some(msg) = msg else { break };
                     match serde_json::to_string(&msg) {
                         Ok(json) => {
-                            if ws_write.send(WsMessage::Text(json)).await.is_err() {
+                            if ws_write.send(WsMessage::Text(json.into())).await.is_err() {
                                 break;
                             }
                         }
@@ -252,7 +252,7 @@ fn spawn_writer<T: serde::Serialize + Send + 'static>(
                     }
                 }
                 _ = ping.tick() => {
-                    if ws_write.send(WsMessage::Ping(Vec::new())).await.is_err() {
+                    if ws_write.send(WsMessage::Ping(Default::default())).await.is_err() {
                         break;
                     }
                 }
