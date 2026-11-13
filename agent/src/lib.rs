@@ -26,6 +26,8 @@ pub mod pairing;
 mod share;
 mod vdisplay;
 mod video;
+#[cfg(target_os = "windows")]
+pub mod win_service;
 
 
 pub static CONNECTED_TO_SERVER: std::sync::atomic::AtomicBool =
@@ -97,6 +99,29 @@ struct Args {
     /// stderr.
     #[arg(long)]
     approval_stdio: bool,
+
+    /// Windows: started by the Service Control Manager (see win_service.rs)
+    #[cfg(target_os = "windows")]
+    #[arg(long, hide = true)]
+    service_run: bool,
+
+    /// Windows: send Ctrl+C to the host process with this id (the service
+    /// runs this program again for it, see win_service.rs)
+    #[cfg(target_os = "windows")]
+    #[arg(long, hide = true, value_name = "PID")]
+    terminate: Option<u32>,
+
+    /// Windows: install the service that runs the host as SYSTEM in the
+    /// console session, start it and make it start at boot (needs an
+    /// elevated prompt)
+    #[cfg(target_os = "windows")]
+    #[arg(long)]
+    install_service: bool,
+
+    /// Windows: stop and remove that service (needs an elevated prompt)
+    #[cfg(target_os = "windows")]
+    #[arg(long)]
+    uninstall_service: bool,
 }
 
 /// `--probe-encoders`: open each codec's encoder for real and report it.
@@ -148,6 +173,30 @@ where
         Ok(args) => args,
         Err(e) => e.exit(),
     };
+    // Service commands (Windows): same order as sunshinesvc.cpp main().
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(pid) = args.terminate {
+            win_service::terminate_main(pid);
+        }
+        if args.install_service || args.uninstall_service {
+            let result = if args.install_service {
+                win_service::install_service(crate::pairing::config_path())
+            } else {
+                win_service::uninstall_service()
+            };
+            return match result {
+                Ok(()) => std::process::ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    std::process::ExitCode::FAILURE
+                }
+            };
+        }
+        if args.service_run {
+            win_service::service_run_main();
+        }
+    }
     let runtime = match tokio::runtime::Runtime::new() {
         Ok(rt) => rt,
         Err(e) => {

@@ -286,6 +286,24 @@ with the SYSTEM token (`tools/sunshinesvc.cpp`), which covers elevated
 windows, the secure desktop and start before logon. To port with this phase,
 together with the desktop switching of `syncThreadDesktop`.
 
+Written, NOT RUN (2026-11-13): `agent/src/win_service.rs`, a function by
+function port of `tools/sunshinesvc.cpp` — `--service-run` (service main,
+SYSTEM token retargeted at the console session, `CreateProcessAsUserW` on
+`winsta0\default`, job object, 3 s poll, relaunch on console-session change,
+stop through a `--terminate` helper then `TerminateProcess` after 20 s),
+`--install-service` / `--uninstall-service` (Sunshine's service scripts).
+Opt-in: nothing installs it. The host it starts reads
+`%ProgramData%\Lunaris\agent_config.json` and logs to
+`agent-service.log` there. Injected input follows the input desktop
+(Sunshine v0.23.1 `input.cpp:468-505`). It compiles on Windows and the normal
+host still streams; installing the service on the test machine was refused
+by the session's permission system, so nothing of it has been executed.
+Known before testing: the host executables are GUI-subsystem, so the
+terminate helper's `AttachConsole` will probably fail and every stop will end
+in the 20 s hard kill; the host has no CTRL_C handling; approvals are
+"unattended" (password mode only); `SetThreadDesktop` fails on threads that
+own windows.
+
 ### Phase 5 — HDR and 10-bit, end to end
 
 - Capture: HDR detection from the output colour space, FP16 duplication,
