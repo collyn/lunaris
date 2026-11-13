@@ -3836,6 +3836,14 @@ async fn setup_peer_connection(
                     let mut queue_lag_events: u64 = 0;
                     let mut max_queue_lag: usize = 0;
                     let mut last_present_log_label = String::new();
+                    // LUNARIS_CLIENT_STATS=1: one line per second with the
+                    // interval between decoded frames (stutter diagnosis).
+                    let stats_log = std::env::var("LUNARIS_CLIENT_STATS").is_ok();
+                    let mut stats_prev_frames: usize = 0;
+                    let mut stats_last_frame_at: Option<std::time::Instant> = None;
+                    let mut stats_gap_min = f64::MAX;
+                    let mut stats_gap_max = 0.0f64;
+                    let mut stats_gap_late: u32 = 0;
 
                     while let Some(rtp_packet) = rtp_rx.blocking_recv() {
                         let _ = pending_packets_decoder.fetch_update(
@@ -4500,9 +4508,40 @@ async fn setup_peer_connection(
                         }
                         
                         let now = std::time::Instant::now();
+                        if frame_count != stats_prev_frames {
+                            if frame_count > stats_prev_frames {
+                                if let Some(prev) = stats_last_frame_at {
+                                    let gap = now.duration_since(prev).as_secs_f64() * 1000.0;
+                                    stats_gap_min = stats_gap_min.min(gap);
+                                    stats_gap_max = stats_gap_max.max(gap);
+                                    if gap > 25.0 {
+                                        stats_gap_late += 1;
+                                    }
+                                }
+                                stats_last_frame_at = Some(now);
+                            }
+                            stats_prev_frames = frame_count;
+                        }
                         let elapsed = now.duration_since(last_stats_time).as_secs_f64();
                         if elapsed >= 1.0 {
                             let fps = frame_count as f64 / elapsed;
+                            if stats_log {
+                                println!(
+                                    "Client stats: fps={:.1} frame_gap_ms(min/max)={:.1}/{:.1} gaps_over_25ms={} decode_ms={:.2} lost_packets={} loss_events={} queue_lag_events={}",
+                                    fps,
+                                    if stats_gap_min == f64::MAX { 0.0 } else { stats_gap_min },
+                                    stats_gap_max,
+                                    stats_gap_late,
+                                    if decode_count > 0 { total_decode_time_ms / decode_count as f64 } else { 0.0 },
+                                    packets_lost,
+                                    packet_loss_events,
+                                    queue_lag_events
+                                );
+                            }
+                            stats_gap_min = f64::MAX;
+                            stats_gap_max = 0.0;
+                            stats_gap_late = 0;
+                            stats_prev_frames = 0;
                             let bitrate_kbps = (byte_count as f64 * 8.0) / 1000.0 / elapsed;
                             let avg_decode_ms = if decode_count > 0 {
                                 total_decode_time_ms / decode_count as f64

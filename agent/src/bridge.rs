@@ -1077,8 +1077,24 @@ pub async fn setup_bridge_session(
 
         let need_idr_clone_writer = need_idr_clone_worker.clone();
         let pipeline_cmd_tx_for_writer = pipeline_cmd_tx_for_writer.clone();
+        // Send pacing. Structure of Sunshine's video broadcast loop
+        // (stream.cpp:1740-1900): a frame's packets leave in 1 ms groups, each
+        // group waiting for its due time, and the next frame does not start
+        // before the previous one's last group. Sunshine's rate is a fixed
+        // 80% of 1 Gbit/s because its transport has FEC; over WebRTC the rate
+        // is libwebrtc's pacing factor, 2.5 x the stream bitrate
+        // (kDefaultPaceMultiplier), raised when needed so that one frame is
+        // spread over at most one frame interval and the queue below cannot
+        // build up behind a large key frame. Measured without pacing over a
+        // WireGuard tunnel at 15 Mbit/s: about 9 retransmission requests per
+        // second from Chrome, late frames every few seconds.
+        const RTP_PACKET_BYTES: u64 = 1200;
+        let pacing_packets_in_1ms: u64 =
+            ((stream_bitrate as u64 * 1000 * 25 / 10) / 8 / RTP_PACKET_BYTES / 1000).max(1);
+        let pacing_frame_interval_ms: u64 = (1000 / stream_fps.max(1) as u64).max(1);
         tokio::spawn(async move {
             let mut seq: u16 = 0;
+            let mut ratecontrol_next_frame_start = Instant::now();
             let mut metrics_started = Instant::now();
             let mut sent_frames: u64 = 0;
             let mut sent_packets: u64 = 0;
@@ -1107,30 +1123,57 @@ pub async fn setup_bridge_session(
                     }
                 }
 
-                // Compute AbsSendTime for congestion control (REMB)
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default();
-                let now_secs = now.as_secs() as f64 + now.subsec_nanos() as f64 * 1e-9;
-                let abs_send_time: u64 = (now_secs * 262_144.0) as u64;
-
-                let extensions = [
-                    // PlayoutDelay(0, 0): min=0, max=0 playout delay.
-                    // Tells Chrome to use ZERO jitter buffer delay — critical for
-                    // preventing latency accumulation that makes mouse feel slower.
-                    HeaderExtension::PlayoutDelay(PlayoutDelayExtension::new(0, 0)),
-                    HeaderExtension::AbsSendTime(AbsSendTimeExtension {
-                        timestamp: abs_send_time,
-                    }),
-                ];
-
                 let packet_count = packets.len() as u64;
                 trace!(
                     "Writer task sending {} RTP packets (first seq={})",
                     packets.len(),
                     seq
                 );
+                // stream.cpp:1740: packets per 1 ms group; here also at least
+                // enough to finish the frame within one frame interval.
+                let packets_in_1ms =
+                    pacing_packets_in_1ms.max(packet_count.div_ceil(pacing_frame_interval_ms));
+                // stream.cpp:1753: "Don't ignore the last ratecontrol group of
+                // the previous frame".
+                let ratecontrol_frame_start = ratecontrol_next_frame_start.max(Instant::now());
+                let mut ratecontrol_frame_packets_sent: u64 = 0;
+                let mut ratecontrol_group_packets_sent: u64 = 0;
+                let mut extensions = [
+                    HeaderExtension::PlayoutDelay(PlayoutDelayExtension::new(0, 0)),
+                    HeaderExtension::AbsSendTime(AbsSendTimeExtension { timestamp: 0 }),
+                ];
                 for packet in &mut packets {
+                    // stream.cpp:1853-1864: pacing within the frame, and
+                    // before its first group.
+                    if ratecontrol_group_packets_sent >= packets_in_1ms
+                        || ratecontrol_frame_packets_sent == 0
+                    {
+                        let due = ratecontrol_frame_start
+                            + Duration::from_nanos(
+                                1_000_000 * ratecontrol_frame_packets_sent / packets_in_1ms,
+                            );
+                        let now = Instant::now();
+                        if now < due {
+                            tokio::time::sleep(due - now).await;
+                        }
+                        ratecontrol_group_packets_sent = 0;
+
+                        // AbsSendTime of this group, for the receiver's
+                        // bandwidth estimate (REMB): the time it really leaves.
+                        let now = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default();
+                        let now_secs = now.as_secs() as f64 + now.subsec_nanos() as f64 * 1e-9;
+                        extensions = [
+                            // PlayoutDelay(0, 0): min=0, max=0 playout delay.
+                            // Tells Chrome to use ZERO jitter buffer delay — critical for
+                            // preventing latency accumulation that makes mouse feel slower.
+                            HeaderExtension::PlayoutDelay(PlayoutDelayExtension::new(0, 0)),
+                            HeaderExtension::AbsSendTime(AbsSendTimeExtension {
+                                timestamp: (now_secs * 262_144.0) as u64,
+                            }),
+                        ];
+                    }
                     packet.header.sequence_number = seq;
                     seq = seq.wrapping_add(1);
                     if let Err(e) = video_track_clone
@@ -1139,7 +1182,12 @@ pub async fn setup_bridge_session(
                     {
                         debug!("Failed to write video RTP packet: {:?}", e);
                     }
+                    ratecontrol_group_packets_sent += 1;
+                    ratecontrol_frame_packets_sent += 1;
                 }
+                // stream.cpp:1899-1901.
+                ratecontrol_next_frame_start = ratecontrol_frame_start
+                    + Duration::from_nanos(1_000_000 * ratecontrol_frame_packets_sent / packets_in_1ms);
                 sent_frames += 1;
                 sent_packets += packet_count;
                 let elapsed = metrics_started.elapsed();
