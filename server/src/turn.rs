@@ -20,11 +20,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tracing::{info, warn};
-use webrtc::turn::auth::{generate_long_term_credentials, LongTermAuthHandler};
-use webrtc::turn::relay::relay_range::RelayAddressGeneratorRanges;
-use webrtc::turn::server::config::{ConnConfig, ServerConfig};
-use webrtc::turn::server::Server;
-use webrtc::util::vnet::net::Net;
+use turn::auth::{generate_long_term_credentials, LongTermAuthHandler};
+use turn::relay::relay_range::RelayAddressGeneratorRanges;
+use turn::server::config::{ConnConfig, ServerConfig};
+use turn::server::Server;
+use webrtc_util::vnet::net::Net;
 
 const REALM: &str = "lunaris";
 const CREDENTIAL_LIFETIME: Duration = Duration::from_secs(12 * 3600);

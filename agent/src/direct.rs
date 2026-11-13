@@ -159,7 +159,7 @@ fn allowed_before_approval(sig: &SignalingMessage) -> bool {
 /// This computer's IPv4 addresses a direct client could use (LAN, VPN),
 /// without loopback and link-local ones, sorted.
 pub async fn local_addresses() -> Vec<String> {
-    let net = webrtc::util::vnet::net::Net::new(None);
+    let net = webrtc_util::vnet::net::Net::new(None);
     let mut addrs: Vec<String> = net
         .get_interfaces()
         .await

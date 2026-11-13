@@ -1,5 +1,6 @@
 use bytes::{Bytes, BytesMut};
-use webrtc::rtp::{self, packetizer::Payloader};
+use rtc::rtp::packetizer::Payloader;
+use rtc::shared::error::Error as RtpError;
 
 use crate::video::h265::reader::{NalHeader, NalUnitType};
 
@@ -122,9 +123,9 @@ impl H265Payloader {
 }
 
 impl Payloader for H265Payloader {
-    fn payload(&mut self, mtu: usize, b: &Bytes) -> Result<Vec<Bytes>, rtp::Error> {
+    fn payload(&mut self, mtu: usize, b: &Bytes) -> Result<Vec<Bytes>, RtpError> {
         if b.len() < 2 {
-            return Err(rtp::Error::ErrBufferTooSmall);
+            return Err(RtpError::ErrBufferTooSmall);
         }
 
         // Parse header
@@ -171,7 +172,7 @@ impl Payloader for H265Payloader {
         }
     }
 
-    fn clone_to(&self) -> Box<dyn Payloader + Send + Sync> {
+    fn clone_to(&self) -> Box<dyn Payloader> {
         Box::new(self.clone())
     }
 }

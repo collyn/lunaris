@@ -24,9 +24,8 @@ use std::time::{Duration, Instant};
 
 use serde_json::json;
 use tracing::{info, warn};
-use webrtc::data_channel::data_channel_init::RTCDataChannelInit;
-use webrtc::data_channel::data_channel_message::DataChannelMessage;
-use webrtc::peer_connection::RTCPeerConnection;
+use webrtc::data_channel::{DataChannelEvent, RTCDataChannelInit};
+use webrtc::peer_connection::PeerConnection;
 
 /// Most controllers one client may plug in.
 const MAX_PADS: u8 = 8;
@@ -99,8 +98,8 @@ enum Event {
 }
 
 /// Opens the `gamepad` channel on a new session's connection.
-pub async fn attach(pc: &Arc<RTCPeerConnection>) -> anyhow::Result<()> {
-    let init = RTCDataChannelInit { ordered: Some(false), max_retransmits: Some(0), ..Default::default() };
+pub async fn attach(pc: &Arc<dyn PeerConnection>) -> anyhow::Result<()> {
+    let init = RTCDataChannelInit { ordered: false, max_retransmits: Some(0), ..Default::default() };
     let channel = pc.create_data_channel("gamepad", Some(init)).await?;
 
     let (tx, rx) = std_mpsc::channel::<Event>();
@@ -109,7 +108,7 @@ pub async fn attach(pc: &Arc<RTCPeerConnection>) -> anyhow::Result<()> {
     let (err_tx, mut err_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
     tokio::spawn(async move {
         while let Some(message) = err_rx.recv().await {
-            let _ = reply_channel.send_text(json!({"type": "gamepad_error", "message": message}).to_string()).await;
+            let _ = reply_channel.send_text(&json!({"type": "gamepad_error", "message": message}).to_string()).await;
         }
     });
     std::thread::Builder::new()
@@ -117,20 +116,26 @@ pub async fn attach(pc: &Arc<RTCPeerConnection>) -> anyhow::Result<()> {
         .spawn(move || pads_thread(rx, err_tx))?;
 
     let tx = Arc::new(Mutex::new(tx));
+    // webrtc 0.21: events are polled; one task reads the messages and the close.
     let on_msg_tx = tx.clone();
-    channel.on_message(Box::new(move |msg: DataChannelMessage| {
-        if !msg.is_string {
-            if let Some(m) = parse(&msg.data) {
-                let _ = on_msg_tx.lock().unwrap().send(Event::Msg(m));
+    let reader = channel.clone();
+    tokio::spawn(async move {
+        while let Some(event) = reader.poll().await {
+            match event {
+                DataChannelEvent::OnMessage(msg) => {
+                    if !msg.is_string {
+                        if let Some(m) = parse(&msg.data) {
+                            let _ = on_msg_tx.lock().unwrap().send(Event::Msg(m));
+                        }
+                    }
+                }
+                DataChannelEvent::OnClose => {
+                    let _ = on_msg_tx.lock().unwrap().send(Event::Closed);
+                }
+                _ => {}
             }
         }
-        Box::pin(async {})
-    }));
-    let on_close_tx = tx.clone();
-    channel.on_close(Box::new(move || {
-        let _ = on_close_tx.lock().unwrap().send(Event::Closed);
-        Box::pin(async {})
-    }));
+    });
     // If the connection dies without closing the channel, IDLE_UNPLUG does it.
     Ok(())
 }

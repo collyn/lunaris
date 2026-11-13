@@ -32,19 +32,15 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, UNIX_EPOCH};
 
-use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
 use tracing::{info, warn};
-use webrtc::api::setting_engine::SettingEngine;
-use webrtc::api::APIBuilder;
-use webrtc::data_channel::data_channel_init::RTCDataChannelInit;
-use webrtc::data_channel::data_channel_message::DataChannelMessage;
-use webrtc::data_channel::data_channel_state::RTCDataChannelState;
-use webrtc::data_channel::RTCDataChannel;
-use webrtc::ice_transport::ice_candidate::RTCIceCandidate;
-use webrtc::peer_connection::RTCPeerConnection;
+use webrtc::data_channel::{DataChannel, DataChannelEvent, RTCDataChannelInit, RTCDataChannelMessage, RTCDataChannelState};
+use webrtc::peer_connection::{
+    PeerConnection, PeerConnectionBuilder, PeerConnectionEventHandler, RTCConfigurationBuilder, RTCIceServer,
+    RTCPeerConnectionIceEvent, SettingEngineBuilder,
+};
 
 /// Chunks the agent sends. Receivers built on webrtc-rs (the desktop client)
 /// read messages into a 65535-byte buffer, so stay below it.
@@ -54,21 +50,44 @@ const PART: &str = ".lunaris-part";
 /// Most entries `walk` returns (a whole disk is not a sensible download).
 const MAX_WALK: usize = 200_000;
 
-fn ice_servers(servers: Option<Vec<common::RtcIceServer>>) -> Vec<webrtc::ice_transport::ice_server::RTCIceServer> {
+fn ice_servers(servers: Option<Vec<common::RtcIceServer>>) -> Vec<RTCIceServer> {
     match servers {
         Some(list) => list
             .into_iter()
-            .map(|s| webrtc::ice_transport::ice_server::RTCIceServer {
+            .map(|s| RTCIceServer {
                 urls: s.urls,
                 username: s.username.unwrap_or_default(),
                 credential: s.credential.unwrap_or_default(),
-                ..Default::default()
             })
             .collect(),
-        None => vec![webrtc::ice_transport::ice_server::RTCIceServer {
+        None => vec![RTCIceServer {
             urls: vec!["stun:stun.l.google.com:19302".to_string()],
             ..Default::default()
         }],
+    }
+}
+
+/// Sends the connection's local ICE candidates to the client (webrtc 0.21
+/// delivers events to a handler object instead of `on_ice_candidate`).
+struct IceToSignaling {
+    tx: mpsc::UnboundedSender<common::AgentMessage>,
+    client: String,
+}
+
+#[async_trait::async_trait]
+impl PeerConnectionEventHandler for IceToSignaling {
+    async fn on_ice_candidate(&self, event: RTCPeerConnectionIceEvent) {
+        if let Ok(c) = event.candidate.to_json() {
+            let _ = self.tx.send(common::AgentMessage::Signaling(common::SignalingMessage::IceCandidate {
+                target_id: self.client.clone(),
+                candidate: common::RtcIceCandidate {
+                    candidate: c.candidate,
+                    sdp_mid: c.sdp_mid,
+                    sdp_mline_index: c.sdp_mline_index,
+                    username_fragment: c.username_fragment,
+                },
+            }));
+        }
     }
 }
 
@@ -79,50 +98,38 @@ pub async fn start(
     agent_tx: mpsc::UnboundedSender<common::AgentMessage>,
     servers: Option<Vec<common::RtcIceServer>>,
     allowed: bool,
-) -> anyhow::Result<(Arc<RTCPeerConnection>, String)> {
-    let mut settings = SettingEngine::default();
-    settings.set_include_loopback_candidate(true);
-    settings.set_network_types(vec![
-        webrtc::ice::network_type::NetworkType::Udp4,
-        webrtc::ice::network_type::NetworkType::Tcp4,
-    ]);
-    let api = APIBuilder::new().with_setting_engine(settings).build();
-    let pc = Arc::new(
-        api.new_peer_connection(webrtc::peer_connection::configuration::RTCConfiguration {
-            ice_servers: ice_servers(servers),
-            ..Default::default()
-        })
-        .await?,
+) -> anyhow::Result<(Arc<dyn PeerConnection>, String)> {
+    let settings = SettingEngineBuilder::new()
+        .with_include_loopback_candidate(true)
+        .with_network_types(vec![
+            rtc::ice::network_type::NetworkType::Udp4,
+            rtc::ice::network_type::NetworkType::Tcp4,
+        ])
+        .build();
+    let pc: Arc<dyn PeerConnection> = Arc::new(
+        PeerConnectionBuilder::new()
+            .with_setting_engine(settings)
+            .with_configuration(RTCConfigurationBuilder::default().with_ice_servers(ice_servers(servers)).build())
+            .with_handler(Arc::new(IceToSignaling { tx: agent_tx.clone(), client: client_id.clone() }))
+            // The wildcard covers every interface but not loopback (the
+            // setting above only allows it): list it, as 0.17 gathered it.
+            .with_udp_addrs(vec!["0.0.0.0:0", "127.0.0.1:0"])
+            .build()
+            .await?,
     );
 
-    let ice_tx = agent_tx.clone();
-    let ice_client = client_id.clone();
-    pc.on_ice_candidate(Box::new(move |candidate: Option<RTCIceCandidate>| {
-        let tx = ice_tx.clone();
-        let client = ice_client.clone();
-        Box::pin(async move {
-            if let Some(Ok(c)) = candidate.map(|c| c.to_json()) {
-                let _ = tx.send(common::AgentMessage::Signaling(common::SignalingMessage::IceCandidate {
-                    target_id: client,
-                    candidate: common::RtcIceCandidate {
-                        candidate: c.candidate,
-                        sdp_mid: c.sdp_mid,
-                        sdp_mline_index: c.sdp_mline_index,
-                        username_fragment: c.username_fragment,
-                    },
-                }));
-            }
-        })
-    }));
-
     let channel = pc
-        .create_data_channel("files", Some(RTCDataChannelInit { ordered: Some(true), ..Default::default() }))
+        .create_data_channel("files", Some(RTCDataChannelInit { ordered: true, ..Default::default() }))
         .await?;
-    let (tx, rx) = mpsc::unbounded_channel::<DataChannelMessage>();
-    channel.on_message(Box::new(move |msg: DataChannelMessage| {
-        let _ = tx.send(msg);
-        Box::pin(async {})
-    }));
+    let (tx, rx) = mpsc::unbounded_channel::<RTCDataChannelMessage>();
+    let reader = channel.clone();
+    tokio::spawn(async move {
+        while let Some(event) = reader.poll().await {
+            if let DataChannelEvent::OnMessage(msg) = event {
+                let _ = tx.send(msg);
+            }
+        }
+    });
     tokio::spawn(serve(channel, rx, allowed, client_id));
 
     let offer = pc.create_offer(None).await?;
@@ -172,8 +179,8 @@ struct Upload {
     received: u64,
 }
 
-async fn send_json(ch: &RTCDataChannel, v: Value) {
-    if let Err(e) = ch.send_text(v.to_string()).await {
+async fn send_json(ch: &Arc<dyn DataChannel>, v: Value) {
+    if let Err(e) = ch.send_text(&v.to_string()).await {
         warn!("Files: could not answer: {}", e);
     }
 }
@@ -182,7 +189,7 @@ fn err(id: &str, message: impl std::fmt::Display) -> Value {
     json!({"type": "error", "id": id, "message": message.to_string()})
 }
 
-async fn serve(channel: Arc<RTCDataChannel>, mut rx: mpsc::UnboundedReceiver<DataChannelMessage>, allowed: bool, client: String) {
+async fn serve(channel: Arc<dyn DataChannel>, mut rx: mpsc::UnboundedReceiver<RTCDataChannelMessage>, allowed: bool, client: String) {
     let mut upload: Option<Upload> = None;
     let downloads: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>> = Arc::default();
     info!("File session with {}", client);
@@ -529,7 +536,7 @@ fn finish_upload(up: Upload) -> Result<Value, String> {
     Ok(json!({"type": "done", "id": id, "path": path_str(&target)}))
 }
 
-async fn download(ch: &Arc<RTCDataChannel>, id: &str, path: &Path, offset: u64, cancel: &AtomicBool) -> Result<(), String> {
+async fn download(ch: &Arc<dyn DataChannel>, id: &str, path: &Path, offset: u64, cancel: &AtomicBool) -> Result<(), String> {
     use tokio::io::{AsyncReadExt, AsyncSeekExt};
     let meta = tokio::fs::metadata(path).await.map_err(|e| format!("{}: {}", path.display(), e))?;
     if !meta.is_file() {
@@ -553,8 +560,10 @@ async fn download(ch: &Arc<RTCDataChannel>, id: &str, path: &Path, offset: u64, 
         if n == 0 {
             break;
         }
-        while ch.buffered_amount().await > MAX_BUFFERED {
-            if ch.ready_state() != RTCDataChannelState::Open {
+        // 0.21 has no bufferedAmount; the bytes SCTP has not released yet
+        // (queued or unacknowledged) are what bounds the send buffer.
+        while ch.outstanding_bytes().await.unwrap_or(0) > MAX_BUFFERED {
+            if !matches!(ch.ready_state().await, Ok(RTCDataChannelState::Open)) {
                 return Ok(());
             }
             if cancel.load(Ordering::SeqCst) {
@@ -563,7 +572,7 @@ async fn download(ch: &Arc<RTCDataChannel>, id: &str, path: &Path, offset: u64, 
             }
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
-        ch.send(&Bytes::copy_from_slice(&buf[..n])).await.map_err(|e| e.to_string())?;
+        ch.send(bytes::BytesMut::from(&buf[..n])).await.map_err(|e| e.to_string())?;
     }
     send_json(ch, json!({"type": "get_end", "id": id})).await;
     Ok(())

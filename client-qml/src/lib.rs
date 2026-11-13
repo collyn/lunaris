@@ -423,10 +423,11 @@ pub fn run() {
     let mut rust_log = if rust_log.contains("webrtc_srtp") {
         rust_log
     } else {
-        format!("{},webrtc_srtp=warn", rust_log)
+        // webrtc 0.17 logged from webrtc_srtp, 0.21 from rtc_srtp.
+        format!("{},webrtc_srtp=warn,rtc_srtp=warn", rust_log)
     };
     if !rust_log.contains("interceptor::nack") {
-        rust_log = format!("{},interceptor::nack=error", rust_log);
+        rust_log = format!("{},interceptor::nack=error,rtc_interceptor::nack=error", rust_log);
     }
     let _ = tracing_subscriber::registry()
         .with(tracing_subscriber::EnvFilter::new(rust_log))

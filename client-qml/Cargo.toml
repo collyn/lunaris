@@ -15,7 +15,9 @@ common = { path = "../common" }
 agent = { path = "../agent" }
 tokio = { version = "1.0", features = ["full"] }
 tokio-tungstenite = { version = "0.21", features = ["native-tls", "rustls-tls-native-roots"] }
-webrtc = "0.17.1"
+webrtc = "0.21.1"
+rtc = "0.21.1"
+async-trait = "0.1"
 wtransport = { version = "0.7.1", features = ["dangerous-configuration"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

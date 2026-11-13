@@ -180,7 +180,7 @@ pub fn run(args: Vec<String>) -> std::process::ExitCode {
 /// Sets up logging to stderr, or to `log_file` (the Windows service has no console).
 pub(crate) fn init_logging(log_file: Option<&std::path::Path>) {
     let filter = tracing_subscriber::EnvFilter::new(
-        std::env::var("RUST_LOG").unwrap_or_else(|_| "info,server=debug,webrtc_sctp=off".into()),
+        std::env::var("RUST_LOG").unwrap_or_else(|_| "info,server=debug,webrtc_sctp=off,rtc_sctp=off".into()),
     );
     let file = log_file.and_then(|p| {
         std::fs::OpenOptions::new().create(true).append(true).open(p).ok()

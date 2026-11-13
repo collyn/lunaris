@@ -10,41 +10,38 @@ use base64::Engine;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, trace, warn};
 
-use webrtc::ice_transport::ice_candidate::RTCIceCandidate;
-
-use webrtc::{
-    api::{
-        interceptor_registry::register_default_interceptors, media_engine::MediaEngine,
-        setting_engine::SettingEngine, APIBuilder,
+use rtc::interceptor::{FlexFec03SendBuilder, Slot};
+use rtc::media::Sample;
+use rtc::media_stream::MediaStreamTrack;
+use rtc::peer_connection::configuration::media_engine::{
+    MIME_TYPE_AV1, MIME_TYPE_FLEX_FEC03, MIME_TYPE_H264, MIME_TYPE_HEVC, MIME_TYPE_OPUS,
+};
+use rtc::rtp::{
+    extension::{
+        abs_send_time_extension::AbsSendTimeExtension,
+        playout_delay_extension::PlayoutDelayExtension, HeaderExtension,
     },
-    data_channel::{
-        data_channel_init::RTCDataChannelInit, data_channel_message::DataChannelMessage,
-        data_channel_state::RTCDataChannelState, RTCDataChannel,
-    },
-    interceptor::registry::Registry,
-    media::Sample,
-    peer_connection::{peer_connection_state::RTCPeerConnectionState, RTCPeerConnection},
-    rtp::{
-        extension::{
-            abs_send_time_extension::AbsSendTimeExtension,
-            playout_delay_extension::PlayoutDelayExtension, HeaderExtension,
-        },
-        header::Header,
-        packet::Packet,
-        packetizer::Payloader,
-    },
-    rtp_transceiver::{
-        rtp_codec::{
-            RTCRtpCodecCapability, RTCRtpCodecParameters, RTCRtpHeaderExtensionCapability,
-            RTPCodecType,
-        },
-        RTCPFeedback,
-    },
-    sdp::extmap::ABS_SEND_TIME_URI,
-    track::track_local::{
-        track_local_static_rtp::TrackLocalStaticRTP,
-        track_local_static_sample::TrackLocalStaticSample,
-    },
+    header::Header,
+    packet::Packet,
+    packetizer::Payloader,
+};
+use rtc::rtp_transceiver::rtp_sender::{
+    RTCPFeedback, RTCRtpCodec, RTCRtpCodecParameters, RTCRtpCodingParameters,
+    RTCRtpEncodingParameters, RTCRtpFecParameters, RTCRtpHeaderExtensionCapability, RtpCodecKind,
+};
+use rtc::sdp::extmap::ABS_SEND_TIME_URI;
+use webrtc::data_channel::{
+    DataChannel, DataChannelEvent, RTCDataChannelInit, RTCDataChannelState,
+};
+use webrtc::media_stream::track_local::{
+    static_rtp::TrackLocalStaticRTP, static_sample::TrackLocalStaticSample, TrackLocal,
+    TrackLocalEvent,
+};
+use webrtc::peer_connection::{
+    register_default_interceptors, MediaEngine, PeerConnection, PeerConnectionBuilder,
+    PeerConnectionEventHandler, RTCConfigurationBuilder, RTCIceConnectionState,
+    RTCIceGatheringState, RTCIceServer, RTCPeerConnectionIceEvent, RTCPeerConnectionState,
+    Registry, SettingEngineBuilder,
 };
 
 use crate::input::{InboundPacket, KeyAction, MouseButton, MouseButtonAction, TransportChannel};
@@ -55,13 +52,115 @@ use crate::video::h264::reader::H264Reader;
 use crate::video::h265::payloader::H265Payloader;
 use crate::video::h265::reader::H265Reader;
 use crate::video::trim_bytes_to_range;
-use webrtc::api::media_engine::{MIME_TYPE_AV1, MIME_TYPE_H264, MIME_TYPE_HEVC};
 
 // We reuse the same channel IDs
 use crate::input::TransportChannelId;
 
+/// Payload type of FlexFEC-03, as the reference project registers it; it does
+/// not collide with the 96/98/102/111 this host registers.
+const FLEX_FEC_PAYLOAD_TYPE: u8 = 49;
+
+fn random_ssrc() -> u32 {
+    (uuid::Uuid::new_v4().as_u128() & 0xFFFF_FFFF) as u32
+}
+
+/// The payload type of FlexFEC-03 in an SDP answer, when the answer accepted
+/// it: an `a=rtpmap:<pt> flexfec-03/90000` line of the video section whose
+/// payload type is also listed on a non-rejected `m=video` line.
+pub(crate) fn flexfec_in_answer(sdp: &str) -> Option<u8> {
+    let mut in_video = false;
+    let mut formats: Vec<u8> = Vec::new();
+    let mut fec_pt: Option<u8> = None;
+    for line in sdp.lines().map(str::trim) {
+        if let Some(rest) = line.strip_prefix("m=") {
+            in_video = rest.starts_with("video ");
+            if in_video {
+                // m=video <port> <proto> <pt>...; port 0 = rejected section.
+                let mut parts = rest.split_whitespace().skip(1);
+                if parts.next() == Some("0") {
+                    in_video = false;
+                    continue;
+                }
+                formats = parts.skip(1).filter_map(|pt| pt.parse().ok()).collect();
+            }
+        } else if in_video {
+            if let Some(map) = line.strip_prefix("a=rtpmap:") {
+                let mut it = map.splitn(2, ' ');
+                let (pt, codec) = (it.next(), it.next());
+                if let (Some(pt), Some(codec)) = (pt.and_then(|p| p.parse::<u8>().ok()), codec) {
+                    if codec.to_ascii_lowercase().starts_with("flexfec-03/") {
+                        fec_pt = Some(pt);
+                    }
+                }
+            }
+        }
+    }
+    fec_pt.filter(|pt| formats.contains(pt))
+}
+
+/// Events of a session's connection (webrtc 0.21 delivers them to a handler
+/// object, 0.17 to callbacks).
+struct SessionEventHandler {
+    ws_tx: mpsc::UnboundedSender<common::AgentMessage>,
+    client_id: String,
+    webrtc_connected: Arc<AtomicBool>,
+    pipeline_cmd_tx:
+        Arc<std::sync::Mutex<Option<tokio::sync::mpsc::Sender<lunaris_media::pipeline::PipelineCommand>>>>,
+}
+
+#[async_trait::async_trait]
+impl PeerConnectionEventHandler for SessionEventHandler {
+    async fn on_ice_candidate(&self, event: RTCPeerConnectionIceEvent) {
+        if let Ok(json_cand) = event.candidate.to_json() {
+            let msg = common::AgentMessage::Signaling(common::SignalingMessage::IceCandidate {
+                target_id: self.client_id.clone(),
+                candidate: common::RtcIceCandidate {
+                    candidate: json_cand.candidate,
+                    sdp_mid: json_cand.sdp_mid,
+                    sdp_mline_index: json_cand.sdp_mline_index,
+                    username_fragment: json_cand.username_fragment,
+                },
+            });
+            let _ = self.ws_tx.send(msg);
+        }
+    }
+
+    // ICE Gathering state change — helps diagnose ICE failures in production logs
+    async fn on_ice_gathering_state_change(&self, state: RTCIceGatheringState) {
+        warn!("[ICE] Gathering state changed: {:?}", state);
+    }
+
+    // ICE Connection state change — logs actual ICE connectivity progress
+    async fn on_ice_connection_state_change(&self, state: RTCIceConnectionState) {
+        warn!("[ICE] Connection state changed: {:?}", state);
+    }
+
+    // Peer Connection state changes clean up the session
+    async fn on_connection_state_change(&self, state: RTCPeerConnectionState) {
+        info!("WebRTC connection state changed to: {}", state);
+        if state == RTCPeerConnectionState::Connected {
+            self.webrtc_connected.store(true, Ordering::SeqCst);
+            if let Some(ref cmd_tx) = *self.pipeline_cmd_tx.lock().unwrap() {
+                info!("WebRTC connected! Requesting immediate IDR keyframe from media pipeline.");
+                let _ = cmd_tx.try_send(lunaris_media::pipeline::PipelineCommand::RequestKeyframe);
+            }
+        } else if state == RTCPeerConnectionState::Closed
+            || state == RTCPeerConnectionState::Failed
+            || state == RTCPeerConnectionState::Disconnected
+        {
+            self.webrtc_connected.store(false, Ordering::SeqCst);
+
+            // Stop MediaPipeline if it is active
+            if let Some(ref cmd_tx) = *self.pipeline_cmd_tx.lock().unwrap() {
+                info!("WebRTC connection state is inactive ({}). Stopping MediaPipeline...", state);
+                let _ = cmd_tx.try_send(lunaris_media::pipeline::PipelineCommand::Stop);
+            }
+        }
+    }
+}
+
 pub struct BridgeSession {
-    pub peer_connection: Arc<RTCPeerConnection>,
+    pub peer_connection: Arc<dyn PeerConnection>,
     pub webtransport_port: Option<u16>,
     pub webtransport_cert_hash: Option<String>,
     pub _webtransport_endpoint:
@@ -283,12 +382,13 @@ pub async fn setup_bridge_session(
     };
 
     // 1. Setup WebRTC PeerConnection
-    let mut api_settings = SettingEngine::default();
-    api_settings.set_include_loopback_candidate(true);
-    api_settings.set_network_types(vec![
-        webrtc::ice::network_type::NetworkType::Udp4,
-        webrtc::ice::network_type::NetworkType::Tcp4,
-    ]);
+    let api_settings = SettingEngineBuilder::new()
+        .with_include_loopback_candidate(true)
+        .with_network_types(vec![
+            rtc::ice::network_type::NetworkType::Udp4,
+            rtc::ice::network_type::NetworkType::Tcp4,
+        ])
+        .build();
 
     let mut api_media = MediaEngine::default();
 
@@ -307,126 +407,8 @@ pub async fn setup_bridge_session(
         },
     ];
 
-    match codec_str.as_str() {
-        "h265" => api_media.register_codec(
-            RTCRtpCodecParameters {
-                capability: RTCRtpCodecCapability {
-                    mime_type: MIME_TYPE_HEVC.to_string(),
-                    clock_rate: 90000,
-                    channels: 0,
-                    sdp_fmtp_line: "profile-id=1;tier-flag=0;level-id=120;tx-mode=SRST".to_string(),
-                    rtcp_feedback: video_rtcp_feedback,
-                },
-                payload_type: 98,
-                ..Default::default()
-            },
-            RTPCodecType::Video,
-        )?,
-        "av1" => api_media.register_codec(
-            RTCRtpCodecParameters {
-                capability: RTCRtpCodecCapability {
-                    mime_type: MIME_TYPE_AV1.to_string(),
-                    clock_rate: 90000,
-                    channels: 0,
-                    sdp_fmtp_line: "profile=0".to_string(),
-                    rtcp_feedback: video_rtcp_feedback,
-                },
-                payload_type: 102,
-                ..Default::default()
-            },
-            RTPCodecType::Video,
-        )?,
-        _ => api_media.register_codec(
-            RTCRtpCodecParameters {
-                capability: RTCRtpCodecCapability {
-                    mime_type: MIME_TYPE_H264.to_string(),
-                    clock_rate: 90000,
-                    channels: 0,
-                    sdp_fmtp_line: h264_fmtp.to_string(),
-                    rtcp_feedback: video_rtcp_feedback,
-                },
-                payload_type: 96,
-                ..Default::default()
-            },
-            RTPCodecType::Video,
-        )?,
-    }
-
-    // Register Opus
-    api_media.register_codec(
-        RTCRtpCodecParameters {
-            capability: RTCRtpCodecCapability {
-                mime_type: "audio/opus".to_string(),
-                clock_rate: 48000,
-                channels: 2,
-                sdp_fmtp_line: "minptime=10;useinbandfec=1".to_string(),
-                rtcp_feedback: vec![],
-            },
-            payload_type: 111,
-            ..Default::default()
-        },
-        RTPCodecType::Audio,
-    )?;
-
-    // Register RTP header extensions — critical for low-latency video:
-    // PlayoutDelay(0,0): tells browser jitter buffer to use ZERO playout delay.
-    //   Without this, Chrome's jitter buffer grows over time, adding increasing latency.
-    //   This is the root cause of "mouse gets slower over time".
-    // AbsSendTime: helps browser's congestion control (REMB) estimate bandwidth.
-    const PLAYOUT_DELAY_URI: &str = "http://www.webrtc.org/experiments/rtp-hdrext/playout-delay";
-    api_media.register_header_extension(
-        RTCRtpHeaderExtensionCapability {
-            uri: PLAYOUT_DELAY_URI.to_string(),
-        },
-        RTPCodecType::Video,
-        None,
-    )?;
-    api_media.register_header_extension(
-        RTCRtpHeaderExtensionCapability {
-            uri: ABS_SEND_TIME_URI.to_string(),
-        },
-        RTPCodecType::Video,
-        None,
-    )?;
-
-    let mut registry = Registry::new();
-    registry = register_default_interceptors(registry, &mut api_media)?;
-
-    let api = APIBuilder::new()
-        .with_setting_engine(api_settings)
-        .with_media_engine(api_media)
-        .with_interceptor_registry(registry)
-        .build();
-
-    let webrtc_ice_servers = if let Some(servers) = ice_servers {
-        servers
-            .into_iter()
-            .map(|s| webrtc::ice_transport::ice_server::RTCIceServer {
-                urls: s.urls,
-                username: s.username.unwrap_or_default(),
-                credential: s.credential.unwrap_or_default(),
-                ..Default::default()
-            })
-            .collect()
-    } else {
-        vec![
-            webrtc::ice_transport::ice_server::RTCIceServer {
-                urls: vec!["stun:stun.l.google.com:19302".to_string()],
-                ..Default::default()
-            },
-            webrtc::ice_transport::ice_server::RTCIceServer {
-                urls: vec!["stun:stun1.l.google.com:19302".to_string()],
-                ..Default::default()
-            },
-        ]
-    };
-
-    let rtc_config = webrtc::peer_connection::configuration::RTCConfiguration {
-        ice_servers: webrtc_ice_servers,
-        ..Default::default()
-    };
-    let peer_connection = Arc::new(api.new_peer_connection(rtc_config).await?);
-
+    // The video codec of this session: what is offered, and what the track
+    // sends (mime, fmtp, payload type, payloader).
     let (mime_type, sdp_fmtp_line, payload_type, payloader) = match codec_str.as_str() {
         "h265" => (
             MIME_TYPE_HEVC.to_string(),
@@ -447,57 +429,223 @@ pub async fn setup_bridge_session(
             VideoPayloader::H264(H264Payloader::default()),
         ),
     };
+    let video_codec = RTCRtpCodec {
+        mime_type: mime_type.clone(),
+        clock_rate: 90000,
+        channels: 0,
+        sdp_fmtp_line: sdp_fmtp_line.clone(),
+        rtcp_feedback: video_rtcp_feedback.clone(),
+    };
+    api_media.register_codec(
+        RTCRtpCodecParameters {
+            rtp_codec: video_codec.clone(),
+            payload_type,
+        },
+        RtpCodecKind::Video,
+    )?;
+
+    // FlexFEC-03 (20%: 1 repair packet per 5 media packets, as Sunshine/
+    // Moonlight do), the same registration as the reference project
+    // (moonlight-web-stream src/api/stream/webrtc/mod.rs). The host offers,
+    // and Chrome accepts flexfec-03 only when it is offered to it. Payload
+    // type 49 does not collide with 96/97/98/102/111 used here. NACK stays
+    // (video_rtcp_feedback above).
+    api_media.register_codec(
+        RTCRtpCodecParameters {
+            rtp_codec: RTCRtpCodec {
+                mime_type: MIME_TYPE_FLEX_FEC03.to_owned(),
+                clock_rate: 90000,
+                channels: 0,
+                sdp_fmtp_line: "repair-window=10000000".to_owned(),
+                rtcp_feedback: video_rtcp_feedback.clone(),
+            },
+            payload_type: FLEX_FEC_PAYLOAD_TYPE,
+        },
+        RtpCodecKind::Video,
+    )?;
+
+    // Register Opus
+    let opus_codec = RTCRtpCodec {
+        mime_type: MIME_TYPE_OPUS.to_string(),
+        clock_rate: 48000,
+        channels: 2,
+        sdp_fmtp_line: "minptime=10;useinbandfec=1".to_string(),
+        rtcp_feedback: vec![],
+    };
+    api_media.register_codec(
+        RTCRtpCodecParameters {
+            rtp_codec: opus_codec.clone(),
+            payload_type: 111,
+        },
+        RtpCodecKind::Audio,
+    )?;
+
+    // Register RTP header extensions — critical for low-latency video:
+    // PlayoutDelay(0,0): tells browser jitter buffer to use ZERO playout delay.
+    //   Without this, Chrome's jitter buffer grows over time, adding increasing latency.
+    //   This is the root cause of "mouse gets slower over time".
+    // AbsSendTime: helps browser's congestion control (REMB) estimate bandwidth.
+    const PLAYOUT_DELAY_URI: &str = "http://www.webrtc.org/experiments/rtp-hdrext/playout-delay";
+    api_media.register_header_extension(
+        RTCRtpHeaderExtensionCapability {
+            uri: PLAYOUT_DELAY_URI.to_string(),
+        },
+        RtpCodecKind::Video,
+        None,
+    )?;
+    api_media.register_header_extension(
+        RTCRtpHeaderExtensionCapability {
+            uri: ABS_SEND_TIME_URI.to_string(),
+        },
+        RtpCodecKind::Video,
+        None,
+    )?;
+
+    // Shared with the connection's event handler (state changes), which has
+    // to exist before the connection does.
+    let pipeline_cmd_tx_shared = Arc::new(std::sync::Mutex::new(
+        None::<tokio::sync::mpsc::Sender<lunaris_media::pipeline::PipelineCommand>>,
+    ));
+    let webrtc_connected = Arc::new(AtomicBool::new(false));
+
+    // register_default_interceptors adds NACK (responder + generator),
+    // sender/receiver reports and the TWCC receiver, as in 0.17. The FEC
+    // encoder (slot 5_000) and the RTCP forwarder (application-most, see
+    // rtcp_forward.rs) are the 0.21 additions.
+    let registry = register_default_interceptors(
+        Registry::new()
+            .with(
+                Slot::FecEncoder,
+                FlexFec03SendBuilder::default()
+                    // 1 to 5 ratio = 20% fec
+                    .with_num_media_packets(5)
+                    .with_num_fec_packets(1)
+                    .build(),
+            )
+            .with(
+                Slot::from(14_000),
+                crate::rtcp_forward::RtcpForwarderInterceptor::default(),
+            ),
+        &mut api_media,
+    )?;
+
+    let webrtc_ice_servers = if let Some(servers) = ice_servers {
+        servers
+            .into_iter()
+            .map(|s| RTCIceServer {
+                urls: s.urls,
+                username: s.username.unwrap_or_default(),
+                credential: s.credential.unwrap_or_default(),
+            })
+            .collect()
+    } else {
+        vec![
+            RTCIceServer {
+                urls: vec!["stun:stun.l.google.com:19302".to_string()],
+                ..Default::default()
+            },
+            RTCIceServer {
+                urls: vec!["stun:stun1.l.google.com:19302".to_string()],
+                ..Default::default()
+            },
+        ]
+    };
+
+    let rtc_config = RTCConfigurationBuilder::default()
+        .with_ice_servers(webrtc_ice_servers)
+        .build();
+    let handler = Arc::new(SessionEventHandler {
+        ws_tx: ws_tx.clone(),
+        client_id: client_id.clone(),
+        webrtc_connected: webrtc_connected.clone(),
+        pipeline_cmd_tx: pipeline_cmd_tx_shared.clone(),
+    });
+    let peer_connection: Arc<dyn PeerConnection> = Arc::new(
+        PeerConnectionBuilder::new()
+            .with_configuration(rtc_config)
+            .with_setting_engine(api_settings)
+            .with_media_engine(api_media)
+            .with_interceptor_registry(registry)
+            .with_handler(handler)
+            // The wildcard covers every interface but not loopback (allowed
+            // by the setting above): list it, as 0.17 gathered it.
+            .with_udp_addrs(vec!["0.0.0.0:0", "127.0.0.1:0"])
+            .build()
+            .await?,
+    );
 
     info!(
         "Configured WebRTC video track codec: {} (requested={}, Mime: {}, PT: {}, host_h265={}, host_av1={})",
         codec_str, requested_codec, mime_type, payload_type, hevc_supported, av1_supported
     );
 
-    // Create video and audio tracks
-    let video_track = Arc::new(TrackLocalStaticRTP::new(
-        RTCRtpCodecCapability {
-            mime_type,
-            clock_rate: 90000,
-            sdp_fmtp_line,
-            ..Default::default()
-        },
-        "video".to_string(),
+    // Create video and audio tracks. The packets are written with the SSRC
+    // and payload type set here (0.17 rewrote them per binding).
+    let video_ssrc: u32 = random_ssrc();
+    let video_fec_ssrc: u32 = loop {
+        let candidate: u32 = random_ssrc();
+        if candidate != video_ssrc {
+            break candidate;
+        }
+    };
+    let audio_ssrc: u32 = loop {
+        let candidate: u32 = random_ssrc();
+        if candidate != video_ssrc && candidate != video_fec_ssrc {
+            break candidate;
+        }
+    };
+    let video_track = Arc::new(TrackLocalStaticRTP::new(MediaStreamTrack::new(
         "lunaris".to_string(),
-    ));
+        "video".to_string(),
+        "video".to_string(),
+        RtpCodecKind::Video,
+        vec![RTCRtpEncodingParameters {
+            rtp_coding_parameters: RTCRtpCodingParameters {
+                ssrc: Some(video_ssrc),
+                // The repair stream of the FEC encoder.
+                fec: Some(RTCRtpFecParameters { ssrc: video_fec_ssrc }),
+                ..Default::default()
+            },
+            codec: video_codec.clone(),
+            ..Default::default()
+        }],
+    )));
 
     let audio_track = Arc::new(TrackLocalStaticSample::new(
-        RTCRtpCodecCapability {
-            mime_type: "audio/opus".to_string(),
-            clock_rate: 48000,
-            channels: 2,
-            ..Default::default()
-        },
-        "audio".to_string(),
-        "lunaris".to_string(),
-    ));
+        Instant::now(),
+        MediaStreamTrack::new(
+            "lunaris".to_string(),
+            "audio".to_string(),
+            "audio".to_string(),
+            RtpCodecKind::Audio,
+            vec![RTCRtpEncodingParameters {
+                rtp_coding_parameters: RTCRtpCodingParameters {
+                    ssrc: Some(audio_ssrc),
+                    ..Default::default()
+                },
+                codec: opus_codec.clone(),
+                ..Default::default()
+            }],
+        ),
+    )?);
 
-    let video_sender = peer_connection
-        .add_track(
-            video_track.clone() as Arc<dyn webrtc::track::track_local::TrackLocal + Send + Sync>
-        )
+    peer_connection
+        .add_track(video_track.clone() as Arc<dyn TrackLocal>)
         .await?;
     peer_connection
-        .add_track(
-            audio_track.clone() as Arc<dyn webrtc::track::track_local::TrackLocal + Send + Sync>
-        )
+        .add_track(audio_track.clone() as Arc<dyn TrackLocal>)
         .await?;
 
-    let pipeline_cmd_tx_shared = Arc::new(std::sync::Mutex::new(
-        None::<tokio::sync::mpsc::Sender<lunaris_media::pipeline::PipelineCommand>>,
-    ));
     let mut spawned_tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
     let pipeline_cmd_tx_for_pli = pipeline_cmd_tx_shared.clone();
 
     let need_idr_flag = Arc::new(AtomicBool::new(true));
     let need_idr_clone = need_idr_flag.clone();
-    let video_sender_clone = video_sender.clone();
+    let video_track_for_rtcp = video_track.clone();
+    // The client's RTCP about the video stream (PLI, FIR, NACK, REMB), which
+    // 0.17 returned from `RTCRtpSender::read`, arrives as track events (see
+    // rtcp_forward.rs).
     let pli_task = tokio::spawn(async move {
-        let mut buf = vec![0u8; 1500];
         let mut last_bitrate_kbps: u32 = stream_bitrate;
         let mut last_bitrate_change = Instant::now();
         let remb_started = Instant::now();
@@ -508,13 +656,30 @@ pub async fn setup_bridge_session(
         let mut last_pli_idr_time = std::time::Instant::now()
             .checked_sub(std::time::Duration::from_secs(60))
             .unwrap_or_else(std::time::Instant::now);
-        while let Ok((packets, _)) = video_sender_clone.read(&mut buf).await {
+        let mut empty_polls = 0u32;
+        loop {
+            let packets = match video_track_for_rtcp.poll().await {
+                Some(TrackLocalEvent::OnRtcpPacket(packets)) => {
+                    empty_polls = 0;
+                    packets
+                }
+                Some(_) => continue,
+                None => {
+                    // Not bound yet, or the connection is gone.
+                    empty_polls += 1;
+                    if empty_polls >= 20 {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                    continue;
+                }
+            };
             for packet in packets {
                 let packet_any = packet.as_any();
                 // A PLI or a FIR asks for an IDR frame, as GameStream's
                 // IDX_REQUEST_IDR_FRAME does in Sunshine (stream.cpp:1221-1225).
-                if packet_any.is::<webrtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication>()
-                    || packet_any.is::<webrtc::rtcp::payload_feedbacks::full_intra_request::FullIntraRequest>()
+                if packet_any.is::<rtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication>()
+                    || packet_any.is::<rtc::rtcp::payload_feedbacks::full_intra_request::FullIntraRequest>()
                 {
                     let now = std::time::Instant::now();
                     let elapsed_ms = now.duration_since(last_pli_idr_time).as_millis();
@@ -530,7 +695,7 @@ pub async fn setup_bridge_session(
                         // Too soon — suppress this PLI to avoid IDR flood on slow networks.
                         debug!("PLI/FIR suppressed: last IDR only {}ms ago (debounce=1000ms)", elapsed_ms);
                     }
-                } else if let Some(nack) = packet_any.downcast_ref::<webrtc::rtcp::transport_feedbacks::transport_layer_nack::TransportLayerNack>() {
+                } else if let Some(nack) = packet_any.downcast_ref::<rtc::rtcp::transport_feedbacks::transport_layer_nack::TransportLayerNack>() {
                     // Diagnosis of loss recovery (debug log): which packets the
                     // client asks for again. The same number asked for twice
                     // means the first retransmission did not help.
@@ -541,7 +706,7 @@ pub async fn setup_bridge_session(
                         }
                         debug!("NACK from the client: {} packet(s) {:?}", seqs.len(), &seqs[..seqs.len().min(12)]);
                     }
-                } else if let Some(remb) = packet_any.downcast_ref::<webrtc::rtcp::payload_feedbacks::receiver_estimated_maximum_bitrate::ReceiverEstimatedMaximumBitrate>() {
+                } else if let Some(remb) = packet_any.downcast_ref::<rtc::rtcp::payload_feedbacks::receiver_estimated_maximum_bitrate::ReceiverEstimatedMaximumBitrate>() {
                     let estimated_bitrate_kbps = (remb.bitrate / 1000.0) as u32;
 
                     // Chrome can report very low REMB during startup before the decoder/jitter
@@ -609,44 +774,12 @@ pub async fn setup_bridge_session(
     });
     spawned_tasks.push(pli_task);
 
-    let webrtc_connected = Arc::new(AtomicBool::new(false));
-    let webrtc_connected_clone = webrtc_connected.clone();
-    // Handle Peer Connection state changes to clean up session
-    let pipeline_cmd_tx_for_state_change = pipeline_cmd_tx_shared.clone();
-    peer_connection.on_peer_connection_state_change(Box::new(
-        move |state: RTCPeerConnectionState| {
-            let webrtc_connected = webrtc_connected_clone.clone();
-            let pipeline_cmd_tx = pipeline_cmd_tx_for_state_change.clone();
-            Box::pin(async move {
-                info!("WebRTC connection state changed to: {}", state);
-                if state == RTCPeerConnectionState::Connected {
-                    webrtc_connected.store(true, Ordering::SeqCst);
-                    if let Some(ref cmd_tx) = *pipeline_cmd_tx.lock().unwrap() {
-                        info!("WebRTC connected! Requesting immediate IDR keyframe from media pipeline.");
-                        let _ = cmd_tx.try_send(lunaris_media::pipeline::PipelineCommand::RequestKeyframe);
-                    }
-                } else if state == RTCPeerConnectionState::Closed
-                    || state == RTCPeerConnectionState::Failed
-                    || state == RTCPeerConnectionState::Disconnected
-                {
-                    webrtc_connected.store(false, Ordering::SeqCst);
-
-                    // Stop MediaPipeline if it is active
-                    if let Some(ref cmd_tx) = *pipeline_cmd_tx.lock().unwrap() {
-                        info!("WebRTC connection state is inactive ({}). Stopping MediaPipeline...", state);
-                        let _ = cmd_tx.try_send(lunaris_media::pipeline::PipelineCommand::Stop);
-                    }
-                }
-            })
-        },
-    ));
-
     // Create Data Channels
     let general_channel = peer_connection.create_data_channel("general", None).await?;
     let general_channel_for_cursor = general_channel.clone();
 
     let cursor_channel_init = RTCDataChannelInit {
-        ordered: Some(false),
+        ordered: false,
         max_retransmits: Some(0),
         ..Default::default()
     };
@@ -657,40 +790,26 @@ pub async fn setup_bridge_session(
     let latest_host_cursor_payload = Arc::new(tokio::sync::Mutex::new(None::<String>));
     let latest_host_cursor_on_cursor_open = latest_host_cursor_payload.clone();
     let cursor_channel_on_open = cursor_channel.clone();
-    cursor_channel.on_open(Box::new(move || {
-        let latest_host_cursor_on_cursor_open = latest_host_cursor_on_cursor_open.clone();
-        let cursor_channel_on_open = cursor_channel_on_open.clone();
-        Box::pin(async move {
-            if let Some(payload) = latest_host_cursor_on_cursor_open.lock().await.clone() {
-                if let Err(err) = cursor_channel_on_open.send_text(payload).await {
-                    trace!(
-                        "Failed to replay cached host cursor update on cursor channel: {:?}",
-                        err
-                    );
+    // webrtc 0.21: channel events are polled. The cursor channel only needs
+    // its open event (the general channel's open is handled together with its
+    // messages, in setup_data_channel_handler).
+    spawned_tasks.push(tokio::spawn(async move {
+        while let Some(event) = cursor_channel_on_open.poll().await {
+            if let DataChannelEvent::OnOpen = event {
+                if let Some(payload) = latest_host_cursor_on_cursor_open.lock().await.clone() {
+                    if let Err(err) = cursor_channel_on_open.send_text(&payload).await {
+                        trace!(
+                            "Failed to replay cached host cursor update on cursor channel: {:?}",
+                            err
+                        );
+                    }
                 }
             }
-        })
-    }));
-
-    let latest_host_cursor_on_general_open = latest_host_cursor_payload.clone();
-    let general_channel_on_open = general_channel.clone();
-    general_channel.on_open(Box::new(move || {
-        let latest_host_cursor_on_general_open = latest_host_cursor_on_general_open.clone();
-        let general_channel_on_open = general_channel_on_open.clone();
-        Box::pin(async move {
-            if let Some(payload) = latest_host_cursor_on_general_open.lock().await.clone() {
-                if let Err(err) = general_channel_on_open.send_text(payload).await {
-                    trace!(
-                        "Failed to replay cached host cursor update on general channel: {:?}",
-                        err
-                    );
-                }
-            }
-        })
+        }
     }));
 
     let mouse_reliable_init = RTCDataChannelInit {
-        ordered: Some(false),
+        ordered: false,
         ..Default::default()
     };
     let mouse_reliable_channel = peer_connection
@@ -698,7 +817,7 @@ pub async fn setup_bridge_session(
         .await?;
 
     let mouse_absolute_init = RTCDataChannelInit {
-        ordered: Some(false),
+        ordered: false,
         max_retransmits: Some(0),
         ..Default::default()
     };
@@ -707,7 +826,7 @@ pub async fn setup_bridge_session(
         .await?;
 
     let mouse_relative_init = RTCDataChannelInit {
-        ordered: Some(false),
+        ordered: false,
         max_retransmits: Some(0),
         ..Default::default()
     };
@@ -729,79 +848,56 @@ pub async fn setup_bridge_session(
     }
 
     // Handle messages on Data Channels
-    setup_data_channel_handler(
-        general_channel,
-        TransportChannel(TransportChannelId::GENERAL),
-        Some(input_tx.clone()),
-        Some(pipeline_cmd_tx_shared.clone()),
+    spawned_tasks.push(
+        setup_data_channel_handler(
+            general_channel,
+            TransportChannel(TransportChannelId::GENERAL),
+            Some(input_tx.clone()),
+            Some(pipeline_cmd_tx_shared.clone()),
+            Some(latest_host_cursor_payload.clone()),
+        )
+        .await,
     );
-    setup_data_channel_handler(
-        mouse_reliable_channel,
-        TransportChannel(TransportChannelId::MOUSE_RELIABLE),
-        Some(input_tx.clone()),
-        None,
+    spawned_tasks.push(
+        setup_data_channel_handler(
+            mouse_reliable_channel,
+            TransportChannel(TransportChannelId::MOUSE_RELIABLE),
+            Some(input_tx.clone()),
+            None,
+            None,
+        )
+        .await,
     );
-    setup_data_channel_handler(
-        mouse_absolute_channel,
-        TransportChannel(TransportChannelId::MOUSE_ABSOLUTE),
-        Some(input_tx.clone()),
-        None,
+    spawned_tasks.push(
+        setup_data_channel_handler(
+            mouse_absolute_channel,
+            TransportChannel(TransportChannelId::MOUSE_ABSOLUTE),
+            Some(input_tx.clone()),
+            None,
+            None,
+        )
+        .await,
     );
-    setup_data_channel_handler(
-        mouse_relative_channel,
-        TransportChannel(TransportChannelId::MOUSE_RELATIVE),
-        Some(input_tx.clone()),
-        None,
+    spawned_tasks.push(
+        setup_data_channel_handler(
+            mouse_relative_channel,
+            TransportChannel(TransportChannelId::MOUSE_RELATIVE),
+            Some(input_tx.clone()),
+            None,
+            None,
+        )
+        .await,
     );
-    setup_data_channel_handler(
-        keyboard_channel,
-        TransportChannel(TransportChannelId::KEYBOARD),
-        Some(key_input_tx.clone()),
-        None,
+    spawned_tasks.push(
+        setup_data_channel_handler(
+            keyboard_channel,
+            TransportChannel(TransportChannelId::KEYBOARD),
+            Some(key_input_tx.clone()),
+            None,
+            None,
+        )
+        .await,
     );
-
-    // ICE Candidate callback
-    let ws_tx_clone = ws_tx.clone();
-    let client_id_clone = client_id.clone();
-    peer_connection.on_ice_candidate(Box::new(move |candidate: Option<RTCIceCandidate>| {
-        let ws_tx = ws_tx_clone.clone();
-        let client_id = client_id_clone.clone();
-        Box::pin(async move {
-            if let Some(cand) = candidate {
-                if let Ok(json_cand) = cand.to_json() {
-                    let msg =
-                        common::AgentMessage::Signaling(common::SignalingMessage::IceCandidate {
-                            target_id: client_id,
-                            candidate: common::RtcIceCandidate {
-                                candidate: json_cand.candidate,
-                                sdp_mid: json_cand.sdp_mid,
-                                sdp_mline_index: json_cand.sdp_mline_index,
-                                username_fragment: json_cand.username_fragment,
-                            },
-                        });
-                    let _ = ws_tx.send(msg);
-                }
-            }
-        })
-    }));
-
-    // ICE Gathering state change callback — helps diagnose ICE failures in production logs
-    peer_connection.on_ice_gathering_state_change(Box::new(
-        move |state: webrtc::ice_transport::ice_gatherer_state::RTCIceGathererState| {
-            Box::pin(async move {
-                warn!("[ICE] Gathering state changed: {:?}", state);
-            })
-        },
-    ));
-
-    // ICE Connection state change callback — logs actual ICE connectivity progress
-    peer_connection.on_ice_connection_state_change(Box::new(
-        move |state: webrtc::ice_transport::ice_connection_state::RTCIceConnectionState| {
-            Box::pin(async move {
-                warn!("[ICE] Connection state changed: {:?}", state);
-            })
-        },
-    ));
 
     let (video_frame_tx, mut video_frame_rx) = tokio::sync::mpsc::channel::<VideoFramePayload>(4);
     let (audio_tx, mut audio_rx) = tokio::sync::mpsc::channel::<Sample>(256);
@@ -809,7 +905,11 @@ pub async fn setup_bridge_session(
     let audio_track_clone = audio_track.clone();
     let audio_writer_task = tokio::spawn(async move {
         while let Some(sample) = audio_rx.recv().await {
-            if let Err(e) = audio_track_clone.write_sample(&sample).await {
+            // Opus payload type 111 (registered above).
+            if let Err(e) = audio_track_clone
+                .write_sample(audio_ssrc, 111, &sample, &[])
+                .await
+            {
                 debug!("Failed to write audio sample: {:?}", e);
             }
         }
@@ -988,7 +1088,7 @@ pub async fn setup_bridge_session(
                     let sample = Sample {
                         data: bytes::Bytes::copy_from_slice(&frame.data),
                         duration,
-                        ..Default::default()
+                        ..Sample::new(Instant::now())
                     };
                     let _ = audio_tx_clone.try_send(sample);
                 }
@@ -1040,9 +1140,12 @@ pub async fn setup_bridge_session(
                     *latest_host_cursor_for_media.lock().await = Some(cached_payload.clone());
 
                     if image.is_some()
-                        && general_channel_for_media.ready_state() == RTCDataChannelState::Open
+                        && matches!(
+                            general_channel_for_media.ready_state().await,
+                            Ok(RTCDataChannelState::Open)
+                        )
                     {
-                        if let Err(err) = general_channel_for_media.send_text(cached_payload).await
+                        if let Err(err) = general_channel_for_media.send_text(&cached_payload).await
                         {
                             trace!(
                                 "Failed to send reliable host cursor image update: {:?}",
@@ -1051,8 +1154,11 @@ pub async fn setup_bridge_session(
                         }
                     }
 
-                    if cursor_channel_for_media.ready_state() == RTCDataChannelState::Open {
-                        if let Err(err) = cursor_channel_for_media.send_text(realtime_payload).await
+                    if matches!(
+                        cursor_channel_for_media.ready_state().await,
+                        Ok(RTCDataChannelState::Open)
+                    ) {
+                        if let Err(err) = cursor_channel_for_media.send_text(&realtime_payload).await
                         {
                             trace!("Failed to send host cursor update: {:?}", err);
                         }
@@ -1153,7 +1259,7 @@ pub async fn setup_bridge_session(
                     HeaderExtension::PlayoutDelay(PlayoutDelayExtension::new(0, 0)),
                     HeaderExtension::AbsSendTime(AbsSendTimeExtension { timestamp: 0 }),
                 ];
-                for packet in &mut packets {
+                for mut packet in packets {
                     // stream.cpp:1853-1864: pacing within the frame, and
                     // before its first group.
                     if ratecontrol_group_packets_sent >= packets_in_1ms
@@ -1308,6 +1414,8 @@ pub async fn setup_bridge_session(
                             sequence_number: 0, // Assigned dynamically by the writer task
                             timestamp,
                             payload_type,
+                            // 0.17 filled in the SSRC when writing; 0.21 sends what it gets.
+                            ssrc: video_ssrc,
                             ..Default::default()
                         },
                         payload,
@@ -1488,8 +1596,8 @@ pub async fn setup_bridge_session(
     }))
 }
 
-fn setup_data_channel_handler(
-    data_channel: Arc<RTCDataChannel>,
+async fn setup_data_channel_handler(
+    data_channel: Arc<dyn DataChannel>,
     channel: TransportChannel,
     input_tx: Option<
         tokio::sync::mpsc::UnboundedSender<(InboundPacket, Arc<std::sync::atomic::AtomicU32>)>,
@@ -1501,9 +1609,11 @@ fn setup_data_channel_handler(
             >,
         >,
     >,
-) {
+    // The latest host cursor payload, replayed when the channel opens.
+    replay_on_open: Option<Arc<tokio::sync::Mutex<Option<String>>>>,
+) -> tokio::task::JoinHandle<()> {
     let last_timestamp = Arc::new(std::sync::atomic::AtomicU32::new(0));
-    let label = data_channel.label().to_string();
+    let label = data_channel.label().await.unwrap_or_default();
     info!(
         "setup_data_channel_handler: label={}, channel_id={}, has_input_tx={}",
         label,
@@ -1514,75 +1624,97 @@ fn setup_data_channel_handler(
     // two mouse messages that follows a run of closely spaced ones.
     let mouse_gap_label = label.clone();
     let mouse_gap_state = Arc::new(std::sync::Mutex::new((None::<Instant>, false)));
-    data_channel.on_message(Box::new(move |msg: DataChannelMessage| {
-        if mouse_gap_label.starts_with("mouse") {
-            let now = Instant::now();
-            let mut st = mouse_gap_state.lock().unwrap();
-            if let Some(prev) = st.0 {
-                let gap = now.duration_since(prev);
-                if st.1 && gap >= Duration::from_millis(60) && gap <= Duration::from_secs(1) {
-                    debug!("Input gap: {} ms without a message on {}", gap.as_millis(), mouse_gap_label);
+    // webrtc 0.21: the channel's events are polled by this task.
+    tokio::spawn(async move {
+        while let Some(event) = data_channel.poll().await {
+            let msg = match event {
+                DataChannelEvent::OnMessage(msg) => msg,
+                DataChannelEvent::OnOpen => {
+                    if let Some(cache) = replay_on_open.as_ref() {
+                        if let Some(payload) = cache.lock().await.clone() {
+                            if let Err(err) = data_channel.send_text(&payload).await {
+                                trace!(
+                                    "Failed to replay cached host cursor update on {} channel: {:?}",
+                                    mouse_gap_label,
+                                    err
+                                );
+                            }
+                        }
+                    }
+                    continue;
                 }
-                st.1 = gap < Duration::from_millis(40);
-            }
-            st.0 = Some(now);
-        }
-        let input_tx = input_tx.clone();
-        let channel = channel;
-        let last_timestamp = last_timestamp.clone();
-        let pipeline_cmd_tx = pipeline_cmd_tx.clone();
-        Box::pin(async move {
-            let Some(packet) = InboundPacket::deserialize(channel, &msg.data) else {
-                // Only warn for non-general channels (general may have unrecognized JSON commands)
-                if channel.0 != 0 {
-                    warn!(
-                        "Failed to deserialize inbound packet on channel {}",
-                        channel.0
-                    );
-                }
-                return;
+                _ => continue,
             };
+            if mouse_gap_label.starts_with("mouse") {
+                let now = Instant::now();
+                let mut st = mouse_gap_state.lock().unwrap();
+                if let Some(prev) = st.0 {
+                    let gap = now.duration_since(prev);
+                    if st.1 && gap >= Duration::from_millis(60) && gap <= Duration::from_secs(1) {
+                        debug!("Input gap: {} ms without a message on {}", gap.as_millis(), mouse_gap_label);
+                    }
+                    st.1 = gap < Duration::from_millis(40);
+                }
+                st.0 = Some(now);
+            }
+            let input_tx = input_tx.clone();
+            let last_timestamp = last_timestamp.clone();
+            let pipeline_cmd_tx = pipeline_cmd_tx.clone();
+            // The body of the 0.17 `on_message` callback, unchanged.
+            async {
+                let Some(packet) = InboundPacket::deserialize(channel, &msg.data) else {
+                    // Only warn for non-general channels (general may have unrecognized JSON commands)
+                    if channel.0 != 0 {
+                        warn!(
+                            "Failed to deserialize inbound packet on channel {}",
+                            channel.0
+                        );
+                    }
+                    return;
+                };
 
-            // Handle dynamic pipeline commands (SetBitrate, SetFps) directly
-            if let Some(ref pipeline_cmd) = pipeline_cmd_tx {
-                match &packet {
-                    InboundPacket::SetBitrate { kbps } => {
-                        info!("Dynamic bitrate change via data channel: {} kbps", kbps);
-                        if let Some(ref cmd_tx) = *pipeline_cmd.lock().unwrap() {
-                            let _ = cmd_tx.try_send(
-                                lunaris_media::pipeline::PipelineCommand::SetBitrate(*kbps),
-                            );
+                // Handle dynamic pipeline commands (SetBitrate, SetFps) directly
+                if let Some(ref pipeline_cmd) = pipeline_cmd_tx {
+                    match &packet {
+                        InboundPacket::SetBitrate { kbps } => {
+                            info!("Dynamic bitrate change via data channel: {} kbps", kbps);
+                            if let Some(ref cmd_tx) = *pipeline_cmd.lock().unwrap() {
+                                let _ = cmd_tx.try_send(
+                                    lunaris_media::pipeline::PipelineCommand::SetBitrate(*kbps),
+                                );
+                            }
+                            return;
                         }
-                        return;
-                    }
-                    // Sunshine stream.cpp:1221-1225 (IDX_REQUEST_IDR_FRAME):
-                    // the client asks for an IDR frame.
-                    InboundPacket::RequestVideoIdr => {
-                        debug!("IDR frame requested via data channel");
-                        if let Some(ref cmd_tx) = *pipeline_cmd.lock().unwrap() {
-                            let _ = cmd_tx.try_send(
-                                lunaris_media::pipeline::PipelineCommand::RequestKeyframe,
-                            );
+                        // Sunshine stream.cpp:1221-1225 (IDX_REQUEST_IDR_FRAME):
+                        // the client asks for an IDR frame.
+                        InboundPacket::RequestVideoIdr => {
+                            debug!("IDR frame requested via data channel");
+                            if let Some(ref cmd_tx) = *pipeline_cmd.lock().unwrap() {
+                                let _ = cmd_tx.try_send(
+                                    lunaris_media::pipeline::PipelineCommand::RequestKeyframe,
+                                );
+                            }
+                            return;
                         }
-                        return;
-                    }
-                    InboundPacket::SetFps { fps } => {
-                        info!("Dynamic FPS change via data channel: {} fps", fps);
-                        if let Some(ref cmd_tx) = *pipeline_cmd.lock().unwrap() {
-                            let _ = cmd_tx
-                                .try_send(lunaris_media::pipeline::PipelineCommand::SetFps(*fps));
+                        InboundPacket::SetFps { fps } => {
+                            info!("Dynamic FPS change via data channel: {} fps", fps);
+                            if let Some(ref cmd_tx) = *pipeline_cmd.lock().unwrap() {
+                                let _ = cmd_tx
+                                    .try_send(lunaris_media::pipeline::PipelineCommand::SetFps(*fps));
+                            }
+                            return;
                         }
-                        return;
+                        _ => {}
                     }
-                    _ => {}
+                }
+
+                if let Some(ref tx) = input_tx {
+                    let _ = tx.send((packet, last_timestamp));
                 }
             }
-
-            if let Some(ref tx) = input_tx {
-                let _ = tx.send((packet, last_timestamp));
-            }
-        })
-    }));
+            .await;
+        }
+    })
 }
 
 type InputQueueItem = (InboundPacket, Arc<std::sync::atomic::AtomicU32>);
@@ -1834,5 +1966,30 @@ mod codec_support_tests {
             // Probe success does not depend on the list.
             assert!(codec_supported_for_realtime(&[], codec, true));
         }
+    }
+}
+
+#[cfg(test)]
+mod fec_answer_tests {
+    use super::flexfec_in_answer;
+
+    const HEAD: &str = "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=rtpmap:111 opus/48000/2\r\n";
+
+    #[test]
+    fn finds_an_accepted_flexfec() {
+        let sdp = format!("{HEAD}m=video 9 UDP/TLS/RTP/SAVPF 96 49\r\na=rtpmap:96 H264/90000\r\na=rtpmap:49 flexfec-03/90000\r\na=fmtp:49 repair-window=10000000\r\n");
+        assert_eq!(flexfec_in_answer(&sdp), Some(49));
+    }
+
+    #[test]
+    fn flexfec_dropped_from_the_answer() {
+        let sdp = format!("{HEAD}m=video 9 UDP/TLS/RTP/SAVPF 96\r\na=rtpmap:96 H264/90000\r\n");
+        assert_eq!(flexfec_in_answer(&sdp), None);
+        // Described but not in the format list: not accepted.
+        let sdp = format!("{HEAD}m=video 9 UDP/TLS/RTP/SAVPF 96\r\na=rtpmap:49 flexfec-03/90000\r\n");
+        assert_eq!(flexfec_in_answer(&sdp), None);
+        // Rejected video section.
+        let sdp = format!("{HEAD}m=video 0 UDP/TLS/RTP/SAVPF 96 49\r\na=rtpmap:49 flexfec-03/90000\r\n");
+        assert_eq!(flexfec_in_answer(&sdp), None);
     }
 }

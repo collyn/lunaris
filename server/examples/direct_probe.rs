@@ -18,14 +18,69 @@ use common::{
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
-use webrtc::api::interceptor_registry::register_default_interceptors;
-use webrtc::api::media_engine::{MediaEngine, MIME_TYPE_H264, MIME_TYPE_HEVC};
-use webrtc::api::APIBuilder;
-use webrtc::ice_transport::ice_candidate::{RTCIceCandidate, RTCIceCandidateInit};
-use webrtc::interceptor::registry::Registry;
-use webrtc::peer_connection::configuration::RTCConfiguration;
-use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
-use webrtc::rtp_transceiver::rtp_codec::{RTCRtpCodecCapability, RTCRtpCodecParameters, RTPCodecType};
+use rtc::interceptor::{FlexFec03ReceiveBuilder, Slot};
+use rtc::peer_connection::configuration::media_engine::{
+    MIME_TYPE_FLEX_FEC03, MIME_TYPE_H264, MIME_TYPE_HEVC,
+};
+use rtc::rtp_transceiver::rtp_sender::{RTCRtpCodec, RTCRtpCodecParameters, RtpCodecKind};
+use webrtc::media_stream::track_remote::{TrackRemote, TrackRemoteEvent};
+use webrtc::peer_connection::{
+    register_default_interceptors, MediaEngine, PeerConnection, PeerConnectionBuilder,
+    PeerConnectionEventHandler, RTCIceCandidateInit, RTCIceConnectionState,
+    RTCPeerConnectionIceEvent, RTCSessionDescription, Registry, StatsSelector,
+};
+
+/// Events of the probe's connection (webrtc 0.21: a handler object).
+struct ProbeHandler {
+    packets: Arc<AtomicUsize>,
+    first_packet: Arc<std::sync::Mutex<Option<Instant>>>,
+    codec_seen: Arc<std::sync::Mutex<String>>,
+    ice_state: Arc<std::sync::Mutex<RTCIceConnectionState>>,
+    out_tx: mpsc::UnboundedSender<SignalingMessage>,
+    host: String,
+}
+
+#[async_trait::async_trait]
+impl PeerConnectionEventHandler for ProbeHandler {
+    async fn on_ice_connection_state_change(&self, state: RTCIceConnectionState) {
+        *self.ice_state.lock().unwrap() = state;
+    }
+
+    async fn on_ice_candidate(&self, event: RTCPeerConnectionIceEvent) {
+        if let Ok(json) = event.candidate.to_json() {
+            let _ = self.out_tx.send(SignalingMessage::IceCandidate {
+                target_id: self.host.clone(),
+                candidate: RtcIceCandidate {
+                    candidate: json.candidate,
+                    sdp_mid: json.sdp_mid,
+                    sdp_mline_index: json.sdp_mline_index,
+                    username_fragment: json.username_fragment,
+                },
+            });
+        }
+    }
+
+    async fn on_track(&self, track: Arc<dyn TrackRemote>) {
+        let packets = self.packets.clone();
+        let first_packet = self.first_packet.clone();
+        let codec_seen = self.codec_seen.clone();
+        tokio::spawn(async move {
+            let Some(ssrc) = track.ssrcs().await.first().copied() else { return };
+            if let Some(c) = track.codec(ssrc).await {
+                *codec_seen.lock().unwrap() = format!("{} {}", c.mime_type, c.sdp_fmtp_line);
+            }
+            if track.kind().await != RtpCodecKind::Video {
+                return;
+            }
+            while let Some(event) = track.poll().await {
+                if let TrackRemoteEvent::OnRtpPacket(_) = event {
+                    first_packet.lock().unwrap().get_or_insert_with(Instant::now);
+                    packets.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        });
+    }
+}
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
@@ -143,7 +198,7 @@ async fn main() -> Result<()> {
     ] {
         media.register_codec(
             RTCRtpCodecParameters {
-                capability: RTCRtpCodecCapability {
+                rtp_codec: RTCRtpCodec {
                     mime_type: mime.to_string(),
                     clock_rate: 90000,
                     channels: 0,
@@ -151,62 +206,48 @@ async fn main() -> Result<()> {
                     rtcp_feedback: vec![],
                 },
                 payload_type: pt,
-                ..Default::default()
             },
-            RTPCodecType::Video,
+            RtpCodecKind::Video,
         )?;
     }
+    // FlexFEC-03, as the host offers it (payload type 49).
+    media.register_codec(
+        RTCRtpCodecParameters {
+            rtp_codec: RTCRtpCodec {
+                mime_type: MIME_TYPE_FLEX_FEC03.to_string(),
+                clock_rate: 90000,
+                channels: 0,
+                sdp_fmtp_line: "repair-window=10000000".to_string(),
+                rtcp_feedback: vec![],
+            },
+            payload_type: 49,
+        },
+        RtpCodecKind::Video,
+    )?;
     media.register_default_codecs()?;
-    let mut registry = Registry::new();
+    let mut registry = Registry::new().with(Slot::FecDecoder, FlexFec03ReceiveBuilder::new().build());
     registry = register_default_interceptors(registry, &mut media)?;
-    let api = APIBuilder::new().with_media_engine(media).with_interceptor_registry(registry).build();
-    let pc = Arc::new(api.new_peer_connection(RTCConfiguration::default()).await?);
 
     let packets = Arc::new(AtomicUsize::new(0));
     let first_packet: Arc<std::sync::Mutex<Option<Instant>>> = Arc::new(std::sync::Mutex::new(None));
     let codec_seen: Arc<std::sync::Mutex<String>> = Arc::new(std::sync::Mutex::new(String::new()));
-    {
-        let packets = packets.clone();
-        let first_packet = first_packet.clone();
-        let codec_seen = codec_seen.clone();
-        pc.on_track(Box::new(move |track, _, _| {
-            let packets = packets.clone();
-            let first_packet = first_packet.clone();
-            let codec_seen = codec_seen.clone();
-            Box::pin(async move {
-                let c = track.codec();
-                *codec_seen.lock().unwrap() = format!("{} {}", c.capability.mime_type, c.capability.sdp_fmtp_line);
-                if track.kind() != RTPCodecType::Video {
-                    return;
-                }
-                while let Ok((_pkt, _)) = track.read_rtp().await {
-                    first_packet.lock().unwrap().get_or_insert_with(Instant::now);
-                    packets.fetch_add(1, Ordering::Relaxed);
-                }
-            })
-        }));
-    }
-    {
-        let out_tx = out_tx.clone();
-        let host = host.clone();
-        pc.on_ice_candidate(Box::new(move |cand: Option<RTCIceCandidate>| {
-            let out_tx = out_tx.clone();
-            let host = host.clone();
-            Box::pin(async move {
-                if let Some(json) = cand.and_then(|c| c.to_json().ok()) {
-                    let _ = out_tx.send(SignalingMessage::IceCandidate {
-                        target_id: host,
-                        candidate: RtcIceCandidate {
-                            candidate: json.candidate,
-                            sdp_mid: json.sdp_mid,
-                            sdp_mline_index: json.sdp_mline_index,
-                            username_fragment: json.username_fragment,
-                        },
-                    });
-                }
-            })
-        }));
-    }
+    let ice_state = Arc::new(std::sync::Mutex::new(RTCIceConnectionState::New));
+    let pc: Arc<dyn PeerConnection> = Arc::new(
+        PeerConnectionBuilder::new()
+            .with_media_engine(media)
+            .with_interceptor_registry(registry)
+            .with_handler(Arc::new(ProbeHandler {
+                packets: packets.clone(),
+                first_packet: first_packet.clone(),
+                codec_seen: codec_seen.clone(),
+                ice_state: ice_state.clone(),
+                out_tx: out_tx.clone(),
+                host: host.clone(),
+            }))
+            .with_udp_addrs(vec!["0.0.0.0:0"])
+            .build()
+            .await?,
+    );
 
     let t_session = Instant::now();
     out_tx.send(SignalingMessage::RequestSession {
@@ -221,6 +262,7 @@ async fn main() -> Result<()> {
         display_id: None,
         virtual_display: None,
         chroma: chroma.clone(),
+        encoder_csc_mode: None,
         microphone: None,
     })?;
     let offer = recv_until(&mut in_rx, Duration::from_secs(15), |m| {
@@ -233,8 +275,16 @@ async fn main() -> Result<()> {
         _ => return step("offer", false, "no SDP offer within 15 s").map(|_| ()),
     };
     step("offer", true, format!("{} ms after RequestSession", t_session.elapsed().as_millis()))?;
+    println!(
+        "      FlexFEC-03 offered: {}",
+        offer_sdp.to_ascii_lowercase().contains("flexfec-03/90000")
+    );
     pc.set_remote_description(RTCSessionDescription::offer(offer_sdp)?).await?;
     let answer = pc.create_answer(None).await?;
+    println!(
+        "      FlexFEC-03 kept in our answer: {}",
+        answer.sdp.to_ascii_lowercase().contains("flexfec-03/90000")
+    );
     pc.set_local_description(answer.clone()).await?;
     out_tx.send(SignalingMessage::Sdp {
         target_id: host.clone(),
@@ -262,6 +312,7 @@ async fn main() -> Result<()> {
                             sdp_mid: candidate.sdp_mid,
                             sdp_mline_index: candidate.sdp_mline_index,
                             username_fragment: candidate.username_fragment,
+                            ..Default::default()
                         })
                         .await;
                 }
@@ -277,16 +328,14 @@ async fn main() -> Result<()> {
     let count = packets.load(Ordering::Relaxed);
     let ttfp = first_packet.lock().unwrap().map(|t| t.duration_since(t_session).as_millis());
     let mut pair = String::from("?");
-    for (_, report) in pc.get_stats().await.reports {
-        if let webrtc::stats::StatsReportType::CandidatePair(p) = report {
-            if p.nominated {
-                pair = format!("{} <-> {}", p.local_candidate_id, p.remote_candidate_id);
-            }
+    for p in pc.get_stats(Instant::now(), StatsSelector::None).await.candidate_pairs() {
+        if p.nominated {
+            pair = format!("{} <-> {}", p.local_candidate_id, p.remote_candidate_id);
         }
     }
     println!(
         "      ice={:?} codec=\"{}\" encoder={:?} packets={} first_packet_after={:?} ms pair={}",
-        pc.ice_connection_state(),
+        *ice_state.lock().unwrap(),
         codec_seen.lock().unwrap(),
         encoder_status,
         count,

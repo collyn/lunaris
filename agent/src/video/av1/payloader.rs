@@ -4,8 +4,9 @@
 //! low-overhead OBU conversion when the primary payloader rejects the frame.
 
 use bytes::Bytes;
-use webrtc::rtp::codecs::av1::Av1Payloader;
-use webrtc::rtp::{self, packetizer::Payloader};
+use rtc::rtp::codec::av1::Av1Payloader;
+use rtc::rtp::packetizer::Payloader;
+use rtc::shared::error::Error as RtpError;
 
 use super::obu::av1_annexb_to_low_overhead;
 
@@ -28,7 +29,7 @@ impl LunarisAv1Payloader {
 }
 
 impl Payloader for LunarisAv1Payloader {
-    fn payload(&mut self, mtu: usize, b: &Bytes) -> Result<Vec<Bytes>, rtp::Error> {
+    fn payload(&mut self, mtu: usize, b: &Bytes) -> Result<Vec<Bytes>, RtpError> {
         match self.inner.payload(mtu, b) {
             Ok(payloads) => Ok(payloads),
             Err(err) => {
@@ -47,7 +48,7 @@ impl Payloader for LunarisAv1Payloader {
         }
     }
 
-    fn clone_to(&self) -> Box<dyn Payloader + Send + Sync> {
+    fn clone_to(&self) -> Box<dyn Payloader> {
         Box::new(self.clone())
     }
 }

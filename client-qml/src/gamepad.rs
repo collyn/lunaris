@@ -12,9 +12,7 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use serde_json::{json, Value};
-use webrtc::data_channel::data_channel_message::DataChannelMessage;
-use webrtc::data_channel::data_channel_state::RTCDataChannelState;
-use webrtc::data_channel::RTCDataChannel;
+use webrtc::data_channel::{DataChannel, DataChannelEvent, RTCDataChannelState};
 
 const MAX_PADS: usize = 8;
 /// The remote side unplugs a controller after 5 s of silence.
@@ -64,7 +62,7 @@ enum Cmd {
 
 static ENABLED: AtomicBool = AtomicBool::new(true);
 static PADS: Mutex<Vec<Pad>> = Mutex::new(Vec::new());
-static CHANNEL: Mutex<Option<(Arc<RTCDataChannel>, tokio::runtime::Handle)>> = Mutex::new(None);
+static CHANNEL: Mutex<Option<(Arc<dyn DataChannel>, tokio::runtime::Handle)>> = Mutex::new(None);
 static CMDS: OnceLock<Mutex<std_mpsc::Sender<Cmd>>> = OnceLock::new();
 static UNAVAILABLE: Mutex<Option<String>> = Mutex::new(None);
 
@@ -110,20 +108,26 @@ pub fn pads_json() -> String {
 }
 
 /// The agent opened its `gamepad` channel (in the session's runtime).
-pub fn attach(channel: Arc<RTCDataChannel>) {
+pub fn attach(channel: Arc<dyn DataChannel>) {
     start();
-    channel.on_message(Box::new(move |msg: DataChannelMessage| {
-        if msg.is_string {
-            if let Ok(v) = serde_json::from_slice::<Value>(&msg.data) {
-                if v.get("type").and_then(Value::as_str) == Some("gamepad_error") {
-                    if let Some(m) = v.get("message").and_then(Value::as_str) {
-                        crate::share::set_status(format!("Controllers: {}", m));
+    // webrtc 0.21: the channel's events are polled (from the session's runtime).
+    let reader = channel.clone();
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        handle.spawn(async move {
+            while let Some(event) = reader.poll().await {
+                let DataChannelEvent::OnMessage(msg) = event else { continue };
+                if msg.is_string {
+                    if let Ok(v) = serde_json::from_slice::<Value>(&msg.data) {
+                        if v.get("type").and_then(Value::as_str) == Some("gamepad_error") {
+                            if let Some(m) = v.get("message").and_then(Value::as_str) {
+                                crate::share::set_status(format!("Controllers: {}", m));
+                            }
+                        }
                     }
                 }
             }
-        }
-        Box::pin(async {})
-    }));
+        });
+    }
     if let Ok(handle) = tokio::runtime::Handle::try_current() {
         *CHANNEL.lock().unwrap() = Some((channel, handle));
     }
@@ -215,11 +219,12 @@ fn encode(slot: u8, kind: &str, s: &State) -> Bytes {
 
 fn send(data: Bytes) {
     let Some((ch, handle)) = CHANNEL.lock().unwrap().clone() else { return };
-    if ch.ready_state() != RTCDataChannelState::Open {
-        return;
-    }
     handle.spawn(async move {
-        let _ = ch.send(&data).await;
+        // (0.17 checked the state here, synchronously.)
+        if !matches!(ch.ready_state().await, Ok(RTCDataChannelState::Open)) {
+            return;
+        }
+        let _ = ch.send(bytes::BytesMut::from(&data[..])).await;
     });
 }
 

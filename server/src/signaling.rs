@@ -23,8 +23,8 @@ use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 use crate::auth::verify_jwt;
-use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
-use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
+use webrtc::peer_connection::RTCIceCandidateInit;
+use webrtc::peer_connection::RTCSessionDescription;
 
 /// Both ends of an HTTP/WebSocket connection: the local address is the server
 /// address that peer uses, which is where it can reach the TURN relay.
@@ -930,6 +930,7 @@ async fn handle_client_signaling(
                     sdp_mid: candidate.sdp_mid,
                     sdp_mline_index: candidate.sdp_mline_index,
                     username_fragment: candidate.username_fragment,
+                    ..Default::default()
                 };
                 if let Err(e) = session.peer_connection.add_ice_candidate(rtc_cand).await {
                     debug!("Failed to add ICE candidate on local session: {:?}", e);

@@ -20,13 +20,11 @@ use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
-use webrtc::api::APIBuilder;
-use webrtc::data_channel::data_channel_message::DataChannelMessage;
-use webrtc::data_channel::data_channel_state::RTCDataChannelState;
-use webrtc::data_channel::RTCDataChannel;
-use webrtc::ice_transport::ice_candidate::{RTCIceCandidate, RTCIceCandidateInit};
-use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
-use webrtc::peer_connection::RTCPeerConnection;
+use webrtc::data_channel::{DataChannel, DataChannelEvent, RTCDataChannelMessage, RTCDataChannelState};
+use webrtc::peer_connection::{
+    PeerConnection, PeerConnectionBuilder, PeerConnectionEventHandler, RTCConfigurationBuilder, RTCIceCandidateInit,
+    RTCIceServer, RTCPeerConnectionIceEvent, RTCSessionDescription,
+};
 
 use common::{ClientMessage, RtcIceCandidate, RtcSdpType, RtcSessionDescription, ServerToClientMessage, SignalingMessage};
 
@@ -159,8 +157,8 @@ fn set_error(e: impl Into<String>) {
 // ---------------------------------------------------------------- connection
 
 struct Conn {
-    ch: Arc<RTCDataChannel>,
-    pc: Arc<RTCPeerConnection>,
+    ch: Arc<dyn DataChannel>,
+    pc: Arc<dyn PeerConnection>,
     waiting: Mutex<HashMap<String, mpsc::UnboundedSender<Value>>>,
     /// Chunks of the download in progress.
     sink: Mutex<Option<mpsc::UnboundedSender<Bytes>>>,
@@ -173,10 +171,10 @@ impl Conn {
         self.sep.lock().unwrap().clone()
     }
 
-    fn on_message(&self, msg: DataChannelMessage) {
+    fn on_message(&self, msg: RTCDataChannelMessage) {
         if !msg.is_string {
             if let Some(tx) = self.sink.lock().unwrap().as_ref() {
-                let _ = tx.send(msg.data);
+                let _ = tx.send(msg.data.freeze());
             }
             return;
         }
@@ -194,7 +192,7 @@ impl Conn {
         body["id"] = json!(id);
         let (tx, rx) = mpsc::unbounded_channel();
         self.waiting.lock().unwrap().insert(id.clone(), tx);
-        if let Err(e) = self.ch.send_text(body.to_string()).await {
+        if let Err(e) = self.ch.send_text(&body.to_string()).await {
             self.waiting.lock().unwrap().remove(&id);
             return Err(e.to_string());
         }
@@ -216,8 +214,9 @@ impl Conn {
     }
 
     async fn drain(&self) -> Result<(), String> {
-        while self.ch.buffered_amount().await > MAX_BUFFERED {
-            if self.ch.ready_state() != RTCDataChannelState::Open {
+        // 0.21 has no bufferedAmount: the bytes SCTP has not released yet.
+        while self.ch.outstanding_bytes().await.unwrap_or(0) > MAX_BUFFERED {
+            if !matches!(self.ch.ready_state().await, Ok(RTCDataChannelState::Open)) {
                 return Err("connection closed".into());
             }
             tokio::time::sleep(Duration::from_millis(5)).await;
@@ -262,6 +261,34 @@ pub fn close() {
     });
 }
 
+/// Events of the file connection (webrtc 0.21: a handler object instead of
+/// `on_ice_candidate` / `on_data_channel` callbacks).
+struct FilesHandler {
+    ice_out: mpsc::UnboundedSender<SignalingMessage>,
+    target: String,
+    ready: mpsc::UnboundedSender<Arc<dyn DataChannel>>,
+}
+
+#[async_trait::async_trait]
+impl PeerConnectionEventHandler for FilesHandler {
+    async fn on_ice_candidate(&self, event: RTCPeerConnectionIceEvent) {
+        if let Ok(c) = event.candidate.to_json() {
+            let _ = self.ice_out.send(SignalingMessage::IceCandidate {
+                target_id: self.target.clone(),
+                candidate: RtcIceCandidate { candidate: c.candidate, sdp_mid: c.sdp_mid, sdp_mline_index: c.sdp_mline_index, username_fragment: c.username_fragment },
+            });
+        }
+    }
+
+    // Called once the remote channel is open (0.17 called it when the channel
+    // was announced, and `on_open` followed).
+    async fn on_data_channel(&self, data_channel: Arc<dyn DataChannel>) {
+        if data_channel.label().await.map(|l| l == "files").unwrap_or(false) {
+            let _ = self.ready.send(data_channel);
+        }
+    }
+}
+
 async fn connect(server_url: String, token: String, host_id: String) -> Result<(), String> {
     let encoded: String = url::form_urlencoded::byte_serialize(token.as_bytes()).collect();
     let ws_url = format!("{}/ws/client?token={}{}", server_url.trim_end_matches('/').replacen("http", "ws", 1), encoded, crate::host::client_name_query());
@@ -282,8 +309,8 @@ async fn connect(server_url: String, token: String, host_id: String) -> Result<(
     });
     let _ = out_tx.send(SignalingMessage::RequestFileSession { host_id: host_id.clone() });
 
-    let mut pc: Option<Arc<RTCPeerConnection>> = None;
-    let (ready_tx, mut ready_rx) = mpsc::unbounded_channel::<Arc<RTCDataChannel>>();
+    let mut pc: Option<Arc<dyn PeerConnection>> = None;
+    let (ready_tx, mut ready_rx) = mpsc::unbounded_channel::<Arc<dyn DataChannel>>();
     let mut deadline = tokio::time::Instant::now() + Duration::from_secs(25);
     let channel = loop {
         tokio::select! {
@@ -309,38 +336,19 @@ async fn connect(server_url: String, token: String, host_id: String) -> Result<(
                         }
                     }
                     SignalingMessage::Sdp { sdp, ice_servers, .. } if sdp.ty == RtcSdpType::Offer => {
-                        let servers = ice_servers.unwrap_or_default().into_iter().map(|s| webrtc::ice_transport::ice_server::RTCIceServer {
-                            urls: s.urls, username: s.username.unwrap_or_default(), credential: s.credential.unwrap_or_default(), ..Default::default()
+                        let servers = ice_servers.unwrap_or_default().into_iter().map(|s| RTCIceServer {
+                            urls: s.urls, username: s.username.unwrap_or_default(), credential: s.credential.unwrap_or_default(),
                         }).collect::<Vec<_>>();
-                        let api = APIBuilder::new().build();
-                        let p = Arc::new(api.new_peer_connection(webrtc::peer_connection::configuration::RTCConfiguration {
-                            ice_servers: if servers.is_empty() { vec![webrtc::ice_transport::ice_server::RTCIceServer { urls: vec!["stun:stun.l.google.com:19302".into()], ..Default::default() }] } else { servers },
-                            ..Default::default()
-                        }).await.map_err(|e| e.to_string())?);
-                        let ice_out = out_tx.clone();
-                        let target = host_id.clone();
-                        p.on_ice_candidate(Box::new(move |c: Option<RTCIceCandidate>| {
-                            if let Some(Ok(c)) = c.map(|c| c.to_json()) {
-                                let _ = ice_out.send(SignalingMessage::IceCandidate {
-                                    target_id: target.clone(),
-                                    candidate: RtcIceCandidate { candidate: c.candidate, sdp_mid: c.sdp_mid, sdp_mline_index: c.sdp_mline_index, username_fragment: c.username_fragment },
-                                });
-                            }
-                            Box::pin(async {})
-                        }));
-                        let ready = ready_tx.clone();
-                        p.on_data_channel(Box::new(move |d: Arc<RTCDataChannel>| {
-                            let ready = ready.clone();
-                            Box::pin(async move {
-                                if d.label() == "files" {
-                                    let opened = d.clone();
-                                    d.on_open(Box::new(move || {
-                                        let _ = ready.send(opened.clone());
-                                        Box::pin(async {})
-                                    }));
-                                }
-                            })
-                        }));
+                        let handler = Arc::new(FilesHandler { ice_out: out_tx.clone(), target: host_id.clone(), ready: ready_tx.clone() });
+                        let p: Arc<dyn PeerConnection> = Arc::new(PeerConnectionBuilder::new()
+                            .with_configuration(RTCConfigurationBuilder::default()
+                                .with_ice_servers(if servers.is_empty() { vec![RTCIceServer { urls: vec!["stun:stun.l.google.com:19302".into()], ..Default::default() }] } else { servers })
+                                .build())
+                            .with_handler(handler)
+                            .with_udp_addrs(vec!["0.0.0.0:0"])
+                            .build()
+                            .await
+                            .map_err(|e| e.to_string())?);
                         p.set_remote_description(RTCSessionDescription::offer(sdp.sdp).map_err(|e| e.to_string())?).await.map_err(|e| e.to_string())?;
                         let answer = p.create_answer(None).await.map_err(|e| e.to_string())?;
                         p.set_local_description(answer.clone()).await.map_err(|e| e.to_string())?;
@@ -356,6 +364,7 @@ async fn connect(server_url: String, token: String, host_id: String) -> Result<(
                             let _ = p.add_ice_candidate(RTCIceCandidateInit {
                                 candidate: candidate.candidate, sdp_mid: candidate.sdp_mid,
                                 sdp_mline_index: candidate.sdp_mline_index, username_fragment: candidate.username_fragment,
+                                ..Default::default()
                             }).await;
                         }
                     }
@@ -380,6 +389,7 @@ async fn connect(server_url: String, token: String, host_id: String) -> Result<(
                         sdp_mid: candidate.sdp_mid,
                         sdp_mline_index: candidate.sdp_mline_index,
                         username_fragment: candidate.username_fragment,
+                        ..Default::default()
                     })
                     .await;
             }
@@ -389,19 +399,24 @@ async fn connect(server_url: String, token: String, host_id: String) -> Result<(
 
     let conn = Arc::new(Conn { ch: channel.clone(), pc: pc.clone(), waiting: Mutex::new(HashMap::new()), sink: Mutex::new(None), sep: Mutex::new("/".into()) });
     let weak = Arc::downgrade(&conn);
-    channel.on_message(Box::new(move |m: DataChannelMessage| {
-        if let Some(c) = weak.upgrade() {
-            c.on_message(m);
+    // webrtc 0.21: the channel's events are polled.
+    let reader = channel.clone();
+    tokio::spawn(async move {
+        while let Some(event) = reader.poll().await {
+            match event {
+                DataChannelEvent::OnMessage(m) => {
+                    if let Some(c) = weak.upgrade() {
+                        c.on_message(m);
+                    }
+                }
+                DataChannelEvent::OnClose => with_state(|s| {
+                    s.connected = false;
+                    s.error = "connection closed".into();
+                }),
+                _ => {}
+            }
         }
-        Box::pin(async {})
-    }));
-    channel.on_close(Box::new(|| {
-        with_state(|s| {
-            s.connected = false;
-            s.error = "connection closed".into();
-        });
-        Box::pin(async {})
-    }));
+    });
 
     let hello = conn.request(json!({"type": "hello"}), 15).await?;
     *conn.sep.lock().unwrap() = hello.get("sep").and_then(Value::as_str).unwrap_or("/").to_string();
@@ -837,7 +852,7 @@ async fn upload_one(c: &Conn, id: &str, local: &Path, remote: &str, size: u64, m
     let mut buf = vec![0u8; CHUNK];
     loop {
         if cancel.load(Ordering::SeqCst) {
-            let _ = c.ch.send_text(json!({"type": "cancel", "id": id}).to_string()).await;
+            let _ = c.ch.send_text(&json!({"type": "cancel", "id": id}).to_string()).await;
             c.waiting.lock().unwrap().remove(id);
             return Ok((JobState::Cancelled, String::new()));
         }
@@ -846,11 +861,11 @@ async fn upload_one(c: &Conn, id: &str, local: &Path, remote: &str, size: u64, m
             break;
         }
         c.drain().await?;
-        c.ch.send(&Bytes::copy_from_slice(&buf[..n])).await.map_err(|e| e.to_string())?;
+        c.ch.send(bytes::BytesMut::from(&buf[..n])).await.map_err(|e| e.to_string())?;
         sent += n as u64;
         progress(id, sent);
     }
-    c.ch.send_text(json!({"type": "put_end", "id": id}).to_string()).await.map_err(|e| e.to_string())?;
+    c.ch.send_text(&json!({"type": "put_end", "id": id}).to_string()).await.map_err(|e| e.to_string())?;
     let done = tokio::time::timeout(Duration::from_secs(600), rx.recv())
         .await
         .map_err(|_| "no answer from the remote computer".to_string())?
@@ -926,7 +941,7 @@ async fn download_one(c: &Conn, id: &str, remote: &str, local: &Path, size: u64,
                 if cancel.load(Ordering::SeqCst) {
                     if !cancel_sent {
                         cancel_sent = true;
-                        let _ = c.ch.send_text(json!({"type": "cancel", "id": id}).to_string()).await;
+                        let _ = c.ch.send_text(&json!({"type": "cancel", "id": id}).to_string()).await;
                     }
                     continue;
                 }

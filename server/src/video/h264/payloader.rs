@@ -1,6 +1,7 @@
 use bytes::{BufMut, Bytes, BytesMut};
 use num_traits::FromPrimitive;
-use webrtc::rtp::{self, packetizer::Payloader};
+use rtc::rtp::packetizer::Payloader;
+use rtc::shared::error::Error as RtpError;
 
 use crate::video::h264::{NalHeader, NalUnitType};
 
@@ -141,9 +142,9 @@ impl H264Payloader {
 }
 
 impl Payloader for H264Payloader {
-    fn payload(&mut self, mtu: usize, b: &Bytes) -> Result<Vec<Bytes>, rtp::Error> {
+    fn payload(&mut self, mtu: usize, b: &Bytes) -> Result<Vec<Bytes>, RtpError> {
         if b.len() < NalHeader::SIZE {
-            return Err(rtp::Error::ErrBufferTooSmall);
+            return Err(RtpError::ErrBufferTooSmall);
         }
 
         let nal_header = NalHeader::parse([b[0]]);
@@ -187,7 +188,7 @@ impl Payloader for H264Payloader {
         Ok(packets)
     }
 
-    fn clone_to(&self) -> Box<dyn Payloader + Send + Sync> {
+    fn clone_to(&self) -> Box<dyn Payloader> {
         Box::new(self.clone())
     }
 }

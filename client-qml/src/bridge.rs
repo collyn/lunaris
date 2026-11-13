@@ -3172,20 +3172,23 @@ use common::{
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::protocol::Message as WsMessage;
-use webrtc::api::media_engine::MediaEngine;
-use webrtc::api::APIBuilder;
-use webrtc::data_channel::{data_channel_message::DataChannelMessage, RTCDataChannel};
-use webrtc::ice_transport::ice_candidate::{RTCIceCandidate, RTCIceCandidateInit};
-use webrtc::ice_transport::ice_server::RTCIceServer;
-use webrtc::interceptor::registry::Registry;
-use webrtc::peer_connection::configuration::RTCConfiguration;
-use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
-use webrtc::peer_connection::RTCPeerConnection;
-use webrtc::rtp_transceiver::rtp_codec::{
-    RTCRtpCodecCapability, RTCRtpCodecParameters, RTPCodecType,
+use rtc::interceptor::{
+    FlexFec03ReceiveBuilder, NackGeneratorBuilder, NackResponderBuilder, Slot,
 };
-use webrtc::rtp_transceiver::RTCPFeedback;
-use webrtc::track::track_remote::TrackRemote;
+use rtc::peer_connection::configuration::media_engine::{
+    MIME_TYPE_AV1, MIME_TYPE_FLEX_FEC03, MIME_TYPE_H264, MIME_TYPE_HEVC,
+};
+use rtc::rtp_transceiver::rtp_sender::{
+    RTCPFeedback, RTCRtpCodec, RTCRtpCodecParameters, RTCRtpHeaderExtensionCapability, RtpCodecKind,
+};
+use webrtc::data_channel::{DataChannel, DataChannelEvent};
+use webrtc::media_stream::track_remote::{TrackRemote, TrackRemoteEvent};
+use webrtc::peer_connection::{
+    configure_rtcp_reports, configure_twcc_receiver_only, MediaEngine, PeerConnection,
+    PeerConnectionBuilder, PeerConnectionEventHandler, RTCConfigurationBuilder, RTCIceCandidateInit,
+    RTCIceConnectionState, RTCIceServer, RTCPeerConnectionIceEvent, RTCPeerConnectionState,
+    RTCSessionDescription, Registry, RTCIceCandidateType, RTCStatsReportEntry, StatsSelector,
+};
 use wtransport::{ClientConfig, Endpoint};
 
 fn normalize_host_cursor_kind(kind: &str) -> &str {
@@ -3291,23 +3294,19 @@ fn handle_host_cursor_message(data: &[u8]) {
 /// unless it is a TURN relay), then the signaling server's host, checking the
 /// agent's self-signed certificate against the hash from its offer.
 async fn connect_webtransport_input(
-    pc: Arc<RTCPeerConnection>,
+    pc: Arc<dyn PeerConnection>,
+    pc_state: ConnState,
     server_url: String,
     port: u16,
     cert_hash: Option<String>,
     wt_conn: Arc<Mutex<Option<wtransport::Connection>>>,
     wt_connected: Arc<std::sync::atomic::AtomicBool>,
 ) {
-    use webrtc::ice_transport::ice_candidate_type::RTCIceCandidateType;
-    use webrtc::ice_transport::ice_connection_state::RTCIceConnectionState;
+    use webrtc::peer_connection::{RTCIceCandidateType, RTCStatsReportEntry, StatsSelector};
 
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
-    while pc.ice_connection_state() != RTCIceConnectionState::Connected
-        && pc.ice_connection_state() != RTCIceConnectionState::Completed
-    {
-        if std::time::Instant::now() > deadline
-            || pc.connection_state() == webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState::Closed
-        {
+    while !pc_state.ice_connected() {
+        if std::time::Instant::now() > deadline || pc_state.closed() {
             eprintln!("WebTransport: ICE not connected, input stays on WebRTC");
             return;
         }
@@ -3315,9 +3314,17 @@ async fn connect_webtransport_input(
     }
 
     let mut hosts: Vec<String> = Vec::new();
-    if let Some(pair) = pc.sctp().transport().ice_transport().get_selected_candidate_pair().await {
-        if pair.remote.typ != RTCIceCandidateType::Relay && !pair.remote.address.is_empty() {
-            hosts.push(pair.remote.address.clone());
+    // The selected candidate pair (0.17: `get_selected_candidate_pair`) is the
+    // nominated pair of the stats report in 0.21.
+    let stats = pc.get_stats(std::time::Instant::now(), StatsSelector::None).await;
+    let selected = stats.candidate_pairs().find(|pair| pair.nominated);
+    if let Some(pair) = selected {
+        if let Some(RTCStatsReportEntry::RemoteCandidate(remote)) = stats.get(&pair.remote_candidate_id) {
+            if remote.candidate_type != RTCIceCandidateType::Relay {
+                if let Some(address) = remote.address.as_ref().filter(|a| !a.is_empty()) {
+                    hosts.push(address.clone());
+                }
+            }
         }
     }
     if let Some(host) = url::Url::parse(&server_url).ok().and_then(|u| u.host_str().map(str::to_string)) {
@@ -3468,24 +3475,1145 @@ fn select_video_codec_for_offer(requested_codec: &str, offer_sdp: &str) -> Strin
     }
 }
 
+/// Connection state the event handler records (webrtc 0.21 has no state
+/// getters on the connection).
+#[derive(Clone)]
+struct ConnState(Arc<std::sync::Mutex<(RTCIceConnectionState, RTCPeerConnectionState)>>);
+
+impl ConnState {
+    fn ice_connected(&self) -> bool {
+        matches!(
+            self.0.lock().unwrap().0,
+            RTCIceConnectionState::Connected | RTCIceConnectionState::Completed
+        )
+    }
+
+    fn closed(&self) -> bool {
+        self.0.lock().unwrap().1 == RTCPeerConnectionState::Closed
+    }
+}
+
+/// Events of the stream connection (webrtc 0.21 delivers them to a handler
+/// object, 0.17 to callbacks).
+struct ClientEventHandler {
+    outbox_tx: tokio::sync::mpsc::UnboundedSender<ClientMessage>,
+    host_id: String,
+    sink_wrapper: VideoSinkWrapper,
+    kb_chan_ref: Arc<Mutex<Option<Arc<dyn DataChannel>>>>,
+    ma_chan_ref: Arc<Mutex<Option<Arc<dyn DataChannel>>>>,
+    mr_chan_ref: Arc<Mutex<Option<Arc<dyn DataChannel>>>>,
+    active_decoder: Arc<Mutex<Option<std::thread::JoinHandle<()>>>>,
+    state: ConnState,
+}
+
+#[async_trait::async_trait]
+impl PeerConnectionEventHandler for ClientEventHandler {
+    async fn on_ice_connection_state_change(&self, state: RTCIceConnectionState) {
+        self.state.0.lock().unwrap().0 = state;
+        println!("Client ICE connection state changed: {:?}", state);
+    }
+
+    async fn on_connection_state_change(&self, state: RTCPeerConnectionState) {
+        self.state.0.lock().unwrap().1 = state;
+        println!("Client WebRTC peer connection state changed: {:?}", state);
+    }
+
+    // ICE candidate gathering
+    async fn on_ice_candidate(&self, event: RTCPeerConnectionIceEvent) {
+        if let Ok(json_cand) = event.candidate.to_json() {
+            let msg = ClientMessage::Signaling(SignalingMessage::IceCandidate {
+                target_id: self.host_id.clone(),
+                candidate: common::RtcIceCandidate {
+                    candidate: json_cand.candidate,
+                    sdp_mid: json_cand.sdp_mid,
+                    sdp_mline_index: json_cand.sdp_mline_index,
+                    username_fragment: json_cand.username_fragment,
+                },
+            });
+            let _ = self.outbox_tx.send(msg);
+        }
+    }
+
+    // Video / audio track handler
+    async fn on_track(&self, track: Arc<dyn TrackRemote>) {
+        tokio::spawn(handle_remote_track(
+            track,
+            self.sink_wrapper.clone(),
+            self.active_decoder.clone(),
+        ));
+    }
+
+    // Data channel callbacks
+    async fn on_data_channel(&self, d: Arc<dyn DataChannel>) {
+        let label = d.label().await.unwrap_or_default();
+        println!("Remote host created DataChannel: {}", label);
+        let channel_ref = Arc::clone(&d);
+        match label.as_str() {
+            "keyboard" => {
+                *self.kb_chan_ref.lock().unwrap() = Some(channel_ref);
+            }
+            "mouse_absolute" => {
+                *self.ma_chan_ref.lock().unwrap() = Some(channel_ref);
+            }
+            "mouse_relative" => {
+                *self.mr_chan_ref.lock().unwrap() = Some(channel_ref);
+            }
+            "clipboard" => crate::share::attach_clipboard(channel_ref),
+            "gamepad" => crate::gamepad::attach(channel_ref),
+            "general" | "cursor" => {
+                // webrtc 0.21: the channel's events are polled.
+                tokio::spawn(async move {
+                    while let Some(event) = d.poll().await {
+                        match event {
+                            DataChannelEvent::OnMessage(msg) => {
+                                handle_host_cursor_message(&msg.data);
+                            }
+                            DataChannelEvent::OnClose => {
+                                *PENDING_HOST_CURSOR.lock().unwrap() = Some(PendingHostCursor {
+                                    x: 0,
+                                    y: 0,
+                                    visible: false,
+                                    kind: "arrow".to_string(),
+                                    in_window_move_size: false,
+                                    image_data_url: String::new(),
+                                    image_width: 0,
+                                    image_height: 0,
+                                    image_hotspot_x: 0,
+                                    image_hotspot_y: 0,
+                                });
+                            }
+                            _ => {}
+                        }
+                    }
+                });
+            }
+            _ => {}
+        }
+    }
+}
+
+/// The 0.17 `on_track` callback's body: starts the receive pipeline of a
+/// remote track (video: reader task -> decode thread; audio: Opus). Runs in
+/// its own task because webrtc 0.21 waits for the event handler to return.
+async fn handle_remote_track(
+    track: Arc<dyn TrackRemote>,
+    sink_inner: VideoSinkWrapper,
+    active_decoder_inner: Arc<Mutex<Option<std::thread::JoinHandle<()>>>>,
+) {
+    let track_clone = Arc::clone(&track);
+    let Some(media_ssrc) = track.ssrcs().await.first().copied() else {
+        eprintln!("client-qml on_track: the track has no SSRC");
+        return;
+    };
+    let Some(codec) = track.codec(media_ssrc).await else {
+        eprintln!("client-qml on_track: no codec for SSRC {}", media_ssrc);
+        return;
+    };
+        let mime = codec.mime_type.to_lowercase();
+        println!("client-qml on_track called: kind={}, mime_type={}", track_clone.kind().await, mime);
+        let is_video = mime == "video/h264" || mime == "video/h265" || mime == "video/hevc" || mime == "video/av1";
+        
+        if is_video {
+            println!("Starting video receiver for: {}", mime);
+            let codec_type = match mime.as_str() {
+                "video/h264" => super::decoder::CodecType::H264,
+                "video/h265" | "video/hevc" => super::decoder::CodecType::H265,
+                "video/av1" => super::decoder::CodecType::AV1,
+                _ => unreachable!(),
+            };
+            
+            let (disable_cuda, requested_codec) = if let Some(ref config) = *ACTIVE_CONFIG.lock().unwrap() {
+                (config.effective_disable_cuda(), config.codec.to_uppercase())
+            } else {
+                (false, "Unknown".to_string())
+            };
+            // H.264 4:4:4 has no GPU decoder (VAAPI/NVDEC): decode it in
+            // software straight away instead of failing over per frame.
+            let h264_444 = matches!(codec_type, super::decoder::CodecType::H264)
+                && is_h264_444_fmtp(&codec.sdp_fmtp_line);
+            if h264_444 {
+                println!("H.264 4:4:4 stream: decoding in software (multi-threaded)");
+            }
+            let decoder = match super::decoder::HardwareDecoder::new(codec_type, disable_cuda || h264_444) {
+                Ok(d) => d,
+                Err(e) => {
+                    eprintln!("Failed to initialize hardware decoder: {:?}", e);
+                    return;
+                }
+            };
+            
+            let annex_b_buf = Vec::<u8>::new();
+            let av1_obu_buf = Vec::<u8>::new();
+            
+            let frame_count = 0;
+            let byte_count = 0;
+            let last_stats_time = std::time::Instant::now();
+            let total_decode_time_ms = 0.0;
+            let decode_count = 0;
+            
+            let has_decoded = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let has_decoded_clone = Arc::clone(&has_decoded);
+                    let pli_track = Arc::clone(&track_clone);
+            
+            tokio::spawn(async move {
+                use rtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication;
+                println!("PLI requester task started for video track SSRC: {}", media_ssrc);
+                
+                while !has_decoded_clone.load(std::sync::atomic::Ordering::SeqCst) {
+                    let pli = PictureLossIndication {
+                        sender_ssrc: 0,
+                        media_ssrc,
+                    };
+                    if let Err(e) = pli_track.write_rtcp(vec![Box::new(pli)]).await {
+                        eprintln!("Failed to send PLI request: {:?}", e);
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+                }
+                println!("First frame decoded, stopping periodic PLI requests.");
+            });
+            
+            let pending_packets = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let pending_packets_reader = Arc::clone(&pending_packets);
+            let pending_packets_decoder = Arc::clone(&pending_packets);
+
+            // Room for a whole keyframe burst: at 20 Mbps a 1080p keyframe
+            // is a few hundred packets arriving at once. With 256 the
+            // queue overflowed on every keyframe, which dropped packets,
+            // requested another (large) keyframe and froze the stream.
+            const RTP_QUEUE_LIMIT: usize = 4096;
+            // Flush only when the decoder is really behind (~1 s of video
+            // at 20 Mbps), not on a keyframe burst.
+            const RTP_QUEUE_LAG_FLUSH: usize = 2048;
+            // A sequence gap is treated as loss once a NACK retransmission
+            // had time to arrive, or when the reorder buffer gets this big.
+            const RTP_GAP_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(120);
+            const RTP_REORDER_LIMIT: usize = 1024;
+            let (rtp_tx, mut rtp_rx) = tokio::sync::mpsc::channel(RTP_QUEUE_LIMIT);
+            let track_clone_reader = Arc::clone(&track_clone);
+            tokio::spawn(async move {
+                while let Some(event) = track_clone_reader.poll().await {
+                    let rtp_packet = match event {
+                        TrackRemoteEvent::OnRtpPacket(p) => p,
+                        TrackRemoteEvent::OnEnded => break,
+                        _ => continue,
+                    };
+                    if rtp_packet.payload.is_empty() {
+                        continue;
+                    }
+                    match rtp_tx.try_send(rtp_packet) {
+                        Ok(()) => {
+                            pending_packets_reader.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        }
+                        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                            pending_packets_reader.store(RTP_QUEUE_LIMIT, std::sync::atomic::Ordering::SeqCst);
+                        }
+                        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
+                    }
+                }
+            });
+
+            let (pli_tx, mut pli_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+            let pli_track2 = Arc::clone(&track_clone);
+            tokio::spawn(async move {
+                let mut last_pli_time = std::time::Instant::now();
+                while let Some(_) = pli_rx.recv().await {
+                    let now = std::time::Instant::now();
+                    if now.duration_since(last_pli_time) > std::time::Duration::from_millis(500) {
+                        let pli = rtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication {
+                            sender_ssrc: 0,
+                            media_ssrc,
+                        };
+                        if let Err(e) = pli_track2.write_rtcp(vec![Box::new(pli)]).await {
+                            eprintln!("Failed to send PLI request: {:?}", e);
+                        }
+                        last_pli_time = now;
+                    }
+                }
+            });
+
+            let thread_handle = std::thread::spawn(move || {
+                let mut decoder = decoder;
+                let mut annex_b_buf = annex_b_buf;
+                let mut av1_obu_buf = av1_obu_buf;
+                let mut frame_count = frame_count;
+                let mut byte_count = byte_count;
+                let mut last_stats_time = last_stats_time;
+                let mut total_decode_time_ms = total_decode_time_ms;
+                let mut decode_count = decode_count;
+                let sink_inner = sink_inner;
+                let has_decoded = has_decoded;
+                
+                let mut next_seq_num: Option<u64> = None;
+                let mut gap_since: Option<std::time::Instant> = None;
+                let mut packet_buffer = std::collections::BTreeMap::<u64, rtc::rtp::Packet>::new();
+                let mut h264_seen_config = false;
+                let mut h264_config_annexb = Vec::<u8>::new();
+                let mut h264_wait_for_idr = true;
+                let mut h264_dropping_fragment = false;
+                let mut h264_fragment_is_idr = false;
+                let mut h265_seen_config = false;
+                let mut h265_config_annexb = Vec::<u8>::new();
+                let mut h265_wait_for_irap = true;
+                let mut h265_dropping_fragment = false;
+                let mut h265_fragment_is_irap = false;
+                let mut last_packet_loss_log = std::time::Instant::now()
+                    .checked_sub(std::time::Duration::from_secs(60))
+                    .unwrap_or_else(std::time::Instant::now);
+                let mut packet_loss_events: u64 = 0;
+                let mut packets_lost: u64 = 0;
+                let mut queue_lag_events: u64 = 0;
+                let mut max_queue_lag: usize = 0;
+                let mut last_present_log_label = String::new();
+                // LUNARIS_CLIENT_STATS=1: one line per second with the
+                // interval between decoded frames (stutter diagnosis).
+                let stats_log = std::env::var("LUNARIS_CLIENT_STATS").is_ok();
+                let mut stats_prev_frames: usize = 0;
+                let mut stats_last_frame_at: Option<std::time::Instant> = None;
+                let mut stats_gap_min = f64::MAX;
+                let mut stats_gap_max = 0.0f64;
+                let mut stats_gap_late: u32 = 0;
+                let mut stats_fill_count: u32 = 0;
+                let mut stats_fill_max = 0.0f64;
+                let mut stats_fill_sum = 0.0f64;
+
+                while let Some(rtp_packet) = rtp_rx.blocking_recv() {
+                    let _ = pending_packets_decoder.fetch_update(
+                        std::sync::atomic::Ordering::SeqCst,
+                        std::sync::atomic::Ordering::SeqCst,
+                        |value| Some(value.saturating_sub(1)),
+                    );
+
+                    // Check for backlog (decoder lagging)
+                    let pending_val = pending_packets_decoder.load(std::sync::atomic::Ordering::SeqCst);
+                    if pending_val > RTP_QUEUE_LAG_FLUSH {
+                        queue_lag_events = queue_lag_events.saturating_add(1);
+                        max_queue_lag = max_queue_lag.max(pending_val);
+                        eprintln!("Video receiver queue lag detected ({} packets). Flushing queue...", pending_val);
+                        while let Ok(_) = rtp_rx.try_recv() {}
+                        pending_packets_decoder.store(0, std::sync::atomic::Ordering::SeqCst);
+                        packet_buffer.clear();
+                        annex_b_buf.clear();
+                        av1_obu_buf.clear();
+                        h264_wait_for_idr = true;
+                        h264_dropping_fragment = false;
+                        h264_fragment_is_idr = false;
+                        h265_wait_for_irap = true;
+                        h265_dropping_fragment = false;
+                        h265_fragment_is_irap = false;
+                        let _ = pli_tx.send(());
+                        next_seq_num = None;
+                        gap_since = None;
+                        continue;
+                    }
+
+                    let seq = rtp_packet.header.sequence_number;
+                    let ext_seq = match next_seq_num {
+                        None => {
+                            next_seq_num = Some(seq as u64);
+                            seq as u64
+                        }
+                        Some(next_seq) => {
+                            let next_seq_16 = next_seq as u16;
+                            let diff = seq.wrapping_sub(next_seq_16) as i16;
+                            (next_seq as i64 + diff as i64) as u64
+                        }
+                    };
+
+                    if ext_seq < next_seq_num.unwrap() {
+                        // Old duplicate packet, discard
+                        continue;
+                    }
+
+                    packet_buffer.insert(ext_seq, rtp_packet);
+
+                    // A gap is open while the next expected packet is missing.
+                    // Give NACK retransmissions time to fill it before giving
+                    // up on the frame (the old 64-packet limit fired within
+                    // one keyframe burst, before any retransmission arrived).
+                    let gap_open = next_seq_num
+                        .map(|expected| !packet_buffer.contains_key(&expected))
+                        .unwrap_or(false);
+                    if !gap_open {
+                        if let Some(since) = gap_since {
+                            // A gap closed: the missing packet arrived
+                            // (reordering or a NACK retransmission).
+                            let ms = since.elapsed().as_secs_f64() * 1000.0;
+                            stats_fill_count += 1;
+                            stats_fill_max = stats_fill_max.max(ms);
+                            stats_fill_sum += ms;
+                        }
+                        gap_since = None;
+                    } else if gap_since.is_none() {
+                        gap_since = Some(std::time::Instant::now());
+                    }
+                    let gap_expired = gap_since
+                        .map(|since| since.elapsed() >= RTP_GAP_TIMEOUT)
+                        .unwrap_or(false);
+
+                    if gap_open && (gap_expired || packet_buffer.len() > RTP_REORDER_LIMIT) {
+                        gap_since = None;
+                        let &first_seq = packet_buffer.keys().next().unwrap();
+                        let missing_start = next_seq_num.unwrap();
+                        let missing_end = first_seq - 1;
+                        let now = std::time::Instant::now();
+                        packet_loss_events = packet_loss_events.saturating_add(1);
+                        if missing_end >= missing_start {
+                            packets_lost = packets_lost.saturating_add(missing_end - missing_start + 1);
+                        }
+                        if now.duration_since(last_packet_loss_log) >= std::time::Duration::from_secs(1) {
+                            eprintln!(
+                                "RTP packet loss detected: missing sequence from {} to {}",
+                                missing_start,
+                                missing_end
+                            );
+                            last_packet_loss_log = now;
+                        }
+                        
+                        // Clear corrupted frame buffer and request keyframe
+                        annex_b_buf.clear();
+                        av1_obu_buf.clear();
+                        h264_wait_for_idr = true;
+                        h264_dropping_fragment = false;
+                        h264_fragment_is_idr = false;
+                        h265_wait_for_irap = true;
+                        h265_dropping_fragment = false;
+                        h265_fragment_is_irap = false;
+                        let _ = pli_tx.send(());
+                        
+                        next_seq_num = Some(first_seq);
+                    }
+
+                    // Process all in-order packets
+                    while let Some(current_expected) = next_seq_num {
+                        if !packet_buffer.contains_key(&current_expected) {
+                            break;
+                        }
+                        let pkt = packet_buffer.remove(&current_expected).unwrap();
+                        
+                        let payload = &pkt.payload;
+                        if payload.is_empty() {
+                            next_seq_num = Some(current_expected + 1);
+                            continue;
+                        }
+                        
+                        byte_count += payload.len();
+                        
+                        let mut process_and_deliver = |annex_b_data: &[u8], decoder_ref: &mut super::decoder::HardwareDecoder, decode_count_ref: &mut usize, total_decode_time_ref: &mut f64, frame_count_ref: &mut usize, has_decoded_ref: &Arc<std::sync::atomic::AtomicBool>, sink_ref: &VideoSinkWrapper| -> Result<(), anyhow::Error> {
+                            let start_decode = std::time::Instant::now();
+                            let decoded_frames = decoder_ref.decode(annex_b_data)?;
+                            let decode_time_ms = start_decode.elapsed().as_secs_f64() * 1000.0;
+                            
+                            if !decoded_frames.is_empty() {
+                                if *decode_count_ref == 0 {
+                                    has_decoded_ref.store(true, std::sync::atomic::Ordering::SeqCst);
+                                }
+                                *decode_count_ref += decoded_frames.len();
+                                *total_decode_time_ref += decode_time_ms;
+                                *frame_count_ref += decoded_frames.len();
+                            }
+                            
+                            for frame in decoded_frames {
+                                match frame {
+                                    super::decoder::DecodedFrame::NativePresented => {
+                                        let label = decoder_ref.presentation_mode_label();
+                                        if last_present_log_label != label {
+                                            println!("Decoded frame via {}", label);
+                                            last_present_log_label = label;
+                                        }
+                                    }
+                                    super::decoder::DecodedFrame::CpuBgrx(frame) => {
+                                        let sink_lock = sink_ref.sink.lock().unwrap();
+                                        let label = "software decode + BGRX present (4:4:4)".to_string();
+                                        if last_present_log_label != label {
+                                            println!("Decoded frame via {}: {}x{}", label, frame.width, frame.height);
+                                            last_present_log_label = label;
+                                        }
+                                        if let Some(sink_ptr_val) = *sink_lock {
+                                            unsafe {
+                                                deliver_bgrx_frame(
+                                                    sink_ptr_val as *mut qobject::QVideoSink,
+                                                    frame.data.as_ptr(),
+                                                    frame.stride,
+                                                    frame.width,
+                                                    frame.height,
+                                                );
+                                            }
+                                        }
+                                    }
+                                    super::decoder::DecodedFrame::CpuYuv(frame) => {
+                                        let sink_lock = sink_ref.sink.lock().unwrap();
+                                        let label = decoder_ref.presentation_mode_label();
+                                        if last_present_log_label != label {
+                                            println!(
+                                                "Decoded frame via {}: {}x{}, sink={:?}",
+                                                label,
+                                                frame.width,
+                                                frame.height,
+                                                *sink_lock
+                                            );
+                                            last_present_log_label = label;
+                                        }
+                                        if let Some(sink_ptr_val) = *sink_lock {
+                                            unsafe {
+                                                deliver_yuv_frame(
+                                                    sink_ptr_val as *mut qobject::QVideoSink,
+                                                    frame.y.as_ptr(), frame.y_stride,
+                                                    frame.u.as_ptr(), frame.u_stride,
+                                                    frame.v.as_ptr(), frame.v_stride,
+                                                    frame.width, frame.height,
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            Ok(())
+                        };
+                        
+                        match codec_type {
+                            super::decoder::CodecType::H264 => {
+                                let nal_type = payload[0] & 0x1F;
+                                if nal_type >= 1 && nal_type <= 23 {
+                                    // Single NAL unit
+                                    let is_config = nal_type == 7 || nal_type == 8;
+                                    let is_vcl = nal_type >= 1 && nal_type <= 5;
+                                    let is_idr = nal_type == 5;
+
+                                    if is_config {
+                                        if nal_type == 7 {
+                                            h264_config_annexb.clear();
+                                        }
+                                        h264_seen_config = true;
+                                        h264_config_annexb.extend_from_slice(&[0, 0, 0, 1]);
+                                        h264_config_annexb.extend_from_slice(payload);
+                                    }
+
+                                    annex_b_buf.extend_from_slice(&[0, 0, 0, 1]);
+                                    annex_b_buf.extend_from_slice(payload);
+
+                                    if is_vcl {
+                                        if h264_wait_for_idr && !is_idr {
+                                            // Still no key frame: ask again (the sender task limits this to
+                                            // one PLI per 500 ms). Without it a lost or ignored request left
+                                            // the stream frozen until some later packet loss.
+                                            let _ = pli_tx.send(());
+                                            annex_b_buf.clear();
+                                            next_seq_num = Some(current_expected + 1);
+                                            continue;
+                                        }
+                                        if is_idr && !h264_seen_config {
+                                            annex_b_buf.clear();
+                                            h264_wait_for_idr = true;
+                                            let _ = pli_tx.send(());
+                                            next_seq_num = Some(current_expected + 1);
+                                            continue;
+                                        }
+
+                                        let h264_decode_buf;
+                                        let h264_payload = if is_idr
+                                            && !h264_config_annexb.is_empty()
+                                            && !annex_b_buf.starts_with(&h264_config_annexb)
+                                        {
+                                            h264_decode_buf = [h264_config_annexb.as_slice(), annex_b_buf.as_slice()].concat();
+                                            h264_decode_buf.as_slice()
+                                        } else {
+                                            annex_b_buf.as_slice()
+                                        };
+
+                                        if let Err(e) = process_and_deliver(h264_payload, &mut decoder, &mut decode_count, &mut total_decode_time_ms, &mut frame_count, &has_decoded, &sink_inner) {
+                                            eprintln!("Decoder error: {:?}. Requesting keyframe...", e);
+                                            h264_wait_for_idr = true;
+                                            let _ = pli_tx.send(());
+                                        } else {
+                                            h264_wait_for_idr = false;
+                                        }
+                                        annex_b_buf.clear();
+                                    }
+                                } else if nal_type == 24 {
+                                    // STAP-A Aggregation Packet
+                                    let mut offset = 1;
+                                    while offset + 2 <= payload.len() {
+                                        let nalu_size = ((payload[offset] as usize) << 8) | (payload[offset + 1] as usize);
+                                        offset += 2;
+                                        if offset + nalu_size > payload.len() {
+                                            break;
+                                        }
+                                        let nalu_data = &payload[offset..offset + nalu_size];
+                                        offset += nalu_size;
+
+                                        if !nalu_data.is_empty() {
+                                            let inner_nal_type = nalu_data[0] & 0x1F;
+                                            let is_config = inner_nal_type == 7 || inner_nal_type == 8;
+                                            let is_vcl = inner_nal_type >= 1 && inner_nal_type <= 5;
+                                            let is_idr = inner_nal_type == 5;
+
+                                            if is_config {
+                                                if inner_nal_type == 7 {
+                                                    h264_config_annexb.clear();
+                                                }
+                                                h264_seen_config = true;
+                                                h264_config_annexb.extend_from_slice(&[0, 0, 0, 1]);
+                                                h264_config_annexb.extend_from_slice(nalu_data);
+                                            }
+
+                                            annex_b_buf.extend_from_slice(&[0, 0, 0, 1]);
+                                            annex_b_buf.extend_from_slice(nalu_data);
+
+                                            if is_vcl {
+                                                if h264_wait_for_idr && !is_idr {
+                                                    // Still no key frame: ask again (the sender task limits this to
+                                                    // one PLI per 500 ms). Without it a lost or ignored request left
+                                                    // the stream frozen until some later packet loss.
+                                                    let _ = pli_tx.send(());
+                                                    annex_b_buf.clear();
+                                                    continue;
+                                                }
+                                                if is_idr && !h264_seen_config {
+                                                    annex_b_buf.clear();
+                                                    h264_wait_for_idr = true;
+                                                    let _ = pli_tx.send(());
+                                                    continue;
+                                                }
+
+                                                let h264_decode_buf;
+                                                let h264_payload = if is_idr
+                                                    && !h264_config_annexb.is_empty()
+                                                    && !annex_b_buf.starts_with(&h264_config_annexb)
+                                                {
+                                                    h264_decode_buf = [h264_config_annexb.as_slice(), annex_b_buf.as_slice()].concat();
+                                                    h264_decode_buf.as_slice()
+                                                } else {
+                                                    annex_b_buf.as_slice()
+                                                };
+
+                                                if let Err(e) = process_and_deliver(h264_payload, &mut decoder, &mut decode_count, &mut total_decode_time_ms, &mut frame_count, &has_decoded, &sink_inner) {
+                                                    eprintln!("Decoder error: {:?}. Requesting keyframe...", e);
+                                                    h264_wait_for_idr = true;
+                                                    let _ = pli_tx.send(());
+                                                } else {
+                                                    h264_wait_for_idr = false;
+                                                }
+                                                annex_b_buf.clear();
+                                            }
+                                        }
+                                    }
+                                } else if nal_type == 28 {
+                                    // FU-A Fragmentation Unit
+                                    if payload.len() < 2 {
+                                        next_seq_num = Some(current_expected + 1);
+                                        continue;
+                                    }
+                                    let fu_indicator = payload[0];
+                                    let fu_header = payload[1];
+                                    let start_bit = (fu_header & 0x80) != 0;
+                                    let end_bit = (fu_header & 0x40) != 0;
+                                    let inner_nal_type = fu_header & 0x1F;
+                                    let reconstructed_header = (fu_indicator & 0xE0) | inner_nal_type;
+
+                                    if start_bit {
+                                        let is_idr = inner_nal_type == 5;
+                                        h264_fragment_is_idr = is_idr;
+                                        h264_dropping_fragment = false;
+                                        annex_b_buf.clear();
+
+                                        if h264_wait_for_idr && !is_idr {
+                                            // Still no key frame: ask again (one PLI per 500 ms at most).
+                                            let _ = pli_tx.send(());
+                                            h264_dropping_fragment = true;
+                                            next_seq_num = Some(current_expected + 1);
+                                            continue;
+                                        }
+                                        if is_idr && !h264_seen_config {
+                                            h264_dropping_fragment = true;
+                                            h264_wait_for_idr = true;
+                                            let _ = pli_tx.send(());
+                                            next_seq_num = Some(current_expected + 1);
+                                            continue;
+                                        }
+
+                                        annex_b_buf.extend_from_slice(&[0, 0, 0, 1, reconstructed_header]);
+                                        annex_b_buf.extend_from_slice(&payload[2..]);
+                                    } else if h264_dropping_fragment || annex_b_buf.is_empty() {
+                                        if end_bit {
+                                            h264_dropping_fragment = false;
+                                        }
+                                        next_seq_num = Some(current_expected + 1);
+                                        continue;
+                                    } else {
+                                        annex_b_buf.extend_from_slice(&payload[2..]);
+                                    }
+
+                                    if end_bit {
+                                        h264_dropping_fragment = false;
+                                        let h264_decode_buf;
+                                        let h264_payload = if h264_fragment_is_idr
+                                            && !h264_config_annexb.is_empty()
+                                            && !annex_b_buf.starts_with(&h264_config_annexb)
+                                        {
+                                            h264_decode_buf = [h264_config_annexb.as_slice(), annex_b_buf.as_slice()].concat();
+                                            h264_decode_buf.as_slice()
+                                        } else {
+                                            annex_b_buf.as_slice()
+                                        };
+
+                                        if let Err(e) = process_and_deliver(h264_payload, &mut decoder, &mut decode_count, &mut total_decode_time_ms, &mut frame_count, &has_decoded, &sink_inner) {
+                                            eprintln!("Decoder error: {:?}. Requesting keyframe...", e);
+                                            h264_wait_for_idr = true;
+                                            let _ = pli_tx.send(());
+                                        } else {
+                                            h264_wait_for_idr = false;
+                                        }
+                                        annex_b_buf.clear();
+                                    }
+                                }
+                            }
+                            super::decoder::CodecType::H265 => {
+                                let nal_type = (payload[0] & 0x7E) >> 1;
+                                let is_h265_config = |t: u8| t == 32 || t == 33 || t == 34;
+                                let is_h265_irap = |t: u8| (16..=23).contains(&t);
+
+                                if nal_type <= 47 {
+                                    // Single NAL unit
+                                    let is_vcl = nal_type <= 31;
+                                    let is_irap = is_h265_irap(nal_type);
+
+                                    if is_h265_config(nal_type) {
+                                        if nal_type == 32 {
+                                            h265_config_annexb.clear();
+                                        }
+                                        h265_seen_config = true;
+                                        h265_config_annexb.extend_from_slice(&[0, 0, 0, 1]);
+                                        h265_config_annexb.extend_from_slice(payload);
+                                    }
+
+                                    annex_b_buf.extend_from_slice(&[0, 0, 0, 1]);
+                                    annex_b_buf.extend_from_slice(payload);
+
+                                    if is_vcl {
+                                        if h265_wait_for_irap && !is_irap {
+                                            // Still no key frame: ask again (see the H.264 path).
+                                            let _ = pli_tx.send(());
+                                            annex_b_buf.clear();
+                                            next_seq_num = Some(current_expected + 1);
+                                            continue;
+                                        }
+                                        if is_irap && !h265_seen_config {
+                                            annex_b_buf.clear();
+                                            h265_wait_for_irap = true;
+                                            let _ = pli_tx.send(());
+                                            next_seq_num = Some(current_expected + 1);
+                                            continue;
+                                        }
+
+                                        let h265_decode_buf;
+                                        let h265_payload = if is_irap
+                                            && !h265_config_annexb.is_empty()
+                                            && !annex_b_buf.starts_with(&h265_config_annexb)
+                                        {
+                                            h265_decode_buf = [h265_config_annexb.as_slice(), annex_b_buf.as_slice()].concat();
+                                            h265_decode_buf.as_slice()
+                                        } else {
+                                            annex_b_buf.as_slice()
+                                        };
+
+                                        if let Err(e) = process_and_deliver(h265_payload, &mut decoder, &mut decode_count, &mut total_decode_time_ms, &mut frame_count, &has_decoded, &sink_inner) {
+                                            eprintln!("Decoder error: {:?}. Requesting keyframe...", e);
+                                            h265_wait_for_irap = true;
+                                            let _ = pli_tx.send(());
+                                        } else {
+                                            h265_wait_for_irap = false;
+                                        }
+                                        annex_b_buf.clear();
+                                    }
+                                } else if nal_type == 48 {
+                                    // AP (Aggregation Packet)
+                                    let mut offset = 2; // HEVC payload header is 2 bytes
+                                    while offset + 2 <= payload.len() {
+                                        let nalu_size = ((payload[offset] as usize) << 8) | (payload[offset + 1] as usize);
+                                        offset += 2;
+                                        if offset + nalu_size > payload.len() {
+                                            break;
+                                        }
+                                        let nalu_data = &payload[offset..offset + nalu_size];
+                                        offset += nalu_size;
+
+                                        if nalu_data.len() >= 2 {
+                                            let inner_nal_type = (nalu_data[0] & 0x7E) >> 1;
+                                            let is_vcl = inner_nal_type <= 31;
+                                            let is_irap = is_h265_irap(inner_nal_type);
+
+                                            if is_h265_config(inner_nal_type) {
+                                                if inner_nal_type == 32 {
+                                                    h265_config_annexb.clear();
+                                                }
+                                                h265_seen_config = true;
+                                                h265_config_annexb.extend_from_slice(&[0, 0, 0, 1]);
+                                                h265_config_annexb.extend_from_slice(nalu_data);
+                                            }
+
+                                            annex_b_buf.extend_from_slice(&[0, 0, 0, 1]);
+                                            annex_b_buf.extend_from_slice(nalu_data);
+
+                                            if is_vcl {
+                                                if h265_wait_for_irap && !is_irap {
+                                                    // Still no key frame: ask again (see the H.264 path).
+                                                    let _ = pli_tx.send(());
+                                                    annex_b_buf.clear();
+                                                    continue;
+                                                }
+                                                if is_irap && !h265_seen_config {
+                                                    annex_b_buf.clear();
+                                                    h265_wait_for_irap = true;
+                                                    let _ = pli_tx.send(());
+                                                    continue;
+                                                }
+
+                                                let h265_decode_buf;
+                                                let h265_payload = if is_irap
+                                                    && !h265_config_annexb.is_empty()
+                                                    && !annex_b_buf.starts_with(&h265_config_annexb)
+                                                {
+                                                    h265_decode_buf = [h265_config_annexb.as_slice(), annex_b_buf.as_slice()].concat();
+                                                    h265_decode_buf.as_slice()
+                                                } else {
+                                                    annex_b_buf.as_slice()
+                                                };
+
+                                                if let Err(e) = process_and_deliver(h265_payload, &mut decoder, &mut decode_count, &mut total_decode_time_ms, &mut frame_count, &has_decoded, &sink_inner) {
+                                                    eprintln!("Decoder error: {:?}. Requesting keyframe...", e);
+                                                    h265_wait_for_irap = true;
+                                                    let _ = pli_tx.send(());
+                                                } else {
+                                                    h265_wait_for_irap = false;
+                                                }
+                                                annex_b_buf.clear();
+                                            }
+                                        }
+                                    }
+                                } else if nal_type == 49 {
+                                    // FU (Fragmentation Unit)
+                                    if payload.len() < 3 {
+                                        next_seq_num = Some(current_expected + 1);
+                                        continue;
+                                    }
+                                    let fu_indicator_1 = payload[0];
+                                    let fu_indicator_2 = payload[1];
+                                    let fu_header = payload[2];
+                                    let start_bit = (fu_header & 0x80) != 0;
+                                    let end_bit = (fu_header & 0x40) != 0;
+                                    let original_nal_type = fu_header & 0x3F;
+                                    let is_irap = is_h265_irap(original_nal_type);
+
+                                    let reconstructed_header_1 = (fu_indicator_1 & 0x81) | (original_nal_type << 1);
+                                    let reconstructed_header_2 = fu_indicator_2;
+
+                                    if start_bit {
+                                        h265_fragment_is_irap = is_irap;
+                                        h265_dropping_fragment = false;
+                                        annex_b_buf.clear();
+
+                                        if h265_wait_for_irap && !is_irap {
+                                            // Still no key frame: ask again (see the H.264 path).
+                                            let _ = pli_tx.send(());
+                                            h265_dropping_fragment = true;
+                                            next_seq_num = Some(current_expected + 1);
+                                            continue;
+                                        }
+                                        if is_irap && !h265_seen_config {
+                                            h265_dropping_fragment = true;
+                                            h265_wait_for_irap = true;
+                                            let _ = pli_tx.send(());
+                                            next_seq_num = Some(current_expected + 1);
+                                            continue;
+                                        }
+
+                                        annex_b_buf.extend_from_slice(&[0, 0, 0, 1, reconstructed_header_1, reconstructed_header_2]);
+                                        annex_b_buf.extend_from_slice(&payload[3..]);
+                                    } else if h265_dropping_fragment || annex_b_buf.is_empty() {
+                                        if end_bit {
+                                            h265_dropping_fragment = false;
+                                        }
+                                        next_seq_num = Some(current_expected + 1);
+                                        continue;
+                                    } else {
+                                        annex_b_buf.extend_from_slice(&payload[3..]);
+                                    }
+
+                                    if end_bit {
+                                        h265_dropping_fragment = false;
+                                        let h265_decode_buf;
+                                        let h265_payload = if h265_fragment_is_irap
+                                            && !h265_config_annexb.is_empty()
+                                            && !annex_b_buf.starts_with(&h265_config_annexb)
+                                        {
+                                            h265_decode_buf = [h265_config_annexb.as_slice(), annex_b_buf.as_slice()].concat();
+                                            h265_decode_buf.as_slice()
+                                        } else {
+                                            annex_b_buf.as_slice()
+                                        };
+
+                                        if let Err(e) = process_and_deliver(h265_payload, &mut decoder, &mut decode_count, &mut total_decode_time_ms, &mut frame_count, &has_decoded, &sink_inner) {
+                                            eprintln!("Decoder error: {:?}. Requesting keyframe...", e);
+                                            h265_wait_for_irap = true;
+                                            let _ = pli_tx.send(());
+                                        } else {
+                                            h265_wait_for_irap = false;
+                                        }
+                                        annex_b_buf.clear();
+                                    }
+                                }
+                            }
+                            super::decoder::CodecType::AV1 => {
+                                let h = payload[0];
+                                let z = (h & 0x80) != 0;
+                                let y = (h & 0x40) != 0;
+                                let w = (h & 0x30) >> 4;
+                                
+                                let mut offset = 1;
+                                
+                                let read_leb128 = |off: &mut usize| -> Option<usize> {
+                                    let mut value = 0;
+                                    let mut shift = 0;
+                                    while *off < payload.len() {
+                                        let b = payload[*off];
+                                        *off += 1;
+                                        value |= ((b & 0x7F) as usize) << shift;
+                                        if (b & 0x80) == 0 {
+                                            return Some(value);
+                                        }
+                                        shift += 7;
+                                        if shift >= 35 {
+                                            return None;
+                                        }
+                                    }
+                                    None
+                                };
+                                
+                                let mut first = true;
+                                
+                                // Process AV1 OBU fragment
+                                let mut process_fragment = |element_data: &[u8], is_first_elem: bool, is_last_elem: bool, av1_obu_buf_ref: &mut Vec<u8>, decoder_ref: &mut super::decoder::HardwareDecoder, decode_count_ref: &mut usize, total_decode_time_ref: &mut f64, frame_count_ref: &mut usize, has_decoded_ref: &Arc<std::sync::atomic::AtomicBool>, sink_ref: &VideoSinkWrapper| {
+                                    if is_first_elem && z {
+                                        av1_obu_buf_ref.extend_from_slice(element_data);
+                                    } else {
+                                        if !av1_obu_buf_ref.is_empty() {
+                                            if let Err(e) = process_and_deliver(av1_obu_buf_ref, decoder_ref, decode_count_ref, total_decode_time_ref, frame_count_ref, has_decoded_ref, sink_ref) {
+                                                eprintln!("Decoder error: {:?}. Requesting keyframe...", e);
+                                                av1_obu_buf_ref.clear();
+                                                let _ = pli_tx.send(());
+                                            }
+                                        }
+                                        av1_obu_buf_ref.extend_from_slice(element_data);
+                                    }
+                                    
+                                    if is_last_elem && y {
+                                        // Fragment continues in next packet
+                                    } else {
+                                        if let Err(e) = process_and_deliver(av1_obu_buf_ref, decoder_ref, decode_count_ref, total_decode_time_ref, frame_count_ref, has_decoded_ref, sink_ref) {
+                                            eprintln!("Decoder error: {:?}. Requesting keyframe...", e);
+                                            av1_obu_buf_ref.clear();
+                                            let _ = pli_tx.send(());
+                                        }
+                                    }
+                                };
+                                
+                                if w == 0 {
+                                    while offset < payload.len() {
+                                        if let Some(size) = read_leb128(&mut offset) {
+                                            if offset + size <= payload.len() {
+                                                let element_data = &payload[offset..offset + size];
+                                                offset += size;
+                                                let is_last = offset >= payload.len();
+                                                process_fragment(element_data, first, is_last, &mut av1_obu_buf, &mut decoder, &mut decode_count, &mut total_decode_time_ms, &mut frame_count, &has_decoded, &sink_inner);
+                                                first = false;
+                                            } else {
+                                                break;
+                                            }
+                                        } else {
+                                            break;
+                                        }
+                                    }
+                                } else {
+                                    for i in 0..w {
+                                        let is_first = i == 0;
+                                        let is_last = i == w - 1;
+                                        if !is_last {
+                                            if let Some(size) = read_leb128(&mut offset) {
+                                                if offset + size <= payload.len() {
+                                                    let element_data = &payload[offset..offset + size];
+                                                    offset += size;
+                                                    process_fragment(element_data, is_first, is_last, &mut av1_obu_buf, &mut decoder, &mut decode_count, &mut total_decode_time_ms, &mut frame_count, &has_decoded, &sink_inner);
+                                                } else {
+                                                    break;
+                                                }
+                                            } else {
+                                                break;
+                                            }
+                                        } else {
+                                            if offset < payload.len() {
+                                                let element_data = &payload[offset..];
+                                                process_fragment(element_data, is_first, is_last, &mut av1_obu_buf, &mut decoder, &mut decode_count, &mut total_decode_time_ms, &mut frame_count, &has_decoded, &sink_inner);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        next_seq_num = Some(current_expected + 1);
+                    }
+                    
+                    let now = std::time::Instant::now();
+                    if frame_count != stats_prev_frames {
+                        if frame_count > stats_prev_frames {
+                            if let Some(prev) = stats_last_frame_at {
+                                let gap = now.duration_since(prev).as_secs_f64() * 1000.0;
+                                stats_gap_min = stats_gap_min.min(gap);
+                                stats_gap_max = stats_gap_max.max(gap);
+                                if gap > 25.0 {
+                                    stats_gap_late += 1;
+                                }
+                            }
+                            stats_last_frame_at = Some(now);
+                        }
+                        stats_prev_frames = frame_count;
+                    }
+                    let elapsed = now.duration_since(last_stats_time).as_secs_f64();
+                    if elapsed >= 1.0 {
+                        let fps = frame_count as f64 / elapsed;
+                        if stats_log {
+                            println!(
+                                "Client stats: fps={:.1} frame_gap_ms(min/max)={:.1}/{:.1} gaps_over_25ms={} decode_ms={:.2} lost_packets={} loss_events={} queue_lag_events={} gaps_filled={} fill_ms(avg/max)={:.0}/{:.0}",
+                                fps,
+                                if stats_gap_min == f64::MAX { 0.0 } else { stats_gap_min },
+                                stats_gap_max,
+                                stats_gap_late,
+                                if decode_count > 0 { total_decode_time_ms / decode_count as f64 } else { 0.0 },
+                                packets_lost,
+                                packet_loss_events,
+                                queue_lag_events,
+                                stats_fill_count,
+                                if stats_fill_count > 0 { stats_fill_sum / stats_fill_count as f64 } else { 0.0 },
+                                stats_fill_max
+                            );
+                        }
+                        stats_fill_count = 0;
+                        stats_fill_max = 0.0;
+                        stats_fill_sum = 0.0;
+                        stats_gap_min = f64::MAX;
+                        stats_gap_max = 0.0;
+                        stats_gap_late = 0;
+                        stats_prev_frames = 0;
+                        let bitrate_kbps = (byte_count as f64 * 8.0) / 1000.0 / elapsed;
+                        let avg_decode_ms = if decode_count > 0 {
+                            total_decode_time_ms / decode_count as f64
+                        } else {
+                            0.0
+                        };
+                        
+                        let negotiated_codec = match codec_type {
+                            super::decoder::CodecType::H264 => "H264",
+                            super::decoder::CodecType::H265 => "H265",
+                            super::decoder::CodecType::AV1 => "AV1",
+                        }.to_string();
+                        
+                        let decode_backend = decoder.decode_backend_label().to_string();
+                        let present_backend = decoder.present_backend_label().to_string();
+                        let gpu_decode_enabled = decoder.gpu_decode_enabled();
+                        let fallback_reason = decoder.fallback_reason();
+                        let mut stats_lock = STREAM_STATS.lock().unwrap();
+                        if let Some(ref mut s) = *stats_lock {
+                            s.decode = avg_decode_ms;
+                            s.fps = fps;
+                            s.bitrate = bitrate_kbps;
+                            s.requested_codec = requested_codec.clone();
+                            s.negotiated_codec = negotiated_codec;
+                            s.decode_backend = decode_backend;
+                            s.present_backend = present_backend;
+                            s.gpu_decode_enabled = gpu_decode_enabled;
+                            s.fallback_reason = fallback_reason;
+                            s.packet_loss_events = packet_loss_events;
+                            s.packets_lost = packets_lost;
+                            s.queue_lag_events = queue_lag_events;
+                            s.max_queue_lag = max_queue_lag;
+                        } else {
+                            *stats_lock = Some(StreamStats {
+                                ping: 0.0,
+                                decode: avg_decode_ms,
+                                fps,
+                                bitrate: bitrate_kbps,
+                                requested_codec: requested_codec.clone(),
+                                negotiated_codec,
+                                decode_backend,
+                                present_backend,
+                                gpu_decode_enabled,
+                                fallback_reason,
+                                packet_loss_events,
+                                packets_lost,
+                                queue_lag_events,
+                                max_queue_lag,
+                                connection_type: "P2P (Direct)".to_string(),
+                            });
+                        }
+                        
+                        frame_count = 0;
+                        byte_count = 0;
+                        decode_count = 0;
+                        total_decode_time_ms = 0.0;
+                        last_stats_time = now;
+                    }
+                }
+            });
+            *active_decoder_inner.lock().unwrap() = Some(thread_handle);
+        } else if mime == "audio/opus" {
+            println!("Starting audio receiver for: {}", mime);
+            // Read audio on its own task: webrtc-rs waits for this on_track
+            // handler to return before dispatching the next track, so a read
+            // loop here would starve the video track (black screen).
+            tokio::spawn(async move {
+                if let Some(audio_tx) = super::audio::setup_audio() {
+                    let mut decoder = match opus::Decoder::new(48000, opus::Channels::Stereo) {
+                        Ok(d) => d,
+                        Err(e) => {
+                            eprintln!("Failed to create Opus decoder: {:?}", e);
+                            return;
+                        }
+                    };
+                    let mut pcm_output = vec![0.0f32; 1920 * 2];
+
+                    while let Some(event) = track_clone.poll().await {
+                        let rtp_packet = match event {
+                            TrackRemoteEvent::OnRtpPacket(p) => p,
+                            TrackRemoteEvent::OnEnded => break,
+                            _ => continue,
+                        };
+                        if let Ok(num_samples) = decoder.decode_float(&rtp_packet.payload, &mut pcm_output, false) {
+                            let stereo_samples = pcm_output[..num_samples * 2].to_vec();
+                            let _ = audio_tx.send(stereo_samples);
+                        }
+                    }
+                }
+            });
+        }
+}
+
 async fn setup_peer_connection(
     ice_servers: Option<Vec<common::RtcIceServer>>,
     outbox_tx: tokio::sync::mpsc::UnboundedSender<ClientMessage>,
     host_id: String,
     sink_wrapper: VideoSinkWrapper,
-    kb_chan_ref: Arc<Mutex<Option<Arc<RTCDataChannel>>>>,
-    ma_chan_ref: Arc<Mutex<Option<Arc<RTCDataChannel>>>>,
-    mr_chan_ref: Arc<Mutex<Option<Arc<RTCDataChannel>>>>,
+    kb_chan_ref: Arc<Mutex<Option<Arc<dyn DataChannel>>>>,
+    ma_chan_ref: Arc<Mutex<Option<Arc<dyn DataChannel>>>>,
+    mr_chan_ref: Arc<Mutex<Option<Arc<dyn DataChannel>>>>,
     active_decoder: Arc<Mutex<Option<std::thread::JoinHandle<()>>>>,
     codec: &str,
-) -> Result<Arc<RTCPeerConnection>, anyhow::Error> {
+) -> Result<(Arc<dyn PeerConnection>, ConnState), anyhow::Error> {
     // WebRTC connection setup
     let mut media_engine = MediaEngine::default();
 
     // Register Opus
     media_engine.register_codec(
         RTCRtpCodecParameters {
-            capability: RTCRtpCodecCapability {
+            rtp_codec: RTCRtpCodec {
                 mime_type: "audio/opus".to_string(),
                 clock_rate: 48000,
                 channels: 2,
@@ -3493,9 +4621,8 @@ async fn setup_peer_connection(
                 rtcp_feedback: vec![],
             },
             payload_type: 111,
-            ..Default::default()
         },
-        RTPCodecType::Audio,
+        RtpCodecKind::Audio,
     )?;
 
     // Register only the requested video codec to avoid SDP answer mismatch
@@ -3518,42 +4645,40 @@ async fn setup_peer_connection(
         "h265" | "hevc" => {
             media_engine.register_codec(
                 RTCRtpCodecParameters {
-                    capability: RTCRtpCodecCapability {
-                        mime_type: webrtc::api::media_engine::MIME_TYPE_HEVC.to_string(),
+                    rtp_codec: RTCRtpCodec {
+                        mime_type: MIME_TYPE_HEVC.to_string(),
                         clock_rate: 90000,
                         channels: 0,
                         sdp_fmtp_line: "profile-id=1;tier-flag=0;level-id=120;tx-mode=SRST"
                             .to_string(),
-                        rtcp_feedback: video_rtcp_feedback,
+                        rtcp_feedback: video_rtcp_feedback.clone(),
                     },
                     payload_type: 98,
-                    ..Default::default()
                 },
-                RTPCodecType::Video,
+                RtpCodecKind::Video,
             )?;
         }
         "av1" => {
             media_engine.register_codec(
                 RTCRtpCodecParameters {
-                    capability: RTCRtpCodecCapability {
-                        mime_type: webrtc::api::media_engine::MIME_TYPE_AV1.to_string(),
+                    rtp_codec: RTCRtpCodec {
+                        mime_type: MIME_TYPE_AV1.to_string(),
                         clock_rate: 90000,
                         channels: 0,
                         sdp_fmtp_line: "profile=0".to_string(),
-                        rtcp_feedback: video_rtcp_feedback,
+                        rtcp_feedback: video_rtcp_feedback.clone(),
                     },
                     payload_type: 102,
-                    ..Default::default()
                 },
-                RTPCodecType::Video,
+                RtpCodecKind::Video,
             )?;
         }
         _ => {
             // Default to H264
             media_engine.register_codec(
                 RTCRtpCodecParameters {
-                    capability: RTCRtpCodecCapability {
-                        mime_type: webrtc::api::media_engine::MIME_TYPE_H264.to_string(),
+                    rtp_codec: RTCRtpCodec {
+                        mime_type: MIME_TYPE_H264.to_string(),
                         clock_rate: 90000,
                         channels: 0,
                         sdp_fmtp_line:
@@ -3562,45 +4687,60 @@ async fn setup_peer_connection(
                         rtcp_feedback: video_rtcp_feedback.clone(),
                     },
                     payload_type: 96,
-                    ..Default::default()
                 },
-                RTPCodecType::Video,
+                RtpCodecKind::Video,
             )?;
             // High 4:4:4 Predictive, offered by the agent for chroma=444
             // sessions; without it the answer has no matching video codec.
             media_engine.register_codec(
                 RTCRtpCodecParameters {
-                    capability: RTCRtpCodecCapability {
-                        mime_type: webrtc::api::media_engine::MIME_TYPE_H264.to_string(),
+                    rtp_codec: RTCRtpCodec {
+                        mime_type: MIME_TYPE_H264.to_string(),
                         clock_rate: 90000,
                         channels: 0,
                         sdp_fmtp_line:
                             "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=f4002a"
                                 .to_string(),
-                        rtcp_feedback: video_rtcp_feedback,
+                        rtcp_feedback: video_rtcp_feedback.clone(),
                     },
                     payload_type: 97,
-                    ..Default::default()
                 },
-                RTPCodecType::Video,
+                RtpCodecKind::Video,
             )?;
         }
     }
 
+    // FlexFEC-03: accept the host's repair stream (payload type and fmtp as
+    // the host offers them, see agent/src/bridge.rs; the reference project
+    // registers it the same way) so that the answer keeps it.
+    media_engine.register_codec(
+        RTCRtpCodecParameters {
+            rtp_codec: RTCRtpCodec {
+                mime_type: MIME_TYPE_FLEX_FEC03.to_owned(),
+                clock_rate: 90000,
+                channels: 0,
+                sdp_fmtp_line: "repair-window=10000000".to_owned(),
+                rtcp_feedback: video_rtcp_feedback,
+            },
+            payload_type: 49,
+        },
+        RtpCodecKind::Video,
+    )?;
+
     // Register RTP header extensions — critical for low-latency video and codec matching
     const PLAYOUT_DELAY_URI: &str = "http://www.webrtc.org/experiments/rtp-hdrext/playout-delay";
     media_engine.register_header_extension(
-        webrtc::rtp_transceiver::rtp_codec::RTCRtpHeaderExtensionCapability {
+        RTCRtpHeaderExtensionCapability {
             uri: PLAYOUT_DELAY_URI.to_string(),
         },
-        RTPCodecType::Video,
+        RtpCodecKind::Video,
         None,
     )?;
     media_engine.register_header_extension(
-        webrtc::rtp_transceiver::rtp_codec::RTCRtpHeaderExtensionCapability {
-            uri: webrtc::sdp::extmap::ABS_SEND_TIME_URI.to_string(),
+        RTCRtpHeaderExtensionCapability {
+            uri: rtc::sdp::extmap::ABS_SEND_TIME_URI.to_string(),
         },
-        RTPCodecType::Video,
+        RtpCodecKind::Video,
         None,
     )?;
 
@@ -3616,26 +4756,28 @@ async fn setup_peer_connection(
     // kept 60 fps. 20 ms is the period of libwebrtc's NackRequester
     // (kUpdateInterval).
     {
-        use webrtc::interceptor::nack::{generator::Generator, responder::Responder};
-        use webrtc::rtp_transceiver::rtp_codec::RTPCodecType;
         for parameter in ["", "pli"] {
             media_engine.register_feedback(
                 RTCPFeedback { typ: "nack".to_owned(), parameter: parameter.to_owned() },
-                RTPCodecType::Video,
+                RtpCodecKind::Video,
             );
         }
-        registry.add(Box::new(Responder::builder()));
-        registry.add(Box::new(
-            Generator::builder().with_interval(std::time::Duration::from_millis(20)),
-        ));
+        registry = registry
+            .with(Slot::NackResponder, NackResponderBuilder::new().build())
+            .with(
+                Slot::NackGenerator,
+                NackGeneratorBuilder::new()
+                    .with_interval(std::time::Duration::from_millis(20))
+                    .build(),
+            );
     }
-    registry = webrtc::api::interceptor_registry::configure_rtcp_reports(registry);
-    registry = webrtc::api::interceptor_registry::configure_twcc_receiver_only(registry, &mut media_engine)?;
-
-    let api = APIBuilder::new()
-        .with_media_engine(media_engine)
-        .with_interceptor_registry(registry)
-        .build();
+    registry = configure_rtcp_reports(registry);
+    registry = configure_twcc_receiver_only(registry, &mut media_engine)?;
+    // FlexFEC-03 receive side (slot 6_000, before the NACK generator: a
+    // packet it rebuilds counts as arrived and is not asked for again).
+    // Recovered packets re-enter the chain as ordinary media RTP, so they
+    // reach `TrackRemote::poll` as `OnRtpPacket`; repair packets never do.
+    registry = registry.with(Slot::FecDecoder, FlexFec03ReceiveBuilder::new().build());
 
     let webrtc_ice_servers = if let Some(servers) = ice_servers {
         servers
@@ -3644,7 +4786,6 @@ async fn setup_peer_connection(
                 urls: s.urls,
                 username: s.username.unwrap_or_default(),
                 credential: s.credential.unwrap_or_default(),
-                ..Default::default()
             })
             .collect()
     } else {
@@ -3654,1097 +4795,44 @@ async fn setup_peer_connection(
         }]
     };
 
-    let config = RTCConfiguration {
-        ice_servers: webrtc_ice_servers,
-        ..Default::default()
-    };
+    let config = RTCConfigurationBuilder::default()
+        .with_ice_servers(webrtc_ice_servers)
+        .build();
 
-    let peer_connection = Arc::new(api.new_peer_connection(config).await?);
+    let state = ConnState(Arc::new(std::sync::Mutex::new((
+        RTCIceConnectionState::New,
+        RTCPeerConnectionState::New,
+    ))));
+    let handler = Arc::new(ClientEventHandler {
+        outbox_tx,
+        host_id,
+        sink_wrapper,
+        kb_chan_ref,
+        ma_chan_ref,
+        mr_chan_ref,
+        active_decoder,
+        state: state.clone(),
+    });
 
-    peer_connection.on_ice_connection_state_change(Box::new(|state| {
-        Box::pin(async move {
-            println!("Client ICE connection state changed: {:?}", state);
-        })
-    }));
+    let peer_connection: Arc<dyn PeerConnection> = Arc::new(
+        PeerConnectionBuilder::new()
+            .with_configuration(config)
+            .with_media_engine(media_engine)
+            .with_interceptor_registry(registry)
+            .with_handler(handler)
+            // Every IPv4 interface (0.17 gathered them all, no loopback).
+            .with_udp_addrs(vec!["0.0.0.0:0"])
+            .build()
+            .await?,
+    );
 
-    peer_connection.on_peer_connection_state_change(Box::new(|state| {
-        Box::pin(async move {
-            println!("Client WebRTC peer connection state changed: {:?}", state);
-        })
-    }));
-
-    // Register ICE candidate gathering callback
-    let outbox_tx_clone = outbox_tx.clone();
-    let host_id_clone = host_id.clone();
-    peer_connection.on_ice_candidate(Box::new(move |candidate: Option<RTCIceCandidate>| {
-        let outbox_tx = outbox_tx_clone.clone();
-        let host_id = host_id_clone.clone();
-        Box::pin(async move {
-            if let Some(cand) = candidate {
-                if let Ok(json_cand) = cand.to_json() {
-                    let msg = ClientMessage::Signaling(SignalingMessage::IceCandidate {
-                        target_id: host_id,
-                        candidate: common::RtcIceCandidate {
-                            candidate: json_cand.candidate,
-                            sdp_mid: json_cand.sdp_mid,
-                            sdp_mline_index: json_cand.sdp_mline_index,
-                            username_fragment: json_cand.username_fragment,
-                        },
-                    });
-                    let _ = outbox_tx.send(msg);
-                }
-            }
-        })
-    }));
-
-    // Setup video track handler
-    let sink_clone = sink_wrapper.clone();
-    let pc_clone = Arc::clone(&peer_connection);
-    let active_decoder_clone = active_decoder.clone();
-    peer_connection.on_track(Box::new(move |track: Arc<TrackRemote>, _receiver, _| {
-        let track_clone = Arc::clone(&track);
-        let codec = track.codec();
-        let sink_inner = sink_clone.clone();
-        let pc_clone_inner = Arc::clone(&pc_clone);
-        let active_decoder_inner = active_decoder_clone.clone();
-        
-        Box::pin(async move {
-            let mime = codec.capability.mime_type.to_lowercase();
-            println!("client-qml on_track called: kind={}, mime_type={}", track_clone.kind(), mime);
-            let is_video = mime == "video/h264" || mime == "video/h265" || mime == "video/hevc" || mime == "video/av1";
-            
-            if is_video {
-                println!("Starting video receiver for: {}", mime);
-                let codec_type = match mime.as_str() {
-                    "video/h264" => super::decoder::CodecType::H264,
-                    "video/h265" | "video/hevc" => super::decoder::CodecType::H265,
-                    "video/av1" => super::decoder::CodecType::AV1,
-                    _ => unreachable!(),
-                };
-                
-                let (disable_cuda, requested_codec) = if let Some(ref config) = *ACTIVE_CONFIG.lock().unwrap() {
-                    (config.effective_disable_cuda(), config.codec.to_uppercase())
-                } else {
-                    (false, "Unknown".to_string())
-                };
-                // H.264 4:4:4 has no GPU decoder (VAAPI/NVDEC): decode it in
-                // software straight away instead of failing over per frame.
-                let h264_444 = matches!(codec_type, super::decoder::CodecType::H264)
-                    && is_h264_444_fmtp(&codec.capability.sdp_fmtp_line);
-                if h264_444 {
-                    println!("H.264 4:4:4 stream: decoding in software (multi-threaded)");
-                }
-                let decoder = match super::decoder::HardwareDecoder::new(codec_type, disable_cuda || h264_444) {
-                    Ok(d) => d,
-                    Err(e) => {
-                        eprintln!("Failed to initialize hardware decoder: {:?}", e);
-                        return;
-                    }
-                };
-                
-                let annex_b_buf = Vec::<u8>::new();
-                let av1_obu_buf = Vec::<u8>::new();
-                
-                let frame_count = 0;
-                let byte_count = 0;
-                let last_stats_time = std::time::Instant::now();
-                let total_decode_time_ms = 0.0;
-                let decode_count = 0;
-                
-                let has_decoded = Arc::new(std::sync::atomic::AtomicBool::new(false));
-                let has_decoded_clone = Arc::clone(&has_decoded);
-                let media_ssrc = track_clone.ssrc();
-                let pc_clone_deep = Arc::clone(&pc_clone_inner);
-                
-                tokio::spawn(async move {
-                    use webrtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication;
-                    println!("PLI requester task started for video track SSRC: {}", media_ssrc);
-                    
-                    while !has_decoded_clone.load(std::sync::atomic::Ordering::SeqCst) {
-                        let pli = PictureLossIndication {
-                            sender_ssrc: 0,
-                            media_ssrc,
-                        };
-                        if let Err(e) = pc_clone_deep.write_rtcp(&[Box::new(pli)]).await {
-                            eprintln!("Failed to send PLI request: {:?}", e);
-                        }
-                        tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
-                    }
-                    println!("First frame decoded, stopping periodic PLI requests.");
-                });
-                
-                let pending_packets = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-                let pending_packets_reader = Arc::clone(&pending_packets);
-                let pending_packets_decoder = Arc::clone(&pending_packets);
-
-                // Room for a whole keyframe burst: at 20 Mbps a 1080p keyframe
-                // is a few hundred packets arriving at once. With 256 the
-                // queue overflowed on every keyframe, which dropped packets,
-                // requested another (large) keyframe and froze the stream.
-                const RTP_QUEUE_LIMIT: usize = 4096;
-                // Flush only when the decoder is really behind (~1 s of video
-                // at 20 Mbps), not on a keyframe burst.
-                const RTP_QUEUE_LAG_FLUSH: usize = 2048;
-                // A sequence gap is treated as loss once a NACK retransmission
-                // had time to arrive, or when the reorder buffer gets this big.
-                const RTP_GAP_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(120);
-                const RTP_REORDER_LIMIT: usize = 1024;
-                let (rtp_tx, mut rtp_rx) = tokio::sync::mpsc::channel(RTP_QUEUE_LIMIT);
-                let track_clone_reader = Arc::clone(&track_clone);
-                tokio::spawn(async move {
-                    while let Ok((rtp_packet, _)) = track_clone_reader.read_rtp().await {
-                        if rtp_packet.payload.is_empty() {
-                            continue;
-                        }
-                        match rtp_tx.try_send(rtp_packet) {
-                            Ok(()) => {
-                                pending_packets_reader.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                            }
-                            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                                pending_packets_reader.store(RTP_QUEUE_LIMIT, std::sync::atomic::Ordering::SeqCst);
-                            }
-                            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
-                        }
-                    }
-                });
-
-                let (pli_tx, mut pli_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
-                let pc_clone_deep2 = Arc::clone(&pc_clone_inner);
-                tokio::spawn(async move {
-                    let mut last_pli_time = std::time::Instant::now();
-                    while let Some(_) = pli_rx.recv().await {
-                        let now = std::time::Instant::now();
-                        if now.duration_since(last_pli_time) > std::time::Duration::from_millis(500) {
-                            let pli = webrtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication {
-                                sender_ssrc: 0,
-                                media_ssrc,
-                            };
-                            if let Err(e) = pc_clone_deep2.write_rtcp(&[Box::new(pli)]).await {
-                                eprintln!("Failed to send PLI request: {:?}", e);
-                            }
-                            last_pli_time = now;
-                        }
-                    }
-                });
-
-                let thread_handle = std::thread::spawn(move || {
-                    let mut decoder = decoder;
-                    let mut annex_b_buf = annex_b_buf;
-                    let mut av1_obu_buf = av1_obu_buf;
-                    let mut frame_count = frame_count;
-                    let mut byte_count = byte_count;
-                    let mut last_stats_time = last_stats_time;
-                    let mut total_decode_time_ms = total_decode_time_ms;
-                    let mut decode_count = decode_count;
-                    let sink_inner = sink_inner;
-                    let has_decoded = has_decoded;
-                    
-                    let mut next_seq_num: Option<u64> = None;
-                    let mut gap_since: Option<std::time::Instant> = None;
-                    let mut packet_buffer = std::collections::BTreeMap::<u64, webrtc::rtp::packet::Packet>::new();
-                    let mut h264_seen_config = false;
-                    let mut h264_config_annexb = Vec::<u8>::new();
-                    let mut h264_wait_for_idr = true;
-                    let mut h264_dropping_fragment = false;
-                    let mut h264_fragment_is_idr = false;
-                    let mut h265_seen_config = false;
-                    let mut h265_config_annexb = Vec::<u8>::new();
-                    let mut h265_wait_for_irap = true;
-                    let mut h265_dropping_fragment = false;
-                    let mut h265_fragment_is_irap = false;
-                    let mut last_packet_loss_log = std::time::Instant::now()
-                        .checked_sub(std::time::Duration::from_secs(60))
-                        .unwrap_or_else(std::time::Instant::now);
-                    let mut packet_loss_events: u64 = 0;
-                    let mut packets_lost: u64 = 0;
-                    let mut queue_lag_events: u64 = 0;
-                    let mut max_queue_lag: usize = 0;
-                    let mut last_present_log_label = String::new();
-                    // LUNARIS_CLIENT_STATS=1: one line per second with the
-                    // interval between decoded frames (stutter diagnosis).
-                    let stats_log = std::env::var("LUNARIS_CLIENT_STATS").is_ok();
-                    let mut stats_prev_frames: usize = 0;
-                    let mut stats_last_frame_at: Option<std::time::Instant> = None;
-                    let mut stats_gap_min = f64::MAX;
-                    let mut stats_gap_max = 0.0f64;
-                    let mut stats_gap_late: u32 = 0;
-                    let mut stats_fill_count: u32 = 0;
-                    let mut stats_fill_max = 0.0f64;
-                    let mut stats_fill_sum = 0.0f64;
-
-                    while let Some(rtp_packet) = rtp_rx.blocking_recv() {
-                        let _ = pending_packets_decoder.fetch_update(
-                            std::sync::atomic::Ordering::SeqCst,
-                            std::sync::atomic::Ordering::SeqCst,
-                            |value| Some(value.saturating_sub(1)),
-                        );
-
-                        // Check for backlog (decoder lagging)
-                        let pending_val = pending_packets_decoder.load(std::sync::atomic::Ordering::SeqCst);
-                        if pending_val > RTP_QUEUE_LAG_FLUSH {
-                            queue_lag_events = queue_lag_events.saturating_add(1);
-                            max_queue_lag = max_queue_lag.max(pending_val);
-                            eprintln!("Video receiver queue lag detected ({} packets). Flushing queue...", pending_val);
-                            while let Ok(_) = rtp_rx.try_recv() {}
-                            pending_packets_decoder.store(0, std::sync::atomic::Ordering::SeqCst);
-                            packet_buffer.clear();
-                            annex_b_buf.clear();
-                            av1_obu_buf.clear();
-                            h264_wait_for_idr = true;
-                            h264_dropping_fragment = false;
-                            h264_fragment_is_idr = false;
-                            h265_wait_for_irap = true;
-                            h265_dropping_fragment = false;
-                            h265_fragment_is_irap = false;
-                            let _ = pli_tx.send(());
-                            next_seq_num = None;
-                            gap_since = None;
-                            continue;
-                        }
-
-                        let seq = rtp_packet.header.sequence_number;
-                        let ext_seq = match next_seq_num {
-                            None => {
-                                next_seq_num = Some(seq as u64);
-                                seq as u64
-                            }
-                            Some(next_seq) => {
-                                let next_seq_16 = next_seq as u16;
-                                let diff = seq.wrapping_sub(next_seq_16) as i16;
-                                (next_seq as i64 + diff as i64) as u64
-                            }
-                        };
-
-                        if ext_seq < next_seq_num.unwrap() {
-                            // Old duplicate packet, discard
-                            continue;
-                        }
-
-                        packet_buffer.insert(ext_seq, rtp_packet);
-
-                        // A gap is open while the next expected packet is missing.
-                        // Give NACK retransmissions time to fill it before giving
-                        // up on the frame (the old 64-packet limit fired within
-                        // one keyframe burst, before any retransmission arrived).
-                        let gap_open = next_seq_num
-                            .map(|expected| !packet_buffer.contains_key(&expected))
-                            .unwrap_or(false);
-                        if !gap_open {
-                            if let Some(since) = gap_since {
-                                // A gap closed: the missing packet arrived
-                                // (reordering or a NACK retransmission).
-                                let ms = since.elapsed().as_secs_f64() * 1000.0;
-                                stats_fill_count += 1;
-                                stats_fill_max = stats_fill_max.max(ms);
-                                stats_fill_sum += ms;
-                            }
-                            gap_since = None;
-                        } else if gap_since.is_none() {
-                            gap_since = Some(std::time::Instant::now());
-                        }
-                        let gap_expired = gap_since
-                            .map(|since| since.elapsed() >= RTP_GAP_TIMEOUT)
-                            .unwrap_or(false);
-
-                        if gap_open && (gap_expired || packet_buffer.len() > RTP_REORDER_LIMIT) {
-                            gap_since = None;
-                            let &first_seq = packet_buffer.keys().next().unwrap();
-                            let missing_start = next_seq_num.unwrap();
-                            let missing_end = first_seq - 1;
-                            let now = std::time::Instant::now();
-                            packet_loss_events = packet_loss_events.saturating_add(1);
-                            if missing_end >= missing_start {
-                                packets_lost = packets_lost.saturating_add(missing_end - missing_start + 1);
-                            }
-                            if now.duration_since(last_packet_loss_log) >= std::time::Duration::from_secs(1) {
-                                eprintln!(
-                                    "RTP packet loss detected: missing sequence from {} to {}",
-                                    missing_start,
-                                    missing_end
-                                );
-                                last_packet_loss_log = now;
-                            }
-                            
-                            // Clear corrupted frame buffer and request keyframe
-                            annex_b_buf.clear();
-                            av1_obu_buf.clear();
-                            h264_wait_for_idr = true;
-                            h264_dropping_fragment = false;
-                            h264_fragment_is_idr = false;
-                            h265_wait_for_irap = true;
-                            h265_dropping_fragment = false;
-                            h265_fragment_is_irap = false;
-                            let _ = pli_tx.send(());
-                            
-                            next_seq_num = Some(first_seq);
-                        }
-
-                        // Process all in-order packets
-                        while let Some(current_expected) = next_seq_num {
-                            if !packet_buffer.contains_key(&current_expected) {
-                                break;
-                            }
-                            let pkt = packet_buffer.remove(&current_expected).unwrap();
-                            
-                            let payload = &pkt.payload;
-                            if payload.is_empty() {
-                                next_seq_num = Some(current_expected + 1);
-                                continue;
-                            }
-                            
-                            byte_count += payload.len();
-                            
-                            let mut process_and_deliver = |annex_b_data: &[u8], decoder_ref: &mut super::decoder::HardwareDecoder, decode_count_ref: &mut usize, total_decode_time_ref: &mut f64, frame_count_ref: &mut usize, has_decoded_ref: &Arc<std::sync::atomic::AtomicBool>, sink_ref: &VideoSinkWrapper| -> Result<(), anyhow::Error> {
-                                let start_decode = std::time::Instant::now();
-                                let decoded_frames = decoder_ref.decode(annex_b_data)?;
-                                let decode_time_ms = start_decode.elapsed().as_secs_f64() * 1000.0;
-                                
-                                if !decoded_frames.is_empty() {
-                                    if *decode_count_ref == 0 {
-                                        has_decoded_ref.store(true, std::sync::atomic::Ordering::SeqCst);
-                                    }
-                                    *decode_count_ref += decoded_frames.len();
-                                    *total_decode_time_ref += decode_time_ms;
-                                    *frame_count_ref += decoded_frames.len();
-                                }
-                                
-                                for frame in decoded_frames {
-                                    match frame {
-                                        super::decoder::DecodedFrame::NativePresented => {
-                                            let label = decoder_ref.presentation_mode_label();
-                                            if last_present_log_label != label {
-                                                println!("Decoded frame via {}", label);
-                                                last_present_log_label = label;
-                                            }
-                                        }
-                                        super::decoder::DecodedFrame::CpuBgrx(frame) => {
-                                            let sink_lock = sink_ref.sink.lock().unwrap();
-                                            let label = "software decode + BGRX present (4:4:4)".to_string();
-                                            if last_present_log_label != label {
-                                                println!("Decoded frame via {}: {}x{}", label, frame.width, frame.height);
-                                                last_present_log_label = label;
-                                            }
-                                            if let Some(sink_ptr_val) = *sink_lock {
-                                                unsafe {
-                                                    deliver_bgrx_frame(
-                                                        sink_ptr_val as *mut qobject::QVideoSink,
-                                                        frame.data.as_ptr(),
-                                                        frame.stride,
-                                                        frame.width,
-                                                        frame.height,
-                                                    );
-                                                }
-                                            }
-                                        }
-                                        super::decoder::DecodedFrame::CpuYuv(frame) => {
-                                            let sink_lock = sink_ref.sink.lock().unwrap();
-                                            let label = decoder_ref.presentation_mode_label();
-                                            if last_present_log_label != label {
-                                                println!(
-                                                    "Decoded frame via {}: {}x{}, sink={:?}",
-                                                    label,
-                                                    frame.width,
-                                                    frame.height,
-                                                    *sink_lock
-                                                );
-                                                last_present_log_label = label;
-                                            }
-                                            if let Some(sink_ptr_val) = *sink_lock {
-                                                unsafe {
-                                                    deliver_yuv_frame(
-                                                        sink_ptr_val as *mut qobject::QVideoSink,
-                                                        frame.y.as_ptr(), frame.y_stride,
-                                                        frame.u.as_ptr(), frame.u_stride,
-                                                        frame.v.as_ptr(), frame.v_stride,
-                                                        frame.width, frame.height,
-                                                    );
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                                Ok(())
-                            };
-                            
-                            match codec_type {
-                                super::decoder::CodecType::H264 => {
-                                    let nal_type = payload[0] & 0x1F;
-                                    if nal_type >= 1 && nal_type <= 23 {
-                                        // Single NAL unit
-                                        let is_config = nal_type == 7 || nal_type == 8;
-                                        let is_vcl = nal_type >= 1 && nal_type <= 5;
-                                        let is_idr = nal_type == 5;
-
-                                        if is_config {
-                                            if nal_type == 7 {
-                                                h264_config_annexb.clear();
-                                            }
-                                            h264_seen_config = true;
-                                            h264_config_annexb.extend_from_slice(&[0, 0, 0, 1]);
-                                            h264_config_annexb.extend_from_slice(payload);
-                                        }
-
-                                        annex_b_buf.extend_from_slice(&[0, 0, 0, 1]);
-                                        annex_b_buf.extend_from_slice(payload);
-
-                                        if is_vcl {
-                                            if h264_wait_for_idr && !is_idr {
-                                                // Still no key frame: ask again (the sender task limits this to
-                                                // one PLI per 500 ms). Without it a lost or ignored request left
-                                                // the stream frozen until some later packet loss.
-                                                let _ = pli_tx.send(());
-                                                annex_b_buf.clear();
-                                                next_seq_num = Some(current_expected + 1);
-                                                continue;
-                                            }
-                                            if is_idr && !h264_seen_config {
-                                                annex_b_buf.clear();
-                                                h264_wait_for_idr = true;
-                                                let _ = pli_tx.send(());
-                                                next_seq_num = Some(current_expected + 1);
-                                                continue;
-                                            }
-
-                                            let h264_decode_buf;
-                                            let h264_payload = if is_idr
-                                                && !h264_config_annexb.is_empty()
-                                                && !annex_b_buf.starts_with(&h264_config_annexb)
-                                            {
-                                                h264_decode_buf = [h264_config_annexb.as_slice(), annex_b_buf.as_slice()].concat();
-                                                h264_decode_buf.as_slice()
-                                            } else {
-                                                annex_b_buf.as_slice()
-                                            };
-
-                                            if let Err(e) = process_and_deliver(h264_payload, &mut decoder, &mut decode_count, &mut total_decode_time_ms, &mut frame_count, &has_decoded, &sink_inner) {
-                                                eprintln!("Decoder error: {:?}. Requesting keyframe...", e);
-                                                h264_wait_for_idr = true;
-                                                let _ = pli_tx.send(());
-                                            } else {
-                                                h264_wait_for_idr = false;
-                                            }
-                                            annex_b_buf.clear();
-                                        }
-                                    } else if nal_type == 24 {
-                                        // STAP-A Aggregation Packet
-                                        let mut offset = 1;
-                                        while offset + 2 <= payload.len() {
-                                            let nalu_size = ((payload[offset] as usize) << 8) | (payload[offset + 1] as usize);
-                                            offset += 2;
-                                            if offset + nalu_size > payload.len() {
-                                                break;
-                                            }
-                                            let nalu_data = &payload[offset..offset + nalu_size];
-                                            offset += nalu_size;
-
-                                            if !nalu_data.is_empty() {
-                                                let inner_nal_type = nalu_data[0] & 0x1F;
-                                                let is_config = inner_nal_type == 7 || inner_nal_type == 8;
-                                                let is_vcl = inner_nal_type >= 1 && inner_nal_type <= 5;
-                                                let is_idr = inner_nal_type == 5;
-
-                                                if is_config {
-                                                    if inner_nal_type == 7 {
-                                                        h264_config_annexb.clear();
-                                                    }
-                                                    h264_seen_config = true;
-                                                    h264_config_annexb.extend_from_slice(&[0, 0, 0, 1]);
-                                                    h264_config_annexb.extend_from_slice(nalu_data);
-                                                }
-
-                                                annex_b_buf.extend_from_slice(&[0, 0, 0, 1]);
-                                                annex_b_buf.extend_from_slice(nalu_data);
-
-                                                if is_vcl {
-                                                    if h264_wait_for_idr && !is_idr {
-                                                        // Still no key frame: ask again (the sender task limits this to
-                                                        // one PLI per 500 ms). Without it a lost or ignored request left
-                                                        // the stream frozen until some later packet loss.
-                                                        let _ = pli_tx.send(());
-                                                        annex_b_buf.clear();
-                                                        continue;
-                                                    }
-                                                    if is_idr && !h264_seen_config {
-                                                        annex_b_buf.clear();
-                                                        h264_wait_for_idr = true;
-                                                        let _ = pli_tx.send(());
-                                                        continue;
-                                                    }
-
-                                                    let h264_decode_buf;
-                                                    let h264_payload = if is_idr
-                                                        && !h264_config_annexb.is_empty()
-                                                        && !annex_b_buf.starts_with(&h264_config_annexb)
-                                                    {
-                                                        h264_decode_buf = [h264_config_annexb.as_slice(), annex_b_buf.as_slice()].concat();
-                                                        h264_decode_buf.as_slice()
-                                                    } else {
-                                                        annex_b_buf.as_slice()
-                                                    };
-
-                                                    if let Err(e) = process_and_deliver(h264_payload, &mut decoder, &mut decode_count, &mut total_decode_time_ms, &mut frame_count, &has_decoded, &sink_inner) {
-                                                        eprintln!("Decoder error: {:?}. Requesting keyframe...", e);
-                                                        h264_wait_for_idr = true;
-                                                        let _ = pli_tx.send(());
-                                                    } else {
-                                                        h264_wait_for_idr = false;
-                                                    }
-                                                    annex_b_buf.clear();
-                                                }
-                                            }
-                                        }
-                                    } else if nal_type == 28 {
-                                        // FU-A Fragmentation Unit
-                                        if payload.len() < 2 {
-                                            next_seq_num = Some(current_expected + 1);
-                                            continue;
-                                        }
-                                        let fu_indicator = payload[0];
-                                        let fu_header = payload[1];
-                                        let start_bit = (fu_header & 0x80) != 0;
-                                        let end_bit = (fu_header & 0x40) != 0;
-                                        let inner_nal_type = fu_header & 0x1F;
-                                        let reconstructed_header = (fu_indicator & 0xE0) | inner_nal_type;
-
-                                        if start_bit {
-                                            let is_idr = inner_nal_type == 5;
-                                            h264_fragment_is_idr = is_idr;
-                                            h264_dropping_fragment = false;
-                                            annex_b_buf.clear();
-
-                                            if h264_wait_for_idr && !is_idr {
-                                                // Still no key frame: ask again (one PLI per 500 ms at most).
-                                                let _ = pli_tx.send(());
-                                                h264_dropping_fragment = true;
-                                                next_seq_num = Some(current_expected + 1);
-                                                continue;
-                                            }
-                                            if is_idr && !h264_seen_config {
-                                                h264_dropping_fragment = true;
-                                                h264_wait_for_idr = true;
-                                                let _ = pli_tx.send(());
-                                                next_seq_num = Some(current_expected + 1);
-                                                continue;
-                                            }
-
-                                            annex_b_buf.extend_from_slice(&[0, 0, 0, 1, reconstructed_header]);
-                                            annex_b_buf.extend_from_slice(&payload[2..]);
-                                        } else if h264_dropping_fragment || annex_b_buf.is_empty() {
-                                            if end_bit {
-                                                h264_dropping_fragment = false;
-                                            }
-                                            next_seq_num = Some(current_expected + 1);
-                                            continue;
-                                        } else {
-                                            annex_b_buf.extend_from_slice(&payload[2..]);
-                                        }
-
-                                        if end_bit {
-                                            h264_dropping_fragment = false;
-                                            let h264_decode_buf;
-                                            let h264_payload = if h264_fragment_is_idr
-                                                && !h264_config_annexb.is_empty()
-                                                && !annex_b_buf.starts_with(&h264_config_annexb)
-                                            {
-                                                h264_decode_buf = [h264_config_annexb.as_slice(), annex_b_buf.as_slice()].concat();
-                                                h264_decode_buf.as_slice()
-                                            } else {
-                                                annex_b_buf.as_slice()
-                                            };
-
-                                            if let Err(e) = process_and_deliver(h264_payload, &mut decoder, &mut decode_count, &mut total_decode_time_ms, &mut frame_count, &has_decoded, &sink_inner) {
-                                                eprintln!("Decoder error: {:?}. Requesting keyframe...", e);
-                                                h264_wait_for_idr = true;
-                                                let _ = pli_tx.send(());
-                                            } else {
-                                                h264_wait_for_idr = false;
-                                            }
-                                            annex_b_buf.clear();
-                                        }
-                                    }
-                                }
-                                super::decoder::CodecType::H265 => {
-                                    let nal_type = (payload[0] & 0x7E) >> 1;
-                                    let is_h265_config = |t: u8| t == 32 || t == 33 || t == 34;
-                                    let is_h265_irap = |t: u8| (16..=23).contains(&t);
-
-                                    if nal_type <= 47 {
-                                        // Single NAL unit
-                                        let is_vcl = nal_type <= 31;
-                                        let is_irap = is_h265_irap(nal_type);
-
-                                        if is_h265_config(nal_type) {
-                                            if nal_type == 32 {
-                                                h265_config_annexb.clear();
-                                            }
-                                            h265_seen_config = true;
-                                            h265_config_annexb.extend_from_slice(&[0, 0, 0, 1]);
-                                            h265_config_annexb.extend_from_slice(payload);
-                                        }
-
-                                        annex_b_buf.extend_from_slice(&[0, 0, 0, 1]);
-                                        annex_b_buf.extend_from_slice(payload);
-
-                                        if is_vcl {
-                                            if h265_wait_for_irap && !is_irap {
-                                                // Still no key frame: ask again (see the H.264 path).
-                                                let _ = pli_tx.send(());
-                                                annex_b_buf.clear();
-                                                next_seq_num = Some(current_expected + 1);
-                                                continue;
-                                            }
-                                            if is_irap && !h265_seen_config {
-                                                annex_b_buf.clear();
-                                                h265_wait_for_irap = true;
-                                                let _ = pli_tx.send(());
-                                                next_seq_num = Some(current_expected + 1);
-                                                continue;
-                                            }
-
-                                            let h265_decode_buf;
-                                            let h265_payload = if is_irap
-                                                && !h265_config_annexb.is_empty()
-                                                && !annex_b_buf.starts_with(&h265_config_annexb)
-                                            {
-                                                h265_decode_buf = [h265_config_annexb.as_slice(), annex_b_buf.as_slice()].concat();
-                                                h265_decode_buf.as_slice()
-                                            } else {
-                                                annex_b_buf.as_slice()
-                                            };
-
-                                            if let Err(e) = process_and_deliver(h265_payload, &mut decoder, &mut decode_count, &mut total_decode_time_ms, &mut frame_count, &has_decoded, &sink_inner) {
-                                                eprintln!("Decoder error: {:?}. Requesting keyframe...", e);
-                                                h265_wait_for_irap = true;
-                                                let _ = pli_tx.send(());
-                                            } else {
-                                                h265_wait_for_irap = false;
-                                            }
-                                            annex_b_buf.clear();
-                                        }
-                                    } else if nal_type == 48 {
-                                        // AP (Aggregation Packet)
-                                        let mut offset = 2; // HEVC payload header is 2 bytes
-                                        while offset + 2 <= payload.len() {
-                                            let nalu_size = ((payload[offset] as usize) << 8) | (payload[offset + 1] as usize);
-                                            offset += 2;
-                                            if offset + nalu_size > payload.len() {
-                                                break;
-                                            }
-                                            let nalu_data = &payload[offset..offset + nalu_size];
-                                            offset += nalu_size;
-
-                                            if nalu_data.len() >= 2 {
-                                                let inner_nal_type = (nalu_data[0] & 0x7E) >> 1;
-                                                let is_vcl = inner_nal_type <= 31;
-                                                let is_irap = is_h265_irap(inner_nal_type);
-
-                                                if is_h265_config(inner_nal_type) {
-                                                    if inner_nal_type == 32 {
-                                                        h265_config_annexb.clear();
-                                                    }
-                                                    h265_seen_config = true;
-                                                    h265_config_annexb.extend_from_slice(&[0, 0, 0, 1]);
-                                                    h265_config_annexb.extend_from_slice(nalu_data);
-                                                }
-
-                                                annex_b_buf.extend_from_slice(&[0, 0, 0, 1]);
-                                                annex_b_buf.extend_from_slice(nalu_data);
-
-                                                if is_vcl {
-                                                    if h265_wait_for_irap && !is_irap {
-                                                        // Still no key frame: ask again (see the H.264 path).
-                                                        let _ = pli_tx.send(());
-                                                        annex_b_buf.clear();
-                                                        continue;
-                                                    }
-                                                    if is_irap && !h265_seen_config {
-                                                        annex_b_buf.clear();
-                                                        h265_wait_for_irap = true;
-                                                        let _ = pli_tx.send(());
-                                                        continue;
-                                                    }
-
-                                                    let h265_decode_buf;
-                                                    let h265_payload = if is_irap
-                                                        && !h265_config_annexb.is_empty()
-                                                        && !annex_b_buf.starts_with(&h265_config_annexb)
-                                                    {
-                                                        h265_decode_buf = [h265_config_annexb.as_slice(), annex_b_buf.as_slice()].concat();
-                                                        h265_decode_buf.as_slice()
-                                                    } else {
-                                                        annex_b_buf.as_slice()
-                                                    };
-
-                                                    if let Err(e) = process_and_deliver(h265_payload, &mut decoder, &mut decode_count, &mut total_decode_time_ms, &mut frame_count, &has_decoded, &sink_inner) {
-                                                        eprintln!("Decoder error: {:?}. Requesting keyframe...", e);
-                                                        h265_wait_for_irap = true;
-                                                        let _ = pli_tx.send(());
-                                                    } else {
-                                                        h265_wait_for_irap = false;
-                                                    }
-                                                    annex_b_buf.clear();
-                                                }
-                                            }
-                                        }
-                                    } else if nal_type == 49 {
-                                        // FU (Fragmentation Unit)
-                                        if payload.len() < 3 {
-                                            next_seq_num = Some(current_expected + 1);
-                                            continue;
-                                        }
-                                        let fu_indicator_1 = payload[0];
-                                        let fu_indicator_2 = payload[1];
-                                        let fu_header = payload[2];
-                                        let start_bit = (fu_header & 0x80) != 0;
-                                        let end_bit = (fu_header & 0x40) != 0;
-                                        let original_nal_type = fu_header & 0x3F;
-                                        let is_irap = is_h265_irap(original_nal_type);
-
-                                        let reconstructed_header_1 = (fu_indicator_1 & 0x81) | (original_nal_type << 1);
-                                        let reconstructed_header_2 = fu_indicator_2;
-
-                                        if start_bit {
-                                            h265_fragment_is_irap = is_irap;
-                                            h265_dropping_fragment = false;
-                                            annex_b_buf.clear();
-
-                                            if h265_wait_for_irap && !is_irap {
-                                                // Still no key frame: ask again (see the H.264 path).
-                                                let _ = pli_tx.send(());
-                                                h265_dropping_fragment = true;
-                                                next_seq_num = Some(current_expected + 1);
-                                                continue;
-                                            }
-                                            if is_irap && !h265_seen_config {
-                                                h265_dropping_fragment = true;
-                                                h265_wait_for_irap = true;
-                                                let _ = pli_tx.send(());
-                                                next_seq_num = Some(current_expected + 1);
-                                                continue;
-                                            }
-
-                                            annex_b_buf.extend_from_slice(&[0, 0, 0, 1, reconstructed_header_1, reconstructed_header_2]);
-                                            annex_b_buf.extend_from_slice(&payload[3..]);
-                                        } else if h265_dropping_fragment || annex_b_buf.is_empty() {
-                                            if end_bit {
-                                                h265_dropping_fragment = false;
-                                            }
-                                            next_seq_num = Some(current_expected + 1);
-                                            continue;
-                                        } else {
-                                            annex_b_buf.extend_from_slice(&payload[3..]);
-                                        }
-
-                                        if end_bit {
-                                            h265_dropping_fragment = false;
-                                            let h265_decode_buf;
-                                            let h265_payload = if h265_fragment_is_irap
-                                                && !h265_config_annexb.is_empty()
-                                                && !annex_b_buf.starts_with(&h265_config_annexb)
-                                            {
-                                                h265_decode_buf = [h265_config_annexb.as_slice(), annex_b_buf.as_slice()].concat();
-                                                h265_decode_buf.as_slice()
-                                            } else {
-                                                annex_b_buf.as_slice()
-                                            };
-
-                                            if let Err(e) = process_and_deliver(h265_payload, &mut decoder, &mut decode_count, &mut total_decode_time_ms, &mut frame_count, &has_decoded, &sink_inner) {
-                                                eprintln!("Decoder error: {:?}. Requesting keyframe...", e);
-                                                h265_wait_for_irap = true;
-                                                let _ = pli_tx.send(());
-                                            } else {
-                                                h265_wait_for_irap = false;
-                                            }
-                                            annex_b_buf.clear();
-                                        }
-                                    }
-                                }
-                                super::decoder::CodecType::AV1 => {
-                                    let h = payload[0];
-                                    let z = (h & 0x80) != 0;
-                                    let y = (h & 0x40) != 0;
-                                    let w = (h & 0x30) >> 4;
-                                    
-                                    let mut offset = 1;
-                                    
-                                    let read_leb128 = |off: &mut usize| -> Option<usize> {
-                                        let mut value = 0;
-                                        let mut shift = 0;
-                                        while *off < payload.len() {
-                                            let b = payload[*off];
-                                            *off += 1;
-                                            value |= ((b & 0x7F) as usize) << shift;
-                                            if (b & 0x80) == 0 {
-                                                return Some(value);
-                                            }
-                                            shift += 7;
-                                            if shift >= 35 {
-                                                return None;
-                                            }
-                                        }
-                                        None
-                                    };
-                                    
-                                    let mut first = true;
-                                    
-                                    // Process AV1 OBU fragment
-                                    let mut process_fragment = |element_data: &[u8], is_first_elem: bool, is_last_elem: bool, av1_obu_buf_ref: &mut Vec<u8>, decoder_ref: &mut super::decoder::HardwareDecoder, decode_count_ref: &mut usize, total_decode_time_ref: &mut f64, frame_count_ref: &mut usize, has_decoded_ref: &Arc<std::sync::atomic::AtomicBool>, sink_ref: &VideoSinkWrapper| {
-                                        if is_first_elem && z {
-                                            av1_obu_buf_ref.extend_from_slice(element_data);
-                                        } else {
-                                            if !av1_obu_buf_ref.is_empty() {
-                                                if let Err(e) = process_and_deliver(av1_obu_buf_ref, decoder_ref, decode_count_ref, total_decode_time_ref, frame_count_ref, has_decoded_ref, sink_ref) {
-                                                    eprintln!("Decoder error: {:?}. Requesting keyframe...", e);
-                                                    av1_obu_buf_ref.clear();
-                                                    let _ = pli_tx.send(());
-                                                }
-                                            }
-                                            av1_obu_buf_ref.extend_from_slice(element_data);
-                                        }
-                                        
-                                        if is_last_elem && y {
-                                            // Fragment continues in next packet
-                                        } else {
-                                            if let Err(e) = process_and_deliver(av1_obu_buf_ref, decoder_ref, decode_count_ref, total_decode_time_ref, frame_count_ref, has_decoded_ref, sink_ref) {
-                                                eprintln!("Decoder error: {:?}. Requesting keyframe...", e);
-                                                av1_obu_buf_ref.clear();
-                                                let _ = pli_tx.send(());
-                                            }
-                                        }
-                                    };
-                                    
-                                    if w == 0 {
-                                        while offset < payload.len() {
-                                            if let Some(size) = read_leb128(&mut offset) {
-                                                if offset + size <= payload.len() {
-                                                    let element_data = &payload[offset..offset + size];
-                                                    offset += size;
-                                                    let is_last = offset >= payload.len();
-                                                    process_fragment(element_data, first, is_last, &mut av1_obu_buf, &mut decoder, &mut decode_count, &mut total_decode_time_ms, &mut frame_count, &has_decoded, &sink_inner);
-                                                    first = false;
-                                                } else {
-                                                    break;
-                                                }
-                                            } else {
-                                                break;
-                                            }
-                                        }
-                                    } else {
-                                        for i in 0..w {
-                                            let is_first = i == 0;
-                                            let is_last = i == w - 1;
-                                            if !is_last {
-                                                if let Some(size) = read_leb128(&mut offset) {
-                                                    if offset + size <= payload.len() {
-                                                        let element_data = &payload[offset..offset + size];
-                                                        offset += size;
-                                                        process_fragment(element_data, is_first, is_last, &mut av1_obu_buf, &mut decoder, &mut decode_count, &mut total_decode_time_ms, &mut frame_count, &has_decoded, &sink_inner);
-                                                    } else {
-                                                        break;
-                                                    }
-                                                } else {
-                                                    break;
-                                                }
-                                            } else {
-                                                if offset < payload.len() {
-                                                    let element_data = &payload[offset..];
-                                                    process_fragment(element_data, is_first, is_last, &mut av1_obu_buf, &mut decoder, &mut decode_count, &mut total_decode_time_ms, &mut frame_count, &has_decoded, &sink_inner);
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            next_seq_num = Some(current_expected + 1);
-                        }
-                        
-                        let now = std::time::Instant::now();
-                        if frame_count != stats_prev_frames {
-                            if frame_count > stats_prev_frames {
-                                if let Some(prev) = stats_last_frame_at {
-                                    let gap = now.duration_since(prev).as_secs_f64() * 1000.0;
-                                    stats_gap_min = stats_gap_min.min(gap);
-                                    stats_gap_max = stats_gap_max.max(gap);
-                                    if gap > 25.0 {
-                                        stats_gap_late += 1;
-                                    }
-                                }
-                                stats_last_frame_at = Some(now);
-                            }
-                            stats_prev_frames = frame_count;
-                        }
-                        let elapsed = now.duration_since(last_stats_time).as_secs_f64();
-                        if elapsed >= 1.0 {
-                            let fps = frame_count as f64 / elapsed;
-                            if stats_log {
-                                println!(
-                                    "Client stats: fps={:.1} frame_gap_ms(min/max)={:.1}/{:.1} gaps_over_25ms={} decode_ms={:.2} lost_packets={} loss_events={} queue_lag_events={} gaps_filled={} fill_ms(avg/max)={:.0}/{:.0}",
-                                    fps,
-                                    if stats_gap_min == f64::MAX { 0.0 } else { stats_gap_min },
-                                    stats_gap_max,
-                                    stats_gap_late,
-                                    if decode_count > 0 { total_decode_time_ms / decode_count as f64 } else { 0.0 },
-                                    packets_lost,
-                                    packet_loss_events,
-                                    queue_lag_events,
-                                    stats_fill_count,
-                                    if stats_fill_count > 0 { stats_fill_sum / stats_fill_count as f64 } else { 0.0 },
-                                    stats_fill_max
-                                );
-                            }
-                            stats_fill_count = 0;
-                            stats_fill_max = 0.0;
-                            stats_fill_sum = 0.0;
-                            stats_gap_min = f64::MAX;
-                            stats_gap_max = 0.0;
-                            stats_gap_late = 0;
-                            stats_prev_frames = 0;
-                            let bitrate_kbps = (byte_count as f64 * 8.0) / 1000.0 / elapsed;
-                            let avg_decode_ms = if decode_count > 0 {
-                                total_decode_time_ms / decode_count as f64
-                            } else {
-                                0.0
-                            };
-                            
-                            let negotiated_codec = match codec_type {
-                                super::decoder::CodecType::H264 => "H264",
-                                super::decoder::CodecType::H265 => "H265",
-                                super::decoder::CodecType::AV1 => "AV1",
-                            }.to_string();
-                            
-                            let decode_backend = decoder.decode_backend_label().to_string();
-                            let present_backend = decoder.present_backend_label().to_string();
-                            let gpu_decode_enabled = decoder.gpu_decode_enabled();
-                            let fallback_reason = decoder.fallback_reason();
-                            let mut stats_lock = STREAM_STATS.lock().unwrap();
-                            if let Some(ref mut s) = *stats_lock {
-                                s.decode = avg_decode_ms;
-                                s.fps = fps;
-                                s.bitrate = bitrate_kbps;
-                                s.requested_codec = requested_codec.clone();
-                                s.negotiated_codec = negotiated_codec;
-                                s.decode_backend = decode_backend;
-                                s.present_backend = present_backend;
-                                s.gpu_decode_enabled = gpu_decode_enabled;
-                                s.fallback_reason = fallback_reason;
-                                s.packet_loss_events = packet_loss_events;
-                                s.packets_lost = packets_lost;
-                                s.queue_lag_events = queue_lag_events;
-                                s.max_queue_lag = max_queue_lag;
-                            } else {
-                                *stats_lock = Some(StreamStats {
-                                    ping: 0.0,
-                                    decode: avg_decode_ms,
-                                    fps,
-                                    bitrate: bitrate_kbps,
-                                    requested_codec: requested_codec.clone(),
-                                    negotiated_codec,
-                                    decode_backend,
-                                    present_backend,
-                                    gpu_decode_enabled,
-                                    fallback_reason,
-                                    packet_loss_events,
-                                    packets_lost,
-                                    queue_lag_events,
-                                    max_queue_lag,
-                                    connection_type: "P2P (Direct)".to_string(),
-                                });
-                            }
-                            
-                            frame_count = 0;
-                            byte_count = 0;
-                            decode_count = 0;
-                            total_decode_time_ms = 0.0;
-                            last_stats_time = now;
-                        }
-                    }
-                });
-                *active_decoder_inner.lock().unwrap() = Some(thread_handle);
-            } else if mime == "audio/opus" {
-                println!("Starting audio receiver for: {}", mime);
-                // Read audio on its own task: webrtc-rs waits for this on_track
-                // handler to return before dispatching the next track, so a read
-                // loop here would starve the video track (black screen).
-                tokio::spawn(async move {
-                    if let Some(audio_tx) = super::audio::setup_audio() {
-                        let mut decoder = match opus::Decoder::new(48000, opus::Channels::Stereo) {
-                            Ok(d) => d,
-                            Err(e) => {
-                                eprintln!("Failed to create Opus decoder: {:?}", e);
-                                return;
-                            }
-                        };
-                        let mut pcm_output = vec![0.0f32; 1920 * 2];
-
-                        while let Ok((rtp_packet, _)) = track_clone.read_rtp().await {
-                            if let Ok(num_samples) = decoder.decode_float(&rtp_packet.payload, &mut pcm_output, false) {
-                                let stereo_samples = pcm_output[..num_samples * 2].to_vec();
-                                let _ = audio_tx.send(stereo_samples);
-                            }
-                        }
-                    }
-                });
-            }
-        })
-    }));
-
-    // Setup data channel callbacks
-    let k_c = Arc::clone(&kb_chan_ref);
-    let ma_c = Arc::clone(&ma_chan_ref);
-    let mr_c = Arc::clone(&mr_chan_ref);
-
-    peer_connection.on_data_channel(Box::new(move |d: Arc<RTCDataChannel>| {
-        let label = d.label().to_string();
-        println!("Remote host created DataChannel: {}", label);
-        let channel_ref = Arc::clone(&d);
-        match label.as_str() {
-            "keyboard" => {
-                *k_c.lock().unwrap() = Some(channel_ref);
-            }
-            "mouse_absolute" => {
-                *ma_c.lock().unwrap() = Some(channel_ref);
-            }
-            "mouse_relative" => {
-                *mr_c.lock().unwrap() = Some(channel_ref);
-            }
-            "clipboard" => crate::share::attach_clipboard(channel_ref),
-            "gamepad" => crate::gamepad::attach(channel_ref),
-            "general" | "cursor" => {
-                d.on_message(Box::new(move |msg: DataChannelMessage| {
-                    Box::pin(async move {
-                        handle_host_cursor_message(&msg.data);
-                    })
-                }));
-
-                d.on_close(Box::new(move || {
-                    Box::pin(async move {
-                        *PENDING_HOST_CURSOR.lock().unwrap() = Some(PendingHostCursor {
-                            x: 0,
-                            y: 0,
-                            visible: false,
-                            kind: "arrow".to_string(),
-                            in_window_move_size: false,
-                            image_data_url: String::new(),
-                            image_width: 0,
-                            image_height: 0,
-                            image_hotspot_x: 0,
-                            image_hotspot_y: 0,
-                        });
-                    })
-                }));
-            }
-            _ => {}
-        }
-        Box::pin(async {})
-    }));
-
-    Ok(peer_connection)
+    Ok((peer_connection, state))
 }
 
 async fn send_relative_packet(
     packet: &[u8],
-    mr_c: &Arc<Mutex<Option<Arc<RTCDataChannel>>>>,
-    cached_chan: &mut Option<Arc<RTCDataChannel>>,
+    mr_c: &Arc<Mutex<Option<Arc<dyn DataChannel>>>>,
+    cached_chan: &mut Option<Arc<dyn DataChannel>>,
     wt_c: &Arc<Mutex<Option<wtransport::Connection>>>,
     has_wt: &Arc<std::sync::atomic::AtomicBool>,
     mouse_queue_limit: u32,
@@ -4792,7 +4880,8 @@ async fn send_relative_packet(
                     }
                 };
                 if should_check {
-                    let amt = chan.buffered_amount().await;
+                    // 0.21 has no bufferedAmount: the bytes SCTP has not released yet.
+                    let amt = chan.outstanding_bytes().await.unwrap_or(0);
                     let limit = if mouse_queue_limit < 10240 {
                         65536
                     } else {
@@ -4807,7 +4896,7 @@ async fn send_relative_packet(
             }
 
             if cached_buffer_ok {
-                let _ = chan.send(&Bytes::from(packet.to_vec())).await;
+                let _ = chan.send(bytes::BytesMut::from(packet)).await;
             }
         }
     }
@@ -4847,7 +4936,7 @@ async fn run_webrtc_client_task(
 
     let (outbox_tx, mut outbox_rx) = tokio::sync::mpsc::unbounded_channel::<ClientMessage>();
 
-    let mut peer_connection: Option<Arc<RTCPeerConnection>> = None;
+    let mut peer_connection: Option<Arc<dyn PeerConnection>> = None;
     let mut pending_remote_ice: Vec<RTCIceCandidateInit> = Vec::new();
 
     // Setup input channels
@@ -4865,9 +4954,9 @@ async fn run_webrtc_client_task(
     *input_senders.lock().unwrap() = Some(senders);
 
     // Setup data channel callbacks
-    let kb_chan_ref: Arc<Mutex<Option<Arc<RTCDataChannel>>>> = Arc::new(Mutex::new(None));
-    let ma_chan_ref: Arc<Mutex<Option<Arc<RTCDataChannel>>>> = Arc::new(Mutex::new(None));
-    let mr_chan_ref: Arc<Mutex<Option<Arc<RTCDataChannel>>>> = Arc::new(Mutex::new(None));
+    let kb_chan_ref: Arc<Mutex<Option<Arc<dyn DataChannel>>>> = Arc::new(Mutex::new(None));
+    let ma_chan_ref: Arc<Mutex<Option<Arc<dyn DataChannel>>>> = Arc::new(Mutex::new(None));
+    let mr_chan_ref: Arc<Mutex<Option<Arc<dyn DataChannel>>>> = Arc::new(Mutex::new(None));
 
     let wt_conn_ref: Arc<Mutex<Option<wtransport::Connection>>> = Arc::new(Mutex::new(None));
     let wt_connected: Arc<std::sync::atomic::AtomicBool> =
@@ -4901,7 +4990,7 @@ async fn run_webrtc_client_task(
             if !wt_sent {
                 let chan = { k_c.lock().unwrap().clone() };
                 if let Some(chan) = chan {
-                    let _ = chan.send(&buf).await;
+                    let _ = chan.send(bytes::BytesMut::from(&buf[..])).await;
                 }
             }
         }
@@ -4911,7 +5000,7 @@ async fn run_webrtc_client_task(
     let wt_c = Arc::clone(&wt_conn_ref);
     let has_wt = Arc::clone(&wt_connected);
     tokio::spawn(async move {
-        let mut cached_chan: Option<Arc<RTCDataChannel>> = None;
+        let mut cached_chan: Option<Arc<dyn DataChannel>> = None;
         loop {
             let first_buf = match ma_rx.recv().await {
                 Some(buf) => buf,
@@ -4967,7 +5056,8 @@ async fn run_webrtc_client_task(
                             }
                         };
                         if should_check {
-                            let amt = chan.buffered_amount().await;
+                            // 0.21 has no bufferedAmount: the bytes SCTP has not released yet.
+                    let amt = chan.outstanding_bytes().await.unwrap_or(0);
                             let limit = if mouse_queue_limit < 10240 {
                                 65536
                             } else {
@@ -4983,7 +5073,7 @@ async fn run_webrtc_client_task(
                     }
 
                     if cached_buffer_ok {
-                        let _ = chan.send(&latest_buf).await;
+                        let _ = chan.send(bytes::BytesMut::from(&latest_buf[..])).await;
                     }
                 }
             }
@@ -4994,7 +5084,7 @@ async fn run_webrtc_client_task(
     let wt_c = Arc::clone(&wt_conn_ref);
     let has_wt = Arc::clone(&wt_connected);
     tokio::spawn(async move {
-        let mut cached_chan: Option<Arc<RTCDataChannel>> = None;
+        let mut cached_chan: Option<Arc<dyn DataChannel>> = None;
         loop {
             let first_buf = match mr_rx.recv().await {
                 Some(buf) => buf,
@@ -5254,7 +5344,7 @@ async fn run_webrtc_client_task(
                                 let _ = old_pc.close().await;
                             }
 
-                            let pc = match setup_peer_connection(
+                            let (pc, pc_state) = match setup_peer_connection(
                                 ice_servers,
                                 outbox_tx.clone(),
                                 host_id.clone(),
@@ -5267,7 +5357,7 @@ async fn run_webrtc_client_task(
                             )
                             .await
                             {
-                                Ok(pc) => pc,
+                                Ok(pair) => pair,
                                 Err(e) => {
                                     eprintln!("Failed to setup peer connection: {:?}", e);
                                     continue;
@@ -5277,6 +5367,7 @@ async fn run_webrtc_client_task(
                             if let Some((port, cert_hash)) = wt_target {
                                 tokio::spawn(connect_webtransport_input(
                                     Arc::clone(&pc),
+                                    pc_state.clone(),
                                     server_url.clone(),
                                     port,
                                     cert_hash,
@@ -5350,66 +5441,50 @@ async fn run_webrtc_client_task(
                                 }
                             }
                             let pc_clone = Arc::clone(&pc);
+                            let pc_state = pc_state.clone();
                             tokio::spawn(async move {
                                 loop {
                                     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                                     // Stop with the connection: holding `pc_clone` forever
                                     // would keep a replaced connection alive.
-                                    if pc_clone.connection_state()
-                                        == webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState::Closed
-                                    {
+                                    if pc_state.closed() {
                                         break;
                                     }
-                                    let stats = pc_clone.get_stats().await;
+                                    let stats = pc_clone
+                                        .get_stats(std::time::Instant::now(), StatsSelector::None)
+                                        .await;
 
                                     let mut conn_type = "P2P (Direct)".to_string();
                                     let mut dynamic_ping = 0.0;
                                     let mut selected_pair = None;
 
-                                    for (_key, val) in &stats.reports {
-                                        if let webrtc::stats::StatsReportType::CandidatePair(
-                                            pair_stats,
-                                        ) = val
-                                        {
-                                            if pair_stats.nominated {
-                                                selected_pair = Some(pair_stats);
-                                                break;
-                                            }
+                                    for pair_stats in stats.candidate_pairs() {
+                                        if pair_stats.nominated {
+                                            selected_pair = Some(pair_stats);
+                                            break;
                                         }
                                     }
 
                                     if let Some(pair_stats) = selected_pair {
                                         dynamic_ping = pair_stats.current_round_trip_time * 1000.0;
 
-                                        let local_cand =
-                                            stats.reports.get(&pair_stats.local_candidate_id);
-                                        let remote_cand =
-                                            stats.reports.get(&pair_stats.remote_candidate_id);
+                                        let local_cand = stats.get(&pair_stats.local_candidate_id);
+                                        let remote_cand = stats.get(&pair_stats.remote_candidate_id);
 
                                         let is_local_relay = if let Some(
-                                            webrtc::stats::StatsReportType::LocalCandidate(
-                                                cand_stats,
-                                            ),
+                                            RTCStatsReportEntry::LocalCandidate(cand_stats),
                                         ) = local_cand
                                         {
-                                            matches!(
-                                                cand_stats.candidate_type,
-                                                webrtc::ice::candidate::CandidateType::Relay
-                                            )
+                                            cand_stats.candidate_type == RTCIceCandidateType::Relay
                                         } else {
                                             false
                                         };
 
                                         let is_remote_relay = if let Some(
-                                            webrtc::stats::StatsReportType::RemoteCandidate(
-                                                cand_stats,
-                                            ),
+                                            RTCStatsReportEntry::RemoteCandidate(cand_stats),
                                         ) = remote_cand
                                         {
-                                            matches!(
-                                                cand_stats.candidate_type,
-                                                webrtc::ice::candidate::CandidateType::Relay
-                                            )
+                                            cand_stats.candidate_type == RTCIceCandidateType::Relay
                                         } else {
                                             false
                                         };
@@ -5434,6 +5509,7 @@ async fn run_webrtc_client_task(
                             sdp_mid: candidate.sdp_mid,
                             sdp_mline_index: candidate.sdp_mline_index,
                             username_fragment: candidate.username_fragment,
+                            ..Default::default()
                         };
 
                         if let Some(ref pc) = peer_connection {

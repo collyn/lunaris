@@ -13,9 +13,7 @@ use std::sync::{mpsc as std_mpsc, Arc, Mutex};
 use std::time::Duration;
 
 use serde_json::{json, Value};
-use webrtc::data_channel::data_channel_message::DataChannelMessage;
-use webrtc::data_channel::data_channel_state::RTCDataChannelState;
-use webrtc::data_channel::RTCDataChannel;
+use webrtc::data_channel::{DataChannel, DataChannelEvent, RTCDataChannelState};
 
 const MAX_CLIPBOARD_BYTES: usize = 1024 * 1024;
 const CLIPBOARD_POLL: Duration = Duration::from_millis(500);
@@ -45,7 +43,7 @@ pub(crate) fn set_status(text: impl Into<String>) {
 }
 
 /// The agent opened its `clipboard` channel: start syncing for this session.
-pub fn attach_clipboard(channel: Arc<RTCDataChannel>) {
+pub fn attach_clipboard(channel: Arc<dyn DataChannel>) {
     let (set_tx, set_rx) = std_mpsc::channel::<String>();
     let (changed_tx, mut changed_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
     if std::thread::Builder::new()
@@ -57,36 +55,40 @@ pub fn attach_clipboard(channel: Arc<RTCDataChannel>) {
     }
 
     let set_tx = Mutex::new(set_tx);
-    channel.on_message(Box::new(move |msg: DataChannelMessage| {
+    // webrtc 0.21: the channel's events are polled.
+    let reader = channel.clone();
+    tokio::spawn(async move {
+        while let Some(event) = reader.poll().await {
+            let DataChannelEvent::OnMessage(msg) = event else { continue };
         if msg.is_string {
-            if let Ok(v) = serde_json::from_slice::<Value>(&msg.data) {
-                match v.get("type").and_then(Value::as_str) {
-                    Some("clipboard") if CLIPBOARD_ENABLED.load(Ordering::Relaxed) => {
-                        if let Some(text) = v.get("text").and_then(Value::as_str) {
-                            if text.len() <= MAX_CLIPBOARD_BYTES {
-                                let _ = set_tx.lock().unwrap().send(text.to_string());
+                if let Ok(v) = serde_json::from_slice::<Value>(&msg.data) {
+                    match v.get("type").and_then(Value::as_str) {
+                        Some("clipboard") if CLIPBOARD_ENABLED.load(Ordering::Relaxed) => {
+                            if let Some(text) = v.get("text").and_then(Value::as_str) {
+                                if text.len() <= MAX_CLIPBOARD_BYTES {
+                                    let _ = set_tx.lock().unwrap().send(text.to_string());
+                                }
                             }
                         }
-                    }
-                    Some("clipboard_error") => {
-                        if let Some(m) = v.get("message").and_then(Value::as_str) {
-                            set_status(m);
+                        Some("clipboard_error") => {
+                            if let Some(m) = v.get("message").and_then(Value::as_str) {
+                                set_status(m);
+                            }
                         }
+                        _ => {}
                     }
-                    _ => {}
                 }
             }
         }
-        Box::pin(async {})
-    }));
+    });
 
     let ch = channel.clone();
     tokio::spawn(async move {
         while let Some(text) = changed_rx.recv().await {
-            if !CLIPBOARD_ENABLED.load(Ordering::Relaxed) || ch.ready_state() != RTCDataChannelState::Open {
+            if !CLIPBOARD_ENABLED.load(Ordering::Relaxed) || !matches!(ch.ready_state().await, Ok(RTCDataChannelState::Open)) {
                 continue;
             }
-            if let Err(e) = ch.send_text(json!({"type": "clipboard", "text": text}).to_string()).await {
+            if let Err(e) = ch.send_text(&json!({"type": "clipboard", "text": text}).to_string()).await {
                 eprintln!("Clipboard: could not send to the remote computer: {}", e);
             }
         }

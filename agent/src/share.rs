@@ -15,10 +15,8 @@ use std::time::{Duration, Instant};
 use serde::Deserialize;
 use serde_json::json;
 use tracing::warn;
-use webrtc::data_channel::data_channel_init::RTCDataChannelInit;
-use webrtc::data_channel::data_channel_message::DataChannelMessage;
-use webrtc::data_channel::RTCDataChannel;
-use webrtc::peer_connection::RTCPeerConnection;
+use webrtc::data_channel::{DataChannel, DataChannelEvent, RTCDataChannelInit, RTCDataChannelState};
+use webrtc::peer_connection::PeerConnection;
 
 /// Clipboard text larger than this isn't sent (it would hold up the channel).
 const MAX_CLIPBOARD_BYTES: usize = 1024 * 1024;
@@ -31,62 +29,70 @@ enum ClipboardMsg {
 }
 
 /// Opens the `clipboard` channel on a new session's connection.
-pub async fn attach(pc: &Arc<RTCPeerConnection>, allow_clipboard: bool) -> anyhow::Result<Vec<tokio::task::JoinHandle<()>>> {
-    let reliable = RTCDataChannelInit { ordered: Some(true), ..Default::default() };
+pub async fn attach(pc: &Arc<dyn PeerConnection>, allow_clipboard: bool) -> anyhow::Result<Vec<tokio::task::JoinHandle<()>>> {
+    let reliable = RTCDataChannelInit { ordered: true, ..Default::default() };
     let clipboard = pc.create_data_channel("clipboard", Some(reliable)).await?;
-    Ok(setup_clipboard(clipboard, allow_clipboard).into_iter().collect())
+    Ok(setup_clipboard(clipboard, allow_clipboard))
 }
 
 // ---------------------------------------------------------------- clipboard
 
-fn setup_clipboard(channel: Arc<RTCDataChannel>, allowed: bool) -> Option<tokio::task::JoinHandle<()>> {
+fn setup_clipboard(channel: Arc<dyn DataChannel>, allowed: bool) -> Vec<tokio::task::JoinHandle<()>> {
     if !allowed {
+        // webrtc 0.21: events are polled, not delivered to callbacks.
         let ch = channel.clone();
-        channel.on_message(Box::new(move |_msg: DataChannelMessage| {
-            let ch = ch.clone();
-            Box::pin(async move {
-                let _ = ch
-                    .send_text(json!({"type": "clipboard_error", "message": "Clipboard sharing is turned off on this computer"}).to_string())
-                    .await;
-            })
-        }));
-        return None;
+        return vec![tokio::spawn(async move {
+            while let Some(event) = ch.poll().await {
+                if let DataChannelEvent::OnMessage(_) = event {
+                    let _ = ch
+                        .send_text(&json!({"type": "clipboard_error", "message": "Clipboard sharing is turned off on this computer"}).to_string())
+                        .await;
+                }
+            }
+        })];
     }
 
     // Text from the client -> the clipboard thread; local changes -> client.
     let (set_tx, set_rx) = std_mpsc::channel::<String>();
     let (changed_tx, mut changed_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-    std::thread::Builder::new()
+    if std::thread::Builder::new()
         .name("lunaris-clipboard".into())
         .spawn(move || clipboard_thread(set_rx, changed_tx))
-        .ok()?;
+        .is_err()
+    {
+        return Vec::new();
+    }
 
     let set_tx = Mutex::new(set_tx);
-    channel.on_message(Box::new(move |msg: DataChannelMessage| {
-        if msg.is_string {
-            match serde_json::from_slice::<ClipboardMsg>(&msg.data) {
-                Ok(ClipboardMsg::Clipboard { text }) if text.len() <= MAX_CLIPBOARD_BYTES => {
-                    let _ = set_tx.lock().unwrap().send(text);
+    let reader = channel.clone();
+    let on_message = tokio::spawn(async move {
+        while let Some(event) = reader.poll().await {
+            let DataChannelEvent::OnMessage(msg) = event else { continue };
+            if msg.is_string {
+                match serde_json::from_slice::<ClipboardMsg>(&msg.data) {
+                    Ok(ClipboardMsg::Clipboard { text }) if text.len() <= MAX_CLIPBOARD_BYTES => {
+                        let _ = set_tx.lock().unwrap().send(text);
+                    }
+                    Ok(_) => warn!("Clipboard text from the client is too large; ignored"),
+                    Err(e) => warn!("Bad clipboard message: {}", e),
                 }
-                Ok(_) => warn!("Clipboard text from the client is too large; ignored"),
-                Err(e) => warn!("Bad clipboard message: {}", e),
             }
         }
-        Box::pin(async {})
-    }));
+    });
 
     let ch = channel.clone();
-    Some(tokio::spawn(async move {
+    let sender = tokio::spawn(async move {
         while let Some(text) = changed_rx.recv().await {
-            if ch.ready_state() != webrtc::data_channel::data_channel_state::RTCDataChannelState::Open {
+            if !matches!(ch.ready_state().await, Ok(RTCDataChannelState::Open)) {
                 continue;
             }
             let payload = json!({"type": "clipboard", "text": text}).to_string();
-            if let Err(e) = ch.send_text(payload).await {
+            if let Err(e) = ch.send_text(&payload).await {
                 warn!("Could not send the clipboard to the client: {}", e);
             }
         }
-    }))
+    });
+    vec![on_message, sender]
 }
 
 /// Owns this computer's clipboard for the session: sets the client's text,

@@ -2,10 +2,10 @@ use std::sync::Arc;
 
 use tracing::info;
 
-use webrtc::peer_connection::RTCPeerConnection;
+use webrtc::peer_connection::PeerConnection;
 
 pub struct BridgeSession {
-    pub peer_connection: Arc<RTCPeerConnection>,
+    pub peer_connection: Arc<dyn PeerConnection>,
     pub webtransport_port: Option<u16>,
     pub webtransport_cert_hash: Option<String>,
     pub _webtransport_endpoint:

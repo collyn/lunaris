@@ -29,7 +29,11 @@ futures-util = "0.3"
 once_cell = "1.18"
 chrono = { version = "0.4", features = ["serde"] }
 
-webrtc = "0.17.1"
+webrtc = "0.21.1"
+rtc = "0.21.1"
+async-trait = "0.1"
+turn = "0.17.1"
+webrtc-util = "0.17.1"
 wtransport = { version = "0.7.1", features = ["self-signed"] }
 anyhow = "1.0"
 thiserror = "1.0"

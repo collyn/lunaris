@@ -11,8 +11,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use common::{
     AgentMessage, RtcSdpType, RtcSessionDescription, ServerToAgentMessage, SignalingMessage,
 };
-use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
-use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
+use webrtc::peer_connection::{PeerConnection, RTCIceCandidateInit, RTCSessionDescription};
 
 pub mod approval;
 mod bridge;
@@ -23,6 +22,7 @@ mod gamepad;
 mod hub;
 mod input;
 pub mod pairing;
+mod rtcp_forward;
 mod share;
 mod vdisplay;
 mod video;
@@ -227,7 +227,7 @@ where
     if let Some(ref import_path) = args.import_config {
         let _ = tracing_subscriber::registry()
             .with(tracing_subscriber::EnvFilter::new(
-                std::env::var("RUST_LOG").unwrap_or_else(|_| "info,agent=info,webrtc_sctp=off,dtls=error".into()),
+                std::env::var("RUST_LOG").unwrap_or_else(|_| "info,agent=info,webrtc_sctp=off,dtls=error,rtc_sctp=off,rtc_dtls=error".into()),
             ))
             .with(tracing_subscriber::fmt::layer())
             .try_init();
@@ -251,9 +251,9 @@ where
                     std::env::var("RUST_LOG").unwrap_or_else(|_| {
                         {
                             if cfg!(debug_assertions) {
-                                "info,agent=info,webrtc_sctp=off,dtls=error"
+                                "info,agent=info,webrtc_sctp=off,dtls=error,rtc_sctp=off,rtc_dtls=error"
                             } else {
-                                "info,agent=info,lunaris_media=info,webrtc_sctp=off,dtls=error,webrtc_ice=warn"
+                                "info,agent=info,lunaris_media=info,webrtc_sctp=off,dtls=error,webrtc_ice=warn,rtc_sctp=off,rtc_dtls=error,rtc_ice=warn"
                             }
                         }
                         .into()
@@ -277,7 +277,7 @@ where
     let _ = tracing_subscriber::registry()
         .with(tracing_subscriber::EnvFilter::new(
             std::env::var("RUST_LOG").unwrap_or_else(|_| {
-                "info,agent=info,webrtc_sctp=off,dtls=error".into()
+                "info,agent=info,webrtc_sctp=off,dtls=error,rtc_sctp=off,rtc_dtls=error".into()
             }),
         ))
         .with(tracing_subscriber::fmt::layer().with_writer(if args.approval_stdio {
@@ -588,7 +588,7 @@ async fn run_session_logic(
     let mut active_client: Option<String> = None;
     // File-transfer connections (files.rs), by client connection; any number,
     // beside the stream.
-    let mut file_sessions: std::collections::HashMap<String, Arc<webrtc::peer_connection::RTCPeerConnection>> =
+    let mut file_sessions: std::collections::HashMap<String, Arc<dyn PeerConnection>> =
         std::collections::HashMap::new();
 
     while let Some(sig) = inbound.recv().await {
@@ -639,6 +639,7 @@ async fn run_session_logic(
                         sdp_mid: candidate.sdp_mid.clone(),
                         sdp_mline_index: candidate.sdp_mline_index,
                         username_fragment: candidate.username_fragment.clone(),
+                        ..Default::default()
                     })
                     .await;
                 continue;
@@ -790,7 +791,7 @@ async fn run_session_logic(
                         .replace("profile-level-id=42001f", "profile-level-id=42002a")
                         // Same for H.264 High 4:4:4 (YUV 4:4:4 sessions).
                         .replace("profile-level-id=f4001f", "profile-level-id=f4002a");
-                    match RTCSessionDescription::answer(forced_sdp) {
+                    match RTCSessionDescription::answer(forced_sdp.clone()) {
                         Ok(rtc_sdp) => {
                             if let Err(e) = session
                                 .peer_connection
@@ -800,6 +801,10 @@ async fn run_session_logic(
                                 error!("[SIGNALING] Failed to set remote description: {:?}", e);
                             } else {
                                 warn!("[SIGNALING] SDP Answer set successfully! WebRTC negotiation in progress.");
+                                match bridge::flexfec_in_answer(&forced_sdp) {
+                                    Some(pt) => info!("FlexFEC-03 (20%): accepted by the client's answer (payload type {}), the video is protected by forward error correction", pt),
+                                    None => info!("FlexFEC-03 (20%): NOT accepted by the client's answer, the video runs without forward error correction (NACK only)"),
+                                }
                             }
                         }
                         Err(e) => {
@@ -821,6 +826,7 @@ async fn run_session_logic(
                         sdp_mid: candidate.sdp_mid,
                         sdp_mline_index: candidate.sdp_mline_index,
                         username_fragment: candidate.username_fragment,
+                        ..Default::default()
                     };
                     if let Err(e) =
                         session.peer_connection.add_ice_candidate(rtc_cand).await
