@@ -211,8 +211,15 @@ them):
   A Rec. 601 full-range request is honoured and tagged (Phase 2 is thereby
   complete on AMD; native NVENC and QSV still ignore the request).
 
-Still to do in this phase: the other encoders on the tables (VAAPI, NVENC and
-software on Linux; software and QSV on Windows), `probe_encoders` and what the
+- NVENC through FFmpeg (Linux) and libx264 / libx265 are on the tables too
+  (`lunaris-media` `defb1ee`); all seven remaining tables were checked
+  against `video.cpp` by a second, independent pass (132 options, no
+  difference). Colour bars round trip on the RTX 2060 and in software:
+  within 2/255, expected profiles, no B-frames. Not yet run as a real stream
+  on a Linux host. NVENC 4:4:4 keeps `rgb_mode=yuv444` (BGRA input path).
+
+Still to do in this phase: VAAPI (with Sunshine's platform rate-control code,
+Phase 6), software and QSV on Windows, `probe_encoders` and what the
 host advertises, native NVENC as `src/nvenc` (bitrate, invalidation), H.264
 High over WebRTC, the IDR / invalidation flow, bitrate change without IDR.
 
