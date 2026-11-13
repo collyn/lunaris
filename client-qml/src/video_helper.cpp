@@ -28,6 +28,12 @@ void set_video_color(bool bt709, bool full_range) {
     g_colorFullRange.store(full_range);
 }
 
+// Default request: Rec. 709, limited (DEFAULT_ENCODER_CSC_MODE of lunaris-media).
+static std::atomic<int> g_requestedCscMode{2};
+
+void set_requested_csc_mode(int mode) { g_requestedCscMode.store(mode); }
+int requested_csc_mode() { return g_requestedCscMode.load(); }
+
 bool video_color_bt709() { return g_colorBt709.load(); }
 bool video_color_full_range() { return g_colorFullRange.load(); }
 

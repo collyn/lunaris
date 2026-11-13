@@ -116,6 +116,38 @@ with `D3D11VA decode + D3D11 present` in the log for H.264 4:2:0, HEVC, AV1
   `getFramePremultipliedCscConstants` (already unified in 0.3.1, re-based on
   the reference maths including chroma siting).
 
+Status (2026-11-13):
+- Host (`lunaris-media` `3fd0e56`): `StreamConfig`/`EncoderConfig` carry a
+  `StreamColorspace`; the FFmpeg encoders tag from it (`video.cpp:2115-2120`,
+  `2311-2314`), swscale converts from it (`video.cpp:318-321`), and the D3D11
+  video processor and the VAAPI VPP take matrix and range from it. Measured
+  with `examples/color_roundtrip.rs` (colour bars → encode → ffmpeg decode):
+  libx264 and VAAPI are within 2/255 for Rec. 601/709 × limited/full.
+- Protocol: `encoder_csc_mode` (GameStream's `encoderCscMode`) in the session
+  request. A client that sends none gets Rec. 709 limited — a Lunaris default
+  (Sunshine's RTSP default is Rec. 601): such clients are browsers and
+  Lunaris ≤ 0.3.2. This changes the FFmpeg hosts from full to limited range.
+- Client: only Moonlight's `COLOR_SPACE_OVERRIDE` / `COLOR_RANGE_OVERRIDE`
+  (`session.cpp:540-556`) are ported; the per-renderer request needs decoder
+  selection before the stream starts (Phase 8). Untagged frames are taken as
+  what was requested (`renderer.h:245-275`).
+
+Still open in this phase:
+- The native Windows encoders ignore the request and stay at Rec. 709 limited
+  (`lunaris-media` `a6e72a6`). Measured on AMF with a Rec. 601 full-range
+  request: the client decodes its H.264 stream as BT.709 limited whatever the
+  host converted to, so a different conversion showed wrong colours. With the
+  fixed conversion the desktop and its streamed copy match within 1/255 in
+  the loopback screenshot. Phase 3 makes the Windows host honour the request.
+- NVENC fed RGB on Linux converts to BT.601 limited whatever is requested;
+  FFmpeg tags it so, the picture is right, the request is not honoured.
+  Sunshine converts to NV12 itself before NVENC (Phase 6).
+- NvFBC's own NV12 conversion is untouched (Phase 6).
+- The conversion vectors (`color_vectors`) have no user until the shader
+  converters of Phases 4 and 6.
+- The VAAPI VPP (DMA-BUF) path is parametrised but was not measured.
+
+
 ### Phase 3 — Encoder core (Sunshine `video.cpp`, `nvenc/`)
 
 - Encoder definition tables (FFmpeg names, device types, pixel formats,
@@ -137,6 +169,35 @@ with `D3D11VA decode + D3D11 present` in the log for H.264 4:2:0, HEVC, AV1
   the encoder as `stream.cpp` does; bitrate changes without an IDR where the
   encoder allows it.
 
+Findings before the start (2026-11-13, RX 6600 XT):
+- HEVC and AV1 never worked through the native AMF encoder: its component
+  ids are wrong (`AMFVideoEncoder_HEVC` / `_AV1`; the SDK headers say
+  `AMFVideoEncoderHW_HEVC` / `AMFVideoEncoderHW_AV1`), `CreateComponent`
+  returns `AMF_NOT_SUPPORTED`, and about twenty HEVC/AV1 property names in
+  `windows_amf.rs` do not exist in `VideoEncoderHEVC.h` / `VideoEncoderAV1.h`
+  (`AV1Usage` for `Av1Usage`, `HevcIDRPeriod`, `HevcInsertVPS`, …). The agent
+  still offers H.265 and the session gets no video.
+- The FFmpeg backend is not compiled into the Windows host at all (no
+  software encoder either), although the app ships FFmpeg for decoding and
+  the CI build of FFmpeg already contains `h264_amf`, `hevc_amf`, `av1_amf`,
+  the NVENC encoders, libx264 and SVT-AV1.
+
+First step done (`lunaris-media` `0514233`): the FFmpeg backend is compiled
+into the Windows host again and used when an FFmpeg encoder is asked for by
+name (`--encoder ffmpeg_amf`); the default selection is unchanged. On the
+RX 6600 XT `h264_amf` and `hevc_amf` open, then every frame fails in the old
+D3D11 conversion (`CreateVideoProcessorOutputView`: invalid parameter, on the
+NV12 texture of FFmpeg's frame pool). Sunshine renders into its own texture
+with its shaders and hands that to FFmpeg (`display_vram.cpp`); that is the
+next step, together with the option tables.
+
+Decision: AMF goes through FFmpeg as in Sunshine (`amdvce`,
+`video.cpp:983-1100`, D3D11 frames); the hand-written AMF encoder is removed
+once the FFmpeg one is measured to be no worse for H.264 on this machine.
+The planned latency comparison stays, but as an acceptance test, not as the
+way to choose: one of the two candidates does not work for two codecs.
+QSV follows the same route (needs libvpl in the FFmpeg build).
+
 ### Phase 4 — Windows capture (Sunshine `display_base.cpp`, `display_vram.cpp`, `display_wgc.cpp`)
 
 - `DuplicateOutput1` with Sunshine's format list; re-initialisation on
@@ -147,6 +208,13 @@ with `D3D11VA decode + D3D11 present` in the log for H.264 4:2:0, HEVC, AV1
 - Colour conversion by Sunshine's HLSL shaders instead of the D3D11 video
   processor (needed for exact matrices, 4:4:4 and HDR).
 - Windows Graphics Capture as the fallback when Desktop Duplication fails.
+
+Finding (2026-11-13): with the monitor asleep (Windows turned it off after
+15 idle minutes) `DuplicateOutput` returns `E_ACCESSDENIED` and Lunaris falls
+back to GDI, which no encoder accepts: no video. Sunshine wakes the display
+and keeps it awake (`SetThreadExecutionState`, `display_base.cpp:258`, `565`),
+syncs the thread desktop and retries (`display_base.cpp:84-93`). To port
+here.
 
 ### Phase 5 — HDR and 10-bit, end to end
 
@@ -189,4 +257,6 @@ with `D3D11VA decode + D3D11 present` in the log for H.264 4:2:0, HEVC, AV1
 |---|---|
 | Preparation: references, reports, Windows build and loopback test | done 2026-11-13 |
 | 1 | H.264 done and tested on Windows; other codecs wait for the host (Phase 3) |
-| 2–8 | not started |
+| 2 | host and protocol done; see the phase for what is open |
+| 3 | findings recorded, not started |
+| 4–8 | not started |

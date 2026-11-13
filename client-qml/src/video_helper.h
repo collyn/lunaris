@@ -28,6 +28,13 @@ struct YuvCoefficients {
 };
 YuvCoefficients video_yuv_coefficients();
 bool video_color_bt709();
+
+// The encoderCscMode asked of the host for this session (bit 0 = full range,
+// bits 1.. = colourspace 0 Rec. 601, 1 Rec. 709, 2 Rec. 2020), set by the
+// Rust side when the session is requested. Untagged frames are assumed to have
+// it (moonlight-qt renderer.h:245-275).
+void set_requested_csc_mode(int mode);
+int requested_csc_mode();
 bool video_color_full_range();
 
 void warp_cursor_helper(int x, int y);

@@ -16,6 +16,7 @@
 //    around every use of the render context, which Qt does not give us).
 
 #include "d3d11_video_item.h"
+#include "video_helper.h"
 
 #include <QQuickWindow>
 #include <QSGNode>
@@ -229,10 +230,10 @@ enum class SupportedFenceType {
 // ── Colour maths: moonlight-qt renderer.h ──────────────────────────────
 enum { COLORSPACE_REC_601, COLORSPACE_REC_709, COLORSPACE_REC_2020 };
 
-// moonlight-qt renderer.h:245-261 (getFrameColorspace). The default for an
-// untagged frame is BT.709 here, where Moonlight's D3D11VA default is Rec.601
-// (getDecoderColorspace(), renderer.h:233-236): Lunaris hosts encode BT.709
-// (see frame_color() in decoder.rs).
+// moonlight-qt renderer.h:245-261 (getFrameColorspace). An untagged frame is
+// assumed to have the colourspace that was requested of the host
+// (requested_csc_mode(), bits 1.. of encoderCscMode; same as frame_color() in
+// decoder.rs).
 int getFrameColorspace(const AVFrame *frame) {
     switch (frame->colorspace) {
     case AVCOL_SPC_SMPTE170M:
@@ -244,13 +245,13 @@ int getFrameColorspace(const AVFrame *frame) {
     case AVCOL_SPC_BT2020_CL:
         return COLORSPACE_REC_2020;
     default:
-        return COLORSPACE_REC_709;
+        return requested_csc_mode() >> 1;
     }
 }
 
-// moonlight-qt renderer.h:263-274 (isFrameFullRange). Untagged frames are
-// limited range here (Moonlight: full, renderer.h:238-241), the same default
-// as frame_color() in decoder.rs.
+// moonlight-qt renderer.h:263-274 (isFrameFullRange). An untagged frame is
+// assumed to have the range that was requested of the host
+// (requested_csc_mode() & 1), the same as frame_color() in decoder.rs.
 bool isFrameFullRange(const AVFrame *frame) {
     switch (frame->color_range) {
     case AVCOL_RANGE_JPEG:
@@ -258,7 +259,7 @@ bool isFrameFullRange(const AVFrame *frame) {
     case AVCOL_RANGE_MPEG:
         return false;
     default:
-        return false;
+        return (requested_csc_mode() & 1) != 0;
     }
 }
 

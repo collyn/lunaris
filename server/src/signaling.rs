@@ -738,9 +738,10 @@ async fn handle_client_signaling(
             display_id,
             virtual_display,
             chroma,
+            encoder_csc_mode,
             microphone,
         } => {
-            info!("Client {} requested session for host {} with settings: w={:?}, h={:?}, fps={:?}, bitrate={:?}, codec={:?}, app_id={:?}, virtual_display={:?}, chroma={:?}", client_id, host_id, width, height, fps, bitrate, codec, app_id, virtual_display, chroma);
+            info!("Client {} requested session for host {} with settings: w={:?}, h={:?}, fps={:?}, bitrate={:?}, codec={:?}, app_id={:?}, virtual_display={:?}, chroma={:?}, encoder_csc_mode={:?}", client_id, host_id, width, height, fps, bitrate, codec, app_id, virtual_display, chroma, encoder_csc_mode);
 
             let previous_host = state.client_to_agent.write().unwrap().remove(client_id);
             let mut stopped_previous_agent_session = false;
@@ -794,6 +795,7 @@ async fn handle_client_signaling(
                         display_id: display_id.clone(),
                         virtual_display,
                         chroma: chroma.clone(),
+                        encoder_csc_mode,
                         microphone,
                         ice_servers: Some(ice_servers),
                         requester,

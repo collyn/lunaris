@@ -203,6 +203,7 @@ pub fn from_direct_client(sig: SignalingMessage, conn_id: &str) -> Option<Signal
             display_id,
             virtual_display,
             chroma,
+            encoder_csc_mode,
             microphone,
         } => Some(IncomingSession {
             client_id: conn_id.to_string(),
@@ -216,6 +217,7 @@ pub fn from_direct_client(sig: SignalingMessage, conn_id: &str) -> Option<Signal
             display_id,
             virtual_display,
             chroma,
+            encoder_csc_mode,
             microphone,
             ice_servers: None,
             requester: None,
@@ -278,14 +280,16 @@ mod tests {
             display_id: None,
             virtual_display: None,
             chroma: Some("444".into()),
+            encoder_csc_mode: Some(5),
             microphone: Some(true),
         };
         match from_direct_client(req, "direct-1") {
-            Some(SignalingMessage::IncomingSession { client_id, width, chroma, microphone, ice_servers, .. }) => {
+            Some(SignalingMessage::IncomingSession { client_id, width, chroma, encoder_csc_mode, microphone, ice_servers, .. }) => {
                 assert_eq!(microphone, Some(true));
                 assert_eq!(client_id, "direct-1");
                 assert_eq!(width, Some(1920));
                 assert_eq!(chroma.as_deref(), Some("444"));
+                assert_eq!(encoder_csc_mode, Some(5));
                 assert!(ice_servers.is_none());
             }
             other => panic!("unexpected {:?}", other),

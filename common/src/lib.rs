@@ -227,6 +227,10 @@ pub enum SignalingMessage {
         /// Chroma subsampling: "420" (default) or "444".
         #[serde(default, skip_serializing_if = "Option::is_none")]
         chroma: Option<String>,
+        /// GameStream `encoderCscMode`: bit 0 = full range, bits 1.. = colourspace
+        /// (0 Rec. 601, 1 Rec. 709, 2 Rec. 2020). None = the host's default.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        encoder_csc_mode: Option<i32>,
         /// Also record the host's microphone into the stream's sound.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         microphone: Option<bool>,
@@ -246,6 +250,10 @@ pub enum SignalingMessage {
         /// Chroma subsampling requested by the client: "420" (default) or "444".
         #[serde(default, skip_serializing_if = "Option::is_none")]
         chroma: Option<String>,
+        /// GameStream `encoderCscMode`: bit 0 = full range, bits 1.. = colourspace
+        /// (0 Rec. 601, 1 Rec. 709, 2 Rec. 2020). None = the host's default.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        encoder_csc_mode: Option<i32>,
         /// Also record the host's microphone into the stream's sound.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         microphone: Option<bool>,

@@ -632,6 +632,11 @@ pub mod qobject {
         #[rust_name = "set_video_color"]
         fn set_video_color(bt709: bool, full_range: bool);
 
+        /// The colourspace/range requested of the host (encoderCscMode), which
+        /// untagged frames are assumed to have.
+        #[rust_name = "set_requested_csc_mode"]
+        fn set_requested_csc_mode(mode: i32);
+
         #[rust_name = "warp_cursor_helper"]
         fn warp_cursor_helper(x: i32, y: i32);
 
@@ -3389,6 +3394,38 @@ fn auto_codec_for_host(encoders: &[String], gpu_info: Option<&str>) -> &'static 
     }
 }
 
+/// Mirrors `lunaris_media::types::DEFAULT_ENCODER_CSC_MODE` (client-qml does
+/// not depend on lunaris-media): Rec. 709, limited range.
+pub(crate) const HOST_DEFAULT_ENCODER_CSC_MODE: i32 = 2;
+
+/// Composition of `requested_encoder_csc_mode` from the two override values
+/// (None = unset or not an integer).
+fn compose_encoder_csc_mode(space: Option<i32>, range: Option<i32>) -> Option<i32> {
+    if space.is_none() && range.is_none() {
+        return None;
+    }
+    // An absent one takes the host default's part.
+    let space = space.unwrap_or(HOST_DEFAULT_ENCODER_CSC_MODE >> 1);
+    let range = range.unwrap_or(HOST_DEFAULT_ENCODER_CSC_MODE & 1);
+    Some((space << 1) | range)
+}
+
+/// Value of an integer environment variable; unset or not an integer is
+/// None, as `qEnvironmentVariableIntValue(name, &ok)` with ok false.
+fn env_int(name: &str) -> Option<i32> {
+    std::env::var(name).ok()?.trim().parse::<i32>().ok()
+}
+
+/// Port of moonlight-qt session.cpp:540-556 (overrides only; the
+/// per-renderer request arrives with decoder selection, Phase 8).
+/// COLOR_SPACE_OVERRIDE: 0 Rec. 601, 1 Rec. 709, 2 Rec. 2020;
+/// COLOR_RANGE_OVERRIDE: 0 limited, 1 full. encoderCscMode =
+/// (colorspace << 1) | range, the inverse of Sunshine
+/// video_colorspace.cpp:59 and :82.
+fn requested_encoder_csc_mode() -> Option<i32> {
+    compose_encoder_csc_mode(env_int("COLOR_SPACE_OVERRIDE"), env_int("COLOR_RANGE_OVERRIDE"))
+}
+
 fn split_chroma_codec(codec: &str) -> (String, Option<String>) {
     let codec = codec.trim().to_ascii_lowercase();
     match codec.as_str() {
@@ -4958,6 +4995,14 @@ async fn run_webrtc_client_task(
     let (request_codec, request_chroma) = split_chroma_codec(&codec_str);
     let mut codec_str = codec_str;
 
+    // Colourspace and range asked of the host (None: the host default); the
+    // untagged-frame fallbacks of the renderers assume what was asked.
+    let requested_csc = requested_encoder_csc_mode();
+    if let Some(mode) = requested_csc {
+        println!("Requesting encoderCscMode {} (colour space {}, {} range)", mode, mode >> 1, if mode & 1 != 0 { "full" } else { "limited" });
+    }
+    crate::decoder::set_requested_encoder_csc_mode(requested_csc.unwrap_or(HOST_DEFAULT_ENCODER_CSC_MODE));
+
     // The session request, sent with the codec to use.
     let request_template = SignalingMessage::RequestSession {
         host_id: host_id.clone(),
@@ -4971,6 +5016,7 @@ async fn run_webrtc_client_task(
         display_id,
         virtual_display: if virtual_display { Some(true) } else { None },
         chroma: request_chroma,
+        encoder_csc_mode: requested_csc,
         microphone: crate::audio::record_microphone().then_some(true),
     };
     let request_with_codec = move |codec: &str| -> ClientMessage {
@@ -5334,6 +5380,25 @@ async fn run_webrtc_client_task(
         let _ = pc.close().await;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod csc_request_tests {
+    use super::compose_encoder_csc_mode;
+
+    #[test]
+    fn composes_overrides() {
+        // Neither set: the host default applies.
+        assert_eq!(compose_encoder_csc_mode(None, None), None);
+        // Both set: (space << 1) | range.
+        assert_eq!(compose_encoder_csc_mode(Some(2), Some(1)), Some(5));
+        assert_eq!(compose_encoder_csc_mode(Some(0), Some(0)), Some(0));
+        // One absent: the default's part (Rec. 709, limited).
+        assert_eq!(compose_encoder_csc_mode(Some(0), None), Some(0));
+        assert_eq!(compose_encoder_csc_mode(Some(2), None), Some(4));
+        assert_eq!(compose_encoder_csc_mode(None, Some(1)), Some(3));
+        assert_eq!(compose_encoder_csc_mode(None, Some(0)), Some(2));
+    }
 }
 
 #[cfg(test)]

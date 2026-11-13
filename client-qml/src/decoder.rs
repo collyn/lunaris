@@ -77,13 +77,47 @@ pub struct BgrxFrame {
     pub stride: i32,
 }
 
+/// The encoderCscMode asked of the host for this session (GameStream:
+/// bit 0 = full range, bits 1.. = colourspace 0 Rec. 601, 1 Rec. 709,
+/// 2 Rec. 2020); the default when nothing was asked.
+static REQUESTED_ENCODER_CSC_MODE: std::sync::atomic::AtomicI32 =
+    std::sync::atomic::AtomicI32::new(crate::bridge::HOST_DEFAULT_ENCODER_CSC_MODE);
+
+/// Store the request of the session (also handed to the C++ renderers).
+pub fn set_requested_encoder_csc_mode(mode: i32) {
+    REQUESTED_ENCODER_CSC_MODE.store(mode, std::sync::atomic::Ordering::Relaxed);
+    crate::bridge::qobject::set_requested_csc_mode(mode);
+}
+
 /// Matrix (BT.709 or not: BT.601) and range (full or studio) of a frame
-/// from its tags; untagged frames are BT.709 studio range, as decoders
-/// assume for HD video (and the agent's untagged encoders produce).
-pub fn frame_color(colorspace: i32, color_range: i32, format: i32) -> (bool, bool) {
-    let bt601 = colorspace == ffi::AVColorSpace::AVCOL_SPC_BT470BG as i32
-        || colorspace == ffi::AVColorSpace::AVCOL_SPC_SMPTE170M as i32;
-    let full = color_range == ffi::AVColorRange::AVCOL_RANGE_JPEG as i32
+/// from its tags. Port of moonlight-qt renderer.h:245-275 (getFrameColorspace,
+/// isFrameFullRange): "If the colorspace is not populated, assume the encoder
+/// is sending the colorspace that we requested" (and the same for the range).
+/// `requested_csc` is the encoderCscMode asked of the host. A requested
+/// Rec. 2020 cannot be expressed in the (bt709, full) result: like a tagged
+/// BT.2020 frame it counts as "not BT.601".
+pub fn frame_color(colorspace: i32, color_range: i32, format: i32, requested_csc: i32) -> (bool, bool) {
+    let bt601 = if colorspace == ffi::AVColorSpace::AVCOL_SPC_BT470BG as i32
+        || colorspace == ffi::AVColorSpace::AVCOL_SPC_SMPTE170M as i32
+    {
+        true
+    } else if colorspace == ffi::AVColorSpace::AVCOL_SPC_BT709 as i32
+        || colorspace == ffi::AVColorSpace::AVCOL_SPC_BT2020_NCL as i32
+        || colorspace == ffi::AVColorSpace::AVCOL_SPC_BT2020_CL as i32
+    {
+        false
+    } else {
+        requested_csc >> 1 == 0
+    };
+    let tagged_full = if color_range == ffi::AVColorRange::AVCOL_RANGE_JPEG as i32 {
+        true
+    } else if color_range == ffi::AVColorRange::AVCOL_RANGE_MPEG as i32 {
+        false
+    } else {
+        requested_csc & 1 != 0
+    };
+    // YUVJ pixel formats are full range.
+    let full = tagged_full
         || format == ffi::AVPixelFormat::AV_PIX_FMT_YUVJ420P as i32
         || format == ffi::AVPixelFormat::AV_PIX_FMT_YUVJ444P as i32;
     (!bt601, full)
@@ -516,7 +550,13 @@ impl HardwareDecoder {
         let format = unsafe { (*gpu_frame).format };
         // The renderers convert YCbCr with the stream's own matrix and range.
         let (bt709, full_range) =
-            unsafe { frame_color((*gpu_frame).colorspace as i32, (*gpu_frame).color_range as i32, format) };
+            unsafe { frame_color(
+                (*gpu_frame).colorspace as i32,
+                (*gpu_frame).color_range as i32,
+                format,
+                REQUESTED_ENCODER_CSC_MODE.load(std::sync::atomic::Ordering::Relaxed),
+            )
+        };
         if self.last_color != Some((bt709, full_range)) {
             self.last_color = Some((bt709, full_range));
             println!("Video colours: {} {} range", if bt709 { "BT.709" } else { "BT.601" }, if full_range { "full" } else { "studio" });
@@ -1096,10 +1136,26 @@ mod color_tests {
         let mpeg = ffi::AVColorRange::AVCOL_RANGE_MPEG as i32;
         let jpeg = ffi::AVColorRange::AVCOL_RANGE_JPEG as i32;
         let no_range = ffi::AVColorRange::AVCOL_RANGE_UNSPECIFIED as i32;
-        // Untagged: BT.709 studio.
-        assert_eq!(frame_color(unspec, no_range, nv12), (true, false));
-        assert_eq!(frame_color(ffi::AVColorSpace::AVCOL_SPC_BT709 as i32, jpeg, nv12), (true, true));
-        assert_eq!(frame_color(ffi::AVColorSpace::AVCOL_SPC_SMPTE170M as i32, mpeg, nv12), (false, false));
-        assert_eq!(frame_color(unspec, no_range, ffi::AVPixelFormat::AV_PIX_FMT_YUVJ420P as i32), (true, true));
+        // The default request: Rec. 709, limited.
+        let default = crate::bridge::HOST_DEFAULT_ENCODER_CSC_MODE;
+        // Untagged: what was requested, here BT.709 studio.
+        assert_eq!(frame_color(unspec, no_range, nv12, default), (true, false));
+        assert_eq!(frame_color(ffi::AVColorSpace::AVCOL_SPC_BT709 as i32, jpeg, nv12, default), (true, true));
+        assert_eq!(frame_color(ffi::AVColorSpace::AVCOL_SPC_SMPTE170M as i32, mpeg, nv12, default), (false, false));
+        assert_eq!(frame_color(unspec, no_range, ffi::AVPixelFormat::AV_PIX_FMT_YUVJ420P as i32, default), (true, true));
+    }
+
+    #[test]
+    fn untagged_frames_take_the_requested_colours() {
+        let nv12 = ffi::AVPixelFormat::AV_PIX_FMT_NV12 as i32;
+        let unspec = ffi::AVColorSpace::AVCOL_SPC_UNSPECIFIED as i32;
+        let mpeg = ffi::AVColorRange::AVCOL_RANGE_MPEG as i32;
+        let no_range = ffi::AVColorRange::AVCOL_RANGE_UNSPECIFIED as i32;
+        // Rec. 601 full range requested (encoderCscMode 1).
+        assert_eq!(frame_color(unspec, no_range, nv12, 1), (false, true));
+        // Rec. 2020 limited requested (4): not BT.601.
+        assert_eq!(frame_color(unspec, no_range, nv12, 4), (true, false));
+        // Tags win over the request.
+        assert_eq!(frame_color(ffi::AVColorSpace::AVCOL_SPC_BT709 as i32, mpeg, nv12, 1), (true, false));
     }
 }

@@ -234,6 +234,7 @@ pub async fn setup_bridge_session(
     display_id: Option<String>,
     virtual_display: Option<bool>,
     yuv444: bool,
+    encoder_csc_mode: Option<i32>,
     microphone: bool,
     ice_servers: Option<Vec<common::RtcIceServer>>,
 ) -> Result<Arc<BridgeSession>> {
@@ -257,8 +258,16 @@ pub async fn setup_bridge_session(
     let requested_codec = codec.as_deref().unwrap_or("h264").to_lowercase();
     let mut codec_str = requested_codec.clone();
 
+    // Sunshine video.cpp: colorspace_from_client_config(config, hdr_display).
+    // dynamicRange 0 and no HDR display until Phase 5.
+    let media_colorspace = lunaris_media::colorspace::from_client_config(
+        encoder_csc_mode.unwrap_or(lunaris_media::types::DEFAULT_ENCODER_CSC_MODE),
+        0,
+        false,
+    );
+
     info!(
-        "Session media request: client={} res={}x{} fps={} bitrate={}kbps codec={} encoder={} display={} virtual_display={} yuv444={}",
+        "Session media request: client={} res={}x{} fps={} bitrate={}kbps codec={} encoder={} display={} virtual_display={} yuv444={} csc={} full_range={}",
         client_id,
         resolution_width,
         resolution_height,
@@ -268,7 +277,9 @@ pub async fn setup_bridge_session(
         encoder.as_deref().unwrap_or("auto"),
         display_id.as_deref().unwrap_or("default"),
         virtual_display.unwrap_or(false),
-        yuv444
+        yuv444,
+        media_colorspace.colorspace.label(),
+        media_colorspace.full_range
     );
 
     // Resolve codec settings before registering WebRTC codecs. The SDP offer
@@ -839,6 +850,7 @@ pub async fn setup_bridge_session(
         preferred_encoder: encoder.clone(),
         virtual_display: virtual_display.unwrap_or(false),
         yuv444,
+        colorspace: media_colorspace,
         microphone,
     };
 
