@@ -120,105 +120,68 @@ fn encoder_supports_codec(
     encoder.supported_codecs.contains(&codec)
 }
 
-fn host_gpu_likely_supports_av1_encode() -> bool {
-    let Some(gpu) = lunaris_media::encode::describe_host_gpu(None) else {
-        return false;
-    };
-    let gpu = gpu.to_ascii_lowercase();
-
-    if gpu.contains("nvidia") {
-        return gpu.contains("rtx 40")
-            || gpu.contains("rtx 50")
-            || gpu.contains("ada")
-            || gpu.contains("blackwell")
-            || gpu.contains(" l4")
-            || gpu.contains(" l40");
-    }
-
-    if gpu.contains("intel") {
-        return gpu.contains("arc")
-            || gpu.contains("battlemage")
-            || gpu.contains("data center gpu")
-            || gpu.contains(" flex");
-    }
-
-    if gpu.contains("amd") || gpu.contains("radeon") {
-        return gpu.contains("rx 7")
-            || gpu.contains("rx 8")
-            || gpu.contains("rx 9")
-            || gpu.contains("rdna3")
-            || gpu.contains("rdna 3");
-    }
-
-    false
-}
-
-fn codec_supported_for_realtime(
+/// Codecs this host offers for realtime streaming. H.264 may be software
+/// (existing Lunaris policy: it is the fallback everywhere). H.265 and AV1
+/// are offered only when a HARDWARE encoder for them really opens
+/// (`hardware_opens`, from [`hardware_encoder_opens_blocking`]); software
+/// HEVC/AV1 are too slow for interactive use. `hardware_opens` is ignored for
+/// H.264.
+pub(crate) fn codec_supported_for_realtime(
     encoders: &[lunaris_media::EncoderInfo],
     codec: lunaris_media::VideoCodec,
+    hardware_opens: bool,
 ) -> bool {
     match codec {
         lunaris_media::VideoCodec::H264 => {
             encoders.iter().any(|e| encoder_supports_codec(e, codec))
         }
-        lunaris_media::VideoCodec::H265 => encoders.iter().any(|e| {
-            e.hw_type != lunaris_media::HwAccelType::Software && encoder_supports_codec(e, codec)
-        }),
-        lunaris_media::VideoCodec::AV1 => {
-            host_gpu_likely_supports_av1_encode()
-                && encoders.iter().any(|e| {
-                    e.hw_type != lunaris_media::HwAccelType::Software
-                        && encoder_supports_codec(e, codec)
-                })
-        }
+        lunaris_media::VideoCodec::H265 | lunaris_media::VideoCodec::AV1 => hardware_opens,
     }
 }
 
 /// Whether a hardware encoder for `codec` actually opens on this machine at
-/// this size. FFmpeg listing e.g. `hevc_vaapi` does not mean the driver
-/// accepts it (Intel iHD can refuse it), and offering such a codec ends in a
-/// black stream. The result is cached per codec and size. Windows uses its
-/// native encoders and keeps the listing-based check.
+/// this size, on every platform: FFmpeg listing e.g. `hevc_vaapi` does not
+/// mean the driver accepts it, and offering such a codec ends in a black
+/// stream. The probe opens an encoder (tens to hundreds of ms), so the result
+/// is cached per codec and size; call this from a blocking context.
+pub(crate) fn hardware_encoder_opens_blocking(
+    codec: lunaris_media::VideoCodec,
+    width: u32,
+    height: u32,
+    fps: u32,
+) -> bool {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    static CACHE: OnceLock<Mutex<HashMap<String, bool>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let key = format!("{:?}-{}x{}", codec, width, height);
+    if let Some(ok) = cache.lock().unwrap().get(&key) {
+        return *ok;
+    }
+    let probed = lunaris_media::encode::probe_encoder(codec, width, height, fps);
+    let ok = probed
+        .as_ref()
+        .is_some_and(|e| e.hw_type != lunaris_media::HwAccelType::Software);
+    info!(
+        "Encoder probe {:?} {}x{}: {}",
+        codec,
+        width,
+        height,
+        probed.map(|e| format!("{} ({:?})", e.name, e.hw_type)).unwrap_or_else(|| "none".into())
+    );
+    cache.lock().unwrap().insert(key, ok);
+    ok
+}
+
 async fn hardware_encoder_opens(
     codec: lunaris_media::VideoCodec,
     width: u32,
     height: u32,
     fps: u32,
 ) -> bool {
-    #[cfg(target_os = "windows")]
-    {
-        let _ = (codec, width, height, fps);
-        true
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        use std::collections::HashMap;
-        use std::sync::{Mutex, OnceLock};
-        static CACHE: OnceLock<Mutex<HashMap<String, bool>>> = OnceLock::new();
-        let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-        let key = format!("{:?}-{}x{}", codec, width, height);
-        if let Some(ok) = cache.lock().unwrap().get(&key) {
-            return *ok;
-        }
-        let probed = tokio::task::spawn_blocking(move || {
-            lunaris_media::encode::probe_encoder(codec, width, height, fps)
-        })
+    tokio::task::spawn_blocking(move || hardware_encoder_opens_blocking(codec, width, height, fps))
         .await
-        .ok()
-        .flatten();
-        let ok = probed
-            .as_ref()
-            .is_some_and(|e| e.hw_type != lunaris_media::HwAccelType::Software);
-        info!(
-            "Encoder probe {:?} {}x{}: {}",
-            codec,
-            width,
-            height,
-            probed.map(|e| format!("{} ({:?})", e.name, e.hw_type)).unwrap_or_else(|| "none".into())
-        );
-        cache.lock().unwrap().insert(key, ok);
-        ok
-    }
+        .unwrap_or(false)
 }
 
 pub async fn setup_bridge_session(
@@ -286,14 +249,18 @@ pub async fn setup_bridge_session(
     // must only advertise the codec the host can actually encode; otherwise
     // the answer can select H.265 while the RTP track is configured for H.264.
     let encoders = lunaris_media::encode::list_available_encoders();
-    // Listed encoders are only candidates; for the requested codec also check
-    // that a hardware encoder really opens, or the session would stay black.
-    let hevc_supported = codec_supported_for_realtime(&encoders, lunaris_media::VideoCodec::H265)
-        && (codec_str != "h265"
-            || hardware_encoder_opens(lunaris_media::VideoCodec::H265, resolution_width, resolution_height, stream_fps).await);
-    let av1_supported = codec_supported_for_realtime(&encoders, lunaris_media::VideoCodec::AV1)
-        && (codec_str != "av1"
-            || hardware_encoder_opens(lunaris_media::VideoCodec::AV1, resolution_width, resolution_height, stream_fps).await);
+    // Listed encoders are only candidates: H.265 and AV1 are supported when
+    // a hardware encoder for them really opens (cached per codec and size).
+    let hevc_supported = codec_supported_for_realtime(
+        &encoders,
+        lunaris_media::VideoCodec::H265,
+        hardware_encoder_opens(lunaris_media::VideoCodec::H265, resolution_width, resolution_height, stream_fps).await,
+    );
+    let av1_supported = codec_supported_for_realtime(
+        &encoders,
+        lunaris_media::VideoCodec::AV1,
+        hardware_encoder_opens(lunaris_media::VideoCodec::AV1, resolution_width, resolution_height, stream_fps).await,
+    );
     if codec_str == "av1" && !av1_supported {
         info!("AV1 requested but host doesn't support it, falling back to H.264");
         codec_str = "h264".to_string();
@@ -1763,5 +1730,34 @@ fn handle_inbound_packet(
             crate::share::type_text(injector, &text);
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod codec_support_tests {
+    use super::*;
+    use lunaris_media::{EncoderInfo, HwAccelType, VideoCodec};
+
+    fn listed(codecs: &[VideoCodec], hw_type: HwAccelType) -> Vec<EncoderInfo> {
+        vec![EncoderInfo { name: "test".into(), hw_type, supported_codecs: codecs.to_vec() }]
+    }
+
+    #[test]
+    fn h264_follows_the_encoder_list() {
+        let sw = listed(&[VideoCodec::H264], HwAccelType::Software);
+        assert!(codec_supported_for_realtime(&sw, VideoCodec::H264, false));
+        assert!(!codec_supported_for_realtime(&[], VideoCodec::H264, true));
+    }
+
+    #[test]
+    fn h265_and_av1_need_a_hardware_probe_success() {
+        let hw = listed(&[VideoCodec::H264, VideoCodec::H265, VideoCodec::AV1], HwAccelType::Amf);
+        for codec in [VideoCodec::H265, VideoCodec::AV1] {
+            assert!(codec_supported_for_realtime(&hw, codec, true));
+            // Listed but the encoder does not open: not offered.
+            assert!(!codec_supported_for_realtime(&hw, codec, false));
+            // Probe success does not depend on the list.
+            assert!(codec_supported_for_realtime(&[], codec, true));
+        }
     }
 }

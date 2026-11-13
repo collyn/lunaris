@@ -42,66 +42,9 @@ fn get_current_time_ms() -> u64 {
         .as_millis() as u64
 }
 
-fn encoder_supports_codec(
-    encoder: &lunaris_media::EncoderInfo,
-    codec: lunaris_media::VideoCodec,
-) -> bool {
-    encoder.supported_codecs.contains(&codec)
-}
-
-fn host_gpu_likely_supports_av1_encode() -> bool {
-    let Some(gpu) = lunaris_media::encode::describe_host_gpu(None) else {
-        return false;
-    };
-    let gpu = gpu.to_ascii_lowercase();
-
-    if gpu.contains("nvidia") {
-        return gpu.contains("rtx 40")
-            || gpu.contains("rtx 50")
-            || gpu.contains("ada")
-            || gpu.contains("blackwell")
-            || gpu.contains(" l4")
-            || gpu.contains(" l40");
-    }
-
-    if gpu.contains("intel") {
-        return gpu.contains("arc")
-            || gpu.contains("battlemage")
-            || gpu.contains("data center gpu")
-            || gpu.contains(" flex");
-    }
-
-    if gpu.contains("amd") || gpu.contains("radeon") {
-        return gpu.contains("rx 7")
-            || gpu.contains("rx 8")
-            || gpu.contains("rx 9")
-            || gpu.contains("rdna3")
-            || gpu.contains("rdna 3");
-    }
-
-    false
-}
-
-fn codec_supported_for_realtime(
-    encoders: &[lunaris_media::EncoderInfo],
-    codec: lunaris_media::VideoCodec,
-) -> bool {
-    match codec {
-        lunaris_media::VideoCodec::H264 => encoders.iter().any(|e| encoder_supports_codec(e, codec)),
-        lunaris_media::VideoCodec::H265 => encoders.iter().any(|e| {
-            e.hw_type != lunaris_media::HwAccelType::Software && encoder_supports_codec(e, codec)
-        }),
-        lunaris_media::VideoCodec::AV1 => {
-            host_gpu_likely_supports_av1_encode()
-                && encoders.iter().any(|e| {
-                    e.hw_type != lunaris_media::HwAccelType::Software
-                        && encoder_supports_codec(e, codec)
-                })
-        }
-    }
-}
-
-use crate::bridge::{setup_bridge_session, BridgeSession};
+use crate::bridge::{
+    codec_supported_for_realtime, hardware_encoder_opens_blocking, setup_bridge_session, BridgeSession,
+};
 use crate::pairing::AgentConfig;
 
 #[derive(Parser, Debug)]
@@ -164,7 +107,6 @@ fn probe_encoders() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         ))
         .with(tracing_subscriber::fmt::layer())
         .try_init();
-    #[cfg(not(target_os = "windows"))]
     for codec in [
         lunaris_media::VideoCodec::H264,
         lunaris_media::VideoCodec::H265,
@@ -174,10 +116,6 @@ fn probe_encoders() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             Some(e) => println!("{:?}: {} ({:?})", codec, e.name, e.hw_type),
             None => println!("{:?}: no working encoder", codec),
         }
-    }
-    #[cfg(target_os = "windows")]
-    for e in lunaris_media::encode::list_available_encoders() {
-        println!("{} ({:?}): {:?}", e.name, e.hw_type, e.supported_codecs);
     }
     Ok(())
 }
@@ -428,9 +366,18 @@ pub(crate) fn codec_support_bits() -> u32 {
 
 fn probe_codec_support() -> u32 {
     let encoders = lunaris_media::encode::list_available_encoders();
-    let h264 = codec_supported_for_realtime(&encoders, lunaris_media::VideoCodec::H264);
-    let h265 = codec_supported_for_realtime(&encoders, lunaris_media::VideoCodec::H265);
-    let av1 = codec_supported_for_realtime(&encoders, lunaris_media::VideoCodec::AV1);
+    let h264 = codec_supported_for_realtime(&encoders, lunaris_media::VideoCodec::H264, false);
+    // The cached probe (1080p60, as `--probe-encoders`) decides H.265 and AV1.
+    let h265 = codec_supported_for_realtime(
+        &encoders,
+        lunaris_media::VideoCodec::H265,
+        hardware_encoder_opens_blocking(lunaris_media::VideoCodec::H265, 1920, 1080, 60),
+    );
+    let av1 = codec_supported_for_realtime(
+        &encoders,
+        lunaris_media::VideoCodec::AV1,
+        hardware_encoder_opens_blocking(lunaris_media::VideoCodec::AV1, 1920, 1080, 60),
+    );
     let mut bits: u32 = 0;
     if h264 {
         bits |= 262145;

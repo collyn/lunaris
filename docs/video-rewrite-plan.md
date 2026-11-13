@@ -218,6 +218,15 @@ them):
   within 2/255, expected profiles, no B-frames. Not yet run as a real stream
   on a Linux host. NVENC 4:4:4 keeps `rgb_mode=yuv444` (BGRA input path).
 
+- The host offers H.265 and AV1 only when a hardware encoder for them really
+  opens, on every platform (`probe_encoder`, now also on Windows; the guess
+  from the GPU's name is gone). RX 6600 XT: H.264 and H.265 through AMF, AV1
+  none, and an AV1 request falls back to H.264. Of Sunshine's
+  `probe_encoders` this is the opening only: the test frame with SPS/VUI
+  validation, the HDR and 4:4:4 probes and re-probing are not ported.
+- FIR and the client's IDR request message ask for an IDR frame as PLI does
+  (`stream.cpp:1221-1225`).
+
 Still to do in this phase: VAAPI (with Sunshine's platform rate-control code,
 Phase 6), software and QSV on Windows, `probe_encoders` and what the
 host advertises, native NVENC as `src/nvenc` (bitrate, invalidation), H.264
