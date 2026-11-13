@@ -253,12 +253,29 @@ QSV follows the same route (needs libvpl in the FFmpeg build).
   processor (needed for exact matrices, 4:4:4 and HDR).
 - Windows Graphics Capture as the fallback when Desktop Duplication fails.
 
-Finding (2026-11-13): with the monitor asleep (Windows turned it off after
-15 idle minutes) `DuplicateOutput` returns `E_ACCESSDENIED` and Lunaris falls
-back to GDI, which no encoder accepts: no video. Sunshine wakes the display
-and keeps it awake (`SetThreadExecutionState`, `display_base.cpp:258`, `565`),
-syncs the thread desktop and retries (`display_base.cpp:84-93`). To port
-here.
+Done (2026-11-13, `lunaris-media`): duplication start-up as Sunshine
+(`syncThreadDesktop` before each of two `DuplicateOutput` tries, display
+power-on when no output is found, display kept awake while capturing) and
+recovery: the reinit class of errors (`ACCESS_LOST`, `ACCESS_DENIED`,
+`WAIT_ABANDONED`, stale factory, changed size) makes the pipeline stop the
+capture and the encoder and build both again on a new device, as
+`video.cpp:1752-1810` and `2831-2975` do. Measured on the RX 6600 XT: a mode
+change during a stream recovers in about one second (before: the stream
+ended). Re-creating only the duplication on the old device was tried first
+and does not work.
+
+Not confirmed: the morning's failure (`DuplicateOutput` access denied after
+the machine sat idle, fixed by waking the display) could not be reproduced
+later — neither the new nor the old build failed with the monitor timed out
+— so the start-up port is untested against it. A monitor switched off by
+force gives no frames until an input wakes it (same in Sunshine).
+
+Open: a retry round that falls back to GDI; finding the output again by name
+(`refresh_displays`); `SetThreadDesktop` returns `ERROR_BUSY` on threads that
+own windows (matters for the secure desktop, with the service work below).
+Still to port in this phase: `DuplicateOutput1` and formats, priorities and
+the timer pacing, the two-device layout, cursor passes, the HLSL conversion,
+WGC.
 
 Requirement from the owner (2026-11-13): on Windows the agent has to run
 elevated, otherwise it cannot operate system applications such as Task
@@ -312,4 +329,5 @@ together with the desktop switching of `syncThreadDesktop`.
 | 1 | H.264 and HEVC tested on Windows (HEVC with `--encoder ffmpeg_amf`); AV1 not decodable on this GPU's host side yet |
 | 2 | host and protocol done; see the phase for what is open |
 | 3 | AMD on Windows done (FFmpeg AMF with Sunshine's table, default); rest open |
-| 4–8 | not started |
+| 4 | start-up and recovery of Desktop Duplication done; rest open |
+| 5–8 | not started |
