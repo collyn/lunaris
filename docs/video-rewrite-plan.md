@@ -366,6 +366,18 @@ Windows host → Chrome on Linux over a WireGuard tunnel, 1080p60, 15 Mbit/s,
 - Open: the desktop client had one bad run after the FEC change (4.3 s
   freeze, 21 PLIs), not yet repeated with `601d5bb`; key frames are sent as
   one burst; no session longer than 5 minutes has been measured.
+- 20 minutes at 20 Mbit/s (Chrome, W1 build): 7 hitches above 100 ms and one
+  3 s freeze, in clusters; the last 5 minutes clean. The freeze was a 1.5 s
+  stretch of heavy loss on the path (hundreds of packets, at times every
+  second one) that also took both key frames sent to repair it; the host does
+  not lower its bitrate when the path is congested. Of 223 NACK messages 127
+  named one packet, 48 two adjacent ones, 48 three or more: one repair packet
+  per 5 cannot rebuild the pairs (candidate: 10 media : 2 repair, interleaved,
+  same overhead).
+- Open (desktop client, Windows loopback): the client asked for video packet
+  49 again every 20 ms for 2.6 s although it had arrived (SRTP reported each
+  resend as a duplicate) — a packet received before the NACK generator saw the
+  stream is never marked as received.
 - Open (Phase 4): when the desktop changes at about 30 fps the Windows host
   sends about 51 fps with uneven spacing (3–34 ms), because repeated frames
   are added between the new ones.

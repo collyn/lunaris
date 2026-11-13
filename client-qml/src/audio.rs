@@ -29,7 +29,7 @@ pub fn setup_audio() -> Option<mpsc::UnboundedSender<Vec<f32>>> {
     let config = device.default_output_config().ok()?;
 
     let config_channels = config.channels();
-    let config_sample_rate = config.sample_rate().0;
+    let config_sample_rate = config.sample_rate();
     info!(
         "Initializing CPAL audio output device: {} channels, {} Hz",
         config_channels, config_sample_rate
@@ -41,7 +41,7 @@ pub fn setup_audio() -> Option<mpsc::UnboundedSender<Vec<f32>>> {
 
     let stream = device
         .build_output_stream(
-            &config.into(),
+            config.into(),
             move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
                 while let Ok(samples) = rx.try_recv() {
                     playout.push(&samples);
