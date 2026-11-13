@@ -3868,6 +3868,9 @@ async fn setup_peer_connection(
                     let mut stats_gap_min = f64::MAX;
                     let mut stats_gap_max = 0.0f64;
                     let mut stats_gap_late: u32 = 0;
+                    let mut stats_fill_count: u32 = 0;
+                    let mut stats_fill_max = 0.0f64;
+                    let mut stats_fill_sum = 0.0f64;
 
                     while let Some(rtp_packet) = rtp_rx.blocking_recv() {
                         let _ = pending_packets_decoder.fetch_update(
@@ -3927,6 +3930,14 @@ async fn setup_peer_connection(
                             .map(|expected| !packet_buffer.contains_key(&expected))
                             .unwrap_or(false);
                         if !gap_open {
+                            if let Some(since) = gap_since {
+                                // A gap closed: the missing packet arrived
+                                // (reordering or a NACK retransmission).
+                                let ms = since.elapsed().as_secs_f64() * 1000.0;
+                                stats_fill_count += 1;
+                                stats_fill_max = stats_fill_max.max(ms);
+                                stats_fill_sum += ms;
+                            }
                             gap_since = None;
                         } else if gap_since.is_none() {
                             gap_since = Some(std::time::Instant::now());
@@ -4567,7 +4578,7 @@ async fn setup_peer_connection(
                             let fps = frame_count as f64 / elapsed;
                             if stats_log {
                                 println!(
-                                    "Client stats: fps={:.1} frame_gap_ms(min/max)={:.1}/{:.1} gaps_over_25ms={} decode_ms={:.2} lost_packets={} loss_events={} queue_lag_events={}",
+                                    "Client stats: fps={:.1} frame_gap_ms(min/max)={:.1}/{:.1} gaps_over_25ms={} decode_ms={:.2} lost_packets={} loss_events={} queue_lag_events={} gaps_filled={} fill_ms(avg/max)={:.0}/{:.0}",
                                     fps,
                                     if stats_gap_min == f64::MAX { 0.0 } else { stats_gap_min },
                                     stats_gap_max,
@@ -4575,9 +4586,15 @@ async fn setup_peer_connection(
                                     if decode_count > 0 { total_decode_time_ms / decode_count as f64 } else { 0.0 },
                                     packets_lost,
                                     packet_loss_events,
-                                    queue_lag_events
+                                    queue_lag_events,
+                                    stats_fill_count,
+                                    if stats_fill_count > 0 { stats_fill_sum / stats_fill_count as f64 } else { 0.0 },
+                                    stats_fill_max
                                 );
                             }
+                            stats_fill_count = 0;
+                            stats_fill_max = 0.0;
+                            stats_fill_sum = 0.0;
                             stats_gap_min = f64::MAX;
                             stats_gap_max = 0.0;
                             stats_gap_late = 0;

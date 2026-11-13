@@ -530,6 +530,17 @@ pub async fn setup_bridge_session(
                         // Too soon — suppress this PLI to avoid IDR flood on slow networks.
                         debug!("PLI/FIR suppressed: last IDR only {}ms ago (debounce=1000ms)", elapsed_ms);
                     }
+                } else if let Some(nack) = packet_any.downcast_ref::<webrtc::rtcp::transport_feedbacks::transport_layer_nack::TransportLayerNack>() {
+                    // Diagnosis of loss recovery (debug log): which packets the
+                    // client asks for again. The same number asked for twice
+                    // means the first retransmission did not help.
+                    if tracing::enabled!(tracing::Level::DEBUG) {
+                        let mut seqs: Vec<u16> = Vec::new();
+                        for pair in &nack.nacks {
+                            seqs.extend(pair.packet_list());
+                        }
+                        debug!("NACK from the client: {} packet(s) {:?}", seqs.len(), &seqs[..seqs.len().min(12)]);
+                    }
                 } else if let Some(remb) = packet_any.downcast_ref::<webrtc::rtcp::payload_feedbacks::receiver_estimated_maximum_bitrate::ReceiverEstimatedMaximumBitrate>() {
                     let estimated_bitrate_kbps = (remb.bitrate / 1000.0) as u32;
 
