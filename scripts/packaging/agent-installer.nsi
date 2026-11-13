@@ -14,6 +14,8 @@
 !define UNINST  "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP}"
 
 Name "${APP}"
+; One LZMA stream over all files: about a third smaller than the default.
+SetCompressor /SOLID lzma
 OutFile "..\..\lunaris-agent-installer.exe"
 InstallDir "$PROGRAMFILES64\${APP}"
 InstallDirRegKey HKLM "Software\${APP}" "InstallDir"

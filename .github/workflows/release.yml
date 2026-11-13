@@ -406,10 +406,13 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path lunaris-client-desktop
           Copy-Item target/release/client-desktop.exe -Destination lunaris-client-desktop/
-          & "${env:QT_ROOT_DIR}/bin/windeployqt.exe" --qmldir client-qml/qml --no-translations --compiler-runtime lunaris-client-desktop/client-desktop.exe
-          Copy-Item "C:/vcpkg/installed/x64-windows/bin/*.dll" -Destination lunaris-client-desktop/
+          & "${env:QT_ROOT_DIR}/bin/windeployqt.exe" --qmldir client-qml/qml --no-translations --no-opengl-sw --no-compiler-runtime lunaris-client-desktop/client-desktop.exe
+          if ($LASTEXITCODE -ne 0) { throw "windeployqt failed" }
+          # Drop what the app does not use (see the script), then add our FFmpeg.
+          ./scripts/packaging/windows/prune-qt.ps1 -Dir lunaris-client-desktop
           Copy-Item "C:/ffmpeg/bin/*.dll" -Destination lunaris-client-desktop/
           Copy-Item LICENSE, scripts/packaging/THIRD-PARTY-NOTICES.md -Destination lunaris-client-desktop/
+          ./scripts/packaging/windows/smoke-qml.ps1 -Exe lunaris-client-desktop/client-desktop.exe
           Compress-Archive -Path lunaris-client-desktop/* -DestinationPath lunaris-client-desktop-windows.zip
           
           # Package QML Client separately (rename binary and bundle as client-qml)
@@ -428,28 +431,21 @@ jobs:
           # the MSVC runtime, so it runs on a clean Windows install.
           New-Item -ItemType Directory -Force -Path lunaris-agent
           Copy-Item target/release/agent.exe -Destination lunaris-agent/lunaris-agent.exe
-          & "${env:QT_ROOT_DIR}/bin/windeployqt.exe" --qmldir agent-app/qml --no-translations --no-opengl-sw --compiler-runtime lunaris-agent/lunaris-agent.exe
+          & "${env:QT_ROOT_DIR}/bin/windeployqt.exe" --qmldir agent-app/qml --no-translations --no-opengl-sw --no-compiler-runtime lunaris-agent/lunaris-agent.exe
           if ($LASTEXITCODE -ne 0) { throw "windeployqt failed" }
-          Copy-Item "C:/vcpkg/installed/x64-windows/bin/*.dll" -Destination lunaris-agent/
+          # Drop what the app does not use (see the script), then add our FFmpeg.
+          ./scripts/packaging/windows/prune-qt.ps1 -Dir lunaris-agent
           Copy-Item "C:/ffmpeg/bin/*.dll" -Destination lunaris-agent/
-          Copy-Item "$env:VCToolsRedistDir/x64/Microsoft.VC143.CRT/*.dll" -Destination lunaris-agent/
-          Remove-Item lunaris-agent/vc_redist*.exe -ErrorAction SilentlyContinue
           Copy-Item LICENSE, scripts/packaging/THIRD-PARTY-NOTICES.md -Destination lunaris-agent/
           Get-ChildItem lunaris-agent | Select-Object -First 40 Name
 
-          # Smoke test with nothing but System32 on PATH: a missing DLL makes the
-          # process die at load (0xC0000135); a broken QML import makes it exit early.
-          # Also hide the build machine's Qt (QML/plugin search paths), so only
-          # what was packaged can be found.
+          # Smoke tests with nothing but Windows on PATH and the build machine's
+          # Qt hidden: a missing DLL makes the process die at load (0xC0000135),
+          # a missing QML module shows in its error output.
           $clean = "C:\Windows\System32;C:\Windows"
-          $env:QML2_IMPORT_PATH = $null; $env:QML_IMPORT_PATH = $null; $env:QT_PLUGIN_PATH = $null
-          $env:QT_ROOT_DIR = $null; $env:Qt6_DIR = $null
           $p = Start-Process lunaris-agent/lunaris-agent.exe -ArgumentList "--help" -PassThru -Wait -Environment @{ PATH = $clean }
           if ($p.ExitCode -ne 0) { throw "lunaris-agent --help exited with $($p.ExitCode)" }
-          $gui = Start-Process lunaris-agent/lunaris-agent.exe -ArgumentList "--minimized" -PassThru -Environment @{ PATH = $clean; QT_QPA_PLATFORM = "offscreen"; QT_DEBUG_PLUGINS = "0" }
-          Start-Sleep -Seconds 10
-          if ($gui.HasExited) { throw "agent GUI exited early with code $($gui.ExitCode)" }
-          Stop-Process -Id $gui.Id -Force
+          ./scripts/packaging/windows/smoke-qml.ps1 -Exe lunaris-agent/lunaris-agent.exe -ExeArgs "--minimized"
           Remove-Item "$env:APPDATA/lunaris-agent" -Recurse -Force -ErrorAction SilentlyContinue
 
           Compress-Archive -Path lunaris-agent/* -DestinationPath lunaris-agent-windows.zip

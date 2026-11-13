@@ -1,6 +1,8 @@
 !include "MUI2.nsh"
 
 Name "Lunaris Client"
+; One LZMA stream over all files: about a third smaller than the default.
+SetCompressor /SOLID lzma
 OutFile "lunaris-client-installer.exe"
 InstallDir "$PROGRAMFILES64\Lunaris Client"
 InstallDirRegKey HKCU "Software\Lunaris Client" ""
