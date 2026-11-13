@@ -45,11 +45,11 @@ major). List at the end.
 
 | # | Repository | Libraries | Gate | State |
 |---|---|---|---|---|
-| W0 | lunaris | `webrtc` 0.17 → 0.21.1, FlexFEC-03 20% | G-build, G-stream-win, G-stream-linux, G-web, G-loss | in progress |
-| W1 | both | semver-compatible `cargo update` | G-build, G-stream-win, G-web | waits for W0 |
-| M1 | lunaris-media | `nix` 0.31, `libloading` 0.9, `image` 0.25, `evdev` 0.13, `windows` 0.62 | G-build, G-stream-win (input, capture), G-capture | can start now |
-| M2 | lunaris-media | `ashpd` 0.14, `pipewire` 0.10 | G-build, G-capture, G-stream-linux | after M1 |
-| M3 | both | `opus` 0.4, `cpal` 0.18 | G-build, G-audio | after M2 and W1 |
+| W0 | lunaris | `webrtc` 0.17 → 0.21.1, FlexFEC-03 20% | G-build, G-stream-win, G-stream-linux, G-web, G-loss | done (`d5ad8c2`); G-loss: 25 → 8, then 1 after W1 |
+| W1 | both | semver-compatible `cargo update` | G-build, G-stream-win, G-web | done (media `edfb786`); G-loss 1 hitch, no freezes |
+| M1 | lunaris-media | `nix` 0.31, `libloading` 0.9, `image` 0.25, `evdev` 0.13, `windows` 0.62 | G-build, G-stream-win (input, capture), G-capture | done (media `29bbeaf`); open: uinput, cursor shapes, SendInput by hand |
+| M2 | lunaris-media | `ashpd` 0.14, `pipewire` 0.10 | G-build, G-capture, G-stream-linux | done (media `eed0974`) |
+| M3 | both | `opus` 0.4, `cpal` 0.18 | G-build, G-audio | ported, not committed: Windows build and G-audio open |
 | L1 | lunaris (server) | `axum` 0.8, `tower-http` 0.7, `sqlx` 0.9, `bcrypt` 0.19, `jsonwebtoken` 11, `rcgen` 0.14, `thiserror` 2, `num-derive` 0.5 | G-build, G-web (login, device list, TLS) | after W1 |
 | L2 | lunaris (agent, client) | `tokio-tungstenite` 0.30, `reqwest` 0.13, `base64` 0.23, `dirs` 7, `zip` 9, `png` 0.18, `windows` 0.62, `windows-service` 0.8, `evdev` 0.13 | G-build, G-stream-win, G-web, file transfer and update check by hand | after L1 |
 | F1 | both + CI | `ffmpeg-next` 9, vendored `ffmpeg-sys-next` 9, FFmpeg version of the Windows CI build and of the Linux packages | all stream gates on both hosts, G-capture | after L2 |
