@@ -89,10 +89,48 @@ pub fn frame_color(colorspace: i32, color_range: i32, format: i32) -> (bool, boo
     (!bt601, full)
 }
 
+/// get_format for the D3D11 path: moonlight-qt ffmpeg.cpp:187-226
+/// (FFmpegVideoDecoder::ffGetFormat) with the hardware pixel format of the
+/// D3D11VA config, AV_PIX_FMT_D3D11, as the desired one.
+///
+/// Where Moonlight returns AV_PIX_FMT_NONE when the preparation fails (and its
+/// start-up test decode then moves to another decoder), Lunaris has no test
+/// decode: it takes the first software format of the list, and the frames go
+/// to the CPU presentation (the renderer is marked failed by the C++ side).
+unsafe extern "C" fn d3d11_get_format(
+    context: *mut ffi::AVCodecContext,
+    pix_fmts: *const ffi::AVPixelFormat,
+) -> ffi::AVPixelFormat {
+    let desired = ffi::AVPixelFormat::AV_PIX_FMT_D3D11;
+    let mut p = pix_fmts;
+    while *p != ffi::AVPixelFormat::AV_PIX_FMT_NONE {
+        // Only match our hardware decoding format.
+        if *p == desired
+            && crate::bridge::qobject::d3d11_prepare_decoder_context_in_get_format(context as usize as u64, *p as i32)
+        {
+            return *p;
+        }
+        p = p.add(1);
+    }
+
+    let mut p = pix_fmts;
+    while *p != ffi::AVPixelFormat::AV_PIX_FMT_NONE {
+        let desc = ffi::av_pix_fmt_desc_get(*p);
+        if !desc.is_null() && (*desc).flags & (ffi::AV_PIX_FMT_FLAG_HWACCEL as u64) == 0 {
+            return *p;
+        }
+        p = p.add(1);
+    }
+    ffi::AVPixelFormat::AV_PIX_FMT_NONE
+}
+
 pub struct HardwareDecoder {
     codec_ctx: *mut ffi::AVCodecContext,
     hw_device_ctx: *mut ffi::AVBufferRef,
     hw_device_type: ffi::AVHWDeviceType,
+    /// The device is the D3D11 renderer's decode device (frames can be
+    /// handed to it).
+    d3d11_device: bool,
     hardware_decode_requested: bool,
     sws_ctx: *mut ffi::SwsContext,
     last_width: i32,
@@ -151,6 +189,7 @@ impl HardwareDecoder {
         let mut hw_device_ctx: *mut ffi::AVBufferRef = std::ptr::null_mut();
         let mut hw_device_type = ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_NONE;
         let hardware_decode_requested = !disable_cuda;
+        let mut d3d11_device = false;
 
         // (device type, device to open: None = FFmpeg's default)
         let mut candidates: Vec<(ffi::AVHWDeviceType, Option<String>)> = Vec::new();
@@ -204,7 +243,25 @@ impl HardwareDecoder {
             println!("All hardware decoding is disabled (Software/FFmpeg mode).");
         }
 
+        // Windows: decode on a second D3D11 device on Qt's adapter, so that the
+        // renderer can sample the decoder's textures (moonlight-qt d3d11va.cpp).
+        // Not when CUDA is explicitly the first choice.
+        if cfg!(target_os = "windows")
+            && hardware_decode_requested
+            && !(Self::cuda_gl_requested() && std::env::var("LUNARIS_DISABLE_CUDA").is_err())
+        {
+            let dev = crate::bridge::qobject::d3d11_setup_decoder_device();
+            if dev != 0 {
+                hw_device_ctx = dev as usize as *mut ffi::AVBufferRef;
+                hw_device_type = ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_D3D11VA;
+                d3d11_device = true;
+            }
+        }
+
         for (dev_type, device) in &candidates {
+            if hw_device_type != ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_NONE {
+                break;
+            }
             let device_c = device.as_deref().and_then(|d| std::ffi::CString::new(d).ok());
             let err = unsafe {
                 ffi::av_hwdevice_ctx_create(
@@ -224,6 +281,9 @@ impl HardwareDecoder {
         if hw_device_type != ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_NONE {
             unsafe {
                 (*codec_ctx).hw_device_ctx = ffi::av_buffer_ref(hw_device_ctx);
+                if d3d11_device {
+                    (*codec_ctx).get_format = Some(d3d11_get_format);
+                }
                 let name = std::ffi::CStr::from_ptr(ffi::av_hwdevice_get_type_name(hw_device_type))
                     .to_string_lossy();
                 println!(
@@ -260,6 +320,7 @@ impl HardwareDecoder {
             codec_ctx,
             hw_device_ctx,
             hw_device_type,
+            d3d11_device,
             hardware_decode_requested,
             sws_ctx: std::ptr::null_mut(),
             last_width: 0,
@@ -337,9 +398,7 @@ impl HardwareDecoder {
             return "DMABUF/OpenGL";
         }
 
-        if self.hw_device_type == ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_D3D11VA
-            && !crate::bridge::qobject::d3d11_render_failed()
-        {
+        if self.d3d11_device && !crate::bridge::qobject::d3d11_render_failed() {
             return "D3D11";
         }
 
@@ -371,7 +430,7 @@ impl HardwareDecoder {
             if self.hw_device_type == ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_D3D11VA
                 && crate::bridge::qobject::d3d11_render_failed()
             {
-                return "D3D11 direct present off (LUNARIS_D3D11_PRESENT=1) or failed; using CPU/QVideoSink".to_string();
+                return "D3D11 present not available (see the 'D3D11 renderer disabled' log line); using CPU/QVideoSink".to_string();
             }
             return "GPU decode with CPU/QVideoSink present".to_string();
         }
@@ -986,43 +1045,21 @@ impl HardwareDecoder {
         Ok(false)
     }
 
-    #[cfg(target_os = "windows")]
+    /// Hands a D3D11VA frame to the renderer. On success the renderer owns
+    /// the frame (it frees it when replaced); the caller must not free it.
     fn try_present_d3d11(&mut self, gpu_frame: *mut ffi::AVFrame) -> Result<bool, anyhow::Error> {
-        if self.hw_device_type != ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_D3D11VA
-            || crate::bridge::qobject::d3d11_render_failed()
-        {
+        if !self.d3d11_device || crate::bridge::qobject::d3d11_render_failed() {
             return Ok(false);
         }
 
         unsafe {
-            let format = (*gpu_frame).format;
-            if format != ffi::AVPixelFormat::AV_PIX_FMT_D3D11 as i32
-                && format != ffi::AVPixelFormat::AV_PIX_FMT_D3D11VA_VLD as i32
-            {
+            if (*gpu_frame).format != ffi::AVPixelFormat::AV_PIX_FMT_D3D11 as i32 {
                 return Ok(false);
             }
-            let texture_ptr = (*gpu_frame).data[0] as u64;
-            if texture_ptr == 0 {
-                return Ok(false);
-            }
-            let array_index = (*gpu_frame).data[1] as isize as i32;
-            let delivered = crate::bridge::qobject::deliver_d3d11_frame(
-                texture_ptr,
-                array_index,
-                (*gpu_frame).width as i32,
-                (*gpu_frame).height as i32,
-                format as u32,
-            );
-            if delivered {
-                ffi::av_frame_free(&mut (gpu_frame as *mut _));
+            if crate::bridge::qobject::deliver_d3d11_frame(gpu_frame as usize as u64) {
                 return Ok(true);
             }
         }
-        Ok(false)
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    fn try_present_d3d11(&mut self, _gpu_frame: *mut ffi::AVFrame) -> Result<bool, anyhow::Error> {
         Ok(false)
     }
 }

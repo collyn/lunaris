@@ -142,12 +142,19 @@ fn main() {
             if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
                 println!("cargo:rustc-link-lib=d3d11");
                 println!("cargo:rustc-link-lib=d3dcompiler");
+                println!("cargo:rustc-link-lib=dxgi");
+                println!("cargo:rustc-link-lib=dxguid");
+                // The D3D11 renderer uses FFmpeg's hwcontext headers.
+                if let Ok(ffmpeg_dir) = std::env::var("FFMPEG_DIR") {
+                    cc.include(std::path::Path::new(&ffmpeg_dir).join("include"));
+                }
             }
         })
         // Register resources.qrc
         .qrc("qml/resources.qrc")
         .build();
 
+    println!("cargo:rerun-if-env-changed=FFMPEG_DIR");
     // Force rerun if QML files change
     println!("cargo:rerun-if-changed=src/gpu_video_item.h");
     println!("cargo:rerun-if-changed=src/gpu_video_item.cpp");

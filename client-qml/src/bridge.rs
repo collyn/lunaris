@@ -673,14 +673,23 @@ pub mod qobject {
         #[rust_name = "cuda_gl_render_failed"]
         fn cuda_gl_render_failed() -> bool;
 
-        #[rust_name = "deliver_d3d11_frame"]
-        unsafe fn deliver_d3d11_frame(
-            texture_ptr: u64,
-            array_index: i32,
-            width: i32,
-            height: i32,
-            format: u32,
+        /// Windows: the D3D11VA hw device context FFmpeg decodes on (an
+        /// AVBufferRef*, one reference for the caller), or 0.
+        #[rust_name = "d3d11_setup_decoder_device"]
+        fn d3d11_setup_decoder_device() -> u64;
+
+        /// get_format helper: hw frames context for `pixel_format` on the
+        /// AVCodecContext* `codec_ctx`.
+        #[rust_name = "d3d11_prepare_decoder_context_in_get_format"]
+        unsafe fn d3d11_prepare_decoder_context_in_get_format(
+            codec_ctx: u64,
+            pixel_format: i32,
         ) -> bool;
+
+        /// Hands an AV_PIX_FMT_D3D11 AVFrame* to the renderer; true = the
+        /// renderer owns (and frees) it now.
+        #[rust_name = "deliver_d3d11_frame"]
+        unsafe fn deliver_d3d11_frame(frame_ptr: u64) -> bool;
 
         #[rust_name = "d3d11_render_failed"]
         fn d3d11_render_failed() -> bool;
