@@ -3172,7 +3172,6 @@ use common::{
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::protocol::Message as WsMessage;
-use webrtc::api::interceptor_registry::register_default_interceptors;
 use webrtc::api::media_engine::MediaEngine;
 use webrtc::api::APIBuilder;
 use webrtc::data_channel::{data_channel_message::DataChannelMessage, RTCDataChannel};
@@ -3606,7 +3605,32 @@ async fn setup_peer_connection(
     )?;
 
     let mut registry = Registry::new();
-    registry = register_default_interceptors(registry, &mut media_engine)?;
+    // What register_default_interceptors does (webrtc 0.17
+    // api/interceptor_registry: configure_nack, configure_rtcp_reports,
+    // configure_twcc_receiver_only), except that lost packets are asked for
+    // again every 20 ms instead of the library's 100 ms. With 100 ms a
+    // retransmission arrives 100-110 ms after the loss, at the edge of
+    // RTP_GAP_TIMEOUT below: measured over a tunnel with ~0.5% loss, the
+    // client then dropped the frame, asked for a key frame whose own packets
+    // were lost again, and never recovered, while Chrome on the same path
+    // kept 60 fps. 20 ms is the period of libwebrtc's NackRequester
+    // (kUpdateInterval).
+    {
+        use webrtc::interceptor::nack::{generator::Generator, responder::Responder};
+        use webrtc::rtp_transceiver::rtp_codec::RTPCodecType;
+        for parameter in ["", "pli"] {
+            media_engine.register_feedback(
+                RTCPFeedback { typ: "nack".to_owned(), parameter: parameter.to_owned() },
+                RTPCodecType::Video,
+            );
+        }
+        registry.add(Box::new(Responder::builder()));
+        registry.add(Box::new(
+            Generator::builder().with_interval(std::time::Duration::from_millis(20)),
+        ));
+    }
+    registry = webrtc::api::interceptor_registry::configure_rtcp_reports(registry);
+    registry = webrtc::api::interceptor_registry::configure_twcc_receiver_only(registry, &mut media_engine)?;
 
     let api = APIBuilder::new()
         .with_media_engine(media_engine)
@@ -4054,6 +4078,10 @@ async fn setup_peer_connection(
 
                                         if is_vcl {
                                             if h264_wait_for_idr && !is_idr {
+                                                // Still no key frame: ask again (the sender task limits this to
+                                                // one PLI per 500 ms). Without it a lost or ignored request left
+                                                // the stream frozen until some later packet loss.
+                                                let _ = pli_tx.send(());
                                                 annex_b_buf.clear();
                                                 next_seq_num = Some(current_expected + 1);
                                                 continue;
@@ -4118,6 +4146,10 @@ async fn setup_peer_connection(
 
                                                 if is_vcl {
                                                     if h264_wait_for_idr && !is_idr {
+                                                        // Still no key frame: ask again (the sender task limits this to
+                                                        // one PLI per 500 ms). Without it a lost or ignored request left
+                                                        // the stream frozen until some later packet loss.
+                                                        let _ = pli_tx.send(());
                                                         annex_b_buf.clear();
                                                         continue;
                                                     }
@@ -4170,6 +4202,8 @@ async fn setup_peer_connection(
                                             annex_b_buf.clear();
 
                                             if h264_wait_for_idr && !is_idr {
+                                                // Still no key frame: ask again (one PLI per 500 ms at most).
+                                                let _ = pli_tx.send(());
                                                 h264_dropping_fragment = true;
                                                 next_seq_num = Some(current_expected + 1);
                                                 continue;
@@ -4242,6 +4276,8 @@ async fn setup_peer_connection(
 
                                         if is_vcl {
                                             if h265_wait_for_irap && !is_irap {
+                                                // Still no key frame: ask again (see the H.264 path).
+                                                let _ = pli_tx.send(());
                                                 annex_b_buf.clear();
                                                 next_seq_num = Some(current_expected + 1);
                                                 continue;
@@ -4305,6 +4341,8 @@ async fn setup_peer_connection(
 
                                                 if is_vcl {
                                                     if h265_wait_for_irap && !is_irap {
+                                                        // Still no key frame: ask again (see the H.264 path).
+                                                        let _ = pli_tx.send(());
                                                         annex_b_buf.clear();
                                                         continue;
                                                     }
@@ -4360,6 +4398,8 @@ async fn setup_peer_connection(
                                             annex_b_buf.clear();
 
                                             if h265_wait_for_irap && !is_irap {
+                                                // Still no key frame: ask again (see the H.264 path).
+                                                let _ = pli_tx.send(());
                                                 h265_dropping_fragment = true;
                                                 next_seq_num = Some(current_expected + 1);
                                                 continue;
