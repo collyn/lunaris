@@ -544,12 +544,16 @@ pub async fn setup_bridge_session(
         while let Ok((packets, _)) = video_sender_clone.read(&mut buf).await {
             for packet in packets {
                 let packet_any = packet.as_any();
-                if packet_any.is::<webrtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication>() {
+                // A PLI or a FIR asks for an IDR frame, as GameStream's
+                // IDX_REQUEST_IDR_FRAME does in Sunshine (stream.cpp:1221-1225).
+                if packet_any.is::<webrtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication>()
+                    || packet_any.is::<webrtc::rtcp::payload_feedbacks::full_intra_request::FullIntraRequest>()
+                {
                     let now = std::time::Instant::now();
                     let elapsed_ms = now.duration_since(last_pli_idr_time).as_millis();
                     if elapsed_ms >= 1000 {
                         // Enough time has passed — honor this PLI and generate IDR.
-                        info!("Received PLI request from browser, requesting IDR frame (last IDR {}ms ago)", elapsed_ms);
+                        info!("Received PLI/FIR from the client, requesting IDR frame (last IDR {}ms ago)", elapsed_ms);
                         last_pli_idr_time = now;
                         need_idr_clone.store(true, Ordering::SeqCst);
                         if let Some(ref cmd_tx) = *pipeline_cmd_tx_for_pli.lock().unwrap() {
@@ -557,7 +561,7 @@ pub async fn setup_bridge_session(
                         }
                     } else {
                         // Too soon — suppress this PLI to avoid IDR flood on slow networks.
-                        debug!("PLI from browser suppressed: last IDR only {}ms ago (debounce=1000ms)", elapsed_ms);
+                        debug!("PLI/FIR suppressed: last IDR only {}ms ago (debounce=1000ms)", elapsed_ms);
                     }
                 } else if let Some(remb) = packet_any.downcast_ref::<webrtc::rtcp::payload_feedbacks::receiver_estimated_maximum_bitrate::ReceiverEstimatedMaximumBitrate>() {
                     let estimated_bitrate_kbps = (remb.bitrate / 1000.0) as u32;
@@ -1505,6 +1509,17 @@ fn setup_data_channel_handler(
                         if let Some(ref cmd_tx) = *pipeline_cmd.lock().unwrap() {
                             let _ = cmd_tx.try_send(
                                 lunaris_media::pipeline::PipelineCommand::SetBitrate(*kbps),
+                            );
+                        }
+                        return;
+                    }
+                    // Sunshine stream.cpp:1221-1225 (IDX_REQUEST_IDR_FRAME):
+                    // the client asks for an IDR frame.
+                    InboundPacket::RequestVideoIdr => {
+                        debug!("IDR frame requested via data channel");
+                        if let Some(ref cmd_tx) = *pipeline_cmd.lock().unwrap() {
+                            let _ = cmd_tx.try_send(
+                                lunaris_media::pipeline::PipelineCommand::RequestKeyframe,
                             );
                         }
                         return;
