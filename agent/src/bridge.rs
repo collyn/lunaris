@@ -1499,7 +1499,23 @@ fn setup_data_channel_handler(
         channel.0,
         input_tx.is_some()
     );
+    // Diagnosis of input stalls (debug log): a pause of 60 ms to 1 s between
+    // two mouse messages that follows a run of closely spaced ones.
+    let mouse_gap_label = label.clone();
+    let mouse_gap_state = Arc::new(std::sync::Mutex::new((None::<Instant>, false)));
     data_channel.on_message(Box::new(move |msg: DataChannelMessage| {
+        if mouse_gap_label.starts_with("mouse") {
+            let now = Instant::now();
+            let mut st = mouse_gap_state.lock().unwrap();
+            if let Some(prev) = st.0 {
+                let gap = now.duration_since(prev);
+                if st.1 && gap >= Duration::from_millis(60) && gap <= Duration::from_secs(1) {
+                    debug!("Input gap: {} ms without a message on {}", gap.as_millis(), mouse_gap_label);
+                }
+                st.1 = gap < Duration::from_millis(40);
+            }
+            st.0 = Some(now);
+        }
         let input_tx = input_tx.clone();
         let channel = channel;
         let last_timestamp = last_timestamp.clone();
