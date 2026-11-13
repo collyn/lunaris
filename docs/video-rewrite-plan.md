@@ -374,10 +374,13 @@ Windows host → Chrome on Linux over a WireGuard tunnel, 1080p60, 15 Mbit/s,
   named one packet, 48 two adjacent ones, 48 three or more: one repair packet
   per 5 cannot rebuild the pairs (candidate: 10 media : 2 repair, interleaved,
   same overhead).
-- Open (desktop client, Windows loopback): the client asked for video packet
-  49 again every 20 ms for 2.6 s although it had arrived (SRTP reported each
-  resend as a duplicate) — a packet received before the NACK generator saw the
-  stream is never marked as received.
+- Desktop client, fixed: the library's SRTP replay window is 64 packets
+  (about 30 ms at 20 Mbit/s), so a packet sent again after a NACK was thrown
+  away as "duplicated" and asked for again every 20 ms until it left the NACK
+  window; the frame was dropped and a key frame requested. Before: 2 of 3
+  one-minute sessions at 20 Mbit/s had unrecovered losses (123 and 20 events,
+  12 and 7 key frame requests). With a 1024-packet window (libwebrtc's value):
+  4 of 4 sessions without any, though those four also saw little loss.
 - Open (Phase 4): when the desktop changes at about 30 fps the Windows host
   sends about 51 fps with uneven spacing (3–34 ms), because repeated frames
   are added between the new ones.

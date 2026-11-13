@@ -4819,6 +4819,16 @@ async fn setup_peer_connection(
             .with_configuration(config)
             .with_media_engine(media_engine)
             .with_interceptor_registry(registry)
+            // The library's SRTP replay window is 64 packets; at 20 Mbit/s
+            // that is about 30 ms of video, so a packet the host sent again
+            // after a NACK (20 ms interval + round trip) was rejected as
+            // "duplicated" and the loss was never repaired. libwebrtc uses
+            // 1024 (pc/srtp_session.cc, `policy.window_size = 1024`).
+            .with_setting_engine(
+                rtc::peer_connection::configuration::setting_engine::SettingEngineBuilder::new()
+                    .with_srtp_replay_protection_window(1024)
+                    .build(),
+            )
             .with_handler(handler)
             // Every IPv4 interface (0.17 gathered them all, no loopback).
             .with_udp_addrs(vec!["0.0.0.0:0"])
