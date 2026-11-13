@@ -241,7 +241,7 @@ pub fn is_autostart_enabled_impl() -> bool {
 fn reg_command() -> std::process::Command {
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    let mut cmd = reg_command();
+    let mut cmd = std::process::Command::new("reg");
     cmd.creation_flags(CREATE_NO_WINDOW);
     cmd
 }
