@@ -11,18 +11,20 @@ GPL-3.0-compatible; nothing "nonfree" is included. The LGPL libraries are
 dynamically linked shared objects that you may replace. Licence texts are
 shipped next to this file (AppImage: `usr/share/licenses/`).
 
-## Linux agent AppImage and distro packages
+## Linux AppImages (agent and client) and distro packages
 
 | Component | Licence | Source |
 |-----------|---------|--------|
 | Qt 6.8 (Core, Gui, Qml, Quick, QuickControls2, Widgets, WaylandClient, DBus, plugins) | LGPL-3.0 | https://download.qt.io/official_releases/qt/6.8/ |
-| FFmpeg 8.1 (libavcodec, libavutil, libswscale, …), built with `--enable-gpl` | GPL-2.0-or-later (as built) | https://github.com/FFmpeg/FFmpeg/tree/n8.1 |
-| x264 (stable branch; commit in `x264/VERSION`), statically linked into libavcodec | GPL-2.0-or-later | https://code.videolan.org/videolan/x264 |
-| SVT-AV1 2.3, statically linked into libavcodec | BSD-3-Clause-Clear + AOM Patent License 1.0 (royalty-free) | https://gitlab.com/AOMediaCodec/SVT-AV1 |
-| dav1d 1.5 (distro packages; statically linked) | BSD-2-Clause | https://code.videolan.org/videolan/dav1d |
+| FFmpeg 8.1 (libavcodec, libavutil, libswscale, …), built with `--enable-gpl`; linked statically into the AppImage binaries | GPL-2.0-or-later (as built) | https://github.com/FFmpeg/FFmpeg/tree/n8.1 |
+| x264 (stable branch; commit in `x264/VERSION`), statically linked | GPL-2.0-or-later | https://code.videolan.org/videolan/x264 |
+| SVT-AV1 2.3, statically linked | BSD-3-Clause-Clear + AOM Patent License 1.0 (royalty-free) | https://gitlab.com/AOMediaCodec/SVT-AV1 |
+| dav1d 1.5 (statically linked) | BSD-2-Clause | https://code.videolan.org/videolan/dav1d |
 | libva 2.22 | MIT | https://github.com/intel/libva |
 | oneVPL dispatcher (libvpl) 2.14 | MIT | https://github.com/intel/libvpl |
 | nv-codec-headers 12.2 (headers only) | MIT | https://github.com/FFmpeg/nv-codec-headers |
+| FFmpeg 7.1 without codecs (libavcodec, libavformat, libavutil, libswscale, libswresample), for Qt Multimedia'"'"'s FFmpeg plugin (client AppImage only) | LGPL-2.1-or-later | https://github.com/FFmpeg/FFmpeg/tree/n7.1 |
+| ICU 73.2 data library, reduced to the locales Qt Core needs (`scripts/packaging/icu-data-filter.json`); the code libraries are Qt'"'"'s own | Unicode License (ICU) | https://github.com/unicode-org/icu/releases/tag/release-73-2 |
 | Other libraries copied from Ubuntu 22.04 (e.g. libopus, OpenSSL, ICU, xkbcommon, fontconfig) | BSD / Apache-2.0 / Unicode / MIT | https://packages.ubuntu.com/jammy/ |
 
 The exact build recipe (versions and FFmpeg `configure` flags) is

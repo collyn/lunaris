@@ -21,71 +21,6 @@ permissions:
   contents: write
 
 jobs:
-  build-linux:
-    name: Build Linux
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: 'npm'
-          cache-dependency-path: web/package-lock.json
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y cmake clang pkg-config libssl-dev libavahi-compat-libdnssd-dev \
-            libasound2-dev libavcodec-dev libavformat-dev libavutil-dev libswscale-dev \
-            libswresample-dev libopus-dev qt6-base-dev qt6-declarative-dev qt6-multimedia-dev libgl1-mesa-dev \
-            libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
-            libavfilter-dev libavdevice-dev libpostproc-dev libpipewire-0.3-dev libudev-dev
-          # QML modules the client imports; build-appimage.sh bundles them.
-          sudo apt-get install -y qml6-module-qtquick qml6-module-qtquick-controls \
-            qml6-module-qtquick-templates qml6-module-qtquick-layouts qml6-module-qtquick-window \
-            qml6-module-qtquick-shapes qml6-module-qtqml-workerscript qml6-module-qt-labs-platform \
-            qml6-module-qtmultimedia
-
-      - name: Setup Rust toolchain
-        uses: dtolnay/rust-toolchain@v1
-        with:
-          toolchain: nightly-2026-04-17
-
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
-
-      - name: Build Web Frontend
-        run: |
-          cd web
-          npm ci || npm install
-          npm run build
-
-      - name: Build Rust Workspace
-        run: cargo build --release --workspace
-
-      - name: Install packaging tools
-        run: sudo apt-get install -y patchelf
-
-      - name: Package Client Desktop and QML as AppImages
-        run: |
-          ./scripts/build-appimage.sh client-desktop
-          ./scripts/build-appimage.sh client-qml
-
-      - name: Upload Client Desktop Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: client-desktop-linux
-          path: build-dir/client-desktop-x86_64.AppImage
-
-      - name: Upload Client QML Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: client-qml-linux
-          path: build-dir/client-qml-x86_64.AppImage
-
   build-server-linux:
     name: Build Linux Server (static)
     runs-on: ubuntu-latest
@@ -217,18 +152,42 @@ jobs:
           name: linux-packages-${{ matrix.format }}
           path: dist/*
 
+  # The agent and the client AppImages, built together in one Ubuntu 22.04
+  # container (Qt 6.8 + a trimmed static FFmpeg, see Containerfile.appimage):
+  # runs on glibc >= 2.35, no distro FFmpeg or Qt is bundled. build-appimages.sh
+  # prunes the bundles, runs a start-up check on each (smoke-appimage.sh, under
+  # xvfb) and repeats it in a bare ubuntu:22.04 container.
   build-agent-appimage:
-    name: Build Linux Agent (AppImage)
+    name: Build Linux AppImages (agent + client)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # The image, Qt, both cargo targets and the web client need ~15 GB.
+      - name: Free disk space
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: web/package-lock.json
+
+      # client-desktop is also the server (`lunaris server`): the web client is
+      # embedded in the binary, so it is built before the container starts.
+      - name: Build Web Frontend
+        run: |
+          cd web
+          npm ci || npm install
+          npm run build
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # Ubuntu 22.04 + Qt 6.8 + FFmpeg/x264/SVT-AV1/libva/oneVPL. The layers are
-      # cached, so only the agent itself is rebuilt on most runs.
+      # Ubuntu 22.04 + Qt 6.8 + FFmpeg/x264/SVT-AV1/dav1d/libva/oneVPL + slim ICU
+      # data. The layers are cached, so only Lunaris itself is rebuilt on most runs.
       - name: Build packaging image
         uses: docker/build-push-action@v6
         with:
@@ -245,17 +204,29 @@ jobs:
           path: |
             build-dir/cargo-cache
             build-dir/target-appimage
-          key: agent-appimage-${{ hashFiles('Cargo.lock', 'scripts/packaging/Containerfile.appimage') }}
+          key: agent-appimage-${{ hashFiles('Cargo.lock', 'scripts/packaging/Containerfile.appimage', 'scripts/packaging/build-ffmpeg-static.sh') }}
           restore-keys: agent-appimage-
 
-      - name: Build AppImage
-        run: CONTAINER=docker ./scripts/packaging/build-agent-appimage.sh
+      - name: Build AppImages
+        run: CONTAINER=docker ./scripts/packaging/build-appimages.sh
 
       - name: Upload Agent AppImage
         uses: actions/upload-artifact@v4
         with:
           name: agent-linux-appimage
           path: dist/Lunaris-Agent-*-x86_64.AppImage
+
+      - name: Upload Client Desktop Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: client-desktop-linux
+          path: dist/client-desktop-x86_64.AppImage
+
+      - name: Upload Client QML Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: client-qml-linux
+          path: dist/client-qml-x86_64.AppImage
 
   build-ffmpeg-windows:
     name: Build FFmpeg for Windows (trimmed)
@@ -487,7 +458,7 @@ jobs:
 
   release:
     name: Create Release
-    needs: [build-linux, build-server-linux, build-server-docker, build-linux-packages, build-agent-appimage, build-windows]
+    needs: [build-server-linux, build-server-docker, build-linux-packages, build-agent-appimage, build-windows]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
     steps:

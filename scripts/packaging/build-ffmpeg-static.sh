@@ -30,7 +30,16 @@ export PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PAT
 LIC="$PREFIX/share/licenses"
 mkdir -p "$LIC"
 
-clone() { git clone -q --depth 1 -b "$2" "$1" "$3"; }
+# Retries: the git hosts (videolan.org especially) drop connections now and then.
+clone() {
+    local i
+    for i in 1 2 3 4 5; do
+        rm -rf "$3"
+        git clone -q --depth 1 -b "$2" "$1" "$3" && return 0
+        echo "git clone of $1 failed (attempt $i), retrying" >&2; sleep 15
+    done
+    return 1
+}
 
 echo "== nv-codec-headers $NVCODEC_VERSION"
 clone https://github.com/FFmpeg/nv-codec-headers.git "$NVCODEC_VERSION" nvcodec

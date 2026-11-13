@@ -1,0 +1,20 @@
+{
+  "strategy": "subtractive",
+  "featureFilters": {
+    "locales_tree": { "filterType": "language", "includelist": ["root", "en", "vi"] },
+    "coll_tree":    "include",
+    "brkitr_tree":  { "filterType": "language", "includelist": ["root", "en", "vi"] },
+    "lang_tree":    { "filterType": "language", "includelist": ["root", "en", "vi"] },
+    "region_tree":  { "filterType": "language", "includelist": ["root", "en", "vi"] },
+    "zone_tree":    { "filterType": "language", "includelist": ["root", "en", "vi"] },
+    "curr_tree":    { "filterType": "language", "includelist": ["root", "en", "vi"] },
+    "unit_tree":    { "filterType": "language", "includelist": ["root", "en", "vi"] },
+    "rbnf_tree":    { "filterType": "language", "includelist": ["root", "en", "vi"] },
+    "translit":     "exclude",
+    "confusables":  "exclude",
+    "stringprep":   "exclude",
+    "unames":       "exclude",
+    "brkitr_lstm":  "exclude",
+    "brkitr_adaboost": "exclude"
+  }
+}

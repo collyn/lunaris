@@ -4,7 +4,7 @@
 # Fedora 36+, Arch, openSUSE Tumbleweed, Mint 21+ ...).
 #
 # Lunaris is GPL-3.0-or-later; everything bundled is compatible, nothing "nonfree":
-#   Qt 6.8 LTS (LGPLv3, dynamically linked)   FFmpeg 8.1 (GPL build, shared)
+#   Qt 6.8 LTS (LGPLv3, dynamically linked)   FFmpeg 8.1 (GPL build, static)
 #   x264 (GPLv2+)   SVT-AV1 (BSD-3-Clause-Clear + AOM royalty-free patents)
 #   libva (MIT)   oneVPL dispatcher (MIT)   nv-codec-headers (MIT)
 FROM docker.io/library/ubuntu:22.04
@@ -22,6 +22,7 @@ RUN for i in 1 2 3 4 5; do apt-get -o Acquire::Retries=5 update && break; echo "
         libfontconfig1 libfreetype6 libxkbcommon0 libxkbcommon-x11-0 libxcb-cursor0 \
         libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 \
         libxcb-shape0 libxcb-xinerama0 libxcb-xkb1 libglib2.0-0 libgl1 libegl1 \
+        xvfb xauth libgl1-mesa-dri \
     && rm -rf /var/lib/apt/lists/*
 
 ARG PREFIX=/opt/deps
@@ -36,60 +37,18 @@ RUN git clone --depth 1 -b ${LIBVA_VERSION} https://github.com/intel/libva.git \
        -Dwith_glx=no -Ddriverdir=/usr/lib/x86_64-linux-gnu/dri:/usr/lib64/dri:/usr/lib/dri \
     && ninja -C build install && install -Dm644 COPYING ${PREFIX}/share/licenses/libva/COPYING && cd .. && rm -rf libva
 
-# NVENC/CUDA headers (FFmpeg loads the NVIDIA libraries at runtime).
-ARG NVCODEC_VERSION=n12.2.72.0
-RUN git clone --depth 1 -b ${NVCODEC_VERSION} https://github.com/FFmpeg/nv-codec-headers.git \
-    && make -C nv-codec-headers PREFIX=${PREFIX} install \
-    && install -Dm644 nv-codec-headers/README ${PREFIX}/share/licenses/nv-codec-headers/README \
-    && sed -n "1,30p" nv-codec-headers/include/ffnvcodec/nvEncodeAPI.h > ${PREFIX}/share/licenses/nv-codec-headers/LICENSE-header.txt \
-    && rm -rf nv-codec-headers
-
-# Intel QSV dispatcher (loads the system's oneVPL/MediaSDK runtime).
-ARG VPL_VERSION=v2.14.0
-RUN git clone --depth 1 -b ${VPL_VERSION} https://github.com/intel/libvpl.git \
-    && cmake -S libvpl -B libvpl/build -G Ninja -DCMAKE_INSTALL_PREFIX=${PREFIX} \
-       -DCMAKE_INSTALL_LIBDIR=lib -DBUILD_TESTS=OFF -DBUILD_EXAMPLES=OFF -DINSTALL_EXAMPLES=OFF \
-    && ninja -C libvpl/build install && install -Dm644 libvpl/LICENSE ${PREFIX}/share/licenses/libvpl/LICENSE && rm -rf libvpl
-
-# SVT-AV1: royalty-free software AV1 encoder (static, folded into libavcodec).
-ARG SVTAV1_VERSION=v2.3.0
-RUN git clone --depth 1 -b ${SVTAV1_VERSION} https://gitlab.com/AOMediaCodec/SVT-AV1.git \
-    && cmake -S SVT-AV1 -B SVT-AV1/build -G Ninja -DCMAKE_BUILD_TYPE=Release \
-       -DCMAKE_INSTALL_PREFIX=${PREFIX} -DCMAKE_INSTALL_LIBDIR=lib -DBUILD_SHARED_LIBS=OFF \
-       -DBUILD_APPS=OFF -DBUILD_DEC=OFF -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
-    && ninja -C SVT-AV1/build install \
-    && install -Dm644 SVT-AV1/LICENSE.md ${PREFIX}/share/licenses/svt-av1/LICENSE.md \
-    && install -Dm644 SVT-AV1/PATENTS.md ${PREFIX}/share/licenses/svt-av1/PATENTS.md && rm -rf SVT-AV1
-
-# x264: software H.264 fallback for hosts without a usable hardware encoder
-# (H.264 is the one codec every browser decodes). Static, folded into libavcodec.
-ARG X264_BRANCH=stable
-RUN git clone --depth 1 -b ${X264_BRANCH} https://code.videolan.org/videolan/x264.git \
-    && cd x264 && ./configure --prefix=${PREFIX} --enable-static --enable-pic --disable-cli \
-    && make -j"$(nproc)" && make install \
-    && install -Dm644 COPYING ${PREFIX}/share/licenses/x264/COPYING \
-    && git rev-parse HEAD > ${PREFIX}/share/licenses/x264/VERSION && cd .. && rm -rf x264
-
-# FFmpeg 8.1 (GPL because of x264), only what the agent uses: hardware encoders,
-# x264, SVT-AV1 and swscale.
-ARG FFMPEG_VERSION=n8.1
-RUN git clone --depth 1 -b ${FFMPEG_VERSION} https://github.com/FFmpeg/FFmpeg.git \
-    && cd FFmpeg && ./configure --prefix=${PREFIX} --libdir=${PREFIX}/lib \
-       --enable-shared --disable-static --disable-programs --disable-doc --disable-debug \
-       --disable-autodetect --disable-everything \
-       --enable-vaapi --enable-libdrm --enable-ffnvcodec --enable-nvenc --enable-cuda \
-       --enable-gpl --enable-libx264 --enable-libvpl --enable-libsvtav1 \
-       --enable-encoder=h264_vaapi,hevc_vaapi,av1_vaapi,h264_nvenc,hevc_nvenc,av1_nvenc,h264_qsv,hevc_qsv,av1_qsv,libx264,libsvtav1 \
-       --enable-parser=h264,hevc,av1 --enable-bsf=h264_metadata,hevc_metadata,av1_metadata,extract_extradata,dump_extradata \
-       --enable-filter=scale,format,hwupload,hwdownload,hwmap,scale_vaapi \
-    && make -j"$(nproc)" && make install \
-    && install -Dm644 COPYING.GPLv2 ${PREFIX}/share/licenses/ffmpeg/COPYING.GPLv2 && install -Dm644 COPYING.LGPLv2.1 ${PREFIX}/share/licenses/ffmpeg/COPYING.LGPLv2.1 && install -Dm644 LICENSE.md ${PREFIX}/share/licenses/ffmpeg/LICENSE.md \
-    && ./ffbuild/version.sh . > ${PREFIX}/share/licenses/ffmpeg/VERSION 2>/dev/null; cd .. && rm -rf FFmpeg
+# FFmpeg 8.1: the same trimmed, *static* build the distro packages use
+# (build-ffmpeg-static.sh: VAAPI/NVENC/QSV encoders, x264, SVT-AV1, h264/hevc/av1
+# decoders incl. dav1d, swscale). Static means it is folded into the agent and
+# client binaries and no libav*.so is bundled. libva/libdrm stay dynamic.
+# Also leaves the licence texts in ${PREFIX}/share/licenses.
+COPY build-ffmpeg-static.sh /tmp/build-ffmpeg-static.sh
+RUN bash /tmp/build-ffmpeg-static.sh ${PREFIX} && rm /tmp/build-ffmpeg-static.sh
 
 # Qt 6.8 LTS from the official LGPL binaries.
 ARG QT_VERSION=6.8.3
 RUN pip3 install --no-cache-dir aqtinstall \
-    && aqt install-qt linux desktop ${QT_VERSION} linux_gcc_64 -O /opt/Qt \
+    && aqt install-qt linux desktop ${QT_VERSION} linux_gcc_64 -m qtmultimedia qtshadertools -O /opt/Qt \
     && rm -rf /opt/Qt/${QT_VERSION}/gcc_64/doc /opt/Qt/${QT_VERSION}/gcc_64/examples
 ENV QTDIR=/opt/Qt/${QT_VERSION}/gcc_64
 ENV QMAKE=${QTDIR}/bin/qmake PATH=${QTDIR}/bin:$PATH \
@@ -118,8 +77,55 @@ RUN for i in 1 2 3 4 5; do apt-get -o Acquire::Retries=5 update \
        -Dsession-managers=[] -Dexamples=disabled -Dtests=disabled -Dman=disabled -Ddocs=disabled \
     && ninja -C pipewire/build install && rm -rf pipewire
 
+# Qt Multimedia (QVideoSink in the client) links libpulse; linuxdeploy can only bundle
+# it when it is installed here.
+RUN apt-get update && apt-get -o Acquire::Retries=5 install -y --no-install-recommends libpulse0 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Slim ICU data. Qt Core links ICU 73 (there is no ICU-free build of the official
+# binaries) and its libicudata.so.73 is 30 MB, nearly all of it locale, currency,
+# time-zone-name and transliteration data Lunaris never looks at. Build the same
+# ICU release (73.2) from source with icu-data-filter.json and keep only the data
+# library; make-appimage.sh swaps it in for the bundled one. Only the data differs:
+# libicuuc / libicui18n stay Qt's own. See the filter file for what is kept.
+ARG ICU_VERSION=73.2
+ARG ICU_TAG=release-73-2
+ARG ICU_FILE=73_2
+COPY icu-data-filter.json /tmp/icu-data-filter.json
+RUN set -e; v=${ICU_VERSION}; u=${ICU_FILE}; cd /tmp \
+    && for f in icu4c-$u-src.tgz icu4c-$u-data.zip; do \
+        for i in 1 2 3 4 5; do curl -fsSLO https://github.com/unicode-org/icu/releases/download/${ICU_TAG}/$f && break; sleep 10; done; done \
+    && echo "818a80712ed3caacd9b652305e01afc7fa167e6f2e94996da44b90c2ab604ce1  icu4c-73_2-src.tgz" | sha256sum -c - \
+    && echo "ca1ee076163b438461e484421a7679fc33a64cd0a54f9d4b401893fa1eb42701  icu4c-73_2-data.zip" | sha256sum -c - \
+    && apt-get update && apt-get install -y --no-install-recommends unzip python3-jsonschema \
+    && tar xzf icu4c-$u-src.tgz && unzip -qo icu4c-$u-data.zip -d icu/source \
+    && rm icu/source/data/in/icudt*l.dat \
+    && cd icu/source && ICU_DATA_FILTER_FILE=/tmp/icu-data-filter.json ./configure --disable-tests --disable-samples \
+        --disable-extras --disable-icuio --disable-layoutex --prefix=/tmp/icu-inst >/dev/null \
+    && make -j"$(nproc)" >/dev/null && make install >/dev/null \
+    && install -Dm755 /tmp/icu-inst/lib/libicudata.so.${v} /opt/icu-data/libicudata.so.${v%%.*} \
+    && install -Dm644 /tmp/icu/LICENSE /opt/icu-data/LICENSE \
+    && cd / && rm -rf /tmp/icu* /var/lib/apt/lists/*
+
 ARG RUST_TOOLCHAIN=nightly-2026-04-17
 ENV RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo PATH=/opt/cargo/bin:$PATH
 RUN curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain ${RUST_TOOLCHAIN} \
     && chmod -R a+rwX /opt/rustup /opt/cargo
 WORKDIR /src
+
+# Minimal FFmpeg 7.1 for Qt Multimedia. The client's CPU fallback paints frames
+# through QVideoSink, and Qt Multimedia on Linux only works with its FFmpeg media
+# plugin, which links Qt's own FFmpeg 7.1 shared libraries (libavcodec.so.61 ... 19 MB
+# unpacked, with every codec). The plugin is only the glue to QVideoSink here (the
+# client decodes with its own static FFmpeg), so build the same release (same sonames
+# and API) with no codecs, muxers or protocols; make-appimage.sh swaps the libraries
+# in for the client. LGPL, shared.
+ARG QT_FFMPEG_VERSION=n7.1
+RUN git clone -q --depth 1 -b ${QT_FFMPEG_VERSION} https://github.com/FFmpeg/FFmpeg.git /tmp/ffmpeg-qt \
+    && cd /tmp/ffmpeg-qt && ./configure --prefix=/opt/qt-ffmpeg-min --libdir=/opt/qt-ffmpeg-min/lib \
+       --enable-shared --disable-static --enable-pic --disable-programs --disable-doc --disable-debug \
+       --disable-autodetect --disable-everything --disable-avdevice --disable-avfilter --disable-network \
+       --enable-swscale --enable-swresample >/dev/null \
+    && make -j"$(nproc)" >/dev/null && make install >/dev/null \
+    && install -Dm644 COPYING.LGPLv2.1 /opt/qt-ffmpeg-min/share/licenses/ffmpeg-qt/COPYING.LGPLv2.1 \
+    && cd / && rm -rf /tmp/ffmpeg-qt
