@@ -71,7 +71,7 @@ fn make_self_signed(cert: &PathBuf, key: &PathBuf) -> Result<(), String> {
         let _ = std::fs::create_dir_all(dir);
     }
     std::fs::write(cert, made.cert.pem()).map_err(|e| format!("{}: {}", cert.display(), e))?;
-    std::fs::write(key, made.key_pair.serialize_pem()).map_err(|e| format!("{}: {}", key.display(), e))?;
+    std::fs::write(key, made.signing_key.serialize_pem()).map_err(|e| format!("{}: {}", key.display(), e))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

@@ -350,6 +350,26 @@ own windows.
 - Decoder and renderer selection with test frames; codec preference order
   and capability probing; the frame pacer; decode-error and IDR handling.
 
+## Transport (outside the phases; measured 2026-11-13)
+
+Windows host → Chrome on Linux over a WireGuard tunnel, 1080p60, 15 Mbit/s,
+5 minutes, presented-frame gaps above 100 ms:
+
+| Build | Hitches | Notes |
+|---|---|---|
+| `webrtc` 0.17, NACK only | 25 | 1510 packets asked for again, 325 more than once |
+| `webrtc` 0.21.1 + FlexFEC-03 20% (`d5ad8c2`) | 8 | all in the first 2 minutes |
+| + AMF bitrate change without a forced key frame (media `601d5bb`) | 1 | at start; 108 NACKs, 1 PLI, no freezes |
+
+- The host paces RTP at 2.5× the bitrate in 1 ms groups; the desktop client
+  NACKs every 20 ms and asks for a key frame again while it waits for one.
+- Open: the desktop client had one bad run after the FEC change (4.3 s
+  freeze, 21 PLIs), not yet repeated with `601d5bb`; key frames are sent as
+  one burst; no session longer than 5 minutes has been measured.
+- Open (Phase 4): when the desktop changes at about 30 fps the Windows host
+  sends about 51 fps with uneven spacing (3–34 ms), because repeated frames
+  are added between the new ones.
+
 ## Status
 
 | Phase | State |

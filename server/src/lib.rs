@@ -266,7 +266,7 @@ pub(crate) async fn run_server(
         .route("/api/auth/login", post(login_handler))
         .route("/api/auth/me", get(admin::get_current_user))
         .route("/api/hosts", get(hosts_handler))
-        .route("/api/hosts/:id", delete(delete_host_handler))
+        .route("/api/hosts/{id}", delete(delete_host_handler))
         .route("/api/hosts/address", post(add_host_by_address_handler))
         .route("/api/agent/token", get(agent_token_handler))
         .route("/api/server/ports", get(ports_handler))
@@ -275,7 +275,7 @@ pub(crate) async fn run_server(
             get(admin::list_users).post(admin::create_user),
         )
         .route(
-            "/api/admin/users/:id",
+            "/api/admin/users/{id}",
             axum::routing::put(admin::update_user).delete(admin::delete_user),
         )
         .route(
@@ -283,7 +283,7 @@ pub(crate) async fn run_server(
             get(admin::list_groups).post(admin::create_group),
         )
         .route(
-            "/api/admin/groups/:id",
+            "/api/admin/groups/{id}",
             axum::routing::put(admin::update_group).delete(admin::delete_group),
         )
         .route(
@@ -291,7 +291,7 @@ pub(crate) async fn run_server(
             get(admin::list_turn_servers).post(admin::create_turn_server),
         )
         .route(
-            "/api/admin/turn-servers/:id",
+            "/api/admin/turn-servers/{id}",
             delete(admin::delete_turn_server),
         )
         .route("/ws/agent", get(agent_ws_handler))

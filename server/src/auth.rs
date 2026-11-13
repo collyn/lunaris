@@ -1,5 +1,4 @@
 use axum::{
-    async_trait,
     extract::FromRequestParts,
     http::{request::Parts, StatusCode},
 };
@@ -71,7 +70,6 @@ pub struct AuthenticatedUser {
     pub role: String,
 }
 
-#[async_trait]
 impl FromRequestParts<Arc<SignalingState>> for AuthenticatedUser {
     type Rejection = (StatusCode, &'static str);
 
@@ -123,7 +121,6 @@ pub struct AdminUser {
     pub username: String,
 }
 
-#[async_trait]
 impl FromRequestParts<Arc<SignalingState>> for AdminUser {
     type Rejection = (StatusCode, &'static str);
 
@@ -139,5 +136,35 @@ impl FromRequestParts<Arc<SignalingState>> for AdminUser {
             user_id: user.user_id,
             username: user.username,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Hash produced by bcrypt 0.15 (before the upgrade) for "correct horse".
+    const OLD_HASH: &str = "$2b$12$rhTXdG3k9pjCa6u1.pNncOA9kj.STXQU8E5kun0D6dJtQRVnVtVR.";
+
+    #[test]
+    fn old_bcrypt_hash_still_verifies() {
+        assert!(verify_password("correct horse", OLD_HASH));
+        assert!(!verify_password("wrong horse", OLD_HASH));
+    }
+
+    #[test]
+    fn new_hash_roundtrip_and_format() {
+        let h = hash_password("pw").unwrap();
+        assert!(h.starts_with("$2b$12$"), "{h}");
+        assert!(verify_password("pw", &h));
+    }
+
+    #[test]
+    fn jwt_roundtrip_hs256() {
+        let t = create_jwt("id1", "bob", "admin").unwrap();
+        let header = jsonwebtoken::decode_header(&t).unwrap();
+        assert_eq!(header.alg, jsonwebtoken::Algorithm::HS256);
+        let c = verify_jwt(&t).unwrap();
+        assert_eq!(c.sub, "id1");
     }
 }

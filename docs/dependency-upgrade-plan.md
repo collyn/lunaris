@@ -50,7 +50,7 @@ major). List at the end.
 | M1 | lunaris-media | `nix` 0.31, `libloading` 0.9, `image` 0.25, `evdev` 0.13, `windows` 0.62 | G-build, G-stream-win (input, capture), G-capture | done (media `29bbeaf`); open: uinput, cursor shapes, SendInput by hand |
 | M2 | lunaris-media | `ashpd` 0.14, `pipewire` 0.10 | G-build, G-capture, G-stream-linux | done (media `eed0974`) |
 | M3 | both | `opus` 0.4, `cpal` 0.18 | G-build, G-audio | ported, not committed: Windows build and G-audio open |
-| L1 | lunaris (server) | `axum` 0.8, `tower-http` 0.7, `sqlx` 0.9, `bcrypt` 0.19, `jsonwebtoken` 11, `rcgen` 0.14, `thiserror` 2, `num-derive` 0.5 | G-build, G-web (login, device list, TLS) | after W1 |
+| L1 | lunaris (server) | `axum` 0.8, `tower-http` 0.7, `sqlx` 0.9, `bcrypt` 0.19, `jsonwebtoken` 11, `rcgen` 0.14, `thiserror` 2, `num-derive` 0.5 | G-build, G-web (login, device list, TLS) | done; `jsonwebtoken` uses the `rust_crypto` backend |
 | L2 | lunaris (agent, client) | `tokio-tungstenite` 0.30, `reqwest` 0.13, `base64` 0.23, `dirs` 7, `zip` 9, `png` 0.18, `windows` 0.62, `windows-service` 0.8, `evdev` 0.13 | G-build, G-stream-win, G-web, file transfer and update check by hand | after L1 |
 | F1 | both + CI | `ffmpeg-next` 9, vendored `ffmpeg-sys-next` 9, FFmpeg version of the Windows CI build and of the Linux packages | all stream gates on both hosts, G-capture | after L2 |
 | Q1 | lunaris (client-qml, agent-app) | `cxx-qt`, `cxx-qt-lib`, `cxx-qt-build` 0.6 → 0.10 | G-build, the client UI by hand on both platforms, all stream gates | last |

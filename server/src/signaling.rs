@@ -34,11 +34,11 @@ pub struct ConnAddrs {
     pub remote: SocketAddr,
 }
 
-impl Connected<axum::serve::IncomingStream<'_>> for ConnAddrs {
-    fn connect_info(target: axum::serve::IncomingStream<'_>) -> Self {
+impl Connected<axum::serve::IncomingStream<'_, tokio::net::TcpListener>> for ConnAddrs {
+    fn connect_info(target: axum::serve::IncomingStream<'_, tokio::net::TcpListener>) -> Self {
         ConnAddrs {
-            local: target.local_addr().ok(),
-            remote: target.remote_addr(),
+            local: target.io().local_addr().ok(),
+            remote: *target.remote_addr(),
         }
     }
 }
@@ -351,7 +351,7 @@ async fn handle_agent_socket(socket: WebSocket, params: AgentParams, state: Arc<
                                     continue;
                                 }
                             };
-                            if let Err(e) = ws_sender.send(Message::Text(json)).await {
+                            if let Err(e) = ws_sender.send(Message::Text(json.into())).await {
                                 debug!("Error sending to agent {}: {}", agent_id_clone, e);
                                 break;
                             }
@@ -433,7 +433,7 @@ async fn handle_client_socket(
                                     continue;
                                 }
                             };
-                            if let Err(e) = ws_sender.send(Message::Text(json)).await {
+                            if let Err(e) = ws_sender.send(Message::Text(json.into())).await {
                                 debug!("Error sending to client {}: {}", client_id_clone, e);
                                 break;
                             }
