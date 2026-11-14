@@ -2843,7 +2843,7 @@ impl qobject::StreamBridge {
     }
 
     pub fn host_status(self: Pin<&mut Self>) -> QString {
-        QString::from(&crate::host::status_json())
+        QString::from(&crate::host::cached_status_json())
     }
 
     pub fn host_start(self: Pin<&mut Self>) -> QString {
@@ -2889,7 +2889,7 @@ impl qobject::StreamBridge {
     }
 
     pub fn server_status(self: Pin<&mut Self>) -> QString {
-        QString::from(&crate::local_server::status_json())
+        QString::from(&crate::local_server::cached_status_json())
     }
 
     pub fn server_start(self: Pin<&mut Self>) -> QString {

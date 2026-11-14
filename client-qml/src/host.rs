@@ -55,7 +55,66 @@ fn load_or_create_config() -> Result<AgentConfig, String> {
 }
 
 fn save(config: &AgentConfig) -> Result<(), String> {
+    STATUS.invalidate();
     pairing::save_config(config, pairing::config_path()).map_err(|e| e.to_string())
+}
+
+/// A status string for the UI that is worked out off the UI thread.
+///
+/// The UI asks every few seconds, on its own thread. Working the status out
+/// there froze the window each time (listing the network interfaces and
+/// probing a closed port take 150 ms and more on Windows: measured as the
+/// app's window not following a drag for 160 ms every 4 s). So the last
+/// value is returned at once and a new one is worked out on another thread;
+/// after a change made from the UI (`invalidate`) the next call waits for a
+/// fresh one.
+pub struct CachedStatus {
+    value: Mutex<Option<String>>,
+    busy: std::sync::atomic::AtomicBool,
+}
+
+impl CachedStatus {
+    pub const fn new() -> Self {
+        Self { value: Mutex::new(None), busy: std::sync::atomic::AtomicBool::new(false) }
+    }
+
+    pub fn invalidate(&self) {
+        *self.value.lock().unwrap() = None;
+    }
+
+    pub fn get(&'static self, compute: fn() -> String) -> String {
+        use std::sync::atomic::Ordering;
+        let cached = self.value.lock().unwrap().clone();
+        match cached {
+            Some(value) => {
+                if !self.busy.swap(true, Ordering::AcqRel) {
+                    std::thread::spawn(move || {
+                        let fresh = compute();
+                        let mut slot = self.value.lock().unwrap();
+                        // Not when it was invalidated meanwhile: this value may predate the change.
+                        if slot.is_some() {
+                            *slot = Some(fresh);
+                        }
+                        drop(slot);
+                        self.busy.store(false, Ordering::Release);
+                    });
+                }
+                value
+            }
+            None => {
+                let fresh = compute();
+                *self.value.lock().unwrap() = Some(fresh.clone());
+                fresh
+            }
+        }
+    }
+}
+
+static STATUS: CachedStatus = CachedStatus::new();
+
+/// Status of remote control as JSON for the UI (see `CachedStatus`).
+pub fn cached_status_json() -> String {
+    STATUS.get(status_json)
 }
 
 fn child_alive() -> bool {
@@ -156,6 +215,7 @@ pub fn status_json() -> String {
 /// Starts the agent (when it isn't running yet) and remembers remote control
 /// as on.
 pub fn start() -> Result<(), String> {
+    STATUS.invalidate();
     let mut config = load_or_create_config()?;
     if !config.direct_enabled {
         config.direct_enabled = true;
@@ -433,6 +493,7 @@ pub fn primary_address() -> Option<String> {
 
 /// Stops the agent the app started and remembers remote control as off.
 pub fn stop() -> Result<(), String> {
+    STATUS.invalidate();
     let mut config = load_or_create_config()?;
     if config.direct_enabled {
         config.direct_enabled = false;

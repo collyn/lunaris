@@ -65,6 +65,7 @@ fn load_settings() -> Settings {
 }
 
 fn save_settings(settings: &Settings) -> Result<(), String> {
+    STATUS.invalidate();
     let json = serde_json::to_string_pretty(settings).map_err(|e| e.to_string())?;
     std::fs::write(settings_path(), json).map_err(|e| e.to_string())
 }
@@ -102,6 +103,14 @@ fn child_alive() -> bool {
     }
 }
 
+static STATUS: crate::host::CachedStatus = crate::host::CachedStatus::new();
+
+/// Status of the local server as JSON for the UI, worked out off the UI
+/// thread (see `CachedStatus`).
+pub fn cached_status_json() -> String {
+    STATUS.get(status_json)
+}
+
 pub fn status_json() -> String {
     let settings = load_settings();
     let ours = child_alive();
@@ -124,6 +133,7 @@ pub fn status_json() -> String {
 /// Starts the server (unless something already serves the port) and
 /// remembers it as on.
 pub fn start() -> Result<(), String> {
+    STATUS.invalidate();
     let mut settings = load_settings();
     if !settings.enabled {
         settings.enabled = true;
@@ -192,6 +202,7 @@ fn connect_local_agent() {
 
 /// Stops the app's server and remembers it as off.
 pub fn stop() -> Result<(), String> {
+    STATUS.invalidate();
     let mut settings = load_settings();
     if settings.enabled {
         settings.enabled = false;
