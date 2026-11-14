@@ -171,6 +171,23 @@ pub fn start() -> Result<(), String> {
     spawn_agent()
 }
 
+/// The log of the agent this app starts: `agent.log` next to its
+/// configuration, the previous run's kept as `agent.log.1`. (It used to be
+/// thrown away, which left nothing to look at after a bad session.)
+pub fn agent_log_path() -> std::path::PathBuf {
+    std::path::Path::new(pairing::config_path()).with_file_name("agent.log")
+}
+
+fn agent_log_file() -> Option<std::fs::File> {
+    let path = agent_log_path();
+    if path.exists() {
+        let mut previous = path.clone().into_os_string();
+        previous.push(".1");
+        let _ = std::fs::rename(&path, previous);
+    }
+    std::fs::File::create(&path).ok()
+}
+
 fn spawn_agent() -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let mut cmd = Command::new(exe);
@@ -181,11 +198,12 @@ fn spawn_agent() -> Result<(), String> {
         .arg("--name")
         .arg(hostname())
         // Questions to accept a connection come on stdout, answers go on
-        // stdin (agent/src/approval.rs); the logs go to stderr.
+        // stdin (agent/src/approval.rs); the logs go to stderr, which is
+        // kept in agent.log next to the configuration.
         .arg("--approval-stdio")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null());
+        .stderr(agent_log_file().map(Stdio::from).unwrap_or_else(Stdio::null));
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
