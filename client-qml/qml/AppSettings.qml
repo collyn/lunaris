@@ -497,7 +497,7 @@ Rectangle {
                 SettingRow {
                     label: I18n.t("Frame rate")
                     Segmented {
-                        options: StreamOptions.fps.map(function (f) { return { value: f, label: String(f) }; })
+                        options: StreamOptions.fpsFor(bridge.screenRefreshRate()).map(function (f) { return { value: f, label: String(f) }; })
                         value: settings.pref("fps")
                         onPicked: (v) => settings.setPref("fps", v)
                     }

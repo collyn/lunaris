@@ -381,6 +381,19 @@ Windows host → Chrome on Linux over a WireGuard tunnel, 1080p60, 15 Mbit/s,
   one-minute sessions at 20 Mbit/s had unrecovered losses (123 and 20 events,
   12 and 7 key frame requests). With a 1024-packet window (libwebrtc's value):
   4 of 4 sessions without any, though those four also saw little loss.
+- Dragging a window on the Windows host (240 Hz screen) to a Linux client on
+  a 75 Hz screen, measured 2026-11-14: the host captures a new frame on every
+  tick, the injected mouse reaches the host evenly (window moved every 10 ms,
+  p99 17 ms) and the client shows every frame it gets (0–0.4 per second
+  replaced before being shown). What is left is the rate itself: the default
+  was 60 fps, which a 75 Hz screen cannot show evenly (every fourth frame
+  stays twice as long). The default frame rate is now the client screen's
+  refresh rate (`StreamOptions.displayFps`) until the user picks one.
+  Still there at either rate: about one frame per second arrives 10–25 ms
+  late (host tick spacing 9–17 ms at 75 fps, tunnel round trip p99 11 ms,
+  max 25 ms) and is shown one refresh late; the client has no jitter buffer.
+- Open: the first mouse press after connecting did not reach the host in the
+  Xvfb test (the second one did); not checked on a real desktop.
 - Open (Phase 4): when the desktop changes at about 30 fps the Windows host
   sends about 51 fps with uneven spacing (3–34 ms), because repeated frames
   are added between the new ones.

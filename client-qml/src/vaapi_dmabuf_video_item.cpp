@@ -10,6 +10,7 @@
 #include <QtQml/qqml.h>
 #include <atomic>
 #include <cerrno>
+#include <chrono>
 #include <cstring>
 #include <iostream>
 
@@ -38,6 +39,10 @@ struct PendingDmabufFrame {
 
 PendingDmabufFrame g_pendingFrame;
 QMutex g_frameMutex;
+// Guarded by g_frameMutex.
+const bool g_statsEnabled = qEnvironmentVariableIsSet("LUNARIS_CLIENT_STATS");
+int g_statDelivered = 0, g_statShown = 0, g_statReplaced = 0;
+std::chrono::steady_clock::time_point g_statSince = std::chrono::steady_clock::now();
 VaapiDmabufVideoItem *g_activeItem = nullptr;
 std::atomic_bool g_dmabufRenderFailed{false};
 bool g_dmabufStreamActive = false;
@@ -361,6 +366,7 @@ bool VaapiDmabufVideoItem::importPendingFrameLocked() {
     }
 
     cleanupFrameLocked();
+    g_statShown++;
     m_yImage = newYImage;
     m_uvImage = newUvImage;
     m_videoWidth = g_pendingFrame.width;
@@ -462,6 +468,19 @@ extern "C" bool deliver_dmabuf_frame(int fd0,
         return false;
     }
     QMutexLocker locker(&g_frameMutex);
+    if (g_statsEnabled) {
+        // LUNARIS_CLIENT_STATS=1: frames handed over, shown, and replaced
+        // before they were shown, once per second.
+        const auto now = std::chrono::steady_clock::now();
+        g_statDelivered++;
+        if (g_pendingFrame.newFrame) g_statReplaced++;
+        if (now - g_statSince >= std::chrono::seconds(1)) {
+            std::cerr << "Present stats: delivered=" << g_statDelivered << " shown=" << g_statShown
+                      << " replaced_unshown=" << g_statReplaced << std::endl;
+            g_statDelivered = g_statShown = g_statReplaced = 0;
+            g_statSince = now;
+        }
+    }
     closeFrameFds(g_pendingFrame);
     g_pendingFrame.fd0 = fd0;
     g_pendingFrame.fd1 = fd1;

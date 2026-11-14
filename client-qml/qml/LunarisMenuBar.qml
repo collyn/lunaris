@@ -8,8 +8,8 @@ Item {
     width: leftSection.width + rightSection.width + 16 + 16 + 24
     height: 48
 
-    // Same choices as the web client (StreamOptions).
-    property var fpsPresets: StreamOptions.fps
+    // Same choices as the web client (StreamOptions), plus this screen's rate.
+    property var fpsPresets: StreamOptions.fpsFor(bridge.screenRefreshRate())
     
     // Custom signals
     signal fullscreenToggled()

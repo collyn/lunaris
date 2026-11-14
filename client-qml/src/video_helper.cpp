@@ -7,6 +7,7 @@
 #include <QApplication>
 #include <QQuickStyle>
 #include <QWindow>
+#include <QScreen>
 #include <QEvent>
 #include <QMouseEvent>
 #include <QWheelEvent>
@@ -161,6 +162,23 @@ void deliver_bgrx_frame(QVideoSink* sink, const uint8_t* data, int stride,
 
 void warp_cursor_helper(int x, int y) {
     QCursor::setPos(x, y);
+}
+
+double window_screen_refresh_rate() {
+    QScreen *screen = nullptr;
+    if (QWindow *window = QGuiApplication::focusWindow()) {
+        screen = window->screen();
+    } else {
+        const auto windows = QGuiApplication::topLevelWindows();
+        for (QWindow *window : windows) {
+            if (window->isVisible()) {
+                screen = window->screen();
+                break;
+            }
+        }
+    }
+    if (!screen) screen = QGuiApplication::primaryScreen();
+    return screen ? screen->refreshRate() : 0.0;
 }
 
 #if defined(Q_OS_LINUX)

@@ -17,6 +17,27 @@ QtObject {
     ]
     readonly property string defaultResolution: "1920x1080"
     readonly property var fps: [240, 144, 120, 90, 75, 60, 30]
+    // The frame rate that fits a screen refreshing at `refreshHz`: a stream at
+    // another rate cannot be shown evenly (60 fps on a 75 Hz screen holds
+    // every fourth frame twice as long, which shows as judder in any steady
+    // movement).
+    function displayFps(refreshHz) {
+        var rate = Math.round(refreshHz);
+        // Above the highest choice: half the rate still divides evenly.
+        while (rate > 240) rate = Math.round(rate / 2);
+        return rate >= 30 ? rate : 60;
+    }
+    // The choices above plus the screen's own rate, highest first (what
+    // Moonlight's settings do: SettingsView.qml, addRefreshRateOrdered).
+    function fpsFor(refreshHz) {
+        var rate = displayFps(refreshHz);
+        var list = fps.slice();
+        if (list.indexOf(rate) === -1) {
+            list.push(rate);
+            list.sort(function (a, b) { return b - a; });
+        }
+        return list;
+    }
     // kbps
     readonly property var bitrates: [2000, 5000, 8000, 10000, 15000, 20000, 30000, 40000, 50000, 75000, 100000, 150000]
     // "auto": the best codec both ends handle (see the client's codec choice)

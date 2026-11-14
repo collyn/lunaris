@@ -619,6 +619,9 @@ pub mod qobject {
             height: i32,
         );
 
+        #[rust_name = "window_screen_refresh_rate"]
+        fn window_screen_refresh_rate() -> f64;
+
         #[rust_name = "deliver_bgrx_frame"]
         unsafe fn deliver_bgrx_frame(
             sink: *mut QVideoSink,
@@ -1206,6 +1209,10 @@ pub mod qobject {
 
         #[qinvokable]
         fn app_version(self: Pin<&mut StreamBridge>) -> QString;
+
+        /// Refresh rate in Hz of the screen the window is on, 0 when unknown.
+        #[qinvokable]
+        fn screen_refresh_rate(self: Pin<&mut StreamBridge>) -> f64;
 
         /// Last direct connection (address "host:port" and password), "" if none.
         #[qinvokable]
@@ -3017,6 +3024,10 @@ impl qobject::StreamBridge {
 
     pub fn app_version(self: Pin<&mut Self>) -> QString {
         QString::from(env!("CARGO_PKG_VERSION"))
+    }
+
+    pub fn screen_refresh_rate(self: Pin<&mut Self>) -> f64 {
+        qobject::window_screen_refresh_rate()
     }
 
     pub fn saved_direct_address(self: Pin<&mut Self>) -> QString {

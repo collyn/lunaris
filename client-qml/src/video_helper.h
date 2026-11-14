@@ -38,6 +38,9 @@ int requested_csc_mode();
 bool video_color_full_range();
 
 void warp_cursor_helper(int x, int y);
+// Refresh rate in Hz of the screen the app's window is on (the primary screen
+// before a window exists), 0 when unknown.
+double window_screen_refresh_rate();
 void set_keyboard_grab_helper(bool grab);
 
 void register_bridge_instance(StreamBridge* bridge);

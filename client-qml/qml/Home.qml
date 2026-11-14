@@ -46,6 +46,28 @@ Rectangle {
         bitrate: 15000,
         renderBackend: "auto_gpu"
     })
+    // Until a frame rate is picked in the settings, new connections use the
+    // refresh rate of the screen this window is on (read again when the
+    // window moves to another screen and before each connection).
+    property bool fpsFollowsScreen: true
+    readonly property string screenName: Screen.name
+    onScreenNameChanged: applyScreenFps()
+    function screenFps() { return StreamOptions.displayFps(bridge.screenRefreshRate()) }
+    function applyScreenFps() {
+        if (!home.fpsFollowsScreen) return;
+        var rate = screenFps();
+        if (home.prefs.fps === rate) return;
+        var next = Object.assign({}, home.prefs);
+        next.fps = rate;
+        home.prefs = next;
+        console.log("Default frame rate follows the screen: " + rate + " fps");
+    }
+    // What goes to app_settings: without the frame rate while it follows the screen.
+    function storedPrefs() {
+        var out = Object.assign({}, home.prefs);
+        if (home.fpsFollowsScreen) delete out.fps;
+        return out;
+    }
 
     property string statusText: ""
     property bool statusIsError: false
@@ -61,8 +83,10 @@ Rectangle {
                 var merged = Object.assign({}, home.prefs);
                 for (var k in p) merged[k] = p[k];
                 home.prefs = merged;
+                home.fpsFollowsScreen = p.fps === undefined;
             } catch (e) { console.log("app_settings: " + e); }
         }
+        applyScreenFps();
         Theme.mode = home.prefs.theme || "system";
         I18n.lang = home.prefs.language === "vi" ? "vi" : "en";
         window.closeToTray = home.prefs.closeToTray !== false;
@@ -82,9 +106,10 @@ Rectangle {
         var next = Object.assign({}, home.prefs);
         next[key] = value;
         home.prefs = next;
+        if (key === "fps") home.fpsFollowsScreen = false;
         if (key === "theme") Theme.mode = value;
         if (key === "language") I18n.lang = value;
-        bridge.saveStore("app_settings", JSON.stringify(home.prefs));
+        bridge.saveStore("app_settings", JSON.stringify(storedPrefs()));
     }
 
     function savePeers() {
@@ -361,6 +386,7 @@ Rectangle {
     // Stream settings for a saved computer: its own (gear on the card) or
     // the defaults from Settings > Display.
     function streamSettingsFor(peer) {
+        applyScreenFps();
         var d = {
             res: home.prefs.res, fps: home.prefs.fps, codec: home.prefs.codec,
             bitrate: home.prefs.bitrate, queueLimit: 256, renderBackend: home.prefs.renderBackend,

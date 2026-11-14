@@ -310,7 +310,7 @@ Rectangle {
                     hint: I18n.t("Frames per second sent by the remote computer. Above its screen's refresh rate needs a virtual screen (Remote computer).")
                     ThemedCombo {
                         width: parent.width
-                        options: StreamOptions.fps.map(function (f) { return { value: f, label: f + " FPS" }; })
+                        options: StreamOptions.fpsFor(bridge.screenRefreshRate()).map(function (f) { return { value: f, label: f + " FPS" }; })
                         value: settingsRoot.fps
                         onPicked: (v) => settingsRoot.fps = v
                     }
