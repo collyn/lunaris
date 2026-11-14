@@ -381,17 +381,24 @@ Windows host → Chrome on Linux over a WireGuard tunnel, 1080p60, 15 Mbit/s,
   one-minute sessions at 20 Mbit/s had unrecovered losses (123 and 20 events,
   12 and 7 key frame requests). With a 1024-packet window (libwebrtc's value):
   4 of 4 sessions without any, though those four also saw little loss.
-- Dragging a window on the Windows host (240 Hz screen) to a Linux client on
-  a 75 Hz screen, measured 2026-11-14: the host captures a new frame on every
-  tick, the injected mouse reaches the host evenly (window moved every 10 ms,
-  p99 17 ms) and the client shows every frame it gets (0–0.4 per second
-  replaced before being shown). What is left is the rate itself: the default
-  was 60 fps, which a 75 Hz screen cannot show evenly (every fourth frame
-  stays twice as long). The default frame rate is now the client screen's
-  refresh rate (`StreamOptions.displayFps`) until the user picks one.
-  Still there at either rate: about one frame per second arrives 10–25 ms
-  late (host tick spacing 9–17 ms at 75 fps, tunnel round trip p99 11 ms,
-  max 25 ms) and is shown one refresh late; the client has no jitter buffer.
+- Dragging a window fast on the Windows host, seen in the Linux desktop
+  client (measured 2026-11-14 through the real input path: a virtual pointer
+  on the client's desktop at 1000 moves per second, 60 fps at 15 Mbit/s):
+  the mouse reaches the host evenly (99% of moves within 7.5 ms of the
+  previous one), the host captures and timestamps a frame every interval, and
+  the client shows every frame it gets. The stutter was in between: the RTP
+  pacing spread a frame over up to a whole frame interval (2.5 x the
+  bitrate), with 1 ms waits on the async runtime's timer, and the desktop
+  client shows frames as they arrive. Frames arriving more than 25% off the
+  interval: 21.8%; more than 1.5 intervals after the previous one: 23 in
+  12 s. With the writer on its own thread (thread sleep) and a frame sent
+  within a quarter of the interval: 5.0% and 3, no more retransmissions than
+  before. What is left is path jitter (99% of frames within 7 ms of their
+  timestamp); removing it takes a jitter buffer in the client (Chrome has
+  one, which is why browser clients looked smooth).
+- The default frame rate of the desktop client is the screen's refresh rate
+  (`StreamOptions.displayFps`) until the user picks one: 60 fps cannot be
+  shown evenly on a 75 Hz screen.
 - Open: the first mouse press after connecting did not reach the host in the
   Xvfb test (the second one did); not checked on a real desktop.
 - Open (Phase 4): when the desktop changes at about 30 fps the Windows host
