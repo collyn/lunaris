@@ -399,6 +399,20 @@ Windows host → Chrome on Linux over a WireGuard tunnel, 1080p60, 15 Mbit/s,
 - The default frame rate of the desktop client is the screen's refresh rate
   (`StreamOptions.displayFps`) until the user picks one: 60 fps cannot be
   shown evenly on a 75 Hz screen.
+- "The drag loses its hold for 0.4 s every 4-5 s" (reported with a smooth
+  picture) was neither transport nor input: the window being dragged was the
+  Lunaris app's own window on the Windows host, and the app froze its UI
+  thread for about 150 ms every 4 s (the status poll of Home.qml probed a
+  closed local port with a 150 ms timeout and listed the network interfaces
+  on the UI thread). Found with a silent logger of cursor, button and
+  foreground-window position on the host (cursor and button continuous, the
+  window standing still at 4.00 s intervals) and confirmed by timing an empty
+  window message to the app: 6 answers of 142-155 ms in 22 s before, none
+  above 2 ms with the status worked out off the UI thread (`CachedStatus`).
+- Linux desktop client: with the pointer moving over the stream, decoded
+  frames were replaced before being shown (4-8 per second of 75); the DMA-BUF
+  item now has Moonlight's pacing queue (1-2 per second). The D3D11 item on
+  Windows still keeps a single pending frame.
 - Open: the first mouse press after connecting did not reach the host in the
   Xvfb test (the second one did); not checked on a real desktop.
 - Open (Phase 4): when the desktop changes at about 30 fps the Windows host
