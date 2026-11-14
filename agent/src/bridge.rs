@@ -1217,7 +1217,13 @@ pub async fn setup_bridge_session(
             .filter(|v| *v >= 1)
             .unwrap_or(1);
         info!("RTP pacing: {} packets per ms, a frame within 1/{} of {} ms", pacing_packets_in_1ms, pacing_frame_fraction, pacing_frame_interval_ms);
-        tokio::spawn(async move {
+        // The writer runs on its own thread: its waits are 1 ms and shorter,
+        // which the async runtime's timer cannot keep (whole milliseconds,
+        // and on Windows the system tick). Sunshine sleeps here with its
+        // high-precision timer (stream.cpp:1857-1860); a thread sleep is the
+        // equivalent (a high-resolution waitable timer on Windows).
+        let writer_runtime = tokio::runtime::Handle::current();
+        std::thread::Builder::new().name("rtp-writer".into()).spawn(move || writer_runtime.block_on(async move {
             let mut seq: u16 = 0;
             let mut ratecontrol_next_frame_start = Instant::now();
             let mut metrics_started = Instant::now();
@@ -1279,7 +1285,7 @@ pub async fn setup_bridge_session(
                             );
                         let now = Instant::now();
                         if now < due {
-                            tokio::time::sleep(due - now).await;
+                            std::thread::sleep(due - now);
                         }
                         ratecontrol_group_packets_sent = 0;
 
@@ -1332,7 +1338,7 @@ pub async fn setup_bridge_session(
                 }
                 trace!("Writer task successfully sent RTP packets");
             }
-        });
+        })).expect("spawn rtp-writer thread");
 
         while let Some(VideoFramePayload {
             full_frame,
