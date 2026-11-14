@@ -717,6 +717,7 @@ pub mod qobject {
             pitch1: i32,
             width: i32,
             height: i32,
+            owner: u64,
         ) -> bool;
 
         #[rust_name = "dmabuf_render_failed"]
@@ -3780,6 +3781,9 @@ async fn handle_remote_track(
                 let stats_log = std::env::var("LUNARIS_CLIENT_STATS").is_ok();
                 let stats_frame_log = std::env::var("LUNARIS_CLIENT_STATS").as_deref() == Ok("2");
                 let stats_started = std::time::Instant::now();
+                let mut stats_first_ts: Option<u32> = None;
+                let mut stats_frame_packets: Vec<(u16, f64)> = Vec::new();
+                let mut stats_first_at = stats_started;
                 let mut stats_prev_frames: usize = 0;
                 let mut stats_last_frame_at: Option<std::time::Instant> = None;
                 let mut stats_gap_min = f64::MAX;
@@ -3820,6 +3824,18 @@ async fn handle_remote_track(
                     }
 
                     let stats_rtp_ts = rtp_packet.header.timestamp;
+                    if stats_frame_log {
+                        if stats_first_ts != Some(stats_rtp_ts) {
+                            // First packet of a new frame taken off the queue.
+                            stats_first_ts = Some(stats_rtp_ts);
+                            stats_first_at = std::time::Instant::now();
+                            stats_frame_packets.clear();
+                        }
+                        stats_frame_packets.push((
+                            rtp_packet.header.sequence_number,
+                            stats_first_at.elapsed().as_secs_f64() * 1000.0,
+                        ));
+                    }
                     let seq = rtp_packet.header.sequence_number;
                     let ext_seq = match next_seq_num {
                         None => {
@@ -4494,10 +4510,20 @@ async fn handle_remote_track(
                             // uneven sending from uneven arrival.
                             if stats_frame_log {
                                 eprintln!(
-                                    "Frame: rtp_ts={} at_ms={:.2}",
+                                    "Frame: rtp_ts={} at_ms={:.2} first_ms={:.2}",
                                     stats_rtp_ts,
-                                    now.duration_since(stats_started).as_secs_f64() * 1000.0
+                                    now.duration_since(stats_started).as_secs_f64() * 1000.0,
+                                    stats_first_at.duration_since(stats_started).as_secs_f64() * 1000.0
                                 );
+                                if now.duration_since(stats_first_at).as_secs_f64() * 1000.0 > 12.0 {
+                                    // A frame that took long from its first packet: every
+                                    // packet's sequence number and ms after the first.
+                                    let detail: Vec<String> = stats_frame_packets
+                                        .iter()
+                                        .map(|(seq, ms)| format!("{}@{:.1}", seq, ms))
+                                        .collect();
+                                    eprintln!("Late frame packets: {}", detail.join(" "));
+                                }
                             }
                         }
                         stats_prev_frames = frame_count;

@@ -1260,6 +1260,10 @@ pub async fn setup_bridge_session(
                     }
                 }
 
+                let writer_frame_started = Instant::now();
+                let mut writer_sleep = Duration::ZERO;
+                let mut writer_sleeps = 0u32;
+                let mut writer_write_max = Duration::ZERO;
                 let packet_count = packets.len() as u64;
                 trace!(
                     "Writer task sending {} RTP packets (first seq={})",
@@ -1292,6 +1296,8 @@ pub async fn setup_bridge_session(
                         let now = Instant::now();
                         if now < due {
                             std::thread::sleep(due - now);
+                            writer_sleep += now.elapsed();
+                            writer_sleeps += 1;
                         }
                         ratecontrol_group_packets_sent = 0;
 
@@ -1313,14 +1319,28 @@ pub async fn setup_bridge_session(
                     }
                     packet.header.sequence_number = seq;
                     seq = seq.wrapping_add(1);
+                    let write_started = Instant::now();
                     if let Err(e) = video_track_clone
                         .write_rtp_with_extensions(packet, &extensions)
                         .await
                     {
                         debug!("Failed to write video RTP packet: {:?}", e);
                     }
+                    writer_write_max = writer_write_max.max(write_started.elapsed());
                     ratecontrol_group_packets_sent += 1;
                     ratecontrol_frame_packets_sent += 1;
+                }
+                if writer_frame_started.elapsed() > Duration::from_millis(9) {
+                    debug!(
+                        "Slow RTP write: {} packets took {:.1} ms: {} sleeps {:.1} ms, longest write {:.2} ms (pacing {} per ms, queue {})",
+                        packet_count,
+                        writer_frame_started.elapsed().as_secs_f64() * 1000.0,
+                        writer_sleeps,
+                        writer_sleep.as_secs_f64() * 1000.0,
+                        writer_write_max.as_secs_f64() * 1000.0,
+                        packets_in_1ms,
+                        packet_rx.len()
+                    );
                 }
                 // stream.cpp:1899-1901.
                 ratecontrol_next_frame_start = ratecontrol_frame_start

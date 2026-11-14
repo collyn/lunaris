@@ -54,6 +54,11 @@ private:
 };
 
 extern "C" {
+// Frees the decoder frame handed over with a delivered frame (implemented in
+// decoder.rs).
+void lunaris_release_video_frame(uint64_t owner);
+// `owner` is the decoder's AVFrame; it belongs to the video item once this
+// returns true.
 bool deliver_dmabuf_frame(int fd0,
                          int fd1,
                          uint32_t fourcc,
@@ -63,7 +68,8 @@ bool deliver_dmabuf_frame(int fd0,
                          int offset1,
                          int pitch1,
                          int width,
-                         int height);
+                         int height,
+                         uint64_t owner);
 bool dmabuf_render_failed();
 void set_dmabuf_stream_active(bool active);
 void register_native_video_item_types();

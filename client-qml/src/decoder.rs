@@ -315,6 +315,12 @@ impl HardwareDecoder {
         if hw_device_type != ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_NONE {
             unsafe {
                 (*codec_ctx).hw_device_ctx = ffi::av_buffer_ref(hw_device_ctx);
+                // Surfaces held outside the decoder: the frame on screen and
+                // the frames waiting in the pacing queue (up to 8).
+                #[cfg(target_os = "linux")]
+                {
+                    (*codec_ctx).extra_hw_frames = 10;
+                }
                 if d3d11_device {
                     (*codec_ctx).get_format = Some(d3d11_get_format);
                 }
@@ -1069,10 +1075,13 @@ impl HardwareDecoder {
                 plane1.pitch as i32,
                 (*gpu_frame).width as i32,
                 (*gpu_frame).height as i32,
+                // The video item keeps the frame (and with it the decoder's
+                // surface) until it is no longer queued or shown, and frees
+                // it with lunaris_release_video_frame.
+                gpu_frame as usize as u64,
             );
             ffi::av_frame_free(&mut (mapped_frame as *mut _));
             if delivered {
-                ffi::av_frame_free(&mut (gpu_frame as *mut _));
                 return Ok(true);
             }
         }
@@ -1157,5 +1166,16 @@ mod color_tests {
         assert_eq!(frame_color(unspec, no_range, nv12, 4), (true, false));
         // Tags win over the request.
         assert_eq!(frame_color(ffi::AVColorSpace::AVCOL_SPC_BT709 as i32, mpeg, nv12, 1), (true, false));
+    }
+}
+
+/// Frees a decoder frame that was handed to the video item with
+/// `deliver_dmabuf_frame` (called from C++ when the frame is dropped from the
+/// pacing queue or replaced on screen).
+#[no_mangle]
+pub extern "C" fn lunaris_release_video_frame(owner: u64) {
+    let mut frame = owner as usize as *mut ffi::AVFrame;
+    if !frame.is_null() {
+        unsafe { ffi::av_frame_free(&mut frame) };
     }
 }

@@ -5,6 +5,7 @@
 #include <QOpenGLContext>
 #include <QOpenGLFunctions>
 #include <QQuickWindow>
+#include <QScreen>
 #include <QSGNode>
 #include <QVector>
 #include <QtQml/qqml.h>
@@ -12,6 +13,7 @@
 #include <cerrno>
 #include <chrono>
 #include <cstring>
+#include <deque>
 #include <iostream>
 
 #if defined(Q_OS_LINUX)
@@ -34,12 +36,33 @@ struct PendingDmabufFrame {
     int pitch1 = 0;
     int width = 0;
     int height = 0;
-    bool newFrame = false;
+    // The decoder's AVFrame, kept until the frame is no longer queued or
+    // shown: the DMA-BUF is the decoder's surface, which would otherwise go
+    // back to its pool and be decoded into again while still on screen.
+    uint64_t owner = 0;
 };
 
-PendingDmabufFrame g_pendingFrame;
+// Frame pacing, a port of Moonlight's Pacer (moonlight-qt
+// app/streaming/video/ffmpeg-renderers/pacer/pacer.cpp): decoded frames wait
+// in a queue and the render thread takes one per rendered frame, instead of
+// each new frame replacing the one not shown yet. The window is rendered on
+// the display's clock whenever anything in it changes (the pointer moving is
+// enough), so frames that arrive close together would otherwise be lost:
+// measured with the pointer moving at 1000 Hz, 4-8 of 75 frames per second
+// (16 in the worst second) against 0.1 with the pointer at rest.
+// All guarded by g_frameMutex.
 QMutex g_frameMutex;
-// Guarded by g_frameMutex.
+std::deque<PendingDmabufFrame> g_pacingQueue;      // Pacer::m_PacingQueue
+std::deque<int> g_pacingQueueHistory;              // Pacer::m_PacingQueueHistory
+uint64_t g_displayedOwner = 0;                     // the frame on screen
+// Frames per second of the stream, measured over the last second
+// (Pacer::m_MaxVideoFps comes from the stream configuration there).
+int g_streamFps = 0;
+int g_streamFpsCount = 0;
+std::chrono::steady_clock::time_point g_streamFpsSince = std::chrono::steady_clock::now();
+// Safety cap, not in Moonlight (its queue is bounded by handleVsync running on
+// every V-sync; this render callback does not run while the window is hidden).
+constexpr size_t MAX_PACING_QUEUE = 8;
 const bool g_statsEnabled = qEnvironmentVariableIsSet("LUNARIS_CLIENT_STATS");
 int g_statDelivered = 0, g_statShown = 0, g_statReplaced = 0;
 std::chrono::steady_clock::time_point g_statSince = std::chrono::steady_clock::now();
@@ -69,6 +92,25 @@ void closeFd(int &fd) {
 void closeFrameFds(PendingDmabufFrame &frame) {
     closeFd(frame.fd0);
     closeFd(frame.fd1);
+}
+
+void releaseOwner(uint64_t &owner) {
+    if (owner) {
+        lunaris_release_video_frame(owner);
+        owner = 0;
+    }
+}
+
+// A queued frame that will not be shown.
+void dropFrame(PendingDmabufFrame &frame) {
+    closeFrameFds(frame);
+    releaseOwner(frame.owner);
+}
+
+void clearPacingQueueLocked() {
+    for (PendingDmabufFrame &frame : g_pacingQueue) dropFrame(frame);
+    g_pacingQueue.clear();
+    g_pacingQueueHistory.clear();
 }
 
 void markDmabufFailed(const char *reason) {
@@ -298,6 +340,7 @@ void VaapiDmabufVideoItem::cleanupFrameLocked() {
         }
     }
 #endif
+    releaseOwner(g_displayedOwner);
     m_haveImportedFrame = false;
 }
 
@@ -329,48 +372,81 @@ void VaapiDmabufVideoItem::cleanupGlResources() {
 
 bool VaapiDmabufVideoItem::importPendingFrameLocked() {
 #if defined(Q_OS_LINUX)
-    if (!g_pendingFrame.newFrame) {
+    // Pacer::handleVsync (pacer.cpp:215-262), run once per rendered frame.
+    // "If the queue length history entries are large, be strict about
+    // dropping excess frames."
+    size_t frameDropTarget = 1;
+    const int displayFps = (window() && window()->screen()) ? qRound(window()->screen()->refreshRate()) : 0;
+    // "If we may get more frames per second than we can display, use frame
+    // history to drop frames only if consistently above the one queued frame
+    // mark."
+    if (displayFps > 0 && g_streamFps >= displayFps) {
+        for (int queueHistoryEntry : g_pacingQueueHistory) {
+            if (queueHistoryEntry <= 1) {
+                // "Be lenient as long as the queue length resolves before
+                // the end of frame history"
+                frameDropTarget = 3;
+                break;
+            }
+        }
+        // "Keep a rolling 500 ms window of pacing queue history"
+        if (static_cast<int>(g_pacingQueueHistory.size()) >= displayFps / 2) {
+            g_pacingQueueHistory.pop_front();
+        }
+        g_pacingQueueHistory.push_back(static_cast<int>(g_pacingQueue.size()));
+    }
+    // "Catch up if we're several frames ahead"
+    while (g_pacingQueue.size() > frameDropTarget) {
+        dropFrame(g_pacingQueue.front());
+        g_pacingQueue.pop_front();
+        g_statReplaced++;
+    }
+    if (g_pacingQueue.empty()) {
         return m_haveImportedFrame;
     }
-    if (g_pendingFrame.fourcc != DRM_FORMAT_NV12) {
-        closeFrameFds(g_pendingFrame);
-        g_pendingFrame.newFrame = false;
+    PendingDmabufFrame frame = g_pacingQueue.front();
+    g_pacingQueue.pop_front();
+
+    if (frame.fourcc != DRM_FORMAT_NV12) {
+        dropFrame(frame);
         markDmabufFailed("only NV12 DMABUF frames are supported initially");
         return false;
     }
     EGLDisplay display = eglGetCurrentDisplay();
     if (display == EGL_NO_DISPLAY) {
-        closeFrameFds(g_pendingFrame);
-        g_pendingFrame.newFrame = false;
+        dropFrame(frame);
         markDmabufFailed("no current EGL display");
         return false;
     }
 
-    void *newYImage = createPlaneImage(display, g_pendingFrame.fd0, g_pendingFrame.width, g_pendingFrame.height,
-                                       0x20203852 /* R8 */, g_pendingFrame.offset0, g_pendingFrame.pitch0,
-                                       g_pendingFrame.modifier);
-    void *newUvImage = createPlaneImage(display, g_pendingFrame.fd1, g_pendingFrame.width / 2, g_pendingFrame.height / 2,
-                                        0x38385247 /* GR88: U in red, V in green */, g_pendingFrame.offset1, g_pendingFrame.pitch1,
-                                        g_pendingFrame.modifier);
-    closeFrameFds(g_pendingFrame);
-    g_pendingFrame.newFrame = false;
+    void *newYImage = createPlaneImage(display, frame.fd0, frame.width, frame.height,
+                                       0x20203852 /* R8 */, frame.offset0, frame.pitch0,
+                                       frame.modifier);
+    void *newUvImage = createPlaneImage(display, frame.fd1, frame.width / 2, frame.height / 2,
+                                        0x38385247 /* GR88: U in red, V in green */, frame.offset1, frame.pitch1,
+                                        frame.modifier);
+    closeFrameFds(frame);
 
     if (!newYImage || !newUvImage) {
         if (newYImage) eglDestroyImageKHRFn(display, static_cast<EGLImageKHR>(newYImage));
         if (newUvImage) eglDestroyImageKHRFn(display, static_cast<EGLImageKHR>(newUvImage));
         std::cerr << "Lunaris: eglCreateImageKHR for the NV12 planes failed: EGL error 0x" << std::hex << eglGetError()
-                  << " (modifier 0x" << g_pendingFrame.modifier << std::dec << ", " << g_pendingFrame.width << "x"
-                  << g_pendingFrame.height << ", pitches " << g_pendingFrame.pitch0 << "/" << g_pendingFrame.pitch1 << ")" << std::endl;
+                  << " (modifier 0x" << frame.modifier << std::dec << ", " << frame.width << "x"
+                  << frame.height << ", pitches " << frame.pitch0 << "/" << frame.pitch1 << ")" << std::endl;
+        releaseOwner(frame.owner);
         markDmabufFailed("eglCreateImageKHR failed for NV12 planes");
         return false;
     }
 
+    // The previous frame's images and surface go only now (Pacer keeps the
+    // frame being shown until the next one is rendered).
     cleanupFrameLocked();
+    g_displayedOwner = frame.owner;
     g_statShown++;
     m_yImage = newYImage;
     m_uvImage = newUvImage;
-    m_videoWidth = g_pendingFrame.width;
-    m_videoHeight = g_pendingFrame.height;
+    m_videoWidth = frame.width;
+    m_videoHeight = frame.height;
 
     g_gl->glBindTexture(GL_TEXTURE_2D, m_yTexture);
     g_gl->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
@@ -402,6 +478,10 @@ void VaapiDmabufVideoItem::renderNative() {
     QMutexLocker locker(&g_frameMutex);
     if (!ensureGlResources() || !importPendingFrameLocked()) {
         return;
+    }
+    if (!g_pacingQueue.empty()) {
+        // More frames wait: render again on the next refresh.
+        QMetaObject::invokeMethod(this, [this]() { update(); }, Qt::QueuedConnection);
     }
 
     QPointF globalPos = mapToScene(QPointF(0, 0));
@@ -458,7 +538,8 @@ extern "C" bool deliver_dmabuf_frame(int fd0,
                                       int offset1,
                                       int pitch1,
                                       int width,
-                                      int height) {
+                                      int height,
+                                      uint64_t owner) {
 #if defined(Q_OS_LINUX)
     if (g_dmabufRenderFailed.load(std::memory_order_acquire)) {
         int a = fd0;
@@ -468,31 +549,42 @@ extern "C" bool deliver_dmabuf_frame(int fd0,
         return false;
     }
     QMutexLocker locker(&g_frameMutex);
+    const auto now = std::chrono::steady_clock::now();
+    g_streamFpsCount++;
+    if (now - g_streamFpsSince >= std::chrono::seconds(1)) {
+        g_streamFps = qRound(g_streamFpsCount / std::chrono::duration<double>(now - g_streamFpsSince).count());
+        g_streamFpsCount = 0;
+        g_streamFpsSince = now;
+    }
     if (g_statsEnabled) {
-        // LUNARIS_CLIENT_STATS=1: frames handed over, shown, and replaced
+        // LUNARIS_CLIENT_STATS=1: frames handed over, shown, and dropped
         // before they were shown, once per second.
-        const auto now = std::chrono::steady_clock::now();
         g_statDelivered++;
-        if (g_pendingFrame.newFrame) g_statReplaced++;
         if (now - g_statSince >= std::chrono::seconds(1)) {
             std::cerr << "Present stats: delivered=" << g_statDelivered << " shown=" << g_statShown
-                      << " replaced_unshown=" << g_statReplaced << std::endl;
+                      << " replaced_unshown=" << g_statReplaced << " queued=" << g_pacingQueue.size() << std::endl;
             g_statDelivered = g_statShown = g_statReplaced = 0;
             g_statSince = now;
         }
     }
-    closeFrameFds(g_pendingFrame);
-    g_pendingFrame.fd0 = fd0;
-    g_pendingFrame.fd1 = fd1;
-    g_pendingFrame.fourcc = fourcc;
-    g_pendingFrame.modifier = modifier;
-    g_pendingFrame.offset0 = offset0;
-    g_pendingFrame.pitch0 = pitch0;
-    g_pendingFrame.offset1 = offset1;
-    g_pendingFrame.pitch1 = pitch1;
-    g_pendingFrame.width = width;
-    g_pendingFrame.height = height;
-    g_pendingFrame.newFrame = true;
+    while (g_pacingQueue.size() >= MAX_PACING_QUEUE) {
+        dropFrame(g_pacingQueue.front());
+        g_pacingQueue.pop_front();
+        g_statReplaced++;
+    }
+    PendingDmabufFrame frame;
+    frame.fd0 = fd0;
+    frame.fd1 = fd1;
+    frame.fourcc = fourcc;
+    frame.modifier = modifier;
+    frame.offset0 = offset0;
+    frame.pitch0 = pitch0;
+    frame.offset1 = offset1;
+    frame.pitch1 = pitch1;
+    frame.width = width;
+    frame.height = height;
+    frame.owner = owner;
+    g_pacingQueue.push_back(frame);
     g_dmabufStreamActive = true;
     if (g_activeItem) {
         QMetaObject::invokeMethod(g_activeItem, [item = g_activeItem]() {
@@ -504,7 +596,7 @@ extern "C" bool deliver_dmabuf_frame(int fd0,
     return true;
 #else
     Q_UNUSED(fd0); Q_UNUSED(fd1); Q_UNUSED(fourcc); Q_UNUSED(modifier); Q_UNUSED(offset0);
-    Q_UNUSED(pitch0); Q_UNUSED(offset1); Q_UNUSED(pitch1); Q_UNUSED(width); Q_UNUSED(height);
+    Q_UNUSED(pitch0); Q_UNUSED(offset1); Q_UNUSED(pitch1); Q_UNUSED(width); Q_UNUSED(height); Q_UNUSED(owner);
     return false;
 #endif
 }
@@ -517,8 +609,7 @@ extern "C" void set_dmabuf_stream_active(bool active) {
     g_dmabufStreamActive = active;
     if (!active) {
         QMutexLocker locker(&g_frameMutex);
-        closeFrameFds(g_pendingFrame);
-        g_pendingFrame.newFrame = false;
+        clearPacingQueueLocked();
         if (g_activeItem) {
             QMetaObject::invokeMethod(g_activeItem, "setDmabufActive", Qt::QueuedConnection, Q_ARG(bool, false));
         }
