@@ -1201,22 +1201,28 @@ pub async fn setup_bridge_session(
         // 80% of 1 Gbit/s because its transport has FEC; over WebRTC the rate
         // is libwebrtc's pacing factor, 2.5 x the stream bitrate
         // (kDefaultPaceMultiplier), raised when needed so that one frame is
-        // spread over at most one frame interval and the queue below cannot
-        // build up behind a large key frame. Measured without pacing over a
+        // spread over at most a quarter of the frame interval (see below). Measured without pacing over a
         // WireGuard tunnel at 15 Mbit/s: about 9 retransmission requests per
         // second from Chrome, late frames every few seconds.
         const RTP_PACKET_BYTES: u64 = 1200;
         let pacing_packets_in_1ms: u64 =
             ((stream_bitrate as u64 * 1000 * 25 / 10) / 8 / RTP_PACKET_BYTES / 1000).max(1);
         let pacing_frame_interval_ms: u64 = (1000 / stream_fps.max(1) as u64).max(1);
-        // Experiment knob: a frame is spread over at most 1/N of the frame
-        // interval (1 = the whole interval).
+        // A frame leaves within a quarter of the frame interval. The desktop
+        // client shows a frame when it arrives (no jitter buffer, like
+        // Moonlight), so the time a frame takes to leave is added to its delay:
+        // at 2.5 x the bitrate an average frame took 40% of the interval and a
+        // large one all of it. Measured dragging a window fast (Windows host,
+        // 60 fps at 15 Mbit/s over the WireGuard tunnel, 12 s): frames arriving
+        // more than 25% off the interval 21.8% -> 8.1%, more than 1.5 intervals
+        // apart 23 -> 5, no retransmissions. 1/8 was no better and 1/32 (as
+        // good as unpaced) brought retransmissions back.
+        // LUNARIS_PACING_FRAME_FRACTION overrides the 4 (1 = the whole interval).
         let pacing_frame_fraction: u64 = std::env::var("LUNARIS_PACING_FRAME_FRACTION")
             .ok()
             .and_then(|v| v.parse().ok())
             .filter(|v| *v >= 1)
-            .unwrap_or(1);
-        info!("RTP pacing: {} packets per ms, a frame within 1/{} of {} ms", pacing_packets_in_1ms, pacing_frame_fraction, pacing_frame_interval_ms);
+            .unwrap_or(4);
         // The writer runs on its own thread: its waits are 1 ms and shorter,
         // which the async runtime's timer cannot keep (whole milliseconds,
         // and on Windows the system tick). Sunshine sleeps here with its
@@ -1261,7 +1267,7 @@ pub async fn setup_bridge_session(
                     seq
                 );
                 // stream.cpp:1740: packets per 1 ms group; here also at least
-                // enough to finish the frame within one frame interval.
+                // enough to finish the frame within its share of the interval.
                 let packets_in_1ms =
                     pacing_packets_in_1ms.max((packet_count * pacing_frame_fraction).div_ceil(pacing_frame_interval_ms));
                 // stream.cpp:1753: "Don't ignore the last ratecontrol group of
