@@ -1209,6 +1209,14 @@ pub async fn setup_bridge_session(
         let pacing_packets_in_1ms: u64 =
             ((stream_bitrate as u64 * 1000 * 25 / 10) / 8 / RTP_PACKET_BYTES / 1000).max(1);
         let pacing_frame_interval_ms: u64 = (1000 / stream_fps.max(1) as u64).max(1);
+        // Experiment knob: a frame is spread over at most 1/N of the frame
+        // interval (1 = the whole interval).
+        let pacing_frame_fraction: u64 = std::env::var("LUNARIS_PACING_FRAME_FRACTION")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .filter(|v| *v >= 1)
+            .unwrap_or(1);
+        info!("RTP pacing: {} packets per ms, a frame within 1/{} of {} ms", pacing_packets_in_1ms, pacing_frame_fraction, pacing_frame_interval_ms);
         tokio::spawn(async move {
             let mut seq: u16 = 0;
             let mut ratecontrol_next_frame_start = Instant::now();
@@ -1249,7 +1257,7 @@ pub async fn setup_bridge_session(
                 // stream.cpp:1740: packets per 1 ms group; here also at least
                 // enough to finish the frame within one frame interval.
                 let packets_in_1ms =
-                    pacing_packets_in_1ms.max(packet_count.div_ceil(pacing_frame_interval_ms));
+                    pacing_packets_in_1ms.max((packet_count * pacing_frame_fraction).div_ceil(pacing_frame_interval_ms));
                 // stream.cpp:1753: "Don't ignore the last ratecontrol group of
                 // the previous frame".
                 let ratecontrol_frame_start = ratecontrol_next_frame_start.max(Instant::now());

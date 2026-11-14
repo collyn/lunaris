@@ -3778,6 +3778,8 @@ async fn handle_remote_track(
                 // LUNARIS_CLIENT_STATS=1: one line per second with the
                 // interval between decoded frames (stutter diagnosis).
                 let stats_log = std::env::var("LUNARIS_CLIENT_STATS").is_ok();
+                let stats_frame_log = std::env::var("LUNARIS_CLIENT_STATS").as_deref() == Ok("2");
+                let stats_started = std::time::Instant::now();
                 let mut stats_prev_frames: usize = 0;
                 let mut stats_last_frame_at: Option<std::time::Instant> = None;
                 let mut stats_gap_min = f64::MAX;
@@ -3817,6 +3819,7 @@ async fn handle_remote_track(
                         continue;
                     }
 
+                    let stats_rtp_ts = rtp_packet.header.timestamp;
                     let seq = rtp_packet.header.sequence_number;
                     let ext_seq = match next_seq_num {
                         None => {
@@ -4485,6 +4488,17 @@ async fn handle_remote_track(
                                 }
                             }
                             stats_last_frame_at = Some(now);
+                            // LUNARIS_CLIENT_STATS=2: one line per decoded
+                            // frame with its RTP timestamp (90 kHz, the
+                            // host's clock) and the local time in ms, to tell
+                            // uneven sending from uneven arrival.
+                            if stats_frame_log {
+                                eprintln!(
+                                    "Frame: rtp_ts={} at_ms={:.2}",
+                                    stats_rtp_ts,
+                                    now.duration_since(stats_started).as_secs_f64() * 1000.0
+                                );
+                            }
                         }
                         stats_prev_frames = frame_count;
                     }
