@@ -311,10 +311,8 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   const [draftInputProtocol, setDraftInputProtocol] = useState<string>(activeInputProtocol);
   const [activeEncoder, setActiveEncoder] = useState<string>(() => localStorage.getItem('lunaris_stream_encoder') || 'auto');
   const [activeDisplay, setActiveDisplay] = useState<string>(() => localStorage.getItem('lunaris_stream_display') || 'default');
-  const [activeVirtualDisplay, setActiveVirtualDisplay] = useState<boolean>(() => localStorage.getItem('lunaris_stream_virtual_display') === 'true');
   const [draftEncoder, setDraftEncoder] = useState<string>(activeEncoder);
   const [draftDisplay, setDraftDisplay] = useState<string>(activeDisplay);
-  const [draftVirtualDisplay, setDraftVirtualDisplay] = useState<boolean>(activeVirtualDisplay);
   // Chroma subsampling: '420' (default, every encoder) or '444' (sharper
   // coloured text; H.264 High 4:4:4 via NVENC or x264 on the host).
   const [activeChroma, setActiveChroma] = useState<'420' | '444'>(() => localStorage.getItem('lunaris_stream_chroma') === '444' ? '444' : '420');
@@ -333,11 +331,6 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     displayName: ''
   });
   const [availableDisplays, setAvailableDisplays] = useState<{id: string; name: string; width: number; height: number; refresh_rate: number; is_primary: boolean}[]>([]);
-  // Virtual Screen (forced high-refresh host output) control state
-  const [vdRefresh, setVdRefresh] = useState<number>(() => Number(localStorage.getItem('lunaris_vd_refresh') || '144'));
-  const [vdStatus, setVdStatus] = useState<string>('');
-  const [vdBusy, setVdBusy] = useState<boolean>(false);
-
   const [useNativeClient, setUseNativeClient] = useState<boolean>(() => {
     if (typeof window.RTCPeerConnection === 'undefined') {
       return true;
@@ -579,10 +572,9 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       setDraftUseCanvasRenderer(useCanvasRenderer);
       setDraftEncoder(activeEncoder);
       setDraftDisplay(activeDisplay);
-      setDraftVirtualDisplay(activeVirtualDisplay);
       setDraftChroma(activeChroma);
     }
-  }, [showSettingsModal, activeResolution, activeFps, activeBitrate, activeCodec, mouseQueueLimit, useNativeClient, activeInputProtocol, useCanvasRenderer, activeEncoder, activeDisplay, activeVirtualDisplay, activeChroma]);
+  }, [showSettingsModal, activeResolution, activeFps, activeBitrate, activeCodec, mouseQueueLimit, useNativeClient, activeInputProtocol, useCanvasRenderer, activeEncoder, activeDisplay, activeChroma]);
   const [hideLocalCursor, setHideLocalCursor] = useState<boolean>(() => localStorage.getItem('lunaris_stream_hide_cursor') !== 'false');
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
   const [isHeaderVisible, setIsHeaderVisible] = useState<boolean>(true);
@@ -1239,7 +1231,6 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
         hostName,
         encoder: activeEncoder,
         displayId: activeDisplay,
-        virtualDisplay: activeVirtualDisplay,
         inputProtocol: activeInputProtocol
       }).then(() => {
         onBack();
@@ -1319,7 +1310,6 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
               app_id: selectedAppId,
               encoder: activeEncoder !== 'auto' ? activeEncoder : undefined,
               display_id: activeDisplay !== 'default' ? activeDisplay : undefined,
-              virtual_display: activeVirtualDisplay ? true : undefined,
               chroma: activeChroma === '444' ? '444' : undefined,
               microphone: (() => { try { return localStorage.getItem('lunaris_stream_microphone') === 'true'; } catch { return false; } })() ? true : undefined
             }
@@ -1475,7 +1465,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       cleanup();
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hostId, activeResolution, activeCodec, token, hostName, selectedAppId, useNativeClient, activeInputProtocol, useCanvasRenderer, activeEncoder, activeDisplay, activeVirtualDisplay, activeChroma]);
+  }, [hostId, activeResolution, activeCodec, token, hostName, selectedAppId, useNativeClient, activeInputProtocol, useCanvasRenderer, activeEncoder, activeDisplay, activeChroma]);
 
   // Fetch display/encoder capabilities from agent when host is selected (before stream starts)
   useEffect(() => {
@@ -1512,45 +1502,6 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
 
     return () => ws.close();
   }, [hostId, token, status]);
-
-  // Enable/disable the host's forced high-refresh "virtual screen" (e.g. DP-2).
-  // Opens a short-lived signaling socket, sends ConfigureVirtualDisplay, and
-  // refreshes the display list from the VirtualDisplayConfigured reply so the
-  // Display dropdown immediately shows the virtual output at its real refresh.
-  const configureVirtualScreen = (enable: boolean) => {
-    if (!hostId || !token) { setVdStatus('No host selected'); return; }
-    setVdBusy(true);
-    setVdStatus(enable ? `Enabling virtual screen @ ${vdRefresh}Hz…` : 'Disabling virtual screen…');
-    const protocol = getBackendProtocol().ws;
-    const host = getBackendHost();
-    const wsUrl = `${protocol}//${host}/ws/client?token=${encodeURIComponent(token)}`;
-    const ws = new WebSocket(wsUrl);
-    const timer = setTimeout(() => { setVdBusy(false); setVdStatus('Timed out'); try { ws.close(); } catch {} }, 8000);
-    ws.onopen = () => {
-      ws.send(JSON.stringify({
-        event: "Signaling",
-        data: {
-          type: "ConfigureVirtualDisplay",
-          payload: { target_id: hostId, enable, width: 1920, height: 1080, refresh_hz: vdRefresh }
-        }
-      }));
-    };
-    ws.onmessage = (event) => {
-      try {
-        const msg = JSON.parse(event.data);
-        if (msg.data?.type === 'VirtualDisplayConfigured' && msg.data?.payload) {
-          const p = msg.data.payload;
-          if (Array.isArray(p.displays)) setAvailableDisplays(p.displays);
-          setVdStatus((p.success ? '✓ ' : '✗ ') + (p.message || ''));
-          addLog(`[VirtualScreen] ${p.success ? 'OK' : 'FAIL'}: ${p.message || ''}`);
-          clearTimeout(timer);
-          setVdBusy(false);
-          ws.close();
-        }
-      } catch {}
-    };
-    ws.onerror = () => { clearTimeout(timer); setVdBusy(false); setVdStatus('Connection error'); try { ws.close(); } catch {} };
-  };
 
   // Helper to send dynamic pipeline commands via the general data channel.
   // Format: u16 length prefix + JSON string, matching the agent's InboundPacket::deserialize.
@@ -2751,7 +2702,6 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     inputProtocol: draftInputProtocol,
     encoder: draftEncoder,
     display: draftDisplay,
-    virtualDisplay: draftVirtualDisplay,
     useCanvasRenderer: draftUseCanvasRenderer,
     useNativeClient: draftUseNativeClient,
   };
@@ -2767,7 +2717,6 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       case 'inputProtocol': setDraftInputProtocol(value as string); break;
       case 'encoder': setDraftEncoder(value as string); break;
       case 'display': setDraftDisplay(value as string); break;
-      case 'virtualDisplay': setDraftVirtualDisplay(value as boolean); break;
       case 'useCanvasRenderer': setDraftUseCanvasRenderer(value as boolean); break;
       case 'useNativeClient': setDraftUseNativeClient(value as boolean); break;
     }
@@ -2784,7 +2733,6 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     setDraftUseCanvasRenderer(useCanvasRenderer);
     setDraftEncoder(activeEncoder);
     setDraftDisplay(activeDisplay);
-    setDraftVirtualDisplay(activeVirtualDisplay);
     setDraftChroma(activeChroma);
     setShowSettingsModal(false);
   };
@@ -2801,7 +2749,6 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     localStorage.setItem('lunaris_canvas_renderer', String(draftUseCanvasRenderer));
     localStorage.setItem('lunaris_stream_encoder', draftEncoder);
     localStorage.setItem('lunaris_stream_display', draftDisplay);
-    localStorage.setItem('lunaris_stream_virtual_display', String(draftVirtualDisplay));
     localStorage.setItem('lunaris_stream_chroma', draftChroma);
     
     // Check if settings requiring reconnect changed
@@ -2813,7 +2760,6 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       draftUseCanvasRenderer !== useCanvasRenderer ||
       draftEncoder !== activeEncoder ||
       draftDisplay !== activeDisplay ||
-      draftVirtualDisplay !== activeVirtualDisplay ||
       draftChroma !== activeChroma;
 
     setMouseQueueLimit(draftMouseQueueLimit);
@@ -2831,7 +2777,6 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       setUseCanvasRenderer(draftUseCanvasRenderer);
       setActiveEncoder(draftEncoder);
       setActiveDisplay(draftDisplay);
-      setActiveVirtualDisplay(draftVirtualDisplay);
       setActiveChroma(draftChroma);
       
       // Reset states for connection indicator
@@ -3822,13 +3767,6 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
             av1: getCodecLabel('AV1', browserCodecs.av1, hostAv1Supported),
           }}
           encoders={availableEncoders}
-            virtualScreen={{
-              hz: vdRefresh,
-              setHz: (v) => { setVdRefresh(v); localStorage.setItem('lunaris_vd_refresh', String(v)); },
-              busy: vdBusy,
-              status: vdStatus || undefined,
-              set: configureVirtualScreen,
-            }}
             showNativeClient={typeof window.RTCPeerConnection !== 'undefined' && !!(window as any).__TAURI__}
           viewer={viewerSettings}
           />
@@ -3998,13 +3936,6 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
             av1: getCodecLabel('AV1', browserCodecs.av1, hostAv1Supported),
           }}
           encoders={availableEncoders}
-          virtualScreen={{
-            hz: vdRefresh,
-            setHz: (v) => { setVdRefresh(v); localStorage.setItem('lunaris_vd_refresh', String(v)); },
-            busy: vdBusy,
-            status: vdStatus || undefined,
-            set: configureVirtualScreen,
-          }}
           showNativeClient={typeof window.RTCPeerConnection !== 'undefined' && !!(window as any).__TAURI__}
           viewer={viewerSettings}
         />

@@ -19,7 +19,6 @@ export type StreamSettingsValues = {
   inputProtocol: string;
   encoder: string;
   display: string;
-  virtualDisplay: boolean;
   useCanvasRenderer: boolean;
   useNativeClient: boolean;
 };
@@ -58,8 +57,6 @@ type Props = {
   codecLabels?: Record<string, string>;
   /** Encoders the remote computer reported, added to the standard list. */
   encoders?: string[];
-  /** Linux hosts' forced high-refresh output (in a session). */
-  virtualScreen?: { hz: number; setHz: (hz: number) => void; busy: boolean; status?: string; set: (on: boolean) => void };
   showNativeClient?: boolean;
   /** This device's display and sound in a session. Without it the dialog
    *  keeps them itself, as this browser's defaults. */
@@ -128,7 +125,7 @@ const useStoredViewer = (): ViewerSettings => {
  */
 export default function StreamSettingsDialog({
   hostName, values, onChange, onCancel, onSave, saveLabel, footerNote, displays, unsupportedCodecs = [],
-  codecLabels = {}, encoders = [], virtualScreen, showNativeClient, viewer: viewerProp,
+  codecLabels = {}, encoders = [], showNativeClient, viewer: viewerProp,
 }: Props) {
   const [category, setCategory] = useState<Category>('video');
   // Ask the remote computer to record its microphone too (sent with the
@@ -185,7 +182,7 @@ export default function StreamSettingsDialog({
                       {RESOLUTIONS.map(r => <option key={r.value} value={r.value}>{r.label} ({r.width} × {r.height})</option>)}
                     </select>
                   </Row>
-                  <Row title={t('Frame rate')} hint={t("Frames per second sent by the remote computer. Above its screen's refresh rate needs a virtual screen (Remote computer).")}>
+                  <Row title={t('Frame rate')} hint={t("Frames per second sent by the remote computer. It cannot send more than its screen's refresh rate.")}>
                     <select value={values.fps} onChange={(e) => onChange('fps', Number(e.target.value))}>
                       {FPS_OPTIONS.map(f => <option key={f} value={f}>{f} FPS</option>)}
                     </select>
@@ -324,20 +321,6 @@ export default function StreamSettingsDialog({
                       {(displays || []).map(d => <option key={d.id} value={d.id}>{d.label}</option>)}
                     </select>
                   </Row>
-                  <Row title={t('Virtual display')} hint={t('Create a separate screen on the remote computer for this session (Windows hosts with the virtual display driver).')}>
-                    <Switch label={t('Virtual display')} checked={values.virtualDisplay} onChange={(v) => onChange('virtualDisplay', v)} />
-                  </Row>
-                  {virtualScreen && (
-                    <Row title={t('High-refresh virtual screen')} hint={virtualScreen.status || t('Linux hosts: turn on a forced high-refresh output so frame rates above the real screen are possible. Applies right away.')}>
-                      <div className="ssd-inline">
-                        <select value={virtualScreen.hz} onChange={(e) => virtualScreen.setHz(Number(e.target.value))} style={{ width: 96 }}>
-                          {[240, 144, 120, 60].map(h => <option key={h} value={h}>{h} Hz</option>)}
-                        </select>
-                        <button type="button" className="btn-secondary" disabled={virtualScreen.busy} onClick={() => virtualScreen.set(true)}>{t('On')}</button>
-                        <button type="button" className="btn-secondary" disabled={virtualScreen.busy} onClick={() => virtualScreen.set(false)}>{t('Off')}</button>
-                      </div>
-                    </Row>
-                  )}
                 </div>
               </>
             )}

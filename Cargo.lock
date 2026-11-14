@@ -31,7 +31,7 @@ dependencies = [
 
 [[package]]
 name = "agent"
-version = "0.3.7"
+version = "0.3.8"
 dependencies = [
  "anyhow",
  "arboard",
@@ -74,7 +74,7 @@ dependencies = [
 
 [[package]]
 name = "agent-app"
-version = "0.3.7"
+version = "0.3.8"
 dependencies = [
  "agent",
  "cxx",
@@ -477,7 +477,7 @@ dependencies = [
  "bitflags 2.13.2",
  "cexpr",
  "clang-sys",
- "itertools 0.13.0",
+ "itertools",
  "proc-macro2",
  "quote",
  "regex",
@@ -771,7 +771,7 @@ checksum = "1c133bc6a41be0d194c306b5506d15e6feeea7b1d6604bd3f8310dfb2ca96486"
 
 [[package]]
 name = "client-desktop"
-version = "0.3.7"
+version = "0.3.8"
 dependencies = [
  "agent",
  "client-qml",
@@ -780,7 +780,7 @@ dependencies = [
 
 [[package]]
 name = "client-qml"
-version = "0.3.7"
+version = "0.3.8"
 dependencies = [
  "agent",
  "anyhow",
@@ -856,7 +856,7 @@ checksum = "af491d569909a7e4dee0ad7db7f5341fef5c614d5b8ec8cf765732aba3cff681"
 dependencies = [
  "serde",
  "termcolor",
- "unicode-width 0.2.3",
+ "unicode-width 0.1.14",
 ]
 
 [[package]]
@@ -877,7 +877,7 @@ dependencies = [
 
 [[package]]
 name = "common"
-version = "0.3.7"
+version = "0.3.8"
 dependencies = [
  "base64 0.23.1",
  "serde",
@@ -2551,15 +2551,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "itertools"
-version = "0.13.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "413ee7dfc52ee1a4949ceeb7dbc8a33f2d6c088194d9f922fb8318faf1f01186"
-dependencies = [
- "either",
-]
-
-[[package]]
 name = "itoa"
 version = "1.0.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2861,7 +2852,7 @@ checksum = "4050469837a6ff301cd14c1f8f24f88549e6d548f24f64e2148eb0f72cebc51f"
 [[package]]
 name = "lunaris-media"
 version = "0.1.0"
-source = "git+https://github.com/collyn/lunaris-media.git#359a93c89eedb34483fca85bfdf370beaff84ce2"
+source = "git+https://github.com/collyn/lunaris-media.git#2556ae1418dc3b5926c6b0b86812ef85e6b90a1f"
 dependencies = [
  "ashpd",
  "async-trait",
@@ -4825,7 +4816,7 @@ dependencies = [
 
 [[package]]
 name = "server"
-version = "0.3.7"
+version = "0.3.8"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6012,7 +6003,7 @@ version = "5.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c73a36bc44e3039f51fbee93e39f41225f6b17b380eb70cc2aab942df06b34dd"
 dependencies = [
- "itertools 0.11.0",
+ "itertools",
  "nom 7.1.3",
 ]
 

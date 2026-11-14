@@ -186,7 +186,6 @@ pub mod qobject {
             host_name: QString,
             encoder: QString,
             display_id: QString,
-            virtual_display: bool,
             input_protocol: QString,
         );
 
@@ -230,7 +229,6 @@ fn make_default_config() -> AgentConfig {
         webtransport_port: 55200,
         autostart: false,
         close_to_tray: false,
-        virtual_display_output: None,
         direct_enabled: false,
         direct_port: agent::pairing::default_direct_port(),
         direct_password: String::new(),
@@ -521,7 +519,6 @@ impl qobject::AgentBridge {
         host_name: QString,
         encoder: QString,
         display_id: QString,
-        virtual_display: bool,
         input_protocol: QString,
     ) {
         let ws_server = {
@@ -551,7 +548,7 @@ impl qobject::AgentBridge {
         };
 
         let url = format!(
-            "lunaris://connect?host_id={}&server={}&token={}&res={}&fps={}&bitrate={}&codec={}&mouse_queue_limit={}&host_name={}&app_id={}&encoder={}&display={}&virtual_display={}&input_protocol={}",
+            "lunaris://connect?host_id={}&server={}&token={}&res={}&fps={}&bitrate={}&codec={}&mouse_queue_limit={}&host_name={}&app_id={}&encoder={}&display={}&input_protocol={}",
             urlencoding::encode(&host_id.to_string()),
             urlencoding::encode(&ws_server),
             urlencoding::encode(&token.to_string()),
@@ -564,7 +561,6 @@ impl qobject::AgentBridge {
             app_id,
             urlencoding::encode(&encoder_val),
             urlencoding::encode(&display_val),
-            virtual_display,
             urlencoding::encode(&input_val),
         );
         let s = url.to_string();

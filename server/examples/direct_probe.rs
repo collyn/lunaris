@@ -260,7 +260,6 @@ async fn main() -> Result<()> {
         app_id: Some(0),
         encoder: None,
         display_id: None,
-        virtual_display: None,
         chroma: chroma.clone(),
         encoder_csc_mode: None,
         microphone: None,

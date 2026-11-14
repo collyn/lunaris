@@ -41,7 +41,6 @@ pub fn parse_deeplink_url(url_str: &str) -> Option<AppArgs> {
         let mut input_protocol = "webrtc".to_string();
         let mut encoder: Option<String> = None;
         let mut display_id: Option<String> = None;
-        let mut virtual_display = false;
         let mut render_backend: Option<String> = None;
 
         for (k, v) in parsed_url.query_pairs() {
@@ -62,9 +61,6 @@ pub fn parse_deeplink_url(url_str: &str) -> Option<AppArgs> {
                     if !value.is_empty() && value != "default" {
                         display_id = Some(value);
                     }
-                }
-                "virtual_display" => {
-                    virtual_display = v.as_ref() == "1" || v.as_ref().eq_ignore_ascii_case("true");
                 }
                 "render_backend" | "gpu_backend" | "decode_backend" => {
                     render_backend = Some(v.into_owned());
@@ -135,7 +131,6 @@ pub fn parse_deeplink_url(url_str: &str) -> Option<AppArgs> {
                 input_protocol,
                 encoder,
                 display_id,
-                virtual_display,
             });
         }
     }
@@ -263,7 +258,6 @@ fn parse_args() -> Option<AppArgs> {
     let mut input_protocol = "webrtc".to_string();
     let mut encoder: Option<String> = None;
     let mut display_id: Option<String> = None;
-    let mut virtual_display = false;
     let mut render_backend: Option<String> = None;
 
     let mut i = 1;
@@ -273,11 +267,6 @@ fn parse_args() -> Option<AppArgs> {
             if render_backend.is_none() {
                 render_backend = Some(bridge::RENDER_BACKEND_SOFTWARE.to_string());
             }
-            i += 1;
-            continue;
-        }
-        if args[i] == "--virtual-display" {
-            virtual_display = true;
             i += 1;
             continue;
         }
@@ -398,7 +387,6 @@ fn parse_args() -> Option<AppArgs> {
             input_protocol,
             encoder,
             display_id,
-            virtual_display,
         })
     } else {
         None

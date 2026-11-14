@@ -13,7 +13,7 @@ Rectangle {
     property string username: ""
     property string serverUrl: ""
 
-    signal startSessionRequested(string server, string token, string hostId, string hostName, int appId, string res, int fps, string codec, int bitrate, int queueLimit, bool disableCuda, string renderBackend, string inputProtocol, string encoder, string displayId, bool virtualDisplay)
+    signal startSessionRequested(string server, string token, string hostId, string hostName, int appId, string res, int fps, string codec, int bitrate, int queueLimit, bool disableCuda, string renderBackend, string inputProtocol, string encoder, string displayId)
 
     // Internal UI state properties
     property bool isLoggedIn: false
@@ -46,7 +46,7 @@ Rectangle {
             dashboardRoot.configRes, dashboardRoot.configFps, dashboardRoot.configCodec,
             dashboardRoot.configBitrate, dashboardRoot.configQueueLimit, dashboardRoot.configDisableCuda,
             dashboardRoot.configRenderBackend, dashboardRoot.configInputProtocol,
-            dashboardRoot.configEncoder, dashboardRoot.configDisplay, dashboardRoot.configVirtualDisplay);
+            dashboardRoot.configEncoder, dashboardRoot.configDisplay);
     }
 
 
@@ -69,7 +69,7 @@ Rectangle {
             dashboardRoot.configRes, dashboardRoot.configFps, dashboardRoot.configCodec,
             dashboardRoot.configBitrate, dashboardRoot.configQueueLimit, dashboardRoot.configDisableCuda,
             dashboardRoot.configRenderBackend, dashboardRoot.configInputProtocol,
-            dashboardRoot.configEncoder, dashboardRoot.configDisplay, dashboardRoot.configVirtualDisplay);
+            dashboardRoot.configEncoder, dashboardRoot.configDisplay);
     }
 
     property var hostsList: []
@@ -94,7 +94,6 @@ Rectangle {
     property string configInputProtocol: "webrtc"
     property string configEncoder: "auto"
     property string configDisplay: "default"
-    property bool configVirtualDisplay: false
     property var pendingDeleteHost: null
 
 
@@ -1017,11 +1016,10 @@ Rectangle {
                                                 dashboardRoot.configInputProtocol = "webrtc";
                                                 dashboardRoot.configEncoder = "auto";
                                                 dashboardRoot.configDisplay = "default";
-                                                dashboardRoot.configVirtualDisplay = false;
                                             }
                                             dashboardRoot.activeConfigHost = modelData;
                                             settingsModal.hostName = modelData.name;
-                                            settingsModal.setCurrentSettings(dashboardRoot.configRes, dashboardRoot.configFps, dashboardRoot.configCodec, dashboardRoot.configBitrate, dashboardRoot.configQueueLimit, dashboardRoot.configDisableCuda, dashboardRoot.configInputProtocol, dashboardRoot.configEncoder, dashboardRoot.configDisplay, dashboardRoot.configVirtualDisplay, dashboardRoot.configRenderBackend);
+                                            settingsModal.setCurrentSettings(dashboardRoot.configRes, dashboardRoot.configFps, dashboardRoot.configCodec, dashboardRoot.configBitrate, dashboardRoot.configQueueLimit, dashboardRoot.configDisableCuda, dashboardRoot.configInputProtocol, dashboardRoot.configEncoder, dashboardRoot.configDisplay, dashboardRoot.configRenderBackend);
                                             // Fetch encoder/display capabilities from agent
                                             if (dashboardRoot.serverUrl && dashboardRoot.token && modelData.id) {
                                                 bridge.fetchCapabilities(dashboardRoot.serverUrl, dashboardRoot.token, modelData.id);
@@ -1210,8 +1208,7 @@ Rectangle {
                                     dashboardRoot.configRenderBackend,
                                     dashboardRoot.configInputProtocol,
                                     dashboardRoot.configEncoder,
-                                    dashboardRoot.configDisplay,
-                                    dashboardRoot.configVirtualDisplay
+                                    dashboardRoot.configDisplay
                                 );
                             }
                         }
@@ -1362,8 +1359,7 @@ Rectangle {
                                             dashboardRoot.configRenderBackend,
                                             dashboardRoot.configInputProtocol,
                                             dashboardRoot.configEncoder,
-                                            dashboardRoot.configDisplay,
-                                            dashboardRoot.configVirtualDisplay
+                                            dashboardRoot.configDisplay
                                         );
                                     }
                                 }
@@ -1504,7 +1500,7 @@ Rectangle {
         anchors.fill: parent
         z: 1000
 
-        onApplySettings: (res, fps, codec, bitrate, queueLimit, disableCuda, renderBackend, inputProtocol, encoder, displayId, virtualDisplay) => {
+        onApplySettings: (res, fps, codec, bitrate, queueLimit, disableCuda, renderBackend, inputProtocol, encoder, displayId) => {
             dashboardRoot.configRes = res;
             dashboardRoot.configFps = fps;
             dashboardRoot.configCodec = codec;
@@ -1515,13 +1511,6 @@ Rectangle {
             dashboardRoot.configInputProtocol = inputProtocol;
             dashboardRoot.configEncoder = encoder;
             dashboardRoot.configDisplay = displayId;
-            dashboardRoot.configVirtualDisplay = virtualDisplay;
-        }
-
-        onConfigureVirtualDisplay: (enable, refreshHz) => {
-            if (dashboardRoot.serverUrl && dashboardRoot.token && dashboardRoot.activeConfigHost && dashboardRoot.activeConfigHost.id) {
-                bridge.configureVirtualDisplay(dashboardRoot.serverUrl, dashboardRoot.token, dashboardRoot.activeConfigHost.id, enable, 1920, 1080, refreshHz);
-            }
         }
     }
 

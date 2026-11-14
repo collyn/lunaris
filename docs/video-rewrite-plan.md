@@ -413,6 +413,21 @@ Windows host → Chrome on Linux over a WireGuard tunnel, 1080p60, 15 Mbit/s,
   frames were replaced before being shown (4-8 per second of 75); the DMA-BUF
   item now has Moonlight's pacing queue (1-2 per second). The D3D11 item on
   Windows still keeps a single pending frame.
+- FlexFEC is off by default since 2026-11-14 (LUNARIS_FEC=1 offers it). With
+  it, Chrome on Windows stopped decoding for 3 s after some losses while it
+  kept receiving complete frames (framesReceived 60/s, framesDecoded 0, then
+  about 190 frames at once, no key frame request): Linux host to Chrome on
+  Windows over the tunnel, 2-5 such freezes per 160 s with FEC (also with the
+  build from before that day's changes), none in two runs of 150 and 170 s
+  without it (42 and 35 losses, all repaired by NACK). Seen by the user as a
+  stuttering picture and keys that "arrive late". The 3 s freeze in the
+  20-minute Chrome run above probably was the same thing. Open: why packets
+  recovered from our FlexFEC stream upset Chrome's decoder; until then FEC
+  must not be turned back on for browsers.
+- The virtual display was removed (it never worked on Wayland or with any
+  installed Windows driver). A host cannot send more frames than its screen
+  refreshes: asking this Linux host (75 Hz) for 144 fps only added repeated
+  frames.
 - Open: the first mouse press after connecting did not reach the host in the
   Xvfb test (the second one did); not checked on a real desktop.
 - Open (Phase 4): when the desktop changes at about 30 fps the Windows host

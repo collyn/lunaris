@@ -24,7 +24,6 @@ mod input;
 pub mod pairing;
 mod rtcp_forward;
 mod share;
-mod vdisplay;
 mod video;
 #[cfg(target_os = "windows")]
 pub mod win_service;
@@ -664,7 +663,6 @@ async fn run_session_logic(
                 app_id: _,
                 encoder,
                 display_id,
-                virtual_display,
                 chroma,
                 encoder_csc_mode,
                 microphone,
@@ -672,8 +670,8 @@ async fn run_session_logic(
                 ..
             } => {
                 info!(
-                    "Incoming session request from client: {} codec={:?} encoder={:?} res={:?}x{:?} fps={:?} bitrate={:?} display={:?} virtual_display={:?} chroma={:?} encoder_csc_mode={:?} microphone={:?}",
-                    client_id, codec, encoder, width, height, fps, bitrate, display_id, virtual_display, chroma, encoder_csc_mode, microphone
+                    "Incoming session request from client: {} codec={:?} encoder={:?} res={:?}x{:?} fps={:?} bitrate={:?} display={:?} chroma={:?} encoder_csc_mode={:?} microphone={:?}",
+                    client_id, codec, encoder, width, height, fps, bitrate, display_id, chroma, encoder_csc_mode, microphone
                 );
 
                 // Clean up previous active session
@@ -715,7 +713,6 @@ async fn run_session_logic(
                     codec,
                     encoder,
                     display_id,
-                    virtual_display,
                     chroma.as_deref() == Some("444"),
                     encoder_csc_mode,
                     microphone.unwrap_or(false),
@@ -803,7 +800,7 @@ async fn run_session_logic(
                                 warn!("[SIGNALING] SDP Answer set successfully! WebRTC negotiation in progress.");
                                 match bridge::flexfec_in_answer(&forced_sdp) {
                                     Some(pt) => info!("FlexFEC-03 (20%): accepted by the client's answer (payload type {}), the video is protected by forward error correction", pt),
-                                    None => info!("FlexFEC-03 (20%): NOT accepted by the client's answer, the video runs without forward error correction (NACK only)"),
+                                    None => info!("FlexFEC-03: not in use (offered only with LUNARIS_FEC=1, and the client has to accept it); lost packets are repaired by NACK"),
                                 }
                             }
                         }
@@ -928,71 +925,6 @@ async fn run_session_logic(
                     error!("Failed to send CapabilitiesResponse: {:?}", e);
                 } else {
                     info!("[GetCapabilities] Response sent!");
-                }
-            }
-            SignalingMessage::ConfigureVirtualDisplay { target_id, enable, width, height, refresh_hz } => {
-                let output = config
-                    .virtual_display_output
-                    .clone()
-                    .unwrap_or_else(|| "DP-2".to_string());
-                info!(
-                    "Received ConfigureVirtualDisplay: enable={} {}x{}@{}Hz output={}",
-                    enable, width, height, refresh_hz, output
-                );
-                let agent_tx_clone = agent_tx.clone();
-
-                // 1. Enable/disable the virtual output via xrandr.
-                let (success, message) = if enable {
-                    match vdisplay::enable(&output, width, height, refresh_hz) {
-                        Ok(()) => (
-                            true,
-                            format!("Virtual display '{}' enabled at {}x{}@{}Hz", output, width, height, refresh_hz),
-                        ),
-                        Err(e) => (false, e),
-                    }
-                } else {
-                    match vdisplay::disable(&output) {
-                        Ok(()) => (true, format!("Virtual display '{}' disabled", output)),
-                        Err(e) => (false, e),
-                    }
-                };
-                if success {
-                    info!("ConfigureVirtualDisplay: {}", message);
-                } else {
-                    warn!("ConfigureVirtualDisplay failed: {}", message);
-                }
-
-                // 2. Re-enumerate displays so the client dropdown refreshes.
-                let mut displays = Vec::new();
-                match lunaris_media::capture::list_displays_for_capabilities().await {
-                    Ok(display_list) => {
-                        for d in &display_list {
-                            displays.push(common::DisplayInfoMsg {
-                                id: d.id.clone(),
-                                name: d.name.clone(),
-                                width: d.width,
-                                height: d.height,
-                                refresh_rate: d.refresh_rate,
-                                is_primary: d.is_primary,
-                            });
-                        }
-                    }
-                    Err(e) => error!("Failed to list displays: {:?}", e),
-                }
-                // Fix up refresh labels (NvFBC reports a hardcoded 60Hz).
-                vdisplay::enrich_refresh_rates(&mut displays);
-
-                // 3. Reply.
-                let resp = AgentMessage::Signaling(
-                    SignalingMessage::VirtualDisplayConfigured {
-                        target_id,
-                        success,
-                        message,
-                        displays,
-                    },
-                );
-                if let Err(e) = agent_tx_clone.send(resp) {
-                    error!("Failed to send VirtualDisplayConfigured: {:?}", e);
                 }
             }
             SignalingMessage::StopActiveStream { target_id } => {

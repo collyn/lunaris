@@ -223,7 +223,6 @@ pub enum SignalingMessage {
         app_id: Option<u32>,
         encoder: Option<String>,
         display_id: Option<String>,
-        virtual_display: Option<bool>,
         /// Chroma subsampling: "420" (default) or "444".
         #[serde(default, skip_serializing_if = "Option::is_none")]
         chroma: Option<String>,
@@ -246,7 +245,6 @@ pub enum SignalingMessage {
         app_id: Option<u32>,
         encoder: Option<String>,
         display_id: Option<String>,
-        virtual_display: Option<bool>,
         /// Chroma subsampling requested by the client: "420" (default) or "444".
         #[serde(default, skip_serializing_if = "Option::is_none")]
         chroma: Option<String>,
@@ -320,20 +318,6 @@ pub enum SignalingMessage {
         encoders: Vec<String>,
         gpu_info: Option<String>,
         host_os: Option<String>,
-    },
-    // Virtual display (host high-refresh output) control
-    ConfigureVirtualDisplay {
-        target_id: String,
-        enable: bool,
-        width: u32,
-        height: u32,
-        refresh_hz: u32,
-    },
-    VirtualDisplayConfigured {
-        target_id: String,
-        success: bool,
-        message: String,
-        displays: Vec<DisplayInfoMsg>,
     },
     EncoderStatus {
         target_id: String,

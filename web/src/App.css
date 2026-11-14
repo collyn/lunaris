@@ -3536,7 +3536,7 @@ button, input, select, textarea { font-family: inherit; }
 
 /* Stream settings: up to three fields per row, so they fit without
    scrolling on usual screens; the card scrolls inside when taller than the
-   window. Only wide controls (bitrate slider, virtual screen) take a row. */
+   window. Only wide controls (bitrate slider) take a row. */
 .stream-settings-card.wide {
   max-width: 900px;
   max-height: calc(100vh - 48px);
@@ -3662,8 +3662,6 @@ button, input, select, textarea { font-family: inherit; }
   border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
 }
 .ssd-row-control select:focus { outline: none; border-color: var(--accent); box-shadow: var(--ring); }
-.ssd-inline { display: flex; gap: 8px; align-items: center; justify-content: flex-end; }
-.ssd-inline .btn-secondary { padding: 0 14px; height: 40px; }
 .ssd-switch { position: relative; display: inline-block; width: 44px; height: 24px; cursor: pointer; }
 .ssd-switch input { position: absolute; opacity: 0; width: 100%; height: 100%; margin: 0; cursor: inherit; }
 .ssd-switch span {

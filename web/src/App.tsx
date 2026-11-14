@@ -40,7 +40,6 @@ type HostStreamSettings = {
   useCanvasRenderer: boolean;
   encoder: string;
   display: string;
-  virtualDisplay: boolean;
 };
 
 const loadHostStreamSettings = (): HostStreamSettings => ({
@@ -54,8 +53,7 @@ const loadHostStreamSettings = (): HostStreamSettings => ({
   useNativeClient: localStorage.getItem('lunaris_tauri_use_native') === 'true',
   useCanvasRenderer: localStorage.getItem('lunaris_canvas_renderer') !== 'false',
   encoder: localStorage.getItem('lunaris_stream_encoder') || 'auto',
-  display: localStorage.getItem('lunaris_stream_display') || 'default',
-  virtualDisplay: localStorage.getItem('lunaris_stream_virtual_display') === 'true'
+  display: localStorage.getItem('lunaris_stream_display') || 'default'
 });
 
 const saveHostStreamSettings = (settings: HostStreamSettings) => {
@@ -70,7 +68,6 @@ const saveHostStreamSettings = (settings: HostStreamSettings) => {
   localStorage.setItem('lunaris_canvas_renderer', String(settings.useCanvasRenderer));
   localStorage.setItem('lunaris_stream_encoder', settings.encoder);
   localStorage.setItem('lunaris_stream_display', settings.display);
-  localStorage.setItem('lunaris_stream_virtual_display', String(settings.virtualDisplay));
 };
 
 const getCurrentBrowserServerUrl = () => {
@@ -736,7 +733,6 @@ function App() {
       app_id: '0',
       encoder: localStorage.getItem('lunaris_stream_encoder') || 'auto',
       display: localStorage.getItem('lunaris_stream_display') || 'default',
-      virtual_display: String(localStorage.getItem('lunaris_stream_virtual_display') === 'true'),
       input_protocol: localStorage.getItem('lunaris_input_protocol') || 'webrtc',
     });
     window.location.href = `lunaris://connect?${params.toString()}`;
@@ -1076,7 +1072,6 @@ function App() {
                                         const mouseQueueLimit = localStorage.getItem('lunaris_mouse_queue_limit') || '256';
                                         const encoder = localStorage.getItem('lunaris_stream_encoder') || 'auto';
                                         const display = localStorage.getItem('lunaris_stream_display') || 'default';
-                                        const virtualDisplay = localStorage.getItem('lunaris_stream_virtual_display') === 'true';
                                         const inputProtocol = localStorage.getItem('lunaris_input_protocol') || 'webrtc';
                                         const hostToUse = currentViewingHost || viewingHost;
 
@@ -1097,7 +1092,6 @@ function App() {
                                             hostName: hostToUse.name,
                                             encoder,
                                             displayId: display,
-                                            virtualDisplay,
                                             inputProtocol
                                           }).catch((err: any) => {
                                             console.error("Failed to launch native client:", err);
@@ -1106,7 +1100,7 @@ function App() {
                                         } else {
                                           const wsProtocol = getBackendProtocol().ws;
                                           const wsServerUrl = `${wsProtocol}//${serverHost}`;
-                                          window.location.href = `lunaris://connect?host_id=${hostToUse.id}&server=${wsServerUrl}&token=${token}&res=${resStr}&fps=${fps}&bitrate=${bitrate}&codec=${codec}&mouse_queue_limit=${mouseQueueLimit}&host_name=${encodeURIComponent(hostToUse.name)}&app_id=${app.id}&encoder=${encodeURIComponent(encoder)}&display=${encodeURIComponent(display)}&virtual_display=${virtualDisplay}&input_protocol=${encodeURIComponent(inputProtocol)}`;
+                                          window.location.href = `lunaris://connect?host_id=${hostToUse.id}&server=${wsServerUrl}&token=${token}&res=${resStr}&fps=${fps}&bitrate=${bitrate}&codec=${codec}&mouse_queue_limit=${mouseQueueLimit}&host_name=${encodeURIComponent(hostToUse.name)}&app_id=${app.id}&encoder=${encodeURIComponent(encoder)}&display=${encodeURIComponent(display)}&input_protocol=${encodeURIComponent(inputProtocol)}`;
                                         }
                                       }}
                                       className="overlay-btn btn-launch-app"

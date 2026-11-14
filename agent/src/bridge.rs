@@ -294,7 +294,6 @@ pub async fn setup_bridge_session(
     codec: Option<String>,
     encoder: Option<String>,
     display_id: Option<String>,
-    virtual_display: Option<bool>,
     yuv444: bool,
     encoder_csc_mode: Option<i32>,
     microphone: bool,
@@ -329,7 +328,7 @@ pub async fn setup_bridge_session(
     );
 
     info!(
-        "Session media request: client={} res={}x{} fps={} bitrate={}kbps codec={} encoder={} display={} virtual_display={} yuv444={} csc={} full_range={}",
+        "Session media request: client={} res={}x{} fps={} bitrate={}kbps codec={} encoder={} display={} yuv444={} csc={} full_range={}",
         client_id,
         resolution_width,
         resolution_height,
@@ -338,7 +337,6 @@ pub async fn setup_bridge_session(
         requested_codec,
         encoder.as_deref().unwrap_or("auto"),
         display_id.as_deref().unwrap_or("default"),
-        virtual_display.unwrap_or(false),
         yuv444,
         media_colorspace.colorspace.label(),
         media_colorspace.full_range
@@ -450,6 +448,15 @@ pub async fn setup_bridge_session(
     // and Chrome accepts flexfec-03 only when it is offered to it. Payload
     // type 49 does not collide with 96/97/98/102/111 used here. NACK stays
     // (video_rtcp_feedback above).
+    // Off unless LUNARIS_FEC=1. With FlexFEC, Chrome on Windows stopped
+    // decoding for 3 s after some losses although it kept receiving complete
+    // frames (framesReceived 60/s, framesDecoded 0, then about 190 frames at
+    // once; no key frame request): Linux host -> Chrome on Windows over the
+    // WireGuard tunnel, 2-5 such freezes per 160 s with FEC, none in 150 s
+    // without (42 losses, all repaired by NACK). The desktop client never
+    // used the repair packets. Why the recovered packets upset Chrome's
+    // decoder is not known yet.
+    if std::env::var("LUNARIS_FEC").map(|v| v == "1").unwrap_or(false) {
     api_media.register_codec(
         RTCRtpCodecParameters {
             rtp_codec: RTCRtpCodec {
@@ -463,6 +470,7 @@ pub async fn setup_bridge_session(
         },
         RtpCodecKind::Video,
     )?;
+    }
 
     // Register Opus
     let opus_codec = RTCRtpCodec {
@@ -930,7 +938,6 @@ pub async fn setup_bridge_session(
         bitrate_kbps: stream_bitrate,
         pixel_format: lunaris_media::types::PixelFormat::NV12,
         preferred_encoder: encoder.clone(),
-        virtual_display: virtual_display.unwrap_or(false),
         yuv444,
         colorspace: media_colorspace,
         microphone,

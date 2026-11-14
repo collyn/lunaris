@@ -31,13 +31,9 @@ Rectangle {
     property string inputProtocol: "webrtc"
     property string encoder: "auto"
     property string displayId: "default"
-    property bool virtualDisplay: false
     property string renderBackend: "auto_gpu"
-    property int virtualScreenHz: 144
 
-    signal applySettings(string res, int fps, string codec, int bitrate, int queueLimit, bool disableCuda, string renderBackend, string inputProtocol, string encoder, string displayId, bool virtualDisplay)
-    // Enable/disable the host's forced high-refresh "virtual screen" (e.g. DP-2).
-    signal configureVirtualDisplay(bool enable, int refreshHz)
+    signal applySettings(string res, int fps, string codec, int bitrate, int queueLimit, bool disableCuda, string renderBackend, string inputProtocol, string encoder, string displayId)
 
     readonly property var categories: [
         { key: "video", label: "Video", icon: "monitor" },
@@ -92,7 +88,7 @@ Rectangle {
         }
     }
 
-    function setCurrentSettings(res, fps, codec, bitrate, queueLimit, disableCuda, inputProtocol, encoder, displayId, virtualDisplay, renderBackend) {
+    function setCurrentSettings(res, fps, codec, bitrate, queueLimit, disableCuda, inputProtocol, encoder, displayId, renderBackend) {
         settingsRoot.res = StreamOptions.resolutions[StreamOptions.resolutionIndex(res)].value;
         settingsRoot.fps = parseInt(fps) || 60;
         settingsRoot.codec = StreamOptions.codecPart(codec);
@@ -102,7 +98,6 @@ Rectangle {
         settingsRoot.inputProtocol = inputProtocol === "webtransport" ? "webtransport" : "webrtc";
         settingsRoot.encoder = (encoder || "auto").toLowerCase();
         settingsRoot.displayId = displayId || "default";
-        settingsRoot.virtualDisplay = virtualDisplay === true;
         settingsRoot.renderBackend = normalizeRenderBackend(renderBackend, disableCuda);
     }
 
@@ -112,8 +107,7 @@ Rectangle {
             StreamOptions.composeCodec(settingsRoot.codec, settingsRoot.chroma),
             settingsRoot.bitrate, settingsRoot.queueLimit,
             settingsRoot.renderBackend === "software", settingsRoot.renderBackend,
-            settingsRoot.inputProtocol, settingsRoot.encoder, settingsRoot.displayId,
-            settingsRoot.virtualDisplay);
+            settingsRoot.inputProtocol, settingsRoot.encoder, settingsRoot.displayId);
         settingsRoot.close();
     }
 
@@ -307,7 +301,7 @@ Rectangle {
                 }
                 SettingRow {
                     title: I18n.t("Frame rate")
-                    hint: I18n.t("Frames per second sent by the remote computer. Above its screen's refresh rate needs a virtual screen (Remote computer).")
+                    hint: I18n.t("Frames per second sent by the remote computer. It cannot send more than its screen's refresh rate.")
                     ThemedCombo {
                         width: parent.width
                         options: StreamOptions.fpsFor(bridge.screenRefreshRate()).map(function (f) { return { value: f, label: f + " FPS" }; })
@@ -507,32 +501,6 @@ Rectangle {
                             : [{ value: "default", label: I18n.t("Default") }]
                         value: settingsRoot.displayId
                         onPicked: (v) => settingsRoot.displayId = v
-                    }
-                }
-                SettingRow {
-                    title: I18n.t("Virtual display")
-                    hint: I18n.t("Create a separate screen on the remote computer for this session (Windows hosts with the virtual display driver).")
-                    Toggle {
-                        anchors.right: parent.right
-                        checked: settingsRoot.virtualDisplay
-                        onToggled: settingsRoot.virtualDisplay = checked
-                    }
-                }
-                SettingRow {
-                    title: I18n.t("High-refresh virtual screen")
-                    hint: I18n.t("Linux hosts: turn on a forced high-refresh output so frame rates above the real screen are possible. Applies right away.")
-                    RowLayout {
-                        width: parent.width
-                        spacing: 8
-                        ThemedCombo {
-                            Layout.preferredWidth: 96
-                            implicitWidth: 96
-                            options: [240, 144, 120, 60].map(function (h) { return { value: h, label: h + " Hz" }; })
-                            value: settingsRoot.virtualScreenHz
-                            onPicked: (v) => settingsRoot.virtualScreenHz = v
-                        }
-                        SecondaryButton { text: I18n.t("On"); implicitHeight: 40; onClicked: settingsRoot.configureVirtualDisplay(true, settingsRoot.virtualScreenHz) }
-                        SecondaryButton { text: I18n.t("Off"); implicitHeight: 40; onClicked: settingsRoot.configureVirtualDisplay(false, settingsRoot.virtualScreenHz) }
                     }
                 }
             }

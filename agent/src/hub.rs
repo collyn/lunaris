@@ -152,8 +152,6 @@ pub fn target_of(sig: &SignalingMessage) -> Option<&str> {
         | StopActiveStreamResponse { target_id, .. }
         | GetCapabilities { target_id }
         | CapabilitiesResponse { target_id, .. }
-        | ConfigureVirtualDisplay { target_id, .. }
-        | VirtualDisplayConfigured { target_id, .. }
         | EncoderStatus { target_id, .. }
         | AccessRequest { target_id, .. } => Some(target_id),
         Error { .. } => None,
@@ -175,8 +173,6 @@ pub fn with_target(mut sig: SignalingMessage, target: &str) -> SignalingMessage 
         | StopActiveStreamResponse { target_id, .. }
         | GetCapabilities { target_id }
         | CapabilitiesResponse { target_id, .. }
-        | ConfigureVirtualDisplay { target_id, .. }
-        | VirtualDisplayConfigured { target_id, .. }
         | EncoderStatus { target_id, .. }
         | AccessRequest { target_id, .. } => *target_id = target.to_string(),
         Error { .. } => {}
@@ -201,7 +197,6 @@ pub fn from_direct_client(sig: SignalingMessage, conn_id: &str) -> Option<Signal
             app_id,
             encoder,
             display_id,
-            virtual_display,
             chroma,
             encoder_csc_mode,
             microphone,
@@ -215,7 +210,6 @@ pub fn from_direct_client(sig: SignalingMessage, conn_id: &str) -> Option<Signal
             app_id,
             encoder,
             display_id,
-            virtual_display,
             chroma,
             encoder_csc_mode,
             microphone,
@@ -243,8 +237,7 @@ pub fn from_direct_client(sig: SignalingMessage, conn_id: &str) -> Option<Signal
         | EndSession { .. }
         | GetAppList { .. }
         | StopActiveStream { .. }
-        | GetCapabilities { .. }
-        | ConfigureVirtualDisplay { .. }) => Some(with_target(sig, conn_id)),
+        | GetCapabilities { .. }) => Some(with_target(sig, conn_id)),
         _ => None,
     }
 }
@@ -278,7 +271,6 @@ mod tests {
             app_id: None,
             encoder: None,
             display_id: None,
-            virtual_display: None,
             chroma: Some("444".into()),
             encoder_csc_mode: Some(5),
             microphone: Some(true),
