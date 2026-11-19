@@ -18,6 +18,8 @@ FFMPEG_PREFIX="${FFMPEG_PREFIX:-/opt/lunaris-ffmpeg}"
 TARGET="${CARGO_TARGET_DIR:-$ROOT/target}"
 RUST_TOOLCHAIN=nightly-2026-04-17
 cd "$ROOT"
+# Absolute: make-deb.sh and stage.sh use it from other directories.
+TARGET="$(mkdir -p "$TARGET" && cd "$TARGET" && pwd)"
 
 COMMON_TOOLS_NOTE="toolchain, nasm, meson, ninja, cmake, git, pkg-config, clang"
 
@@ -88,8 +90,10 @@ build_binaries() {
         echo "error: web/dist is missing: build the web client first (cd web && npm ci && npm run build)" >&2
         exit 1
     fi
-    cargo build --release --locked -p agent-app --features static-ffmpeg --target-dir "$TARGET"
-    cargo build --release --locked -p client-desktop --features static-ffmpeg --target-dir "$TARGET"
+    # One cargo run for both apps: built separately, the crates they share
+    # (agent, lunaris-media, webrtc, ...) get different features and are
+    # compiled twice (7 more minutes in CI).
+    cargo build --release --locked -p agent-app -p client-desktop --features static-ffmpeg --target-dir "$TARGET"
     for b in agent client-desktop; do
         if ldd "$TARGET/release/$b" | grep -qE 'libav(codec|util)|libx264'; then
             echo "error: $b still links FFmpeg dynamically" >&2; exit 1

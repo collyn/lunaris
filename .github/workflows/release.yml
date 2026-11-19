@@ -159,7 +159,22 @@ jobs:
           npm ci
           npm run build
 
+      # Crates and the build of the dependencies: a change to lunaris alone
+      # then rebuilds only what changed. Keyed like the AppImage cache.
+      - name: Cache cargo registry and target
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target-packages
+          key: packages-${{ matrix.format }}-${{ hashFiles('Cargo.lock', 'scripts/packaging/build-ffmpeg-static.sh') }}
+          restore-keys: packages-${{ matrix.format }}-
+
       - name: Build packages
+        env:
+          CARGO_TARGET_DIR: target-packages
         run: bash scripts/packaging/linux/build-packages.sh ${{ matrix.format }} dist
 
       - name: Upload packages
