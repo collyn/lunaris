@@ -102,6 +102,11 @@ ironrdp-tokio = "0.12"
 ironrdp-cliprdr = "0.9"
 ironrdp-displaycontrol = "0.10"
 ironrdp-input = "0.9"
+# The graphics pipeline (MS-RDPEGFX) over a dynamic virtual channel: whole
+# frames (StartFrame..EndFrame) instead of bitmap rows painted top to bottom.
+# ironrdp-session 0.13 composites its frames itself once it is registered.
+ironrdp-dvc = "0.10"
+ironrdp-egfx = "0.5"
 # connector/rdp/tls.rs: the server certificate's public key for CredSSP
 # (the same parser ironrdp-tls uses for `extract_tls_server_public_key`).
 x509-cert = { version = "0.3", default-features = false, features = ["std"] }

@@ -46,6 +46,16 @@ pub const HEARTBEAT: Duration = Duration::from_secs(1);
 pub const DEFAULT_BITRATE_KBPS: u32 = 10_000;
 /// Frame rate when the viewer has no wish.
 pub const DEFAULT_FPS: u32 = 30;
+/// A changed picture is encoded once nothing more has been drawn for this
+/// long: a protocol draws one screen's change as many rectangles in a row
+/// (RDP's bitmap updates come in rows of 64x64 tiles, top to bottom), and a
+/// picture taken in between shows the screen half old, half new, so the
+/// change seems to sweep down the screen.
+pub const SETTLE: Duration = Duration::from_millis(6);
+/// ... but a picture that keeps changing is still sent this long after its
+/// first change at the latest (or one frame interval, if that is longer),
+/// so moving pictures keep moving.
+pub const SETTLE_MAX: Duration = Duration::from_millis(40);
 
 /// Which encoders may be tried.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -63,11 +73,15 @@ pub struct Framebuffer {
     /// BGRA (B, G, R, X), `width * 4` bytes a row.
     pub data: Vec<u8>,
     dirty: bool,
+    /// When it was last drawn on, and when the first change not sent yet
+    /// was made (`None`: no change since the last picture sent).
+    changed_at: Option<Instant>,
+    dirty_since: Option<Instant>,
 }
 
 impl Framebuffer {
     fn new(width: u32, height: u32) -> Framebuffer {
-        Framebuffer { width, height, data: vec![0; width as usize * height as usize * 4], dirty: true }
+        Framebuffer { width, height, data: vec![0; width as usize * height as usize * 4], dirty: true, changed_at: None, dirty_since: None }
     }
 
     #[cfg(test)]
@@ -98,7 +112,7 @@ impl Framebuffer {
             let dst = (y as usize + row) * stride + x as usize * 4;
             self.data[dst..dst + cw * 4].copy_from_slice(&pixels[src..src + cw * 4]);
         }
-        self.dirty = true;
+        self.touch();
     }
 
     /// Fills a rectangle with one BGRA pixel.
@@ -116,7 +130,7 @@ impl Framebuffer {
                 px.copy_from_slice(&bgra);
             }
         }
-        self.dirty = true;
+        self.touch();
     }
 
     /// Copies a rectangle from (sx, sy) to (dx, dy) within the picture
@@ -138,13 +152,35 @@ impl Framebuffer {
             let dst = (dy as usize + row) * stride + dx as usize * 4;
             self.data[dst..dst + w * 4].copy_from_slice(&tmp[row * w * 4..(row + 1) * w * 4]);
         }
-        self.dirty = true;
+        self.touch();
     }
 
     /// The protocol drew the whole picture another way (its own decoder's
     /// buffer was copied in): mark it changed.
     pub fn mark_dirty(&mut self) {
+        self.touch();
+    }
+
+    fn touch(&mut self) {
+        let now = Instant::now();
         self.dirty = true;
+        self.changed_at = Some(now);
+        self.dirty_since.get_or_insert(now);
+    }
+
+    /// How much longer to wait before the change is encoded (zero: now).
+    /// See [`SETTLE`].
+    fn settle_wait(&self, now: Instant, interval: Duration) -> Duration {
+        let (Some(changed), Some(since)) = (self.changed_at, self.dirty_since) else { return Duration::ZERO };
+        let quiet = (changed + SETTLE).saturating_duration_since(now);
+        let latest = (since + SETTLE_MAX.max(interval)).saturating_duration_since(now);
+        quiet.min(latest)
+    }
+
+    /// The picture was taken for encoding.
+    fn taken(&mut self) {
+        self.dirty = false;
+        self.dirty_since = None;
     }
 }
 
@@ -381,12 +417,13 @@ fn encode_loop(shared: Arc<Shared>, codecs: Vec<Codec>, events: mpsc::Sender<Eve
             let due = last_sent.map(|t| now.duration_since(t) >= interval).unwrap_or(true);
             let heartbeat = last_sent.map(|t| now.duration_since(t) >= HEARTBEAT).unwrap_or(false);
             match fb_guard.as_ref() {
-                Some(fb) if (fb.dirty && due) || heartbeat || (shared.key_frame.load(Ordering::Relaxed) && due) => break,
+                Some(fb) if (fb.dirty && due && fb.settle_wait(now, interval).is_zero()) || heartbeat || (shared.key_frame.load(Ordering::Relaxed) && due) => break,
                 _ => {}
             }
             // Sleep until the next frame is allowed or the heartbeat is due.
             let wait = match (fb_guard.as_ref(), last_sent) {
-                (Some(fb), Some(t)) if fb.dirty => (t + interval).saturating_duration_since(now),
+                (Some(fb), Some(t)) if fb.dirty => (t + interval).saturating_duration_since(now).max(fb.settle_wait(now, interval)),
+                (Some(fb), None) if fb.dirty => fb.settle_wait(now, interval),
                 (_, Some(t)) => (t + HEARTBEAT).saturating_duration_since(now),
                 _ => HEARTBEAT,
             };
@@ -450,7 +487,7 @@ fn encode_loop(shared: Arc<Shared>, codecs: Vec<Codec>, events: mpsc::Sender<Eve
             *width = *ew;
             *height = *eh;
         }
-        fb.dirty = false;
+        fb.taken();
         drop(fb_guard);
 
         if fps != fps_now {
@@ -517,6 +554,38 @@ fn encode_loop(shared: Arc<Shared>, codecs: Vec<Codec>, events: mpsc::Sender<Eve
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A change is encoded once drawing has paused for SETTLE, or at the
+    /// latest SETTLE_MAX (or a frame interval) after the change began.
+    #[test]
+    fn a_change_is_encoded_once_drawing_pauses() {
+        let interval = Duration::from_millis(16);
+        let mut fb = Framebuffer::new(4, 4);
+        let t0 = Instant::now();
+        // Nothing drawn since the last picture: no wait.
+        fb.taken();
+        assert_eq!(fb.settle_wait(t0, interval), Duration::ZERO);
+        // Drawn just now: wait for the pause.
+        fb.dirty = true;
+        fb.dirty_since = Some(t0);
+        fb.changed_at = Some(t0);
+        assert_eq!(fb.settle_wait(t0, interval), SETTLE);
+        assert_eq!(fb.settle_wait(t0 + SETTLE, interval), Duration::ZERO);
+        // Still being drawn on (a row of tiles every 2 ms): no picture yet...
+        fb.changed_at = Some(t0 + Duration::from_millis(30));
+        assert!(!fb.settle_wait(t0 + Duration::from_millis(31), interval).is_zero());
+        // ... until SETTLE_MAX after the first change, whatever comes.
+        fb.changed_at = Some(t0 + SETTLE_MAX);
+        assert_eq!(fb.settle_wait(t0 + SETTLE_MAX, interval), Duration::ZERO);
+        // A slow frame rate waits up to its interval instead.
+        let slow = Duration::from_millis(100);
+        assert!(!fb.settle_wait(t0 + SETTLE_MAX, slow).is_zero());
+        // Taken: the next change starts again.
+        fb.taken();
+        assert!(!fb.dirty && fb.dirty_since.is_none());
+        fb.fill(0, 0, 1, 1, [1, 2, 3, 0]);
+        assert!(fb.dirty && fb.dirty_since.is_some() && fb.changed_at.is_some());
+    }
 
     #[test]
     fn rectangles_are_clipped_to_the_picture() {

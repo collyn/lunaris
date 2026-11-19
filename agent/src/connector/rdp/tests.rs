@@ -271,3 +271,62 @@ async fn no_pinned_certificate_no_session() {
     let error = connector().connect(&target(server.port, "pw-1", "nla"), &viewer()).await.err().unwrap().to_string();
     assert!(error.contains("no pinned certificate"), "{error}");
 }
+
+/// Against a real RDP computer, for measuring by hand: connects to the
+/// source `LUNARIS_RDP_LIVE_SOURCE` of the agent config `LUNARIS_RDP_LIVE`,
+/// only watches for `LUNARIS_RDP_LIVE_SECS` seconds (default 15; no key,
+/// pointer or clipboard is sent), then closes. Logs whether the graphics
+/// pipeline was used and the frames that came. `LUNARIS_RDP_GFX=0` compares
+/// with bitmap updates.
+///
+/// `cargo test -p agent --lib rdp::tests::live -- --ignored --nocapture`
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a real RDP computer (LUNARIS_RDP_LIVE, LUNARIS_RDP_LIVE_SOURCE)"]
+async fn live() {
+    let _ = tracing_subscriber::fmt().with_env_filter("info").with_test_writer().try_init();
+    let path = std::env::var("LUNARIS_RDP_LIVE").expect("LUNARIS_RDP_LIVE: an agent config");
+    let id = std::env::var("LUNARIS_RDP_LIVE_SOURCE").expect("LUNARIS_RDP_LIVE_SOURCE: a source id");
+    let secs: u64 = std::env::var("LUNARIS_RDP_LIVE_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(15);
+    let config = crate::pairing::load_config(&path).expect("config");
+    let source = config.sources.into_iter().find(|s| s.id == id).expect("no such source");
+    let viewer = Viewer { codecs: vec![Codec::H264], fps: 60, width: 1920, height: 1080, bitrate_kbps: 15_000 };
+    let Session { mut events, commands } = RdpConnector::new().connect(&source.target, &viewer).await.expect("connect");
+    let started = std::time::Instant::now();
+    let end = started + Duration::from_secs(secs);
+    let (mut frames, mut keys, mut bytes) = (0u64, 0u64, 0u64);
+    let mut gaps: Vec<u128> = Vec::new();
+    let mut last: Option<std::time::Instant> = None;
+    loop {
+        let left = end.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
+            break;
+        }
+        match tokio::time::timeout(left, events.recv()).await {
+            Ok(Some(Event::Video { key, data, .. })) => {
+                let now = std::time::Instant::now();
+                if let Some(t) = last {
+                    gaps.push(now.duration_since(t).as_millis());
+                }
+                last = Some(now);
+                frames += 1;
+                keys += key as u64;
+                bytes += data.len() as u64;
+            }
+            Ok(Some(Event::Closed { reason })) => panic!("closed: {reason}"),
+            Ok(Some(_)) => {}
+            Ok(None) => panic!("the session ended"),
+            Err(_) => break,
+        }
+    }
+    let _ = commands.send(Command::Close).await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    gaps.sort_unstable();
+    let pct = |p: usize| gaps.get(gaps.len().saturating_sub(1) * p / 100).copied().unwrap_or(0);
+    println!(
+        "live RDP: {frames} frames ({keys} key) in {secs} s, {} KiB; gap ms median {} p95 {} max {}",
+        bytes / 1024,
+        pct(50),
+        pct(95),
+        gaps.last().copied().unwrap_or(0)
+    );
+}

@@ -213,6 +213,25 @@ pub fn explain(error: &ironrdp_connector::ConnectorError, security: Security) ->
     }
 }
 
+/// Whether to offer the graphics pipeline (MS-RDPEGFX). On unless
+/// `LUNARIS_RDP_GFX=0` (bitmap updates only, as before; for comparing).
+fn graphics_pipeline_wanted() -> bool {
+    std::env::var("LUNARIS_RDP_GFX").map(|v| v.trim() != "0").unwrap_or(true)
+}
+
+/// Says in the log what the graphics pipeline agreed on.
+struct PipelineLog;
+
+impl ironrdp_egfx::client::GraphicsPipelineHandler for PipelineLog {
+    fn on_capabilities_confirmed(&mut self, caps: &ironrdp_egfx::pdu::CapabilitySet) {
+        info!("RDP: graphics pipeline in use ({caps:?})");
+    }
+
+    fn on_reset_graphics(&mut self, width: u32, height: u32) {
+        debug!("RDP: graphics pipeline reset to {width}x{height}");
+    }
+}
+
 /// The connection sequence up to the active session (ironrdp-client
 /// `connect_direct` + `security_upgrade_and_finalize`).
 pub async fn connect_sequence(
@@ -236,9 +255,24 @@ pub async fn connect_sequence(
     #[cfg(not(unix))]
     let rtt_fd: RttFd = None;
 
-    let mut connector = ClientConnector::new(connector_config(options, size), client_addr);
+    let mut config = connector_config(options, size);
+    let gfx = graphics_pipeline_wanted();
+    // MS-RDPEGFX 1.5.1: the flag is set only with the channel registered.
+    config.support_dyn_vc_gfx_protocol = gfx;
+    let mut connector = ClientConnector::new(config, client_addr);
     if let Some(tasks) = clipboard {
         connector.attach_static_channel(ironrdp_cliprdr::CliprdrClient::new(Box::new(TextBackend::new(tasks))));
+    }
+    if gfx {
+        // The graphics pipeline: the server sends whole frames
+        // (StartFrame..EndFrame) and ActiveStage composites each one into
+        // the picture when it is complete, so a change never shows half
+        // drawn. No H.264 decoder is given: the client then offers only the
+        // capability sets without AVC, and the server uses RemoteFX /
+        // progressive / planar / ClearCodec, which ironrdp-egfx decodes. A
+        // server that does not open the channel keeps sending bitmaps.
+        let pipeline = ironrdp_egfx::client::GraphicsPipelineClient::new(Box::new(PipelineLog), None);
+        connector.attach_static_channel(ironrdp_dvc::DrdynvcClient::new().with_dynamic_channel(pipeline));
     }
     let mut framed = TokioFramed::new(stream);
     let should_upgrade = ironrdp_tokio::connect_begin(&mut framed, &mut connector).await.map_err(|e| anyhow::anyhow!(explain(&e, options.security)))?;
