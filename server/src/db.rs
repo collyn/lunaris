@@ -142,6 +142,18 @@ pub async fn init_db(
     .execute(&pool)
     .await?;
 
+    // Sources removed from the list while their agent was offline: the agent
+    // still has them and is asked to remove them when it is back.
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS source_removals (
+            host_id TEXT NOT NULL,
+            source_id TEXT NOT NULL,
+            PRIMARY KEY (host_id, source_id)
+        );",
+    )
+    .execute(&pool)
+    .await?;
+
     // Which computer a source is, when that computer is listed in other
     // ways too (sources.rs): an opaque word its agent announced.
     let source_columns: Vec<String> = sqlx::query_scalar("SELECT name FROM pragma_table_info('host_sources')")

@@ -698,6 +698,10 @@ async fn delete_host_handler(
         .bind(&host_id)
         .execute(&state.db)
         .await;
+    let _ = sqlx::query("DELETE FROM source_removals WHERE host_id = ?")
+        .bind(&host_id)
+        .execute(&state.db)
+        .await;
     if let Err(e) = sqlx::query("DELETE FROM hosts WHERE id = ?")
         .bind(&host_id)
         .execute(&state.db)

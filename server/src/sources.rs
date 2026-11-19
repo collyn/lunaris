@@ -120,6 +120,10 @@ pub(crate) async fn announced(
 ) {
     sources.truncate(MAX_ANNOUNCED);
     connectors.truncate(MAX_ANNOUNCED);
+    // Removed from the list while it was away: not listed again.
+    let removals = removals_of(state, agent_id).await;
+    let ids: Vec<String> = sources.iter().map(|source| source.id.clone()).collect();
+    sources.retain(|source| !removals.contains(&source.id));
     let mut tx = match state.db.begin().await {
         Ok(tx) => tx,
         Err(e) => {
@@ -152,6 +156,10 @@ pub(crate) async fn announced(
     }
     let reachable = sources.iter().filter_map(|source| Some((source.id.clone(), source.online?))).collect();
     state.sources.announced.write().unwrap().insert(agent_id.to_string(), Announced { connectors, manageable, reachable });
+    if !removals.is_empty() {
+        // Not awaited: the answers come through this agent's messages.
+        tokio::spawn(apply_removals(state.clone(), agent_id.to_string(), removals, ids));
+    }
 }
 
 /// An agent answered a change. Only the agent that was asked is believed.
@@ -497,16 +505,85 @@ pub async fn remove_source(
     Path((host_id, id)): Path<(String, String)>,
     State(state): State<Arc<SignalingState>>,
 ) -> impl IntoResponse {
-    // The agent is away: the card is taken off the list here, and the
-    // agent's next announcement decides (it still has the source).
+    // The agent is away: the card is taken off the list now, and the agent
+    // (which still has the source) is asked to remove it when it is back.
     if !state.agents.read().unwrap().contains_key(&host_id) {
-        return refused(StatusCode::CONFLICT, "That computer is offline. It can be removed when it is back.");
+        return remove_while_away(&state, &host_id, &id, &admin.username).await;
     }
     let response = change(&state, &host_id, SourceChange::Remove { id }, &admin.username).await;
     if response.status().is_success() {
         return Json(serde_json::json!({})).into_response();
     }
     response
+}
+
+async fn remove_while_away(state: &Arc<SignalingState>, host_id: &str, id: &str, requester: &str) -> axum::response::Response {
+    let removed: Result<u64, sqlx::Error> = async {
+        let mut tx = state.db.begin().await?;
+        let gone = sqlx::query("DELETE FROM host_sources WHERE host_id = ? AND source_id = ?")
+            .bind(host_id)
+            .bind(id)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+        if gone > 0 {
+            sqlx::query("INSERT OR IGNORE INTO source_removals (host_id, source_id) VALUES (?, ?)")
+                .bind(host_id)
+                .bind(id)
+                .execute(&mut *tx)
+                .await?;
+        }
+        tx.commit().await?;
+        Ok(gone)
+    }
+    .await;
+    match removed {
+        Ok(0) => refused(StatusCode::NOT_FOUND, "That computer is not in the list any more."),
+        Ok(_) => {
+            info!("Sources of {} (offline): {} removed from the list by {}; the agent is asked when it is back", host_id, id, requester);
+            Json(serde_json::json!({})).into_response()
+        }
+        Err(e) => {
+            error!("Database error: {}", e);
+            refused(StatusCode::INTERNAL_SERVER_ERROR, "Failed to remove it")
+        }
+    }
+}
+
+/// The sources of `agent_id` removed from the list while it was away.
+async fn removals_of(state: &Arc<SignalingState>, agent_id: &str) -> Vec<String> {
+    sqlx::query_scalar("SELECT source_id FROM source_removals WHERE host_id = ?")
+        .bind(agent_id)
+        .fetch_all(&state.db)
+        .await
+        .unwrap_or_else(|e| {
+            error!("Database error: {}", e);
+            Vec::new()
+        })
+}
+
+async fn forget_removal(state: &Arc<SignalingState>, agent_id: &str, id: &str) {
+    let _ = sqlx::query("DELETE FROM source_removals WHERE host_id = ? AND source_id = ?")
+        .bind(agent_id)
+        .bind(id)
+        .execute(&state.db)
+        .await;
+}
+
+/// Asks an agent that is back to remove what was removed from the list while
+/// it was away. What it no longer has is forgotten; a removal it refuses
+/// (or that cannot be asked now) is kept, and the source stays off the list.
+async fn apply_removals(state: Arc<SignalingState>, agent_id: String, removals: Vec<String>, announced: Vec<String>) {
+    for id in removals {
+        if !announced.contains(&id) {
+            forget_removal(&state, &agent_id, &id).await;
+            continue;
+        }
+        match ask(&state, &agent_id, SourceChange::Remove { id: id.clone() }, "the server (removed while offline)").await {
+            Ok(_) => forget_removal(&state, &agent_id, &id).await,
+            Err(response) => warn!("Sources of {}: {} could not be removed now ({})", agent_id, id, response.status()),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -717,6 +794,46 @@ mod tests {
         agent.await.unwrap();
         let (_, list) = body(list_sources(user("admin"), State(state.clone())).await).await;
         assert!(list.as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_source_removed_while_its_agent_is_away_goes_now_and_is_removed_there_when_it_is_back() {
+        let state = state().await;
+        // h1 announced two sources, then went away.
+        announced(&state, "h1", vec![source("den-1", "Den PC"), source("lab-2", "Lab")], vec![rustdesk()], true).await;
+        agent_gone(&state, "h1");
+
+        let (status, _) = body(remove_source(admin(), Path(("h1".into(), "den-1".into())), State(state.clone())).await).await;
+        assert_eq!(status, StatusCode::OK);
+        let (_, list) = body(list_sources(user("admin"), State(state.clone())).await).await;
+        let ids: Vec<&str> = list.as_array().unwrap().iter().map(|s| s["id"].as_str().unwrap()).collect();
+        assert_eq!(ids, vec!["lab-2"]);
+        // Not there (any more): said so.
+        let (status, _) = body(remove_source(admin(), Path(("h1".into(), "den-1".into())), State(state.clone())).await).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        // Back, still with the source: it stays off the list and the agent
+        // is asked to remove it.
+        let mut to_agent = connect(&state, "h1");
+        announced(&state, "h1", vec![source("den-1", "Den PC"), source("lab-2", "Lab")], vec![rustdesk()], true).await;
+        let (_, list) = body(list_sources(user("admin"), State(state.clone())).await).await;
+        assert_eq!(list.as_array().unwrap().len(), 1);
+        let (request_id, change) = asked(&mut to_agent).await;
+        assert_eq!(change, SourceChange::Remove { id: "den-1".into() });
+        crate::signaling::agent_message(&state, "h1", AgentMessage::SourceChanged { request_id, id: Some("den-1".into()), error: None, setup: None }).await;
+        for _ in 0..100 {
+            if removals_of(&state, "h1").await.is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(removals_of(&state, "h1").await.is_empty());
+
+        // Should it add a source with that id again later, it is listed.
+        announced(&state, "h1", vec![source("den-1", "Den PC"), source("lab-2", "Lab")], vec![rustdesk()], true).await;
+        let (_, list) = body(list_sources(user("admin"), State(state.clone())).await).await;
+        assert_eq!(list.as_array().unwrap().len(), 2);
+        assert!(to_agent.rx_try().is_none());
     }
 
     #[tokio::test]
