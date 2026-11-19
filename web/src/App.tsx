@@ -2416,6 +2416,15 @@ function App() {
       {linkRequest && (
         <div className="host-confirm-overlay">
           <div className="host-confirm-card" role="alertdialog" aria-modal="true" aria-labelledby="linkTitle">
+            {/* The card is two columns (icon, text): without the icon the
+                text would be squeezed into the icon's column. */}
+            <div className="host-confirm-icon danger" aria-hidden="true">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4" />
+                <polyline points="10 17 15 12 10 7" />
+                <line x1="15" y1="12" x2="3" y2="12" />
+              </svg>
+            </div>
             <div className="host-confirm-content">
               <h2 id="linkTitle">{linkRequest.connect ? t('Sign in and connect?') : t('Sign in?')}</h2>
               <p>

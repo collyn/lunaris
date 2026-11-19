@@ -33,6 +33,12 @@ qt_package_alternatives() {
     sed -E 's/(libqt6[a-z0-9-]+)t64( \([^)]*\))?/\1t64\2 | \1\2/g'
 }
 
+# VA-API drivers: mesa-va-drivers covers AMD; Intel GPUs need Intel's own
+# driver (iHD, Broadwell and newer), which Ubuntu does not install by
+# default. Without it VAAPI and Quick Sync cannot start and the agent
+# encodes on the CPU ("Failed to initialise VAAPI connection").
+INTEL_VA="intel-media-va-driver | intel-media-va-driver-non-free"
+
 build() {
     local kind="$1" bin="$2" extra_deps="$3" recommends="$4" description="$5"
     local name="lunaris-$kind"
@@ -124,7 +130,7 @@ EOF
 }
 
 build agent "$TARGET/release/agent" "" \
-    ", xdg-desktop-portal, pipewire, mesa-va-drivers" \
+    ", xdg-desktop-portal, pipewire, mesa-va-drivers, $INTEL_VA" \
     "Lunaris remote desktop host agent
  Shares this computer's screen with Lunaris clients: unattended KMS capture
  through the lunaris-capture service (Wayland without the portal prompt),
@@ -133,7 +139,7 @@ build agent "$TARGET/release/agent" "" \
 
 build client "$TARGET/release/client-desktop" \
     ", qml6-module-qtmultimedia, qml6-module-qtquick-shapes" \
-    ", mesa-va-drivers, xdg-utils, xdg-desktop-portal, pipewire" \
+    ", mesa-va-drivers, $INTEL_VA, xdg-utils, xdg-desktop-portal, pipewire" \
     "Lunaris remote desktop
  Control other computers running Lunaris, with hardware video decoding
  (VAAPI, NVDEC), and let them control this one (built-in agent and server:

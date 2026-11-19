@@ -4070,6 +4070,16 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     }
   };
 
+  // Back to the list of computers. Full screen is left first: on phones the
+  // stream is usually full screen, and the list must not open in it.
+  const leaveSession = () => {
+    setShowMobileMenu(false);
+    if (document.fullscreenElement) {
+      document.exitFullscreen().catch(() => {});
+    }
+    onBack();
+  };
+
   const handleStopActiveStream = () => {
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       setIsStoppingStream(true);
@@ -4106,7 +4116,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
         {/* Header/Navbar */}
         <header className="navbar" style={{ position: 'static', background: 'transparent', borderBottom: '1px solid rgb(var(--ink-rgb) / 0.05)' }}>
           <div className="nav-brand">
-            <button onClick={onBack} className="btn-secondary stream-back-btn" title="Leave" style={{ marginRight: '0.5rem', background: 'rgb(var(--ink-rgb) / 0.03)', border: '1px solid rgb(var(--ink-rgb) / 0.08)' }}>
+            <button onClick={leaveSession} className="btn-secondary stream-back-btn" title="Leave" style={{ marginRight: '0.5rem', background: 'rgb(var(--ink-rgb) / 0.03)', border: '1px solid rgb(var(--ink-rgb) / 0.08)' }}>
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                 <path d="M19 12H5M12 19l-7-7 7-7" />
               </svg>
@@ -4360,7 +4370,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
           }
         }}
       >
-        <button onClick={onBack} className="stream-action-btn" title="Leave Session" style={{ marginRight: '0.25rem' }}>
+        <button onClick={leaveSession} className="stream-action-btn" title="Leave Session" style={{ marginRight: '0.25rem' }}>
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
             <polyline points="15 18 9 12 15 6" />
           </svg>
@@ -4994,7 +5004,11 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
                       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0" /><circle cx="16" cy="6" r="2" /><circle cx="10" cy="12" r="2" /><circle cx="18" cy="18" r="2" /></svg>
                       <span>{t('Stream settings')}</span>
                     </button>
-                    <button type="button" className="mobile-action danger" onClick={handleStopActiveStream}>
+                    {/* Leaves the session, as Leave does on a desktop: the
+                        player unmounts and its cleanup ends the session.
+                        (Stopping the stream alone left a black picture with
+                        no way back but reloading the page.) */}
+                    <button type="button" className="mobile-action danger" onClick={leaveSession}>
                       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M12 3v9M6.3 7.5a8 8 0 1 0 11.4 0" /></svg>
                       <span>{t('Disconnect')}</span>
                     </button>
@@ -5036,7 +5050,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
             >
               {/* Close Button */}
               <button 
-                onClick={onBack}
+                onClick={leaveSession}
                 className="mobile-footer-btn"
                 title={t('Disconnect')} aria-label={t('Disconnect')}
               >
@@ -5217,7 +5231,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
                 <div className="error-icon">⚠️</div>
                 <h3>Connection Failure</h3>
                 <p>{errorMsg}</p>
-                <button onClick={onBack} className="btn-primary">Return to Dashboard</button>
+                <button onClick={leaveSession} className="btn-primary">Return to Dashboard</button>
               </div>
             ) : (
               <div className="loading-panel">

@@ -792,6 +792,10 @@ body {
   font-size: 0.92rem;
 }
 
+.host-confirm-content p + p {
+  margin-top: 0.5rem;
+}
+
 .host-confirm-content strong {
   color: var(--text-strong);
 }
