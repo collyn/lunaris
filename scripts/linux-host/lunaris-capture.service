@@ -14,7 +14,7 @@ After=systemd-logind.service
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/lunaris-agent --capture-service --allow-exe /usr/bin/lunaris-client
+ExecStart=/usr/bin/lunaris-agent --capture-service
 Restart=on-failure
 RestartSec=2
 

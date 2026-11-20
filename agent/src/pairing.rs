@@ -114,6 +114,14 @@ pub struct AgentConfig {
     /// never used). Anything else counts as "auto" (`wayland_capture_preference`).
     #[serde(default = "default_wayland_capture")]
     pub wayland_capture: String,
+    /// "Allow the server to change this computer's settings": the
+    /// administrators of the Lunaris server may read and change the settings
+    /// above (settings.rs) and see the access password. Off by default; set
+    /// here, with `lunaris-agent set server-settings allow` or
+    /// `--allow-server-settings`, never from the server. While it is off the
+    /// server may only read them (without the password).
+    #[serde(default)]
+    pub allow_server_settings: bool,
 }
 
 fn default_wayland_capture() -> String {
@@ -296,7 +304,12 @@ pub fn save_config(config: &AgentConfig, path: &str) -> Result<(), anyhow::Error
     Ok(())
 }
 
-fn write_private(path: &std::path::Path, data: &[u8]) -> std::io::Result<()> {
+/// Writes `data` to `path` owner-only (unix 0600), through a new file
+/// renamed over the old one. Run as root on a file of another user (the
+/// system service's config, `--system`) the file keeps that owner, or gets
+/// the folder's owner when it is new, so the agent running as that user can
+/// still read it.
+pub(crate) fn write_private(path: &std::path::Path, data: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
     let dir = match path.parent() {
         Some(d) if !d.as_os_str().is_empty() => d,
@@ -315,6 +328,8 @@ fn write_private(path: &std::path::Path, data: &[u8]) -> std::io::Result<()> {
     }
     let result = (|| {
         let mut file = options.open(&tmp)?;
+        #[cfg(unix)]
+        keep_owner(&file, path, dir)?;
         file.write_all(data)?;
         file.sync_all()?;
         drop(file);
@@ -324,6 +339,32 @@ fn write_private(path: &std::path::Path, data: &[u8]) -> std::io::Result<()> {
         let _ = fs::remove_file(&tmp);
     }
     result
+}
+
+/// See [`write_private`]: only root can give a file away.
+#[cfg(unix)]
+fn keep_owner(file: &fs::File, path: &std::path::Path, dir: &std::path::Path) -> std::io::Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    use std::os::unix::io::AsRawFd;
+    if unsafe { libc::geteuid() } != 0 {
+        return Ok(());
+    }
+    // Never through a link: one planted by the folder's owner would hand
+    // the file to whoever owns the link's target.
+    let own = match fs::symlink_metadata(path) {
+        Ok(m) if !m.file_type().is_symlink() => Ok(m),
+        _ => fs::symlink_metadata(dir),
+    };
+    let Ok(meta) = own else {
+        return Ok(());
+    };
+    if meta.uid() == 0 {
+        return Ok(());
+    }
+    if unsafe { libc::fchown(file.as_raw_fd(), meta.uid(), meta.gid()) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 /// Changes the config file on disk: read again first, so what the app or
@@ -369,180 +410,19 @@ pub fn import_config_file(imported_path: &str, target_path: &str) -> Result<(), 
 
 
 
-#[cfg(target_os = "linux")]
-fn get_autostart_path_linux() -> Option<std::path::PathBuf> {
-    let home = std::env::var("HOME").ok()?;
-    let mut path = std::path::PathBuf::from(home);
-    path.push(".config");
-    path.push("autostart");
-    let _ = std::fs::create_dir_all(&path);
-    path.push("lunaris-agent.desktop");
-    Some(path)
-}
-
-#[allow(dead_code)]
-fn get_autostart_path_macos() -> Option<std::path::PathBuf> {
-    let home = std::env::var("HOME").ok()?;
-    let mut path = std::path::PathBuf::from(home);
-    path.push("Library");
-    path.push("LaunchAgents");
-    let _ = std::fs::create_dir_all(&path);
-    path.push("com.lunaris.agent.plist");
-    Some(path)
-}
-
-#[allow(dead_code)]
-pub fn is_autostart_enabled_impl() -> bool {
-    #[cfg(target_os = "linux")]
-    {
-        if let Some(path) = get_autostart_path_linux() {
-            return path.exists();
-        }
-    }
-    #[cfg(target_os = "macos")]
-    {
-        if let Some(path) = get_autostart_path_macos() {
-            return path.exists();
-        }
-    }
-    #[cfg(target_os = "windows")]
-    {
-        let output = reg_command()
-            .args(&[
-                "query",
-                "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run",
-                "/v",
-                "LunarisAgent",
-            ])
-            .output();
-        if let Ok(out) = output {
-            return out.status.success();
-        }
-    }
-    false
-}
-
-/// Runs `reg.exe` without flashing a console window from the GUI app.
-#[cfg(target_os = "windows")]
-fn reg_command() -> std::process::Command {
-    use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    let mut cmd = std::process::Command::new("reg");
-    cmd.creation_flags(CREATE_NO_WINDOW);
-    cmd
-}
-
-/// What `--enroll` does about starting at login, given the app's autostart
-/// entry as it is now.
-#[cfg_attr(not(any(target_os = "linux", test)), allow(dead_code))]
-#[derive(Debug, PartialEq, Eq)]
-enum CliAutostart {
-    /// Write the headless entry in the app's file (none there, or one an
-    /// earlier `--enroll` wrote).
-    AppEntry,
-    /// The app already starts at login with this same config: it joins the
-    /// server itself; a second agent with the same id would fight it.
-    KeepApp,
-    /// The app starts at login with its own config: this agent (another
-    /// config, another id) gets an entry of its own next to it.
-    OwnEntry,
-}
-
-#[cfg_attr(not(any(target_os = "linux", test)), allow(dead_code))]
-fn cli_autostart_choice(existing: Option<&str>, config_is_the_apps: bool) -> CliAutostart {
-    match existing {
-        None => CliAutostart::AppEntry,
-        Some(entry) if entry.lines().any(|l| l.starts_with("Exec=") && l.contains(" --cli ")) => CliAutostart::AppEntry,
-        Some(_) if config_is_the_apps => CliAutostart::KeepApp,
-        Some(_) => CliAutostart::OwnEntry,
-    }
-}
-
-/// Linux: starts the agent headless (`--cli`) with `config` when the user
-/// logs in to the desktop. Used by `--enroll`, for computers set up by the
-/// one-line installer. The app's own "Start at login" entry (it opens the
-/// window) is never replaced: with the same config it is kept as it is (the
-/// app joins the server then); with another config this agent gets
-/// `lunaris-agent-cli.desktop` beside it. Returns the entry that starts the
-/// agent, and whether it is the app's, kept.
-#[cfg(target_os = "linux")]
-pub fn enable_cli_autostart(config: &str) -> std::io::Result<(std::path::PathBuf, bool)> {
-    let exe = match std::env::var("APPIMAGE").ok().filter(|p| !p.is_empty()) {
-        Some(appimage) => appimage,
-        None => std::env::current_exe()?.to_string_lossy().into_owned(),
+/// macOS: starts the agent (`--cli`) at login with the default config
+/// (`--enroll`), as a LaunchAgent.
+#[cfg(target_os = "macos")]
+pub fn enable_macos_login_start() {
+    let exe = match std::env::current_exe() {
+        Ok(path) => path.to_string_lossy().into_owned(),
+        Err(_) => return,
     };
-    let canonical = |p: &str| std::fs::canonicalize(p).map(|p| p.to_string_lossy().into_owned()).ok();
-    let config = canonical(config).unwrap_or_else(|| config.to_string());
-    // The config the app uses when started at login (`--minimized`, no --config).
-    let apps_config = dirs::config_dir()
-        .map(|d| d.join("lunaris-agent").join("agent_config.json").to_string_lossy().into_owned())
-        .and_then(|p| canonical(&p).or(Some(p)));
-    let path = get_autostart_path_linux()
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "HOME is not set"))?;
-    let existing = std::fs::read_to_string(&path).ok();
-    match cli_autostart_choice(existing.as_deref(), apps_config.as_deref() == Some(config.as_str())) {
-        CliAutostart::AppEntry => {
-            std::fs::write(&path, cli_autostart_entry(&exe, &config))?;
-            Ok((path, false))
-        }
-        CliAutostart::KeepApp => Ok((path, true)),
-        CliAutostart::OwnEntry => {
-            let own = path.with_file_name("lunaris-agent-cli.desktop");
-            std::fs::write(&own, cli_autostart_entry(&exe, &config))?;
-            Ok((own, false))
-        }
-    }
-}
-
-/// The desktop entry: arguments quoted as the Desktop Entry spec says.
-#[cfg(any(target_os = "linux", test))]
-fn cli_autostart_entry(exe: &str, config: &str) -> String {
-    let quote = |s: &str| {
-        let mut out = String::from("\"");
-        for c in s.chars() {
-            if matches!(c, '"' | '`' | '$' | '\\') {
-                out.push('\\');
-            }
-            out.push(c);
-        }
-        out.push('"');
-        // Then the string escape (a backslash twice), and `%` is a field code.
-        out.replace('\\', "\\\\").replace('%', "%%")
-    };
-    format!(
-        "[Desktop Entry]\nType=Application\nName=Lunaris Agent\nExec={} --cli --config {}\nIcon=lunaris-agent\nTerminal=false\nX-GNOME-Autostart-enabled=true\n",
-        quote(exe),
-        quote(config)
-    )
-}
-
-pub fn set_autostart_enabled_impl(enabled: bool) {
-    // Inside an AppImage current_exe() points into a temporary mount; the
-    // AppImage file itself is what has to be started at login.
-    let exe_path = match std::env::var("APPIMAGE").ok().filter(|p| !p.is_empty()) {
-        Some(appimage) => appimage,
-        None => match std::env::current_exe() {
-            Ok(path) => path.to_string_lossy().to_string(),
-            Err(_) => return,
-        },
-    };
-
-    if enabled {
-        #[cfg(target_os = "linux")]
-        {
-            if let Some(path) = get_autostart_path_linux() {
-                let content = format!(
-                    "[Desktop Entry]\nType=Application\nName=Lunaris Agent\nExec=\"{}\" --minimized\nIcon=lunaris-agent\nX-GNOME-Autostart-enabled=true\n",
-                    exe_path
-                );
-                let _ = std::fs::write(path, content);
-            }
-        }
-        #[cfg(target_os = "macos")]
-        {
-            if let Some(path) = get_autostart_path_macos() {
-                let content = format!(
-                    r#"<?xml version="1.0" encoding="UTF-8"?>
+    let Some(home) = std::env::var_os("HOME") else { return };
+    let dir = std::path::Path::new(&home).join("Library").join("LaunchAgents");
+    let _ = std::fs::create_dir_all(&dir);
+    let content = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
@@ -551,60 +431,15 @@ pub fn set_autostart_enabled_impl(enabled: bool) {
     <key>ProgramArguments</key>
     <array>
         <string>{}</string>
-        <string>--minimized</string>
+        <string>--cli</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
 </dict>
 </plist>"#,
-                    exe_path
-                );
-                let _ = std::fs::write(path, content);
-            }
-        }
-        #[cfg(target_os = "windows")]
-        {
-            let val = format!("\"{}\" --minimized", exe_path);
-            let _ = reg_command()
-                .args(&[
-                    "add",
-                    "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run",
-                    "/v",
-                    "LunarisAgent",
-                    "/t",
-                    "REG_SZ",
-                    "/d",
-                    &val,
-                    "/f",
-                ])
-                .output();
-        }
-    } else {
-        #[cfg(target_os = "linux")]
-        {
-            if let Some(path) = get_autostart_path_linux() {
-                let _ = std::fs::remove_file(path);
-            }
-        }
-        #[cfg(target_os = "macos")]
-        {
-            if let Some(path) = get_autostart_path_macos() {
-                let _ = std::fs::remove_file(path);
-            }
-        }
-        #[cfg(target_os = "windows")]
-        {
-            let _ = reg_command()
-                .args(&[
-                    "delete",
-                    "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run",
-                    "/v",
-                    "LunarisAgent",
-                    "/f",
-                ])
-                .output();
-        }
-    }
+        exe
+    );
+    let _ = std::fs::write(dir.join("com.lunaris.agent.plist"), content);
 }
 
 #[cfg(test)]
@@ -634,31 +469,6 @@ mod tests {
         assert_eq!(c.agent_key, key);
         c.agent_key = "short".into();
         assert!(ensure_agent_key(&mut c));
-    }
-
-    #[test]
-    fn cli_autostart_entry_quotes() {
-        let e = cli_autostart_entry("/opt/lunaris agent/x.AppImage", "/home/a/.config/lunaris-agent/agent_config.json");
-        assert!(e.contains("Exec=\"/opt/lunaris agent/x.AppImage\" --cli --config \"/home/a/.config/lunaris-agent/agent_config.json\"\n"));
-        let e = cli_autostart_entry("/usr/bin/lunaris-agent", "/h/$x\"%");
-        assert!(e.contains("--config \"/h/\\\\$x\\\\\"%%\""), "{e}");
-    }
-
-    /// `--enroll` never replaces the app's own "Start at login" entry.
-    #[test]
-    fn enroll_keeps_the_apps_autostart_entry() {
-        let app = "[Desktop Entry]\nType=Application\nName=Lunaris Agent\nExec=\"/usr/bin/lunaris-agent\" --minimized\n";
-        let ours = cli_autostart_entry("/usr/bin/lunaris-agent", "/home/a/.config/lunaris-agent/agent_config.json");
-        assert_eq!(cli_autostart_choice(None, true), CliAutostart::AppEntry);
-        assert_eq!(cli_autostart_choice(None, false), CliAutostart::AppEntry);
-        // An entry an earlier --enroll wrote: updated.
-        assert_eq!(cli_autostart_choice(Some(&ours), true), CliAutostart::AppEntry);
-        assert_eq!(cli_autostart_choice(Some(&ours), false), CliAutostart::AppEntry);
-        // The app's: kept with the same config, beside it with another.
-        assert_eq!(cli_autostart_choice(Some(app), true), CliAutostart::KeepApp);
-        assert_eq!(cli_autostart_choice(Some(app), false), CliAutostart::OwnEntry);
-        // Something else someone put there under that name: not replaced either.
-        assert_eq!(cli_autostart_choice(Some("[Desktop Entry]\nExec=my-wrapper.sh\n"), false), CliAutostart::OwnEntry);
     }
 
     #[test]

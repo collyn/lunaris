@@ -2,7 +2,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
-// Settings → General → Updates: this version, "Check now", the automatic
+// The Updates card of the window shown without a link (Launcher.qml): this version, "Check now", the automatic
 // check, and a newer release with its notes, Update and the progress.
 // `status` is the parsed bridge.updateStatus() (updater/src/service.rs).
 ColumnLayout {

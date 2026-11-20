@@ -8,45 +8,22 @@
     <file>main.qml</file>
     <file>LunarisMenuBar.qml</file>
     <file>LunarisComboBox.qml</file>
-    <file>Dashboard.qml</file>
-    <file>Settings.qml</file>
-    <file>Home.qml</file>
+    <file>SessionSettings.qml</file>
+    <file>Launcher.qml</file>
     <file>ThemedCombo.qml</file>
-    <file>LocalServerCard.qml</file>
-    <file>AppSettings.qml</file>
     <file>Icon.qml</file>
     <file>IconButton.qml</file>
     <file>PrimaryButton.qml</file>
     <file>SecondaryButton.qml</file>
     <file>Toggle.qml</file>
     <file>CheckRow.qml</file>
-    <file>RadioRow.qml</file>
     <file>InputField.qml</file>
     <file>DialogFrame.qml</file>
     <file>ThemedMenu.qml</file>
     <file>GamepadTester.qml</file>
     <file>FileManager.qml</file>
-    <file>AdminTurnServers.qml</file>
-    <file>AdminGroups.qml</file>
-    <file>AdminUsers.qml</file>
-    <file>ApiClient.qml</file>
-    <file>AddComputerDialog.qml</file>
-    <file>MfaDialog.qml</file>
     <file>UpdateBanner.qml</file>
     <file>UpdatesPanel.qml</file>
-    <file>TypeBadge.qml</file>
-    <file>Cards.js</file>
-    <file>OptionCard.qml</file>
-    <file>MethodChips.qml</file>
-    <file>TypeLogo.qml</file>
-    <file>TypeTile.qml</file>
-    <file>ComputerFinder.qml</file>
-    <file>NoMatch.qml</file>
-    <file>logos/lunaris.svg</file>
-    <file>logos/rustdesk.svg</file>
-    <file>logos/sunshine.svg</file>
-    <file>logos/rdp.svg</file>
-    <file>logos/vnc.svg</file>
     <file>icon.png</file>
     <file>cursors/arrow.png</file>
     <file>cursors/cross.png</file>

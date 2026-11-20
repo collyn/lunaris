@@ -5090,3 +5090,100 @@ select option:disabled { color: var(--text-subtle); }
    empty-state one), and its text readable in light mode too. */
 .auth-error-banner .error-icon { font-size: 1rem; line-height: 1; flex: none; }
 .auth-error-banner { color: color-mix(in srgb, var(--danger) 72%, var(--text-strong)); }
+
+/* First-start setup page (components/SetupPage.tsx): where the code is. */
+.setup-code-hint { color: var(--text-muted); font-size: 0.8rem; line-height: 1.45; }
+.setup-code-hint ul { margin: 0.25rem 0 0; padding-left: 1.1rem; }
+.setup-code-hint code { font-size: 0.78rem; word-break: break-all; color: var(--text); }
+
+/* ===== Computer settings dialog (ComputerSettingsDialog.tsx) =====
+   The stream settings dialog's layout; a few controls of its own. */
+.csd-status { display: flex; flex-direction: column; align-items: flex-start; gap: 12px; color: var(--text-muted); }
+.csd-error { color: color-mix(in srgb, var(--danger) 78%, var(--text-strong)); }
+.csd-note {
+  margin: 0 0 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius);
+  background: var(--surface);
+  font-size: 0.86rem;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+.csd-password { display: flex; align-items: center; justify-content: flex-end; gap: 8px; width: 100%; min-width: 0; }
+.csd-password-value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.9rem;
+  color: var(--text-strong);
+  user-select: all;
+}
+.csd-input {
+  min-width: 0;
+  flex: 1;
+  padding: 8px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text-strong);
+  font: inherit;
+  font-size: 0.9rem;
+}
+.csd-input:focus { outline: none; border-color: var(--accent); box-shadow: var(--ring); }
+.csd-input:disabled { opacity: 0.55; }
+.csd-port { flex: 0 0 auto; width: 120px; }
+
+/* Favourites: a star on each card, and what the list shows. */
+.card-star {
+  margin-left: auto;
+  flex-shrink: 0;
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-subtle);
+  cursor: pointer;
+}
+.card-star:hover { color: var(--text-strong); background: var(--surface-2); }
+.card-star:focus-visible { outline: none; box-shadow: var(--ring); }
+.card-star.on { color: var(--warning); }
+.card-star.on svg { fill: currentColor; }
+.hosts-card-list .card-star { align-self: center; width: 28px; height: 28px; }
+.show-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.show-chip-star { display: inline-flex; color: var(--warning); }
+.type-chip.selected .show-chip-star svg { fill: currentColor; }
+
+/* A card's menu (administrators), in the style of the ways to connect. */
+.card-menu .card-menu-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  flex-shrink: 0;
+  color: var(--text-muted);
+}
+
+/* The server page and About. */
+.server-info { display: flex; flex-direction: column; gap: 10px; max-width: 760px; }
+.server-info .ssd-section { margin: 12px 0 0; }
+.server-info-hint { margin: 0; }
+.server-info-path { font-size: 0.85rem; overflow-wrap: anywhere; }
+.server-update-available { color: var(--status-online); font-weight: 600; }
+.server-gateway-running { color: var(--status-online); font-weight: 600; }
+.server-gateway-failing, .server-gateway-unsupported { color: var(--danger); font-weight: 600; }
+.server-gateway-error { margin-top: 4px; font-weight: 400; color: var(--text-muted); font-size: 0.85rem; }
+.host-gateway-badge { font-size: 0.75rem; color: var(--text-muted); }
+.server-info-links { display: flex; flex-wrap: wrap; gap: 8px 18px; }
+.server-info-links a { color: var(--accent-text, var(--accent)); font-weight: 600; text-decoration: none; }
+.server-info-links a:hover { text-decoration: underline; }
+.about-card .host-confirm-icon img { display: block; }
+.about-versions { margin: 12px 0; }

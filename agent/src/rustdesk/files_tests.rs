@@ -83,7 +83,7 @@ pub(crate) async fn start_listener(password: &str, mode: &str, file_transfer: bo
             Some(Decision::Accepted)
         })
     });
-    tokio::spawn(serve_listener(listener, config, Arc::new(NoScreen), asker, Arc::new(|| true)));
+    tokio::spawn(serve_listener(listener, config, Arc::new(NoScreen), asker, Arc::new(|| true), Arc::default()));
     Listener { address, asked }
 }
 

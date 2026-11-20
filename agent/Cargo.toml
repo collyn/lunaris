@@ -3,12 +3,20 @@ name = "agent"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+description = "The Lunaris agent: the library and the lunaris-agent command-line program (daemon, no GUI)"
+
+# The shipped program (Linux packages, Windows service and installer).
+[[bin]]
+name = "lunaris-agent"
+path = "src/main.rs"
 
 [features]
 # Link FFmpeg statically (distro packages, see scripts/packaging/build-ffmpeg-static.sh).
 static-ffmpeg = ["dep:ffmpeg-sys-next", "ffmpeg-sys-next/static"]
 
 [dependencies]
+# The approval helper's local channel (approval.rs).
+approval-channel = { path = "../approval-channel" }
 common = { path = "../common" }
 # restart.rs: the headless agent re-executes itself when its program file is
 # replaced by an update (updater::restart::watch_executable).

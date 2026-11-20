@@ -5,13 +5,9 @@ use sqlx::{
 use std::fs;
 use std::str::FromStr;
 
-/// Opens (and migrates) the database. On first start it creates the `admin`
-/// account with a random password (or `LUNARIS_ADMIN_PASSWORD`), written to
-/// `admin_password_file`.
-pub async fn init_db(
-    database_url: &str,
-    admin_password_file: &std::path::Path,
-) -> Result<SqlitePool, sqlx::Error> {
+/// Opens (and migrates) the database. It makes no account: the first admin
+/// comes from the setup page or LUNARIS_ADMIN_PASSWORD (setup.rs).
+pub async fn init_db(database_url: &str) -> Result<SqlitePool, sqlx::Error> {
     // If it's a file database, ensure parent directories exist
     if database_url.starts_with("sqlite://") {
         let path = database_url.trim_start_matches("sqlite://");
@@ -127,6 +123,16 @@ pub async fn init_db(
     .execute(&pool)
     .await?;
 
+    // The name given when it was added (or edited); '' when none.
+    let address_columns: Vec<String> = sqlx::query_scalar("SELECT name FROM pragma_table_info('address_hosts')")
+        .fetch_all(&pool)
+        .await?;
+    if !address_columns.iter().any(|c| c == "name") {
+        sqlx::query("ALTER TABLE address_hosts ADD COLUMN name TEXT NOT NULL DEFAULT '';")
+            .execute(&pool)
+            .await?;
+    }
+
     // Computers of other types that a Lunaris computer shows (sources.rs):
     // what its agent announced. Nothing of how they are reached is here.
     sqlx::query(
@@ -222,6 +228,13 @@ pub async fn init_db(
             .execute(&pool)
             .await?;
     }
+    // A name an administrator gave the computer; NULL: the name its agent
+    // announces (`name`) is shown.
+    if !columns.iter().any(|c| c == "display_name") {
+        sqlx::query("ALTER TABLE hosts ADD COLUMN display_name TEXT;")
+            .execute(&pool)
+            .await?;
+    }
     if !columns.iter().any(|c| c == "install_token_id") {
         sqlx::query("ALTER TABLE hosts ADD COLUMN install_token_id TEXT;")
             .execute(&pool)
@@ -304,35 +317,61 @@ pub async fn init_db(
     .execute(&pool)
     .await?;
 
-    // Bootstrap default admin user if no users exist
-    let user_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM users")
-        .fetch_one(&pool)
-        .await?;
-    if user_count.0 == 0 {
-        use crate::auth::hash_password;
-        let admin_id = uuid::Uuid::new_v4().to_string();
-        let password = std::env::var("LUNARIS_ADMIN_PASSWORD")
-            .ok()
-            .filter(|p| !p.trim().is_empty())
-            .unwrap_or_else(|| uuid::Uuid::new_v4().simple().to_string()[..20].to_string());
-        let hashed = hash_password(&password)
-            .map_err(|e| sqlx::Error::Protocol(format!("Hash error: {}", e)))?;
-        sqlx::query("INSERT INTO users (id, username, password_hash, role, is_active, created_at) VALUES (?, 'admin', ?, 'admin', 1, datetime('now'))")
-            .bind(&admin_id)
-            .bind(&hashed)
-            .execute(&pool)
-            .await?;
-        if let Err(e) = crate::paths::write_private(admin_password_file, &format!("{password}\n")) {
-            tracing::error!("Cannot save the admin password to {:?}: {}", admin_password_file, e);
-        }
-        // The password stays out of the log; it is in the file only.
-        tracing::info!("==================================================");
-        tracing::info!(" Created admin account 'admin'; its password is in {:?}", admin_password_file);
-        tracing::info!(" (change it after signing in)");
-        tracing::info!("==================================================");
-    }
+    // One-time tickets for lunaris://connect links (link_tickets.rs): the
+    // desktop app trades one for a token that opens only `host_id` (or only
+    // its source `source_id`). Only the ticket's SHA-256 (hex) is kept;
+    // expires_at in Unix seconds.
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS link_tickets (
+            ticket_hash TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            host_id TEXT NOT NULL,
+            source_id TEXT,
+            token_version INTEGER NOT NULL,
+            expires_at INTEGER NOT NULL
+        );",
+    )
+    .execute(&pool)
+    .await?;
+
+    // The first-start setup code (setup.rs): only its SHA-256 (hex), one row
+    // while there is no account.
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS setup_code (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            code_hash TEXT NOT NULL,
+            created_at TEXT
+        );",
+    )
+    .execute(&pool)
+    .await?;
+
+    // The server's own settings changed on its web page (key, value): the
+    // server gateway's switch and its computer id (gateway.rs).
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS server_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );",
+    )
+    .execute(&pool)
+    .await?;
 
     Ok(pool)
+}
+
+/// A setting from `server_settings`, None when it is not set.
+pub async fn setting(db: &SqlitePool, key: &str) -> Result<Option<String>, sqlx::Error> {
+    sqlx::query_scalar("SELECT value FROM server_settings WHERE key = ?").bind(key).fetch_optional(db).await
+}
+
+pub async fn set_setting(db: &SqlitePool, key: &str, value: &str) -> Result<(), sqlx::Error> {
+    sqlx::query("INSERT INTO server_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+        .bind(key)
+        .bind(value)
+        .execute(db)
+        .await
+        .map(|_| ())
 }
 
 /// The database holds password hashes and keys: only the owner may read it.
@@ -361,15 +400,28 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let dir = std::env::temp_dir().join(format!("lunaris-db-{}", crate::security::random_hex(8)));
         let db = dir.join("lunaris.db");
-        let pool = super::init_db(&format!("sqlite://{}", db.display()), &dir.join("pw.txt")).await.unwrap();
+        let pool = super::init_db(&format!("sqlite://{}", db.display())).await.unwrap();
         let cols: Vec<String> = sqlx::query_scalar("SELECT name FROM pragma_table_info('hosts')")
             .fetch_all(&pool)
             .await
             .unwrap();
         assert!(cols.iter().any(|c| c == "agent_key_hash"));
         assert_eq!(std::fs::metadata(&db).unwrap().permissions().mode() & 0o777, 0o600);
-        assert_eq!(std::fs::metadata(dir.join("pw.txt")).unwrap().permissions().mode() & 0o777, 0o600);
+        // No account and no password file: the first admin comes from setup.rs.
+        let users: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users").fetch_one(&pool).await.unwrap();
+        assert_eq!(users, 0);
+        assert!(!dir.join("initial_admin_password.txt").exists());
         pool.close().await;
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
+
+/// The name a host is shown with, in SQL over `hosts` aliased `h`: the one
+/// an administrator gave it, else the one its agent announces.
+/// A macro, so that it can be part of a `concat!` (sqlx takes only static SQL).
+macro_rules! host_name_sql {
+    () => {
+        "COALESCE(NULLIF(h.display_name, ''), h.name)"
+    };
+}
+pub(crate) use host_name_sql;

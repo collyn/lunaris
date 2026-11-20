@@ -27,11 +27,45 @@ RequestExecutionLevel admin
 !insertmacro MUI_LANGUAGE "English"
 
 
-; The agent's Windows service (LunarisAgentService, `--install-service`, see
-; agent/src/win_service.rs) runs the program from its install folder, which
-; keeps the files in use. An install (also the app's silent update, `/S`)
-; stops it before copying and starts it again afterwards when it was running.
-Var ServiceWasRunning
+; The app is the stream window only (opened from the server's web page).
+; Earlier versions were also the agent and could run its Windows service from
+; this folder (`client-desktop.exe agent --install-service`, service
+; LunarisAgentService). This version has no agent: such a service is stopped
+; and removed on install (it would keep the files in use and could not start
+; again); lunaris-agent installs its own. A service of the standalone agent
+; (another program) is left alone.
+
+; 1 on the stack when the first string contains the second, else 0.
+; Arguments on the stack: haystack, then needle (pushed last).
+Function StrContains
+  Exch $R1 ; needle
+  Exch
+  Exch $R0 ; haystack
+  Push $R2
+  Push $R3
+  Push $R4
+  StrLen $R3 $R1
+  StrCpy $R4 0
+  sc_loop:
+    StrCpy $R2 $R0 $R3 $R4
+    StrCmp $R2 "" sc_no
+    StrCmp $R2 $R1 sc_yes
+    IntOp $R4 $R4 + 1
+    Goto sc_loop
+  sc_yes:
+    StrCpy $R0 1
+    Goto sc_end
+  sc_no:
+    StrCpy $R0 0
+  sc_end:
+  Pop $R4
+  Pop $R3
+  Pop $R2
+  ; Stack: old $R0, old $R1. Leave the result, restore both.
+  Exch $R0
+  Exch
+  Pop $R1
+FunctionEnd
 
 ; ---- Safe install / uninstall -------------------------------------------------
 ; The uninstaller removes only what the installer put there (install.log), never a
@@ -149,13 +183,27 @@ Section "Install"
   StrCmp $InstDirOk 1 +3
     MessageBox MB_OK|MB_ICONSTOP "The install folder $INSTDIR is not empty and is not a previous install. Choose an empty folder." /SD IDOK
     Abort
-  ; Stop the agent service (if installed and running) so its files can be replaced.
-  StrCpy $ServiceWasRunning 0
-  nsExec::Exec 'net stop LunarisAgentService'
+  ; An agent service run by an earlier version of this app goes (see above).
+  nsExec::ExecToStack 'sc qc LunarisAgentService'
   Pop $0
-  StrCmp $0 0 0 svc_not_running
-    StrCpy $ServiceWasRunning 1
-  svc_not_running:
+  Pop $1
+  StrCmp $0 0 0 svc_done
+  Push $1
+  Push "client-desktop.exe"
+  Call StrContains
+  Pop $2
+  StrCmp $2 1 0 svc_done
+    nsExec::Exec 'net stop LunarisAgentService'
+    Pop $0
+    nsExec::Exec 'sc delete LunarisAgentService'
+    Pop $0
+  svc_done:
+  ; Starting with Windows (earlier versions hosted this computer or sat in
+  ; the tray): the elevated scheduled task, which the app itself may not be
+  ; allowed to delete, and the Run entry of older versions.
+  nsExec::Exec 'schtasks /Delete /TN "LunarisClient" /F'
+  Pop $0
+  DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "LunarisClient"
   SetOutPath "$INSTDIR"
   File /r "lunaris-client-desktop\*"
 
@@ -179,12 +227,7 @@ Section "Install"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Lunaris Client" "UninstallString" '"$INSTDIR\uninstall.exe"'
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Lunaris Client" "DisplayIcon" '"$INSTDIR\client-desktop.exe"'
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Lunaris Client" "Publisher" "Lunaris"
-  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Lunaris Client" "DisplayVersion" "0.6.6"
-  ; Start the service again with the new files.
-  StrCmp $ServiceWasRunning 1 0 svc_done
-    nsExec::Exec 'net start LunarisAgentService'
-    Pop $0
-  svc_done:
+  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Lunaris Client" "DisplayVersion" "0.7.0"
 SectionEnd
 
 Section "Uninstall"
@@ -193,7 +236,7 @@ Section "Uninstall"
   RMDir "$SMPROGRAMS\Lunaris Client"
   Delete "$DESKTOP\Lunaris Client.lnk"
 
-  # Starting with Windows: the scheduled task (and the Run entry of older versions)
+  # Starting with Windows (earlier versions): the scheduled task and the Run entry
   nsExec::Exec 'schtasks /Delete /TN "LunarisClient" /F'
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "LunarisClient"
 

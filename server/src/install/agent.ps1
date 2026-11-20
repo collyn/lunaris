@@ -7,9 +7,12 @@
 # (-Token TOKEN works too, but then the token shows in the process list.)
 #
 # Installs the Lunaris agent of this server's version from GitHub Releases
-# (silent installer), joins it to the server with the install token (used
-# once, then the agent signs in with its own key) and runs it as the
-# "Lunaris Agent" Windows service, which starts at boot.
+# (silent installer: the command-line agent, which has no window, and the
+# approval helper, a tray that asks the person at the computer before anyone
+# connects without the password), joins it to the server with the install
+# token (used once, then the agent signs in with its own key) and runs it as
+# the "Lunaris Agent" Windows service (LunarisAgentService), which starts at
+# boot.
 param(
     [string]$Token = $env:LUNARIS_INSTALL_TOKEN,
     [string]$Name = ''
@@ -40,7 +43,7 @@ function Quote-Arg([string]$Value) {
     return '"' + $escaped + '"'
 }
 
-# Runs the agent (a windowed program: Start-Process waits for it and catches
+# Runs the agent (a console program: Start-Process waits for it and catches
 # its output) and returns the exit code.
 function Invoke-Agent([string]$Exe, [string[]]$Arguments, [string]$Dir) {
     $out = Join-Path $Dir 'agent-out.txt'
@@ -90,9 +93,8 @@ try {
     $exe = Join-Path $dir 'lunaris-agent.exe'
     if (-not (Test-Path $exe)) { Fail "$exe is missing after the install" }
 
-    # The config the service uses (agent/src/win_service.rs).
-    $config = Join-Path $env:ProgramData 'Lunaris\agent_config.json'
-    $enroll = @('--enroll', '--server', (Quote-Arg $ServerUrl), '--config', (Quote-Arg $config))
+    # The config the service uses (agent/src/win_service.rs): --system.
+    $enroll = @('--system', '--enroll', '--server', (Quote-Arg $ServerUrl))
     if ($Name) { $enroll += @('--name', (Quote-Arg $Name)) }
     if ($CertSha256) { $enroll += @('--server-cert-sha256', $CertSha256) }
 
@@ -106,7 +108,9 @@ try {
     }
     if ($code -ne 0) { Fail "the agent could not be set up (exit code $code)" }
 
-    Write-Host '==> Installing the Lunaris Agent service'
+    # The installer installed and started the service; this restarts it with
+    # the new config (and installs it again if it was missing).
+    Write-Host '==> Starting the Lunaris Agent service'
     $code = Invoke-Agent $exe @('--install-service') $tmp
     if ($code -ne 0) { Fail "the service could not be installed (exit code $code)" }
 } finally {
@@ -117,4 +121,5 @@ Write-Host ''
 Write-Host "$AppName $Version is installed and joined to $ServerUrl."
 Write-Host '  * It runs as the "Lunaris Agent" service and starts at boot; the computer'
 Write-Host '    appears on the server within a few seconds.'
-Write-Host "  * Settings and log: $env:ProgramData\Lunaris (administrators only)."
+Write-Host "  * Settings and log: $env:ProgramData\Lunaris (administrators only);"
+Write-Host "    state: & '$exe' --system status"

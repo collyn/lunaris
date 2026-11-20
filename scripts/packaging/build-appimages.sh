@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build the portable Lunaris AppImages (they run on glibc >= 2.35 distros):
-# the agent and the client (client-desktop, plus client-qml, the same program
-# under its old name).
+# the agent (the command-line program, without Qt) and the client
+# (client-desktop, plus client-qml, the same program under its old name).
 #
 # The build happens inside an Ubuntu 22.04 container with Qt 6.8 and a trimmed,
 # static FFmpeg 8.1 (+ x264, SVT-AV1, dav1d) — see Containerfile.appimage. One
@@ -22,7 +22,6 @@
 #      SKIP_SMOKE=1           skip the start-up checks
 #      SKIP_CLEAN_SMOKE=1     skip only the bare-container check
 #      ONLY="agent client-desktop client-qml"  build a subset of the AppImages
-#                             (the web client must be built in web/dist for client-*)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -57,9 +56,10 @@ fi
 # NvFBC and CUDA are loaded at runtime (dlopen), so one binary runs everywhere.
 # static-ffmpeg: the FFmpeg of the build image is linked into the binaries.
 PKGS=()
-[[ " $ONLY " == *" agent "* ]] && PKGS+=(-p agent-app)
-[[ " $ONLY " == *" client-"* ]] && PKGS+=(-p client-desktop)
-CARGO_ARGS="--release ${PKGS[*]} --features static-ffmpeg --target-dir /target"
+FEATURES=()
+[[ " $ONLY " == *" agent "* ]] && PKGS+=(-p agent) && FEATURES+=(agent/static-ffmpeg)
+[[ " $ONLY " == *" client-"* ]] && PKGS+=(-p client-desktop) && FEATURES+=(client-desktop/static-ffmpeg)
+CARGO_ARGS="--release ${PKGS[*]} --features $(IFS=,; echo "${FEATURES[*]}") --target-dir /target"
 if [[ -n "${LUNARIS_MEDIA_PATH:-}" ]]; then
     RUN_ARGS+=(-v "$(cd "$LUNARIS_MEDIA_PATH" && pwd):/lunaris-media:ro")
     cat > "$TARGET_DIR/media-patch.toml" <<'EOF'
@@ -87,7 +87,7 @@ fi
     bash -c 'set -e
              cargo build $CARGO_ARGS
              for v in $ONLY; do
-                 bin=/target/release/client-desktop; [ "$v" = agent ] && bin=/target/release/agent
+                 bin=/target/release/client-desktop; [ "$v" = agent ] && bin=/target/release/lunaris-agent
                  /src/scripts/packaging/make-appimage.sh "$v" "$bin" /out
              done'
 
@@ -97,7 +97,7 @@ fi
 if [[ -z "${SKIP_SMOKE:-}" && -z "${SKIP_CLEAN_SMOKE:-}" ]]; then
     for v in $ONLY; do
         case "$v" in
-            agent) f=$(basename "$(ls "$OUT_DIR"/Lunaris-Agent-*-x86_64.AppImage | tail -1)"); args=--minimized ;;
+            agent) f=$(basename "$(ls "$OUT_DIR"/Lunaris-Agent-*-x86_64.AppImage | tail -1)"); args="" ;;
             *)     f="$v-x86_64.AppImage"; args="" ;;
         esac
         "${ENGINE_CMD[@]}" run --rm -v "$HERE:/pkg:ro" -v "$OUT_DIR:/out:ro" "$CLEAN_IMAGE" bash -c '

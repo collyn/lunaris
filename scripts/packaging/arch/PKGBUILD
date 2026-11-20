@@ -1,13 +1,14 @@
 # Maintainer: Lunaris <noreply@lunaris.invalid>
 #
-# Builds lunaris-agent and lunaris-client from the release source. FFmpeg is
+# Builds lunaris-agent (command line, no Qt), lunaris-approval-helper and
+# lunaris-client from the release source. FFmpeg is
 # built trimmed and linked statically (scripts/packaging/build-ffmpeg-static.sh);
 # Qt, PipeWire, libva and the rest come from Arch.
 # CI builds from a local tarball of the checkout with the same name as `source`.
 
 pkgbase=lunaris
-pkgname=(lunaris-agent lunaris-client)
-pkgver=0.6.6
+pkgname=(lunaris-agent lunaris-approval-helper lunaris-client)
+pkgver=0.7.0
 pkgrel=1
 pkgdesc="Low-latency remote desktop"
 arch=(x86_64)
@@ -21,7 +22,8 @@ options=(!lto !debug)
 source=("$pkgbase-$pkgver.tar.gz::https://github.com/collyn/lunaris/archive/refs/tags/v$pkgver.tar.gz")
 sha256sums=('SKIP')
 
-_common_depends=(gcc-libs glibc qt6-base qt6-declarative libva libdrm opus alsa-lib openssl)
+_common_depends=(gcc-libs glibc libva libdrm opus alsa-lib openssl)
+_qt_depends=(qt6-base qt6-declarative)
 
 prepare() {
   cd "$pkgbase-$pkgver"
@@ -34,26 +36,33 @@ build() {
   export CARGO_HOME="$srcdir/cargo-home"
   bash scripts/packaging/build-ffmpeg-static.sh "$srcdir/ffmpeg"
   export PKG_CONFIG_PATH="$srcdir/ffmpeg/lib/pkgconfig" QMAKE=/usr/bin/qmake6
-  cargo build --release --frozen -p agent-app --features static-ffmpeg
-  cargo build --release --frozen -p client-desktop --features static-ffmpeg
+  cargo build --release --frozen -p agent -p approval-helper -p client-desktop --features agent/static-ffmpeg,client-desktop/static-ffmpeg
 }
 
 package_lunaris-agent() {
-  pkgdesc="Lunaris remote desktop host agent (screen sharing, remote input)"
+  pkgdesc="Lunaris remote desktop agent (command line and services, no GUI)"
   depends=("${_common_depends[@]}" libpipewire libx11 libxtst libxfixes libxext)
   optdepends=('xdg-desktop-portal: screen capture on Wayland'
               'pipewire: screen capture on Wayland'
               'libva-mesa-driver: VAAPI encoding on AMD'
               'intel-media-driver: VAAPI/Quick Sync encoding on Intel'
-              'qt6-wayland: native Wayland window')
+              'lunaris-approval-helper: accept connections on this screen')
   install=lunaris-agent.install
   cd "$pkgbase-$pkgver"
-  bash scripts/packaging/linux/stage.sh agent target/release/agent "$pkgdir" "$srcdir/ffmpeg"
+  bash scripts/packaging/linux/stage.sh agent target/release/lunaris-agent "$pkgdir" "$srcdir/ffmpeg"
+}
+
+package_lunaris-approval-helper() {
+  pkgdesc="Lunaris agent: tray that accepts connections"
+  depends=(gcc-libs glibc "${_qt_depends[@]}" lunaris-agent)
+  optdepends=('qt6-wayland: native Wayland window')
+  cd "$pkgbase-$pkgver"
+  bash scripts/packaging/linux/stage.sh approval-helper target/release/lunaris-approval-helper "$pkgdir"
 }
 
 package_lunaris-client() {
-  pkgdesc="Lunaris remote desktop client"
-  depends=("${_common_depends[@]}" qt6-multimedia)
+  pkgdesc="Lunaris remote desktop stream window (opened from the server's web page)"
+  depends=("${_common_depends[@]}" "${_qt_depends[@]}" qt6-multimedia)
   optdepends=('xdg-utils: open lunaris:// links'
               'libva-mesa-driver: VAAPI decoding on AMD'
               'intel-media-driver: VAAPI decoding on Intel'

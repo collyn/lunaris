@@ -8,14 +8,10 @@ license.workspace = true
 client-qml = { path = "../client-qml" }
 # The restart after an update (how the app was started).
 updater = { path = "../updater" }
-# The app is also the host agent (`lunaris agent`) and the server
-# (`lunaris server`); the standalone agent and server binaries remain.
-agent = { path = "../agent" }
-server = { path = "../server" }
 
 [build-dependencies]
 # The icon and the manifest of the Windows program (build.rs).
 winresource = "0.1"
 
 [features]
-static-ffmpeg = ["client-qml/static-ffmpeg", "agent/static-ffmpeg"]
+static-ffmpeg = ["client-qml/static-ffmpeg"]

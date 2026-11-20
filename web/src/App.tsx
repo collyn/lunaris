@@ -1,7 +1,16 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { LANGUAGES, getLang, setLang, t, type Lang } from './i18n';
 import StreamSettingsDialog from './components/StreamSettingsDialog';
-import { DEFAULT_BITRATE, DEFAULT_CODEC, resolutionString } from './streamOptions';
+import ComputerSettingsDialog from './components/ComputerSettingsDialog';
+import { resolutionString } from './streamOptions';
+import {
+  differences, hostPrefsKey, linkCodec, loadDefaults, measureRefresh, prefsFor, saveComputerPrefs, saveDefaults,
+  sourcePrefsKey, type ComputerPrefs,
+} from './streamPrefs';
+import {
+  accountKey, arrangeCards, loadFavourites, loadRecent, loadShow, recordRecent, saveShow, toggleFavourite, type CardShow,
+} from './favourites';
+import { AdminServerInfo, AboutDialog } from './components/ServerInfo';
 import { StreamPlayer } from './components/StreamPlayer';
 import { AdminUsers } from './components/AdminUsers';
 import { AdminGroups } from './components/AdminGroups';
@@ -10,6 +19,8 @@ import { AdminInstallAgents } from './components/AdminInstallAgents';
 import { AccountSecurity } from './components/AccountSecurity';
 import { isCompleteTotp, isPlausibleRecoveryCode, normalizeRecoveryInput, normalizeTotpInput, parseLoginAnswer, type LoginAnswer } from './mfa';
 import FileManager from './components/FileManager';
+import SetupPage from './components/SetupPage';
+import { parseSetupStatus } from './setup';
 import {
   browserStore, buildCards, choiceAsList, currentMethod, effectiveType, filterCards, layoutFields, loadMethods, loadTypeFilter, loadView, methodType,
   newGroup, rememberMethod, saveTypeFilter, saveView, typeShortName, typesOf, type Card, type ComputerView, type Method,
@@ -33,6 +44,12 @@ interface Host {
   /** Its own IPv4 addresses (LAN, VPN) as its agent last said them, kept
    *  while it is offline. Not there when not known (an older agent). */
   addresses?: string[];
+  /** The name its agent reports, when an administrator gave it another one. */
+  agent_name?: string;
+  /** The server's own gateway (server/src/gateway.rs): it has no screen of
+   *  its own, only the computers added through it; not a card, managed on
+   *  the Server page. */
+  gateway?: boolean;
 }
 
 /** One field of a connector's form ("kind": text, port, secret, or choice:
@@ -125,8 +142,13 @@ const ICON_EDIT = cardIcon(<><path d="M12 20h9" /><path d="M16.5 3.5a2.12 2.12 0
 const ICON_TRASH = cardIcon(<><polyline points="3 6 5 6 21 6" /><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" /><path d="M10 11v6" /><path d="M14 11v6" /><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" /></>);
 const ICON_APP = cardIcon(<><rect x="3" y="4" width="18" height="12" rx="1.5" /><path d="M8 20h8M12 16v4" /></>);
 const ICON_GEAR = cardIcon(<><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06A1.65 1.65 0 0 0 15 19.4a1.65 1.65 0 0 0-1 .6 1.65 1.65 0 0 0-.4 1.08V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 8.6 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-.6-1 1.65 1.65 0 0 0-1.08-.4H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 8.6a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-.6 1.65 1.65 0 0 0 .4-1.08V3a2 2 0 1 1 4 0v.09A1.65 1.65 0 0 0 15.4 4.6a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9c.38.16.72.4 1 .7.29.29.6.9.6 1.3V12a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" /></>);
+const ICON_SLIDERS = cardIcon(<><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0" /><circle cx="16" cy="6" r="2" /><circle cx="10" cy="12" r="2" /><circle cx="18" cy="18" r="2" /></>);
 const ICON_PLUS = cardIcon(<path d="M12 5v14M5 12h14" />);
 const ICON_CHEVRON = cardIcon(<polyline points="6 9 12 15 18 9" />, 14);
+const ICON_STAR = cardIcon(<polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />);
+const ICON_MORE = cardIcon(<><circle cx="5" cy="12" r="1.2" /><circle cx="12" cy="12" r="1.2" /><circle cx="19" cy="12" r="1.2" /></>);
+const ICON_KEY = cardIcon(<><circle cx="7.5" cy="15.5" r="4.5" /><path d="M10.7 12.3 21 2M16 7l3 3M18 5l2 2" /></>);
+const ICON_INFO = cardIcon(<><circle cx="12" cy="12" r="10" /><path d="M12 16v-4M12 8h.01" /></>, 18);
 
 /** "host:8091" -> "host" (the default port isn't worth showing). */
 const shortAddress = (a: string) => a.replace(/:8091$/, '');
@@ -151,12 +173,10 @@ type HostStreamSettings = {
   display: string;
 };
 
-const loadHostStreamSettings = (): HostStreamSettings => ({
-  resolution: localStorage.getItem('lunaris_stream_res') || '1080p',
-  fps: Number(localStorage.getItem('lunaris_stream_fps') || '60'),
-  codec: localStorage.getItem('lunaris_stream_codec') || DEFAULT_CODEC,
-  chroma: localStorage.getItem('lunaris_stream_chroma') === '444' ? '444' : '420',
-  bitrate: Number(localStorage.getItem('lunaris_stream_bitrate') || String(DEFAULT_BITRATE)),
+/** The settings the dialog shows: `computer`'s own picture settings (else
+ *  the defaults; null: the defaults themselves), and this browser's others. */
+const loadHostStreamSettings = (computer: string | null = null): HostStreamSettings => ({
+  ...prefsFor(localStorage, computer),
   mouseQueueLimit: Number(localStorage.getItem('lunaris_mouse_queue_limit') || '256'),
   inputProtocol: localStorage.getItem('lunaris_input_protocol') || 'webrtc',
   useNativeClient: localStorage.getItem('lunaris_tauri_use_native') === 'true',
@@ -164,22 +184,22 @@ const loadHostStreamSettings = (): HostStreamSettings => ({
   // <video> element. The key was renamed because the old one was written as
   // 'true' on every save, whether or not anyone had chosen it.
   useCanvasRenderer: localStorage.getItem('lunaris_canvas_renderer_v2') === 'true',
-  encoder: localStorage.getItem('lunaris_stream_encoder') || 'auto',
-  display: localStorage.getItem('lunaris_stream_display') || 'default'
 });
 
-const saveHostStreamSettings = (settings: HostStreamSettings) => {
-  localStorage.setItem('lunaris_stream_res', settings.resolution);
-  localStorage.setItem('lunaris_stream_fps', String(settings.fps));
-  localStorage.setItem('lunaris_stream_bitrate', String(settings.bitrate));
-  localStorage.setItem('lunaris_stream_codec', settings.codec);
-  localStorage.setItem('lunaris_stream_chroma', settings.chroma);
+/** The picture settings of the dialog's values. */
+const picturePrefs = (s: HostStreamSettings): ComputerPrefs => ({
+  resolution: s.resolution, fps: s.fps, bitrate: s.bitrate, codec: s.codec, chroma: s.chroma, encoder: s.encoder, display: s.display,
+});
+
+/** Saves the dialog: the picture settings for `computer` (null: as the
+ *  defaults), the others for this browser. */
+const saveHostStreamSettings = (settings: HostStreamSettings, computer: string | null) => {
+  if (computer) saveComputerPrefs(localStorage, computer, picturePrefs(settings));
+  else saveDefaults(localStorage, picturePrefs(settings));
   localStorage.setItem('lunaris_mouse_queue_limit', String(settings.mouseQueueLimit));
   localStorage.setItem('lunaris_input_protocol', settings.inputProtocol);
   localStorage.setItem('lunaris_tauri_use_native', String(settings.useNativeClient));
   localStorage.setItem('lunaris_canvas_renderer_v2', String(settings.useCanvasRenderer));
-  localStorage.setItem('lunaris_stream_encoder', settings.encoder);
-  localStorage.setItem('lunaris_stream_display', settings.display);
 };
 
 const getCurrentBrowserServerUrl = () => {
@@ -392,6 +412,16 @@ function App() {
   const [mfaUseRecovery, setMfaUseRecovery] = useState(false);
   const [mfaRecovery, setMfaRecovery] = useState('');
   const mfaInputRef = useRef<HTMLInputElement>(null);
+  // A new server with no account yet: the setup page instead of sign-in.
+  const [setupNeeded, setSetupNeeded] = useState(false);
+  useEffect(() => {
+    if (token) return;
+    let live = true;
+    fetch(`${getBackendProtocol().http}//${getBackendHost()}/api/setup`)
+      .then(async r => { const d = await r.json().catch(() => null); if (live) setSetupNeeded(parseSetupStatus(r.ok, d)); })
+      .catch(() => { if (live) setSetupNeeded(false); });
+    return () => { live = false; };
+  }, [token]);
   useEffect(() => { if (mfaStep) mfaInputRef.current?.focus(); }, [mfaStep, mfaUseRecovery]);
   const [showAccountSecurity, setShowAccountSecurity] = useState(false);
   const [theme, setTheme] = useState<ThemeChoice>(readThemeChoice);
@@ -399,12 +429,16 @@ function App() {
     applyTheme(theme);
     try { localStorage.setItem('lunaris_theme', theme); } catch { /* storage unavailable */ }
   }, [theme]);
+  // The display's refresh rate, once: the default frame rate while none is
+  // chosen (streamPrefs.ts).
+  useEffect(() => { measureRefresh(localStorage).catch(() => {}); }, []);
+  const [showAbout, setShowAbout] = useState(false);
   const nextTheme: Record<ThemeChoice, ThemeChoice> = { system: 'light', light: 'dark', dark: 'system' };
   const themeLabel: Record<ThemeChoice, string> = { system: 'Theme: system', light: 'Theme: light', dark: 'Theme: dark' };
 
   // Admin State
   const [userRole, setUserRole] = useState<string | null>(localStorage.getItem('lunaris_role'));
-  const [activeTab, setActiveTab] = useState<'devices' | 'users' | 'groups' | 'turn_servers' | 'install_agents'>('devices');
+  const [activeTab, setActiveTab] = useState<'devices' | 'users' | 'groups' | 'turn_servers' | 'install_agents' | 'server'>('devices');
 
   // Dashboard State
   const [hosts, setHosts] = useState<Host[]>([]);
@@ -453,10 +487,18 @@ function App() {
   const [viewingAppsLoading, setViewingAppsLoading] = useState<boolean>(false);
   const [viewingAppsError, setViewingAppsError] = useState<string | null>(null);
   const [selectedAppId, setSelectedAppId] = useState<number | null>(null);
+  // The stream settings dialog: of a Lunaris computer, of a computer of
+  // another type, or this browser's defaults (streamPrefs.ts).
   const [settingsHost, setSettingsHost] = useState<Host | null>(null);
+  const [settingsSource, setSettingsSource] = useState<Source | null>(null);
+  const [settingsDefaults, setSettingsDefaults] = useState(false);
   const [draftHostSettings, setDraftHostSettings] = useState<HostStreamSettings>(() => loadHostStreamSettings());
+  // The encoders the computer whose settings are open reported ([] until it answers).
+  const [hostEncoders, setHostEncoders] = useState<string[]>([]);
   const [deleteHostLoading, setDeleteHostLoading] = useState<string | null>(null);
   const [pendingDeleteHost, setPendingDeleteHost] = useState<Host | null>(null);
+  // The computer's own settings (its agent's), for administrators.
+  const [computerSettingsHost, setComputerSettingsHost] = useState<Host | null>(null);
   const [hostAvailableDisplays, setHostAvailableDisplays] = useState<{id: string; name: string; width: number; height: number; refresh_rate: number; is_primary: boolean}[]>([]);
 
 
@@ -823,22 +865,56 @@ function App() {
 
 
   const openHostSettings = (host: Host) => {
+    setHostEncoders([]);
+    setSettingsSource(null);
+    setSettingsDefaults(false);
     setSettingsHost(host);
-    setDraftHostSettings(loadHostStreamSettings());
+    setDraftHostSettings(loadHostStreamSettings(hostPrefsKey(host.id)));
+  };
+  const openSourceSettings = (source: Source) => {
+    setSettingsHost(null);
+    setSettingsDefaults(false);
+    setSettingsSource(source);
+    setDraftHostSettings(loadHostStreamSettings(sourcePrefsKey(source.host_id, source.id)));
+  };
+  const openDefaultSettings = () => {
+    setHostEncoders([]);
+    setSettingsHost(null);
+    setSettingsSource(null);
+    setSettingsDefaults(true);
+    setDraftHostSettings(loadHostStreamSettings(null));
+  };
+  const closeSettings = () => { setSettingsHost(null); setSettingsSource(null); setSettingsDefaults(false); };
+  // Whose settings the dialog edits (null: the defaults).
+  const settingsComputer = settingsHost ? hostPrefsKey(settingsHost.id)
+    : settingsSource ? sourcePrefsKey(settingsSource.host_id, settingsSource.id) : null;
+  const settingsOpen = !!settingsHost || !!settingsSource || settingsDefaults;
+  // Whether the draft differs from the defaults: the computer has settings of its own.
+  const settingsOwn = !!settingsComputer && (() => {
+    const own = differences(loadDefaults(localStorage), picturePrefs(draftHostSettings));
+    // A source's 'default' display is not one of its own.
+    if (settingsSource && own.display === 'default') delete own.display;
+    return Object.keys(own).length > 0;
+  })();
+  // "Use defaults": the draft takes the defaults (saved with Save).
+  const useDefaultSettings = () => {
+    const defaults = prefsFor(localStorage, null);
+    setDraftHostSettings(current => ({ ...current, ...defaults, display: settingsSource ? 'default' : defaults.display }));
   };
 
   // What the settings dialog shows about its computer, as the list has it now.
   const settingsHostNow = settingsHost ? hosts.find(h => h.id === settingsHost.id) || settingsHost : null;
   const settingsHostInfo: { label: string; value: string }[] = settingsHostNow ? [
     { label: t('Name'), value: settingsHostNow.name },
+    ...(settingsHostNow.agent_name ? [{ label: t('Name it reports'), value: settingsHostNow.agent_name }] : []),
     { label: t('Status'), value: t(settingsHostNow.status) },
     ...((settingsHostNow.addresses || []).length > 0 ? [{ label: t('IP addresses'), value: (settingsHostNow.addresses || []).join(', ') }] : []),
     ...(settingsHostNow.address ? [{ label: t('Added by address'), value: shortAddress(settingsHostNow.address) }] : []),
   ] : [];
 
   const applyHostSettings = () => {
-    saveHostStreamSettings(draftHostSettings);
-    setSettingsHost(null);
+    saveHostStreamSettings(draftHostSettings, settingsComputer);
+    closeSettings();
   };
 
   // Fetch display list from agent when host settings modal opens
@@ -885,6 +961,9 @@ function App() {
           console.log('[Capabilities] Displays:', JSON.stringify(payload.displays));
           setHostAvailableDisplays(payload.displays);
         }
+        if (Array.isArray(payload?.encoders)) {
+          setHostEncoders(payload.encoders.filter((e: unknown): e is string => typeof e === 'string'));
+        }
         gotResponse = true;
         if (timeoutId) clearTimeout(timeoutId);
         ws.close();
@@ -919,6 +998,7 @@ function App() {
   const [addHostOpen, setAddHostOpen] = useState(false);
   const [addHostAddress, setAddHostAddress] = useState('');
   const [addHostPassword, setAddHostPassword] = useState('');
+  const [addHostName, setAddHostName] = useState('');
   const [addHostBusy, setAddHostBusy] = useState(false);
   const [addHostError, setAddHostError] = useState('');
 
@@ -953,11 +1033,14 @@ function App() {
   // One card for each computer (computerCards.ts). A source's method is
   // named by its type, in the person's language.
   const uiLang = getLang();
+  // The server gateway is no computer to connect to: its computers have
+  // cards of their own, and it is a choice when one is added.
+  const computerHosts = useMemo(() => hosts.filter(h => !h.gateway), [hosts]);
   const cards: ComputerCard[] = useMemo(
-    () => buildCards(hosts, sources, (source) => typeShortName(source.connector, t(source.connector_name || source.connector))),
+    () => buildCards(computerHosts, sources, (source) => typeShortName(source.connector, t(source.connector_name || source.connector))),
     // (The names are in the person's language.)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [hosts, sources, uiLang],
+    [computerHosts, sources, uiLang],
   );
   // Finding a computer (computerCards.ts, as the desktop app does): the
   // search, the types among the cards with the one filtered by, and grid or
@@ -970,10 +1053,28 @@ function App() {
     [cards],
   );
   const typeFilter = effectiveType(cardTypeList, typeChoice);
-  const shownCards = useMemo(() => filterCards(cards, computerSearch, typeFilter), [cards, computerSearch, typeFilter]);
+  // Favourites and the computers used last, for this account on this server (favourites.ts).
+  const account = accountKey(username || '', localStorage.getItem('lunaris_server_host') || getCurrentBrowserServerUrl());
+  const loadMarks = (forAccount: string) => ({
+    account: forAccount,
+    favourites: loadFavourites(browserStore(), forAccount),
+    recent: loadRecent(browserStore(), forAccount),
+  });
+  const [marksState, setMarks] = useState(() => loadMarks(account));
+  // Another account or server: its own lists.
+  const marks = marksState.account === account ? marksState : loadMarks(account);
+  const { favourites, recent } = marks;
+  const [cardShow, setCardShow] = useState<CardShow>(() => loadShow(browserStore()));
+  const chooseShow = (show: CardShow) => { setCardShow(show); saveShow(browserStore(), show); };
+  const toggleFav = (cardKey: string) => setMarks({ ...marks, favourites: toggleFavourite(browserStore(), account, cardKey) });
+  const noteUsed = (cardKey: string) => setMarks({ ...marks, recent: recordRecent(browserStore(), account, cardKey) });
+  const shownCards = useMemo(
+    () => arrangeCards(filterCards(cards, computerSearch, typeFilter), cardShow, favourites, recent),
+    [cards, computerSearch, typeFilter, cardShow, favourites, recent],
+  );
   const chooseView = (view: ComputerView) => { setComputerView(view); saveView(browserStore(), view); };
   const chooseType = (type: string) => { setTypeChoice(type); saveTypeFilter(browserStore(), type); };
-  const clearFinding = () => { setComputerSearch(''); chooseType(''); };
+  const clearFinding = () => { setComputerSearch(''); chooseType(''); chooseShow('all'); };
   const methodOf = (card: ComputerCard): ComputerMethod | undefined =>
     card.methods.find(m => m.key === pickedMethods[card.key]) || currentMethod(card.methods, cardMethods[card.key]);
   const pickMethod = (card: ComputerCard, method: ComputerMethod) => {
@@ -984,6 +1085,7 @@ function App() {
     if (!method.online) return;
     pickMethod(card, method);
     setChooserCard(null);
+    noteUsed(card.key);
     if (method.host) connectToHost(method.host);
     else if (method.source) setSelectedSource(method.source);
   };
@@ -1001,6 +1103,22 @@ function App() {
       document.removeEventListener('mousedown', onDown);
     };
   }, [chooserCard]);
+  // A card's menu (administrators): closes at Escape and at a click elsewhere.
+  const [menuCard, setMenuCard] = useState<string | null>(null);
+  useEffect(() => {
+    if (!menuCard) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setMenuCard(null); };
+    const onDown = (e: MouseEvent) => {
+      if (!(e.target instanceof Element) || !e.target.closest('.card-menu, .card-menu-btn')) setMenuCard(null);
+    };
+    document.addEventListener('keydown', onKey);
+    document.addEventListener('mousedown', onDown);
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      document.removeEventListener('mousedown', onDown);
+    };
+  }, [menuCard]);
+
   // The other computers a source being edited can be said to be.
   const editOwnCard = editSource ? cards.find(card => card.methods.some(m => m.source?.id === editSource.id && m.source.host_id === editSource.host_id)) : undefined;
   const sameChoices = editSource
@@ -1030,7 +1148,7 @@ function App() {
   const dialogTypes: { id: string; name: string; note: string }[] = (addTo ? [] : [{
     id: '',
     name: 'Lunaris',
-    note: 'The server connects to the Lunaris app on that computer (remote control turned on). Its address and password are shown under "This computer" there.',
+    note: 'The server connects to lunaris-agent on that computer (direct access on). `lunaris-agent status --show-password` there shows its addresses and password.',
   }]).concat(connectorTypes.map(c => ({ id: c.id, name: c.name, note: c.note || '' })));
   const dialogType = dialogTypes.find(type => type.id === addType);
   // The name and the Lunaris computer to go through share a row when there
@@ -1055,6 +1173,7 @@ function App() {
   const openAddHost = () => {
     setAddHostAddress('');
     setAddHostPassword('');
+    setAddHostName('');
     setAddHostError('');
     setAddType('');
     setAddTo(null);
@@ -1333,7 +1452,7 @@ function App() {
       const response = await fetch(`${getBackendProtocol().http}//${getBackendHost()}/api/hosts/address`, {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ address: addHostAddress.trim(), password: addHostPassword.trim() || null }),
+        body: JSON.stringify({ address: addHostAddress.trim(), password: addHostPassword.trim() || null, name: addHostName.trim() || null }),
       });
       if (response.ok) {
         setAddHostOpen(false);
@@ -1386,6 +1505,76 @@ function App() {
     }
   };
 
+  // Administrators: a computer's name, a computer added by address, its key.
+  const [renameHost, setRenameHost] = useState<Host | null>(null);
+  const [renameText, setRenameText] = useState('');
+  const [editAddressHost, setEditAddressHost] = useState<Host | null>(null);
+  const [editAddress, setEditAddress] = useState('');
+  const [editAddressPassword, setEditAddressPassword] = useState('');
+  const [editAddressName, setEditAddressName] = useState('');
+  const [resetKeyHost, setResetKeyHost] = useState<Host | null>(null);
+  const [hostDialogBusy, setHostDialogBusy] = useState(false);
+  const [hostDialogError, setHostDialogError] = useState('');
+  const openRename = (host: Host) => {
+    setMenuCard(null);
+    setHostDialogError('');
+    setRenameText(host.agent_name ? host.name : '');
+    setRenameHost(host);
+  };
+  const openEditAddress = (host: Host) => {
+    setMenuCard(null);
+    setHostDialogError('');
+    setEditAddress(host.address ? shortAddress(host.address) : '');
+    setEditAddressPassword('');
+    setEditAddressName(host.agent_name || (isPlaceholderHost(host) && host.name !== host.address) ? host.name : '');
+    setEditAddressHost(host);
+  };
+  const openResetKey = (host: Host) => { setMenuCard(null); setHostDialogError(''); setResetKeyHost(host); };
+  /** An administrator's change to a computer; true when it was made. */
+  const hostAdminRequest = async (method: string, path: string, body?: unknown): Promise<boolean> => {
+    if (!token || hostDialogBusy) return false;
+    setHostDialogBusy(true);
+    setHostDialogError('');
+    try {
+      const response = await fetch(`${getBackendProtocol().http}//${getBackendHost()}${path}`, {
+        method,
+        headers: { 'Authorization': `Bearer ${token}`, ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      });
+      if (response.status === 401) { handleLogout(); return false; }
+      if (!response.ok) { setHostDialogError(await writeErrorText(response, t('Could not save the computer'))); return false; }
+      fetchHosts();
+      return true;
+    } catch {
+      setHostDialogError(t('Cannot reach the server'));
+      return false;
+    } finally {
+      setHostDialogBusy(false);
+    }
+  };
+  const submitRename = async () => {
+    if (!renameHost) return;
+    if (await hostAdminRequest('PUT', `/api/admin/hosts/${encodeURIComponent(renameHost.id)}/name`, { name: renameText.trim() })) setRenameHost(null);
+  };
+  const submitEditAddress = async () => {
+    if (!editAddressHost) return;
+    if (!editAddress.trim()) { setHostDialogError(t('Enter the address of the computer')); return; }
+    const done = await hostAdminRequest('PUT', `/api/admin/hosts/${encodeURIComponent(editAddressHost.id)}/address`, {
+      address: editAddress.trim(),
+      password: editAddressPassword.trim() || null,
+      name: editAddressName.trim(),
+    });
+    if (done) {
+      setEditAddressHost(null);
+      // The new connection takes a moment.
+      window.setTimeout(fetchHosts, 2500);
+    }
+  };
+  const submitResetKey = async () => {
+    if (!resetKeyHost) return;
+    if (await hostAdminRequest('POST', `/api/admin/hosts/${encodeURIComponent(resetKeyHost.id)}/reset-key`)) setResetKeyHost(null);
+  };
+
   const updateDraftHostSettings = <K extends keyof HostStreamSettings>(key: K, value: HostStreamSettings[K]) => {
     setDraftHostSettings((current) => ({ ...current, [key]: value }));
   };
@@ -1424,28 +1613,57 @@ function App() {
     }, 3000);
   };
 
-  // Remote control of `host` in the Lunaris desktop app (lunaris:// link),
-  // with this page's stream settings.
-  const openInDesktopApp = (host: Host) => {
+  // A one-time ticket for a lunaris:// link to `hostId`: the link goes on
+  // the desktop app's command line, so it never carries the sign-in token.
+  // The app trades the ticket (good for a minute, once) for a token that
+  // opens only that computer. Null when the server gives none.
+  const requestLinkTicket = async (hostId: string, sourceId?: string): Promise<string | null> => {
+    try {
+      const response = await fetch(`${getBackendProtocol().http}//${getBackendHost()}/api/links/ticket`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(sourceId ? { host_id: hostId, source_id: sourceId } : { host_id: hostId }),
+      });
+      if (!response.ok) return null;
+      const data = await response.json();
+      return typeof data?.ticket === 'string' ? data.ticket : null;
+    } catch {
+      return null;
+    }
+  };
+
+  // Remote control in the Lunaris desktop app (lunaris:// link), with this
+  // page's stream settings: a Lunaris computer (`host`), or a computer of
+  // another type shown through one (`source`).
+  const openInDesktopApp = async (target: { host: Host } | { source: Source }) => {
+    const hostId = 'host' in target ? target.host.id : target.source.host_id;
+    const sourceId = 'source' in target ? target.source.id : undefined;
+    const name = 'host' in target ? target.host.name : target.source.name;
+    const ticket = await requestLinkTicket(hostId, sourceId);
+    if (!ticket) {
+      alert(t("Could not prepare the link for the desktop app. Try again."));
+      return;
+    }
     const protocol = getBackendProtocol();
     const serverHost = getBackendHost();
-    const rawRes = localStorage.getItem('lunaris_stream_res') || '1080p';
-    const res = resolutionString(rawRes);
+    // This computer's own settings, else the defaults (streamPrefs.ts).
+    const prefs = prefsFor(localStorage, sourceId ? sourcePrefsKey(hostId, sourceId) : hostPrefsKey(hostId));
     const params = new URLSearchParams({
-      host_id: host.id,
+      host_id: hostId,
       server: `${protocol.ws}//${serverHost}`,
-      token: token || '',
-      res,
-      fps: localStorage.getItem('lunaris_stream_fps') || '60',
-      bitrate: localStorage.getItem('lunaris_stream_bitrate') || '8000',
-      codec: localStorage.getItem('lunaris_stream_codec') || 'auto',
+      ticket,
+      res: resolutionString(prefs.resolution),
+      fps: String(prefs.fps),
+      bitrate: String(prefs.bitrate),
+      codec: linkCodec(prefs),
       mouse_queue_limit: localStorage.getItem('lunaris_mouse_queue_limit') || '256',
-      host_name: host.name,
+      host_name: name,
       app_id: '0',
-      encoder: localStorage.getItem('lunaris_stream_encoder') || 'auto',
-      display: localStorage.getItem('lunaris_stream_display') || 'default',
+      encoder: prefs.encoder,
+      display: prefs.display,
       input_protocol: localStorage.getItem('lunaris_input_protocol') || 'webrtc',
     });
+    if (sourceId) params.set('source_id', sourceId);
     window.location.href = `lunaris://connect?${params.toString()}`;
   };
 
@@ -1525,6 +1743,15 @@ function App() {
           <button
             type="button"
             className="icon-btn"
+            onClick={() => setShowAbout(true)}
+            title={t('About Lunaris')}
+            aria-label={t('About Lunaris')}
+          >
+            {ICON_INFO}
+          </button>
+          <button
+            type="button"
+            className="icon-btn"
             onClick={() => setTheme(nextTheme[theme])}
             title={themeLabel[theme]}
             aria-label={themeLabel[theme]}
@@ -1576,7 +1803,13 @@ function App() {
 
       {/* Main Content Area */}
       <main className="main-viewport">
-        {!token ? (
+        {!token && setupNeeded ? (
+          <SetupPage
+            apiBase={`${getBackendProtocol().http}//${getBackendHost()}`}
+            onDone={(answer) => { setSetupNeeded(false); finishSignIn(answer); }}
+            onClosed={() => setSetupNeeded(false)}
+          />
+        ) : !token ? (
           /* Authentication Screen */
           <div className="auth-card-wrapper">
             <div className="auth-card">
@@ -1768,6 +2001,17 @@ function App() {
                     </svg>
                     {t('Install agents')}
                   </button>
+                  <button
+                    className={`nav-tab ${activeTab === 'server' ? 'active' : ''}`}
+                    onClick={() => setActiveTab('server')}
+                  >
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <rect x="3" y="3" width="18" height="7" rx="1.5" />
+                      <rect x="3" y="14" width="18" height="7" rx="1.5" />
+                      <path d="M7 6.5h.01M7 17.5h.01" />
+                    </svg>
+                    {t('Server')}
+                  </button>
                 </div>
               )}
 
@@ -1885,22 +2129,18 @@ function App() {
                                   <div className="overlay-bottom-actions">
                                     {/* Launch Native App */}
                                     <button
-                                      onClick={() => {
+                                      onClick={async () => {
                                         const protocol = getBackendProtocol().http;
                                         const serverHost = getBackendHost();
                                         const serverUrl = `${protocol}//${serverHost}`;
-                                        const rawRes = localStorage.getItem('lunaris_stream_res') || '1080p';
-                                        const resStr = resolutionString(rawRes);
-                                        const fps = localStorage.getItem('lunaris_stream_fps') || '60';
-                                        const bitrate = localStorage.getItem('lunaris_stream_bitrate') || '8000';
-                                        const codec = localStorage.getItem('lunaris_stream_codec') || 'auto';
-                                        const mouseQueueLimit = localStorage.getItem('lunaris_mouse_queue_limit') || '256';
-                                        const encoder = localStorage.getItem('lunaris_stream_encoder') || 'auto';
-                                        const display = localStorage.getItem('lunaris_stream_display') || 'default';
-                                        const inputProtocol = localStorage.getItem('lunaris_input_protocol') || 'webrtc';
                                         const hostToUse = currentViewingHost || viewingHost;
 
                                         if (!hostToUse) return;
+                                        const prefs = prefsFor(localStorage, hostPrefsKey(hostToUse.id));
+                                        const resStr = resolutionString(prefs.resolution);
+                                        const { fps, bitrate, codec, encoder, display } = prefs;
+                                        const mouseQueueLimit = localStorage.getItem('lunaris_mouse_queue_limit') || '256';
+                                        const inputProtocol = localStorage.getItem('lunaris_input_protocol') || 'webrtc';
 
                                         const tauri = (window as any).__TAURI__;
                                         if (tauri) {
@@ -1925,14 +2165,19 @@ function App() {
                                         } else {
                                           const wsProtocol = getBackendProtocol().ws;
                                           const wsServerUrl = `${wsProtocol}//${serverHost}`;
+                                          const ticket = await requestLinkTicket(hostToUse.id);
+                                          if (!ticket) {
+                                            alert(t("Could not prepare the link for the desktop app. Try again."));
+                                            return;
+                                          }
                                           window.location.href = `lunaris://connect?${new URLSearchParams({
                                             host_id: hostToUse.id,
                                             server: wsServerUrl,
-                                            token: token || '',
+                                            ticket,
                                             res: resStr,
                                             fps: String(fps),
                                             bitrate: String(bitrate),
-                                            codec: String(codec),
+                                            codec: linkCodec(prefs),
                                             mouse_queue_limit: String(mouseQueueLimit),
                                             host_name: hostToUse.name,
                                             app_id: String(app.id),
@@ -1989,6 +2234,15 @@ function App() {
                             </button>
                           )}
                           <button
+                            type="button"
+                            onClick={openDefaultSettings}
+                            className="btn-secondary refresh-btn"
+                            title={t('Stream settings for every computer that has none of its own')}
+                          >
+                            {ICON_GEAR}
+                            {t('Default stream settings')}
+                          </button>
+                          <button
                             onClick={fetchHosts}
                             disabled={hostsLoading}
                             className="btn-secondary refresh-btn"
@@ -2012,7 +2266,7 @@ function App() {
 
                       {/* Agent setup credentials — only needed when adding a host, so it is
                           collapsed unless there are no hosts yet. */}
-                      <details className="setup-panel" open={!hostsLoading && hosts.length === 0}>
+                      <details className="setup-panel" open={!hostsLoading && computerHosts.length === 0}>
                         <summary>
                           <span className="setup-panel-title">
                             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -2083,12 +2337,12 @@ function App() {
                         </div>
                       )}
 
-                      {hostsLoading && hosts.length === 0 && sources.length === 0 ? (
+                      {hostsLoading && computerHosts.length === 0 && sources.length === 0 ? (
                         <div className="loading-card">
                           <div className="tech-loader"></div>
                           <div>Syncing active host agent list...</div>
                         </div>
-                      ) : hosts.length === 0 && sources.length === 0 ? (
+                      ) : computerHosts.length === 0 && sources.length === 0 ? (
                         <div className="empty-card">
                           <div className="empty-icon">🖥️</div>
                           <h3>{t('No agents connected')}</h3>
@@ -2134,6 +2388,21 @@ function App() {
                               ))}
                             </div>
                           )}
+                          <div className="show-chips" role="radiogroup" aria-label={t('Show')}>
+                            {([['all', t('All computers')], ['favourites', t('Favourites')], ['recent', t('Recent')]] as const).map(([value, label]) => (
+                              <button
+                                key={value}
+                                type="button"
+                                role="radio"
+                                aria-checked={cardShow === value}
+                                className={`type-chip${cardShow === value ? ' selected' : ''}`}
+                                onClick={() => chooseShow(value)}
+                              >
+                                {value === 'favourites' && <span className="show-chip-star" aria-hidden="true">{cardIcon(<polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />, 13)}</span>}
+                                <span>{label}</span>
+                              </button>
+                            ))}
+                          </div>
                           <div className="finder-end">
                             <span className="computer-count" aria-live="polite">
                               {shownCards.length === cards.length
@@ -2164,8 +2433,12 @@ function App() {
                         {shownCards.length === 0 ? (
                           <div className="empty-card no-match">
                             <div className="empty-icon" aria-hidden="true">{cardIcon(<><circle cx="11" cy="11" r="7" /><path d="M20 20l-4-4" /></>, 30)}</div>
-                            <h3>{t('No computer matches')}</h3>
-                            <p>{t('Try other words, or show every type.')}</p>
+                            <h3>{cardShow === 'favourites' && !computerSearch && !typeFilter ? t('No favourites yet')
+                              : cardShow === 'recent' && !computerSearch && !typeFilter ? t('No computer used yet')
+                              : t('No computer matches')}</h3>
+                            <p>{cardShow === 'favourites' && !computerSearch && !typeFilter ? t('Mark a computer with its star to keep it here.')
+                              : cardShow === 'recent' && !computerSearch && !typeFilter ? t('The computers you connect to are listed here, the last one first.')
+                              : t('Try other words, or show every type.')}</p>
                             <button type="button" className="btn-secondary" onClick={clearFinding}>{t('Clear search and filter')}</button>
                           </div>
                         ) : (
@@ -2194,7 +2467,7 @@ function App() {
                                 <span className="host-card-lead"><TypeMark id={methodType(method)} name={method.label} /></span>
                                 <div className="host-card-header">
                                   <div className="source-card-title">
-                                    <h3 className="host-name">{card.title}</h3>
+                                    <h3 className="host-name" title={card.host?.agent_name ? `${card.title} (${card.host.agent_name})` : undefined}>{card.title}</h3>
                                     {card.host && !isPlaceholderHost(card.host) && (
                                       <span className="host-id">ID: {card.host.id.slice(0, 8)}...</span>
                                     )}
@@ -2205,6 +2478,16 @@ function App() {
                                       </div>
                                     )}
                                   </div>
+                                  <button
+                                    type="button"
+                                    className={`card-star${favourites.includes(card.key) ? ' on' : ''}`}
+                                    aria-pressed={favourites.includes(card.key)}
+                                    title={favourites.includes(card.key) ? t('Remove from favourites') : t('Add to favourites')}
+                                    aria-label={favourites.includes(card.key) ? t('Remove from favourites') : t('Add to favourites')}
+                                    onClick={(e) => { e.stopPropagation(); toggleFav(card.key); }}
+                                  >
+                                    {ICON_STAR}
+                                  </button>
                                 </div>
 
                                 {/* The ways to connect to this computer: one is picked. */}
@@ -2292,13 +2575,13 @@ function App() {
                                       )}
                                     </div>
                                   )}
-                                  {host && isOnline && (
+                                  {isOnline && (host || source) && (
                                     <button
                                       type="button"
                                       className="host-action-btn"
-                                      title="Open in the Lunaris app"
-                                      aria-label="Open in the Lunaris app"
-                                      onClick={() => openInDesktopApp(host)}
+                                      title={t('Open in the Lunaris app')}
+                                      aria-label={t('Open in the Lunaris app')}
+                                      onClick={() => { noteUsed(card.key); openInDesktopApp(host ? { host } : { source: source! }); }}
                                     >
                                       {ICON_APP}
                                     </button>
@@ -2314,14 +2597,26 @@ function App() {
                                       {ICON_FILES}
                                     </button>
                                   )}
-                                  {host && (
+                                  {(host || source) && (
                                     <button
                                       type="button"
                                       className="host-action-btn"
-                                      title="Stream settings"
-                                      onClick={() => openHostSettings(host)}
+                                      title={t('Stream settings')}
+                                      aria-label={t('Stream settings')}
+                                      onClick={() => { if (host) openHostSettings(host); else if (source) openSourceSettings(source); }}
                                     >
                                       {ICON_GEAR}
+                                    </button>
+                                  )}
+                                  {host && userRole === 'admin' && (
+                                    <button
+                                      type="button"
+                                      className="host-action-btn"
+                                      title={t('Computer settings')}
+                                      aria-label={t('Computer settings')}
+                                      onClick={() => setComputerSettingsHost(host)}
+                                    >
+                                      {ICON_SLIDERS}
                                     </button>
                                   )}
                                   {canAddMethod && (
@@ -2346,11 +2641,25 @@ function App() {
                                       {ICON_EDIT}
                                     </button>
                                   )}
+                                  {host && userRole === 'admin' && (
+                                    <button
+                                      type="button"
+                                      className="host-action-btn card-menu-btn"
+                                      title={t('More')}
+                                      aria-label={t('More')}
+                                      aria-haspopup="menu"
+                                      aria-expanded={menuCard === card.key}
+                                      onClick={() => setMenuCard(menuCard === card.key ? null : card.key)}
+                                    >
+                                      {ICON_MORE}
+                                    </button>
+                                  )}
                                   {host && (
                                     <button
                                       type="button"
                                       className="host-action-btn danger"
-                                      title="Delete host"
+                                      title={t('Delete')}
+                                      aria-label={t('Delete')}
                                       disabled={deleteHostLoading === host.id}
                                       onClick={() => setPendingDeleteHost(host)}
                                     >
@@ -2369,6 +2678,37 @@ function App() {
                                     </button>
                                   )}
                                 </div>
+
+                                {/* An administrator's changes to the Lunaris computer. */}
+                                {host && userRole === 'admin' && menuCard === card.key && (
+                                  <div className="method-chooser card-menu" role="menu" aria-label={t('More')} onClick={(e) => e.stopPropagation()}>
+                                    <button type="button" role="menuitem" className="method-option" onClick={() => openRename(host)}>
+                                      <span className="card-menu-icon">{ICON_EDIT}</span>
+                                      <span className="method-option-text">
+                                        <span className="method-option-name">{t('Rename')}</span>
+                                        <span className="method-option-sub">{t('The name everyone sees in the list')}</span>
+                                      </span>
+                                    </button>
+                                    {host.address && (
+                                      <button type="button" role="menuitem" className="method-option" onClick={() => openEditAddress(host)}>
+                                        <span className="card-menu-icon">{ICON_APP}</span>
+                                        <span className="method-option-text">
+                                          <span className="method-option-name">{t('Edit address and password')}</span>
+                                          <span className="method-option-sub">{shortAddress(host.address)}</span>
+                                        </span>
+                                      </button>
+                                    )}
+                                    {!isPlaceholderHost(host) && !host.address && (
+                                      <button type="button" role="menuitem" className="method-option" onClick={() => openResetKey(host)}>
+                                        <span className="card-menu-icon">{ICON_KEY}</span>
+                                        <span className="method-option-text">
+                                          <span className="method-option-name">{t('Reset its key')}</span>
+                                          <span className="method-option-sub">{t('After a reinstall, when it can no longer sign in')}</span>
+                                        </span>
+                                      </button>
+                                    )}
+                                  </div>
+                                )}
 
                                 {/* Connecting another way, right here. */}
                                 {many && chooserOpen && (
@@ -2416,6 +2756,9 @@ function App() {
               )}
               {activeTab === 'install_agents' && userRole === 'admin' && (
                 <AdminInstallAgents token={token!} getBackendHost={getBackendHost} getBackendProtocol={getBackendProtocol} />
+              )}
+              {activeTab === 'server' && userRole === 'admin' && (
+                <AdminServerInfo token={token!} apiBase={() => `${getBackendProtocol().http}//${getBackendHost()}`} />
               )}
             </div>
           </div>
@@ -2483,6 +2826,16 @@ function App() {
             </div>
           </div>
         </div>
+      )}
+
+      {computerSettingsHost && token && userRole === 'admin' && (
+        <ComputerSettingsDialog
+          hostId={computerSettingsHost.id}
+          hostName={computerSettingsHost.name}
+          token={token}
+          apiBase={() => `${getBackendProtocol().http}//${getBackendHost()}`}
+          onClose={() => setComputerSettingsHost(null)}
+        />
       )}
 
       {pendingDeleteHost && (
@@ -2621,13 +2974,40 @@ function App() {
                       {dialogType.note ? <span>{t(dialogType.note)}</span> : null}
                     </p>
                   )}
+                  {/* RustDesk, Sunshine, RDP, VNC… are reached through a Lunaris
+                      agent that is online and offers them: none now. */}
+                  {!editSource && !addTo && connectorTypes.length === 0 && (
+                    <p className="type-note add-types-missing" role="note">
+                      <span>{t('To add a RustDesk, Sunshine, RDP or VNC computer, a Lunaris computer must be online to reach it through: install lunaris-agent on a computer in that network (a VPS works too).')}</span>
+                      {userRole === 'admin' && (
+                        <span>{t('Or let this server reach them itself: its gateway runs when lunaris-agent is installed on the server too (see the Server page).')}</span>
+                      )}
+                      {userRole === 'admin' && (
+                        <button type="button" className="btn-secondary" onClick={() => { closeAddHost(); setActiveTab('install_agents'); }}>{t('Install agents')}</button>
+                      )}
+                      {userRole === 'admin' && (
+                        <button type="button" className="btn-secondary" onClick={() => { closeAddHost(); setActiveTab('server'); }}>{t('Server gateway')}</button>
+                      )}
+                    </p>
+                  )}
                   {!sourceDialog && (
                     <div className="form-grid">
+                      <div className="form-group span-6">
+                        <label htmlFor="addHostName">{t('Name (optional)')}</label>
+                        <input
+                          id="addHostName"
+                          autoFocus
+                          value={addHostName}
+                          onChange={(e) => setAddHostName(e.target.value)}
+                          placeholder={t('The name the computer reports')}
+                          autoComplete="off"
+                          maxLength={100}
+                        />
+                      </div>
                       <div className="form-group span-3">
                         <label htmlFor="addHostAddress">{t('Address')}</label>
                         <input
                           id="addHostAddress"
-                          autoFocus
                           placeholder={t('e.g. 192.168.1.20')}
                           value={addHostAddress}
                           onChange={(e) => setAddHostAddress(e.target.value)}
@@ -2820,19 +3200,168 @@ function App() {
         </div>
       )}
 
-      {settingsHost && (
+      {showAbout && (
+        <AboutDialog
+          token={token}
+          apiBase={() => `${getBackendProtocol().http}//${getBackendHost()}`}
+          onClose={() => setShowAbout(false)}
+        />
+      )}
+
+      {renameHost && (
+        <div className="host-confirm-overlay add-host-overlay" onMouseDown={(e) => { if (e.target === e.currentTarget && !hostDialogBusy) setRenameHost(null); }}>
+          <form
+            className="host-confirm-card add-host-card"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="renameHostTitle"
+            noValidate
+            onSubmit={(e) => { e.preventDefault(); submitRename(); }}
+          >
+            <div className="host-confirm-content">
+              <h2 id="renameHostTitle">{t('Rename %1', renameHost.name)}</h2>
+              <p>{t('Everyone who can use this computer sees it with this name.')}</p>
+            </div>
+            <div className="add-host-main">
+              <div className="add-host-body">
+                <div className="form-grid">
+                  <div className="form-group span-6">
+                    <label htmlFor="renameHostName">{t('Name')}</label>
+                    <input
+                      id="renameHostName"
+                      autoFocus
+                      value={renameText}
+                      maxLength={100}
+                      autoComplete="off"
+                      placeholder={renameHost.agent_name || renameHost.name}
+                      onChange={(e) => setRenameText(e.target.value)}
+                    />
+                  </div>
+                  <span className="form-hint span-6">{t('Leave it empty to use the name the computer reports (%1).', renameHost.agent_name || renameHost.name)}</span>
+                </div>
+                {hostDialogError && <div className="add-host-error" role="alert">{hostDialogError}</div>}
+              </div>
+            </div>
+            <div className="host-confirm-actions">
+              <button type="button" className="btn-secondary" disabled={hostDialogBusy} onClick={() => setRenameHost(null)}>{t('Cancel')}</button>
+              <button type="submit" className="btn-primary" disabled={hostDialogBusy}>{hostDialogBusy ? t('Saving…') : t('Save')}</button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {editAddressHost && (
+        <div className="host-confirm-overlay add-host-overlay" onMouseDown={(e) => { if (e.target === e.currentTarget && !hostDialogBusy) setEditAddressHost(null); }}>
+          <form
+            className="host-confirm-card add-host-card"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="editAddressTitle"
+            noValidate
+            onSubmit={(e) => { e.preventDefault(); submitEditAddress(); }}
+          >
+            <div className="host-confirm-content">
+              <h2 id="editAddressTitle">{t('Edit computer')}</h2>
+              <p>{t('The server connects to this computer at its address. Saving connects to it again.')}</p>
+            </div>
+            <div className="add-host-main">
+              <div className="add-host-body">
+                <div className="form-grid">
+                  <div className="form-group span-6">
+                    <label htmlFor="editAddressName">{t('Name (optional)')}</label>
+                    <input
+                      id="editAddressName"
+                      value={editAddressName}
+                      maxLength={100}
+                      autoComplete="off"
+                      placeholder={editAddressHost.agent_name || (isPlaceholderHost(editAddressHost) ? '' : editAddressHost.name) || t('The name the computer reports')}
+                      onChange={(e) => setEditAddressName(e.target.value)}
+                    />
+                  </div>
+                  <div className="form-group span-3">
+                    <label htmlFor="editAddressAddress">{t('Address')}</label>
+                    <input
+                      id="editAddressAddress"
+                      autoFocus
+                      value={editAddress}
+                      autoComplete="off"
+                      placeholder={t('e.g. 192.168.1.20')}
+                      onChange={(e) => setEditAddress(e.target.value)}
+                    />
+                  </div>
+                  <div className="form-group span-3">
+                    <label htmlFor="editAddressPassword">{t('Password')}</label>
+                    <input
+                      id="editAddressPassword"
+                      type="password"
+                      value={editAddressPassword}
+                      autoComplete="new-password"
+                      placeholder={t('Empty keeps the saved password')}
+                      onChange={(e) => setEditAddressPassword(e.target.value)}
+                    />
+                  </div>
+                  <span className="form-hint span-6">
+                    {editAddressHost.needs_approval
+                      ? t('No password is saved: the person at that computer accepts each connection. Enter its password to connect without asking.')
+                      : t('Leave the password empty to keep the saved one.')}
+                  </span>
+                </div>
+                {hostDialogError && <div className="add-host-error" role="alert">{hostDialogError}</div>}
+              </div>
+            </div>
+            <div className="host-confirm-actions">
+              <button type="button" className="btn-secondary" disabled={hostDialogBusy} onClick={() => setEditAddressHost(null)}>{t('Cancel')}</button>
+              <button type="submit" className="btn-primary" disabled={hostDialogBusy}>{hostDialogBusy ? t('Saving…') : t('Save')}</button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {resetKeyHost && (
+        <div className="host-confirm-overlay" onMouseDown={(e) => { if (e.target === e.currentTarget && !hostDialogBusy) setResetKeyHost(null); }}>
+          <div className="host-confirm-card" role="dialog" aria-modal="true" aria-labelledby="resetKeyTitle">
+            <div className="host-confirm-icon danger" aria-hidden="true">{ICON_KEY}</div>
+            <div className="host-confirm-content">
+              <h2 id="resetKeyTitle">{t('Reset the key of %1?', resetKeyHost.name)}</h2>
+              <p>{t('Each computer proves it is itself with a key it made when it first connected. Resetting forgets that key: the computer is disconnected now, and the next Lunaris agent that connects with this computer\'s ID is accepted and its key is kept.')}</p>
+              <p>{t('Use it when the computer was reinstalled or lost its settings and is refused. A computer that joined with an install token needs a valid install token again. Its groups stay.')}</p>
+              {hostDialogError && <p className="add-host-error" role="alert">{hostDialogError}</p>}
+            </div>
+            <div className="host-confirm-actions">
+              <button className="btn-secondary" autoFocus disabled={hostDialogBusy} onClick={() => setResetKeyHost(null)}>{t('Cancel')}</button>
+              <button className="btn-danger" disabled={hostDialogBusy} onClick={submitResetKey}>{hostDialogBusy ? t('Resetting…') : t('Reset key')}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {settingsOpen && (
         <StreamSettingsDialog
-          hostName={settingsHost.name}
-          hostAddress={settingsHostNow ? hostAddressText(settingsHostNow) : ''}
-          hostInfo={settingsHostInfo}
+          hostName={settingsHostNow ? settingsHostNow.name : settingsSource ? settingsSource.name : undefined}
+          hostAddress={settingsHostNow ? hostAddressText(settingsHostNow) : settingsSource?.address || ''}
+          sourceOnly={!!settingsSource}
+          hostInfo={settingsHostNow ? settingsHostInfo : settingsSource ? [
+            { label: t('Name'), value: settingsSource.name },
+            { label: t('Type'), value: t(settingsSource.connector_name || settingsSource.connector) },
+            { label: t('Through'), value: settingsSource.host_name },
+            ...(settingsSource.address ? [{ label: t('Address'), value: settingsSource.address }] : []),
+          ] : undefined}
           values={draftHostSettings}
           onChange={(key, value) => updateDraftHostSettings(key, value)}
-          onCancel={() => setSettingsHost(null)}
+          onCancel={closeSettings}
           onSave={applyHostSettings}
-          displays={hostAvailableDisplays.map(d => ({
+          onUseDefaults={settingsComputer ? useDefaultSettings : undefined}
+          ownSettings={settingsOwn}
+          footerNote={settingsDefaults
+            ? t('Used for every computer that has no settings of its own.')
+            : settingsOwn
+              ? t('%1 has its own settings; the ones not changed here follow the defaults.', settingsHostNow?.name || settingsSource?.name || '')
+              : t('%1 uses the default settings. A change made here is kept for it only.', settingsHostNow?.name || settingsSource?.name || '')}
+          displays={settingsHost ? hostAvailableDisplays.map(d => ({
             id: d.id,
             label: `${d.name} (${d.width}x${d.height} @ ${d.refresh_rate.toFixed(0)}Hz)${d.is_primary ? ' ★' : ''}`,
-          }))}
+          })) : []}
+          encoders={hostEncoders}
           showNativeClient={!!(window as any).__TAURI__}
         />
       )}

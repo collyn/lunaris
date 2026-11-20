@@ -82,6 +82,16 @@ pub struct Claims {
     /// as version 0.
     #[serde(default)]
     pub ver: i64,
+    /// Set on tokens from a `lunaris://connect` link ticket (link_tickets.rs):
+    /// the one computer they may open over the client WebSocket. Such a token
+    /// is refused by every HTTP API (`AuthenticatedUser`), and the signaling
+    /// socket lets it address no other host. None: a normal sign-in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+    /// With `host`: the source of that host the link is for (sources.rs);
+    /// None = the host's own screen. Only that one may be opened.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
 }
 
 pub fn hash_password(password: &str) -> Result<String, bcrypt::BcryptError> {
@@ -112,8 +122,49 @@ pub fn create_jwt(
     role: &str,
     token_version: i64,
 ) -> Result<String, jsonwebtoken::errors::Error> {
+    sign(user_id, username, role, token_version, chrono::Duration::days(7), None)
+}
+
+/// How long a token from a link ticket lasts: one sitting at the computer.
+/// The desktop app opens a new client WebSocket with it for every (re)start
+/// of the stream (new settings, a dropped connection), so it can't be
+/// minutes; an open WebSocket is not cut when it expires.
+pub const HOST_TOKEN_HOURS: i64 = 12;
+
+/// A token that opens only `host_id`, or only its source `source_id` (see
+/// `Claims::host`).
+pub fn create_host_jwt(
+    user_id: &str,
+    username: &str,
+    role: &str,
+    token_version: i64,
+    host_id: &str,
+    source_id: Option<&str>,
+) -> Result<String, jsonwebtoken::errors::Error> {
+    sign(
+        user_id,
+        username,
+        role,
+        token_version,
+        chrono::Duration::hours(HOST_TOKEN_HOURS),
+        Some((host_id.to_string(), source_id.map(str::to_string))),
+    )
+}
+
+fn sign(
+    user_id: &str,
+    username: &str,
+    role: &str,
+    token_version: i64,
+    lifetime: chrono::Duration,
+    scope: Option<(String, Option<String>)>,
+) -> Result<String, jsonwebtoken::errors::Error> {
+    let (host, source) = match scope {
+        Some((host, source)) => (Some(host), source),
+        None => (None, None),
+    };
     let expiration = chrono::Utc::now()
-        .checked_add_signed(chrono::Duration::days(7))
+        .checked_add_signed(lifetime)
         .expect("valid timestamp")
         .timestamp() as u64;
 
@@ -123,6 +174,8 @@ pub fn create_jwt(
         role: role.to_string(),
         exp: expiration,
         ver: token_version,
+        host,
+        source,
     };
 
     encode(
@@ -220,6 +273,11 @@ impl FromRequestParts<Arc<SignalingState>> for AuthenticatedUser {
 
         let token = &auth_header[7..];
         let claims = verify_jwt(token).map_err(|_| (StatusCode::UNAUTHORIZED, "Invalid Token"))?;
+        // A token from a link opens one computer over the client WebSocket
+        // and nothing else: no computer list, no settings, no admin pages.
+        if claims.host.is_some() {
+            return Err((StatusCode::FORBIDDEN, "This sign-in only opens one computer"));
+        }
 
         // The user must still exist and be active, and the token must be
         // from after their last password change; the role comes from the database.
@@ -293,6 +351,8 @@ mod tests {
             role: "admin".into(),
             exp: (chrono::Utc::now().timestamp() + 3600) as u64,
             ver: 0,
+            host: None,
+            source: None,
         };
         let forged = encode(
             &Header::default(),
@@ -365,5 +425,18 @@ mod tests {
         assert_eq!(header.alg, jsonwebtoken::Algorithm::HS256);
         let c = verify_jwt(&t).unwrap();
         assert_eq!(c.sub, "id1");
+        assert_eq!(c.host, None);
+    }
+
+    #[test]
+    fn host_token_names_its_host_and_lasts_hours() {
+        let c = verify_jwt(&create_host_jwt("id1", "bob", "user", 2, "h1", None).unwrap()).unwrap();
+        assert_eq!(c.host.as_deref(), Some("h1"));
+        assert_eq!(c.source, None);
+        let c = verify_jwt(&create_host_jwt("id1", "bob", "user", 2, "h1", Some("s1")).unwrap()).unwrap();
+        assert_eq!((c.host.as_deref(), c.source.as_deref()), (Some("h1"), Some("s1")));
+        assert_eq!(c.ver, 2);
+        let left = c.exp as i64 - chrono::Utc::now().timestamp();
+        assert!(left > (HOST_TOKEN_HOURS - 1) * 3600 && left <= HOST_TOKEN_HOURS * 3600, "{left}");
     }
 }

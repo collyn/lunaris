@@ -228,14 +228,14 @@ async fn run(shared: Arc<Shared>, load: Load, on_change: OnChange, interval: Dur
 // ---- This agent's monitor ----
 
 /// The monitor of this agent's sources (its config file), started the
-/// first time it is asked for. Not in the bridge-only agent (the Lunaris
-/// app checks its own computers itself) nor in unit tests (they must not
-/// reach out to the addresses in a config).
+/// first time it is asked for; also in the bridge-only agent (the server
+/// gateway: the server shows whether its computers are there). Not in unit
+/// tests (they must not reach out to the addresses in a config).
 pub fn agent_monitor() -> Option<&'static Monitor> {
     static MONITOR: OnceLock<Option<Monitor>> = OnceLock::new();
     MONITOR
         .get_or_init(|| {
-            if cfg!(test) || crate::bridge_agent::is_bridge_only() || std::env::var_os("LUNARIS_NO_SOURCE_CHECKS").is_some() {
+            if cfg!(test) || std::env::var_os("LUNARIS_NO_SOURCE_CHECKS").is_some() {
                 return None;
             }
             Some(Monitor::start(

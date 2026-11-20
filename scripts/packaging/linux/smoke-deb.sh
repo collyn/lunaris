@@ -8,9 +8,12 @@
 # Fails when
 #   - apt cannot install the packages with their Depends alone (no Recommends),
 #   - a binary misses a shared library or a symbol (ldd -r), or
-#   - an app exits early or prints one of the messages Qt emits when a QML
+#   - a program exits early (the agent runs headless with a new config; the
+#     approval helper with an agent to answer for) or prints one of the messages Qt emits when a QML
 #     module or a plugin is missing (the distro's Qt is newer than the one the
-#     package was built with).
+#     package was built with), or
+#   - the server, with lunaris-agent installed too, does not start its gateway
+#     (server/src/gateway.rs: the agent as its child, connected to).
 #
 # usage: smoke-deb.sh <dir with lunaris-*.deb> [seconds=8]
 set -uo pipefail
@@ -53,10 +56,25 @@ for deb in "${DEBS[@]}"; do
 
     home="$(mktemp -d)"; log="$home/output.log"
     mkdir -m 700 "$home/run"
-    env -i HOME="$home" PATH=/usr/bin:/bin LANG=C.UTF-8 XDG_RUNTIME_DIR="$home/run" \
-        QT_QPA_PLATFORM=offscreen QT_FORCE_STDERR_LOGGING=1 LUNARIS_ALLOW_SECOND_INSTANCE=1 \
-        timeout --kill-after=5 "$SECONDS_TO_RUN" "$bin" >"$log" 2>&1
+    ENV=(env -i HOME="$home" PATH=/usr/bin:/bin LANG=C.UTF-8 XDG_RUNTIME_DIR="$home/run"
+        QT_QPA_PLATFORM=offscreen QT_FORCE_STDERR_LOGGING=1 LUNARIS_ALLOW_SECOND_INSTANCE=1
+        LUNARIS_DATA_DIR="$home/data" LUNARIS_ADMIN_PASSWORD=smoke-test-password)
+    RUN=()
+    if [[ "$name" == lunaris-approval-helper ]]; then
+        # The helper starts Qt only once an agent of its own user lets it
+        # answer (an agent running as root offers no channel): both run as
+        # an ordinary user, the agent (no config: a new one, nothing
+        # shared) a little longer.
+        id lunaris-smoke >/dev/null 2>&1 || useradd -M -d "$home" lunaris-smoke
+        chown -R lunaris-smoke "$home"
+        RUN=(runuser -u lunaris-smoke --)
+        "${RUN[@]}" "${ENV[@]}" timeout --kill-after=5 "$((SECONDS_TO_RUN + 4))" /usr/bin/lunaris-agent --cli \
+            >"$home/agent.log" 2>&1 &
+        for _ in 1 2 3 4 5 6 7 8 9 10; do [[ -S "$home/run/lunaris/approval.sock" ]] && break; sleep 0.5; done
+    fi
+    "${RUN[@]}" "${ENV[@]}" timeout --kill-after=5 "$SECONDS_TO_RUN" "$bin" >"$log" 2>&1
     rc=$?
+    wait
     sed 's/\x1b\[[0-9;]*m//g' "$log" | tail -20
     # 124: still running when the time was up, which is what a started app does.
     if [[ $rc -ne 124 ]]; then
@@ -64,6 +82,10 @@ for deb in "${DEBS[@]}"; do
         FAILED=1
     elif grep -E "$FORBIDDEN" "$log"; then
         echo "smoke: FAILED: $name printed a missing-module message" >&2
+        FAILED=1
+    elif [[ "$name" == lunaris-server && -x /usr/bin/lunaris-agent ]] \
+        && ! sed 's/\x1b\[[0-9;]*m//g' "$log" | grep -q 'Agent registered (added by address): .* (gateway)'; then
+        echo "smoke: FAILED: lunaris-server did not start and reach its gateway (lunaris-agent --bridge-only)" >&2
         FAILED=1
     else
         echo "smoke: OK: $name ran for ${SECONDS_TO_RUN}s on $PRETTY_NAME"

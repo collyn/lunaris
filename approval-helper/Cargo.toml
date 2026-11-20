@@ -1,0 +1,24 @@
+[package]
+name = "approval-helper"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Optional tray program that asks the person at a computer to accept connections for the Lunaris agent running as a daemon"
+
+[[bin]]
+name = "lunaris-approval-helper"
+path = "src/main.rs"
+
+[dependencies]
+# The channel to the agent: no agent, no media here.
+approval-channel = { path = "../approval-channel" }
+tokio = { version = "1.0", features = ["rt", "macros", "sync", "time"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+serde_json = "1.0"
+cxx = "1.0"
+cxx-qt = "0.6"
+cxx-qt-lib = { version = "0.6", features = ["qt_gui", "qt_qml"] }
+
+[build-dependencies]
+cxx-qt-build = "0.6"

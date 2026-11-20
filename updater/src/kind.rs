@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 pub enum App {
     /// The Lunaris app (client-desktop: client + agent + server).
     Client,
-    /// The standalone agent (agent-app).
+    /// The agent (lunaris-agent).
     Agent,
 }
 

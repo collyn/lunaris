@@ -518,9 +518,7 @@ pub async fn list_groups(
         .fetch_all(&state.db)
         .await
         .map_err(db_err)?;
-        let hosts: Vec<(String, String)> = sqlx::query_as(
-            "SELECT h.id, h.name FROM hosts h INNER JOIN host_groups hg ON h.id = hg.host_id WHERE hg.group_id = ?",
-        )
+        let hosts: Vec<(String, String)> = sqlx::query_as(concat!("SELECT h.id, ", crate::db::host_name_sql!(), " FROM hosts h INNER JOIN host_groups hg ON h.id = hg.host_id WHERE hg.group_id = ?"))
         .bind(&id)
         .fetch_all(&state.db)
         .await

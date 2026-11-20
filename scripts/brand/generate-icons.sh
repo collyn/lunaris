@@ -34,7 +34,7 @@ open(out, "wb").write(b"icns" + struct.pack(">I", len(body) + 8) + body)
 PY
 done
 
-cp "$WORK/256.png" "$ROOT/agent-app/qml/icons/icon.png"
+cp "$WORK/256.png" "$ROOT/approval-helper/qml/icons/icon.png"
 cp "$WORK/256.png" "$ROOT/client-qml/qml/icon.png"
 cp "$SVG" "$ROOT/web/public/favicon.svg"
 # The mark alone (no tile), the type logo beside RustDesk and Sunshine.

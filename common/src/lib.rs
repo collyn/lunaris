@@ -48,6 +48,15 @@ pub struct HostInfo {
     /// accepted by the person at that computer.
     #[serde(default)]
     pub needs_approval: bool,
+    /// The name its agent announces, when an administrator gave it another
+    /// one (`name` is then that one).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_name: Option<String>,
+    /// The server's own gateway (server/src/gateway.rs): the agent the
+    /// server runs itself, which shows the computers added through it and
+    /// never a screen of its own. Not deleted or edited like a computer.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub gateway: bool,
 }
 
 /// Adds a computer by address: the server connects to its agent (direct
@@ -58,6 +67,9 @@ pub struct AddHostByAddressRequest {
     pub address: String,
     #[serde(default)]
     pub password: Option<String>,
+    /// The name it is listed with; none or empty: the one its agent announces.
+    #[serde(default)]
+    pub name: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
@@ -394,6 +406,173 @@ impl std::fmt::Debug for SourceChange {
     }
 }
 
+// --- A LUNARIS COMPUTER'S OWN SETTINGS (server administrators) ---
+
+/// A secret passed through once (an access password): written on the wire,
+/// never in a log (`Debug` hides it).
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Default)]
+#[serde(transparent)]
+pub struct SecretString(pub String);
+
+impl std::fmt::Debug for SecretString {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("(hidden)")
+    }
+}
+
+/// A Lunaris computer's own settings (its agent's config), as its agent
+/// tells them. Never the access password: that is asked for on its own
+/// (`SettingsRequest::ShowPassword`).
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default)]
+pub struct AgentSettingsMsg {
+    /// The person at that computer lets the server change these
+    /// ("Allow the server to change this computer's settings", off by
+    /// default). Never changed from the server. When off, the values are
+    /// for reading only.
+    #[serde(default)]
+    pub remote_changes: bool,
+    #[serde(default)]
+    pub direct_enabled: bool,
+    #[serde(default)]
+    pub direct_port: u16,
+    /// Whether an access password is set (it is never told here).
+    #[serde(default)]
+    pub has_password: bool,
+    /// "password", "click" or "password-click".
+    #[serde(default)]
+    pub approve_mode: String,
+    /// Sessions through the server: "trusted" or "ask".
+    #[serde(default)]
+    pub server_sessions: String,
+    #[serde(default)]
+    pub allow_clipboard: bool,
+    #[serde(default)]
+    pub allow_file_transfer: bool,
+    /// What file transfer may reach: "home", "full" or an absolute folder
+    /// (as in effect there).
+    #[serde(default)]
+    pub file_access: String,
+    #[serde(default)]
+    pub rustdesk_enabled: bool,
+    #[serde(default)]
+    pub rustdesk_port: u16,
+    #[serde(default)]
+    pub rustdesk_file_transfer: bool,
+    /// Screen capture on a Linux Wayland session: "auto" or "portal".
+    #[serde(default)]
+    pub wayland_capture: String,
+    /// Read only: remote keyboard and mouse can work (Linux: /dev/uinput).
+    #[serde(default)]
+    pub input_ready: bool,
+    /// Read only: the agent's version.
+    #[serde(default)]
+    pub version: String,
+    /// Read only: "linux", "windows", "macos".
+    #[serde(default)]
+    pub os: String,
+    /// Read only: the change came over a server that connects to this
+    /// computer by its address; its direct access (on, port, password)
+    /// is then not changed from there (that would cut the server off).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub linked_by_address: bool,
+}
+
+/// What to change of a computer's settings; a field left out keeps its
+/// value. There is no field for `remote_changes`: it is only ever changed
+/// at that computer.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default)]
+pub struct AgentSettingsChange {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub direct_enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub direct_port: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approve_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_sessions: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_clipboard: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_file_transfer: Option<bool>,
+    /// "home" or "full".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_access: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rustdesk_enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rustdesk_port: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rustdesk_file_transfer: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wayland_capture: Option<String>,
+}
+
+pub const APPROVE_MODES: [&str; 3] = ["password", "click", "password-click"];
+pub const SERVER_SESSION_MODES: [&str; 2] = ["trusted", "ask"];
+pub const WAYLAND_CAPTURE_MODES: [&str; 2] = ["auto", "portal"];
+pub const FILE_ACCESS_CHOICES: [&str; 2] = ["home", "full"];
+/// Ports a setting may use (as the apps take them).
+pub const MIN_SETTINGS_PORT: u16 = 1024;
+/// An access password set by hand: 6 to 128 characters, no control
+/// characters, no space at either end.
+pub fn valid_access_password(password: &str) -> bool {
+    let count = password.chars().count();
+    (6..=128).contains(&count) && password.trim() == password && !password.chars().any(char::is_control)
+}
+
+/// Why a settings change is not valid (the same rules at the server and the
+/// agent), in words for the person; `current_direct_port` is the port in
+/// effect when the change leaves it out.
+pub fn settings_change_error(change: &AgentSettingsChange, current_direct_port: u16) -> Option<String> {
+    let port_ok = |p: u16| p >= MIN_SETTINGS_PORT;
+    if change.direct_port.is_some_and(|p| !port_ok(p)) || change.rustdesk_port.is_some_and(|p| !port_ok(p)) {
+        return Some("Use a port from 1024 to 65535".into());
+    }
+    if let (Some(rustdesk), true) = (change.rustdesk_port, change.rustdesk_enabled != Some(false)) {
+        if rustdesk == change.direct_port.unwrap_or(current_direct_port) {
+            return Some("That port is the one for direct connections".into());
+        }
+    }
+    let one_of = |value: &Option<String>, allowed: &[&str]| value.as_deref().is_none_or(|v| allowed.contains(&v));
+    if !one_of(&change.approve_mode, &APPROVE_MODES) {
+        return Some("Unknown way of accepting connections".into());
+    }
+    if !one_of(&change.server_sessions, &SERVER_SESSION_MODES) {
+        return Some("Unknown choice for sessions through the server".into());
+    }
+    if !one_of(&change.wayland_capture, &WAYLAND_CAPTURE_MODES) {
+        return Some("Unknown Wayland capture mode".into());
+    }
+    if !one_of(&change.file_access, &FILE_ACCESS_CHOICES) {
+        return Some("File access is \"home\" or \"full\"".into());
+    }
+    None
+}
+
+/// What a server asks of a computer's own settings (server administrators).
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum SettingsRequest {
+    /// The settings (`AgentSettingsMsg`).
+    Get,
+    /// Change some (only when the person there allows it).
+    Change { change: AgentSettingsChange },
+    /// The access password, to show (only when the person there allows
+    /// changes from the server).
+    ShowPassword,
+    /// A new access password: this one, or a new random one when left out.
+    /// Answered with the settings, not the password.
+    NewPassword {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        password: Option<SecretString>,
+    },
+}
+
+/// Why an agent did not do what was asked of its settings.
+pub const SETTINGS_NOT_ALLOWED: &str = "not_allowed";
+pub const SETTINGS_INVALID: &str = "invalid";
+pub const SETTINGS_FAILED: &str = "failed";
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "type", content = "payload")]
 pub enum SignalingMessage {
@@ -612,6 +791,22 @@ pub enum AgentMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         setup: Option<SetupInfo>,
     },
+    /// The answer to `ServerToAgentMessage::Settings`: the settings (after
+    /// a change, as they are now), the password when it was asked for, or
+    /// why not (`error`, and `code`: `SETTINGS_NOT_ALLOWED`,
+    /// `SETTINGS_INVALID`, `SETTINGS_FAILED`). Servers from before this
+    /// message drop it.
+    SettingsAnswer {
+        request_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        settings: Option<AgentSettingsMsg>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        password: Option<SecretString>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        code: Option<String>,
+    },
 }
 
 // Message from Server to Agent via WebSocket
@@ -626,6 +821,16 @@ pub enum ServerToAgentMessage {
     ChangeSource {
         request_id: String,
         change: SourceChange,
+        /// Who asked (user name), for the agent's log.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        requester: Option<String>,
+    },
+    /// Read or change this computer's own settings; answered with
+    /// `AgentMessage::SettingsAnswer`. Agents from before this message
+    /// drop it (the server then times out and says the agent is too old).
+    Settings {
+        request_id: String,
+        request: SettingsRequest,
         /// Who asked (user name), for the agent's log.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         requester: Option<String>,
@@ -673,5 +878,68 @@ mod tests {
         // Which set-up it is about can be read in a log.
         assert!(printed.contains("SetupState { setup: \"s1\" }") && printed.contains("SetupCancel { setup: \"s1\" }"), "{}", printed);
         assert!(format!("{:?}", SetupInfo { code: None, ..info }).contains("code: none"));
+    }
+    #[test]
+    fn settings_messages_on_the_wire_and_from_older_peers() {
+        // An older agent's view of a newer server's message: unknown, so it
+        // fails to parse (the agent logs it without the text and goes on).
+        let ask = ServerToAgentMessage::Settings { request_id: "r".into(), request: SettingsRequest::Get, requester: None };
+        let wire = serde_json::to_string(&ask).unwrap();
+        assert_eq!(wire, r#"{"event":"Settings","data":{"request_id":"r","request":{"op":"get"}}}"#);
+        let back: ServerToAgentMessage = serde_json::from_str(&wire).unwrap();
+        assert!(matches!(back, ServerToAgentMessage::Settings { request: SettingsRequest::Get, .. }));
+
+        // A change with only some fields; unknown fields (a newer server's,
+        // or one trying `remote_changes`) are ignored.
+        let wire = r#"{"event":"Settings","data":{"request_id":"r","request":{"op":"change","change":{"direct_port":9000,"remote_changes":true,"future":1}}}}"#;
+        let ServerToAgentMessage::Settings { request: SettingsRequest::Change { change }, .. } = serde_json::from_str(wire).unwrap() else { panic!() };
+        assert_eq!(change, AgentSettingsChange { direct_port: Some(9000), ..Default::default() });
+
+        // An answer from an agent that knows fewer fields of the settings.
+        let wire = r#"{"event":"SettingsAnswer","data":{"request_id":"r","settings":{"direct_enabled":true}}}"#;
+        let AgentMessage::SettingsAnswer { settings: Some(s), password: None, error: None, .. } = serde_json::from_str(wire).unwrap() else { panic!() };
+        assert!(s.direct_enabled && !s.remote_changes && s.version.is_empty());
+
+        // Older messages still read the same.
+        let wire = r#"{"event":"SourceChanged","data":{"request_id":"r","id":"x"}}"#;
+        assert!(matches!(serde_json::from_str::<AgentMessage>(wire).unwrap(), AgentMessage::SourceChanged { .. }));
+    }
+
+    #[test]
+    fn a_password_is_never_printed() {
+        let set = ServerToAgentMessage::Settings {
+            request_id: "r".into(),
+            request: SettingsRequest::NewPassword { password: Some(SecretString("hunter22".into())) },
+            requester: Some("admin".into()),
+        };
+        let answer = AgentMessage::SettingsAnswer { request_id: "r".into(), settings: None, password: Some(SecretString("hunter22".into())), error: None, code: None };
+        let printed = format!("{:?} {:?}", set, answer);
+        assert!(!printed.contains("hunter22"), "{}", printed);
+        // But it is on the wire.
+        assert!(serde_json::to_string(&set).unwrap().contains(r#""password":"hunter22""#));
+    }
+
+    #[test]
+    fn settings_changes_are_checked() {
+        let ok = AgentSettingsChange { direct_port: Some(9000), approve_mode: Some("click".into()), ..Default::default() };
+        assert_eq!(settings_change_error(&ok, 8091), None);
+        for bad in [
+            AgentSettingsChange { direct_port: Some(80), ..Default::default() },
+            AgentSettingsChange { rustdesk_port: Some(0), ..Default::default() },
+            AgentSettingsChange { rustdesk_port: Some(8091), ..Default::default() },
+            AgentSettingsChange { direct_port: Some(9000), rustdesk_port: Some(9000), rustdesk_enabled: Some(true), ..Default::default() },
+            AgentSettingsChange { approve_mode: Some("always".into()), ..Default::default() },
+            AgentSettingsChange { server_sessions: Some("never".into()), ..Default::default() },
+            AgentSettingsChange { wayland_capture: Some("kms".into()), ..Default::default() },
+            AgentSettingsChange { file_access: Some("/etc".into()), ..Default::default() },
+        ] {
+            assert!(settings_change_error(&bad, 8091).is_some(), "{:?}", bad);
+        }
+        // RustDesk turned off: its port is not in the way.
+        assert_eq!(settings_change_error(&AgentSettingsChange { rustdesk_port: Some(8091), rustdesk_enabled: Some(false), ..Default::default() }, 8091), None);
+        assert!(valid_access_password("abc-def"));
+        for bad in ["short", " padded ", "tab\there", &"x".repeat(129)] {
+            assert!(!valid_access_password(bad), "{:?}", bad);
+        }
     }
 }

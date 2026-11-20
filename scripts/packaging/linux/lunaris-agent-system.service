@@ -1,0 +1,69 @@
+# Lunaris agent as a system service, for headless computers (a VPS, a
+# server without a desktop): reaches the computers of other types added
+# through it (RDP, VNC, Sunshine, ... "sources") and offers direct and
+# RustDesk access, managed from the Lunaris server's web page. It shares no
+# screen: there is no desktop session here (the lunaris-capture service only
+# serves the agent of the user at the local screen; desktops use the user
+# service lunaris-agent.service).
+#
+# Installed (not enabled) by the lunaris-agent package. Join a server and
+# start it with
+#   sudo LUNARIS_INSTALL_TOKEN=lit_... lunaris-agent --system --enroll --server https://SERVER
+# which writes the config and runs `systemctl enable --now` on this unit.
+# Settings: sudo lunaris-agent --system status | set KEY VALUE
+# Data: /var/lib/lunaris-agent (config with the agent key, owned by the
+# lunaris-agent user). Log: journalctl -u lunaris-agent-system
+[Unit]
+Description=Lunaris agent (headless system service)
+Documentation=https://github.com/collyn/lunaris
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/var/lib/lunaris-agent/agent_config.json
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/lunaris-agent --cli --config /var/lib/lunaris-agent/agent_config.json
+User=lunaris-agent
+Group=lunaris-agent
+WorkingDirectory=/var/lib/lunaris-agent
+StateDirectory=lunaris-agent
+StateDirectoryMode=0700
+Restart=on-failure
+RestartSec=5
+
+# Settings and ports (>= 1024) need no privilege.
+CapabilityBoundingSet=
+AmbientCapabilities=
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+# Devices: GPU encoders (DRM render nodes, NVIDIA) and /dev/uinput for
+# remote input, nothing else. The lunaris-agent user is in the video,
+# render and input groups (lunaris-agent.sysusers).
+DevicePolicy=closed
+DeviceAllow=char-drm rw
+DeviceAllow=char-nvidia-frontend rw
+DeviceAllow=char-nvidia-uvm rw
+DeviceAllow=char-nvidia-caps rw
+DeviceAllow=/dev/uinput rw
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+# AF_NETLINK: WebRTC lists the network interfaces.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RemoveIPC=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

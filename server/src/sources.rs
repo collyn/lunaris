@@ -300,11 +300,9 @@ pub async fn list_sources(user: crate::auth::AuthenticatedUser, State(state): St
     };
     let admin = user.role == "admin";
     #[allow(clippy::type_complexity)]
-    let rows: Vec<(String, String, String, String, String, String, Option<String>, Option<String>)> = match sqlx::query_as(
-        "SELECT s.host_id, h.name, s.source_id, s.name, s.connector, s.connector_name, s.source_group, s.source_values
+    let rows: Vec<(String, String, String, String, String, String, Option<String>, Option<String>)> = match sqlx::query_as(concat!("SELECT s.host_id, ", crate::db::host_name_sql!(), ", s.source_id, s.name, s.connector, s.connector_name, s.source_group, s.source_values
          FROM host_sources s INNER JOIN hosts h ON h.id = s.host_id
-         ORDER BY s.name COLLATE NOCASE, s.source_id",
-    )
+         ORDER BY s.name COLLATE NOCASE, s.source_id"))
     .fetch_all(&state.db)
     .await
     {
@@ -376,7 +374,7 @@ pub async fn list_connectors(user: crate::auth::AuthenticatedUser, State(state):
         if !state.agents.read().unwrap().contains_key(&host_id) {
             continue;
         }
-        let host_name: Option<String> = sqlx::query_scalar("SELECT name FROM hosts WHERE id = ?").bind(&host_id).fetch_optional(&state.db).await.ok().flatten();
+        let host_name: Option<String> = sqlx::query_scalar(concat!("SELECT ", crate::db::host_name_sql!(), " FROM hosts h WHERE h.id = ?")).bind(&host_id).fetch_optional(&state.db).await.ok().flatten();
         let Some(host_name) = host_name else { continue };
         hosts.push(HostConnectors { host_id, host_name, connectors: a.connectors });
     }
@@ -440,7 +438,7 @@ async fn ask(state: &Arc<SignalingState>, host_id: &str, change: SourceChange, r
     if !announced.manageable {
         return Err(refused(
             StatusCode::CONFLICT,
-            "That computer asks at its screen before each connection, so computers cannot be added to it from here. Add it in the Lunaris app on that computer.",
+            "That computer asks at its screen before each server session, so computers cannot be added to it from here. On that computer, run `lunaris-agent set server-sessions trusted` to manage it from here.",
         ));
     }
     let request_id = uuid::Uuid::new_v4().to_string();
@@ -1217,10 +1215,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let url = format!("sqlite://{}?mode=rwc", dir.join("old.db").display());
-        let password_file = dir.join("admin_password.txt");
         // As a server from before groups left it: the table without the column, with a source in it.
         {
-            let pool = crate::db::init_db(&url, &password_file).await.unwrap();
+            let pool = crate::db::init_db(&url).await.unwrap();
             sqlx::query("DROP TABLE host_sources").execute(&pool).await.unwrap();
             sqlx::query(
                 "CREATE TABLE host_sources (host_id TEXT NOT NULL REFERENCES hosts(id) ON DELETE CASCADE, source_id TEXT NOT NULL, name TEXT NOT NULL,
@@ -1235,12 +1232,12 @@ mod tests {
             assert!(!columns.iter().any(|c| c == "source_group"));
             pool.close().await;
         }
-        let pool = crate::db::init_db(&url, &password_file).await.unwrap();
+        let pool = crate::db::init_db(&url).await.unwrap();
         let row: (String, Option<String>) = sqlx::query_as("SELECT name, source_group FROM host_sources WHERE source_id = 'den-1'").fetch_one(&pool).await.unwrap();
         assert_eq!(row, ("Den PC".to_string(), None));
         // Opening it again changes nothing.
         pool.close().await;
-        let pool = crate::db::init_db(&url, &password_file).await.unwrap();
+        let pool = crate::db::init_db(&url).await.unwrap();
         let columns: Vec<String> = sqlx::query_scalar("SELECT name FROM pragma_table_info('host_sources')").fetch_all(&pool).await.unwrap();
         assert_eq!(columns.iter().filter(|c| c.as_str() == "source_group").count(), 1);
         pool.close().await;

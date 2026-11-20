@@ -1,6 +1,6 @@
 //! Restarting after an update.
 //!
-//! * The app and the agent window: [`remember_launch`] first thing in
+//! * The app (and the agent, for its restart): [`remember_launch`] first thing in
 //!   `main` keeps the program path, arguments and environment as they were
 //!   started. After the update the window quits; when Qt's event loop has
 //!   returned and the children are stopped, [`relaunch_if_requested`]

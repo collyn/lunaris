@@ -1,0 +1,7 @@
+# The account of lunaris-agent-system.service (systemd-sysusers, sysusers.d(5)):
+# the headless agent. In video/render for hardware encoding, input for
+# remote keyboard/mouse (/dev/uinput).
+u lunaris-agent - "Lunaris agent (system service)" /var/lib/lunaris-agent /usr/sbin/nologin
+m lunaris-agent video
+m lunaris-agent render
+m lunaris-agent input

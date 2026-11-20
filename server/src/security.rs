@@ -216,7 +216,7 @@ pub(crate) mod tests {
         let dir = std::env::temp_dir().join(format!("lunaris-test-{}", random_hex(8)));
         std::fs::create_dir_all(&dir).unwrap();
         let url = format!("sqlite://{}", dir.join("test.db").display());
-        crate::db::init_db(&url, &dir.join("pw.txt")).await.unwrap()
+        crate::db::init_db(&url).await.unwrap()
     }
 
     async fn add_user(db: &SqlitePool, id: &str, role: &str, active: bool) {

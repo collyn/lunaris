@@ -71,5 +71,13 @@ libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
 windows-service = "0.8"
+# win_acl.rs: the data folder and secret files for SYSTEM and Administrators
+# only (the same crate and version as the agent).
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+] }
 
 

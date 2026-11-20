@@ -20,6 +20,8 @@ Item {
     // "Send keys": a key combination this computer keeps for itself, to be
     // pressed on the remote computer (Qt key codes, in the order pressed).
     signal sendKeysRequested(var keys)
+    // The gear: this device's settings for the session (SessionSettings.qml).
+    signal sessionSettingsRequested()
     // The remote computer's system when it says so ("windows", "linux", ...).
     property string hostOs: "unknown"
     signal cursorHideToggled()
@@ -161,6 +163,12 @@ Item {
         }
 
         isInitializing = false;
+    }
+
+    // The decoder chosen in the session settings: as if picked here.
+    function setRenderBackend(renderBackend) {
+        decoderComboBox.currentIndex = renderBackendIndex(renderBackend, false);
+        applyCurrentSettings();
     }
 
     function applyCurrentSettings() {
@@ -607,6 +615,34 @@ Item {
                         text: "Ctrl+Alt+Del"
                         onTriggered: sendKeysMenu.send([Qt.Key_Control, Qt.Key_Alt, Qt.Key_Delete])
                     }
+                }
+            }
+
+            // This device's settings for the session (sound, clipboard and
+            // files, controllers, system shortcuts, picture).
+            Button {
+                // Keys belong to the remote computer: a clicked button must not
+                // keep the focus, or the next Space or Enter presses it again.
+                focusPolicy: Qt.NoFocus
+                id: sessionSettingsButton
+                objectName: "sessionSettingsButton"
+                width: 28
+                height: 28
+                padding: 0
+                anchors.verticalCenter: parent.verticalCenter
+                LunarisToolTip { text: I18n.t("Session settings") }
+                Accessible.name: I18n.t("Session settings")
+                background: Rectangle {
+                    anchors.fill: parent
+                    color: sessionSettingsButton.hovered ? Theme.live.ink(0.12) : "transparent"
+                    radius: 14
+                }
+                contentItem: Item {
+                    Icon { anchors.centerIn: parent; name: "settings"; size: 16; color: Theme.live.text }
+                }
+                onClicked: {
+                    menuContainer.sessionSettingsRequested();
+                    if (!menuContainer.isPinned) autoHideTimer.restart();
                 }
             }
 

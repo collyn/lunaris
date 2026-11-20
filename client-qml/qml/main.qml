@@ -2,7 +2,6 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 import QtMultimedia
-import Qt.labs.platform as Platform
 import com.lunaris.client 1.0
 import com.lunaris.client.gpu 1.0
 
@@ -17,75 +16,6 @@ ApplicationWindow {
 
     property bool exitRequested: false
 
-    onClosing: (close) => {
-        if (bridge.hasConnectionArgs()) {
-            window.exitRequested = true;
-        }
-        if (!exitRequested && closeToTray) {
-            close.accepted = false;
-            window.hide();
-        }
-    }
-
-    Platform.SystemTrayIcon {
-        id: trayIcon
-        visible: true
-        icon.source: "qrc:/icon.png"
-        tooltip: "Lunaris Client"
-
-        menu: Platform.Menu {
-            Platform.MenuItem {
-                text: window.visible ? "Hide Client" : "Show Client"
-                onTriggered: {
-                    if (window.visible) {
-                        window.hide()
-                    } else {
-                        window.show()
-                        window.raise()
-                        window.requestActivate()
-                    }
-                }
-            }
-            Platform.MenuItem {
-                text: "Allow remote control"
-                checkable: true
-                checked: homeView.hostStatus.enabled
-                onTriggered: homeView.setRemoteControl(!homeView.hostStatus.enabled)
-            }
-            Platform.MenuItem {
-                text: "Autostart on Boot"
-                checkable: true
-                checked: window.autostartEnabled
-                onTriggered: {
-                    var nextState = !window.autostartEnabled;
-                    bridge.setAutostartEnabled(nextState);
-                    window.autostartEnabled = bridge.isAutostartEnabled();
-                }
-            }
-            Platform.MenuSeparator {}
-            Platform.MenuItem {
-                text: "Exit"
-                onTriggered: {
-                    window.exitRequested = true;
-                    bridge.stopLocalAgent();
-                    Qt.quit();
-                }
-            }
-        }
-
-        onActivated: (reason) => {
-            if (reason === Platform.SystemTrayIcon.Trigger) {
-                if (window.visible) {
-                    window.hide();
-                } else {
-                    window.show();
-                    window.raise();
-                    window.requestActivate();
-                }
-            }
-        }
-    }
-
     // Custom properties to keep track of state
     property bool isPointerLocked: false
     property bool showStats: false
@@ -96,8 +26,6 @@ ApplicationWindow {
     readonly property bool useHostHardwareCursor: window.isStreamMode
         && window.hideLocalCursor && !window.isPointerLocked
     property bool ignoreMenuHover: false
-    property bool autostartEnabled: false
-    property bool closeToTray: true
     property real pingMs: 0.0
     property real decodeLatencyMs: 0.0
     property real fps: 0.0
@@ -124,7 +52,7 @@ ApplicationWindow {
     property string renderBackend: "auto_gpu"
     property bool nativeVideoActive: gpuVideoItem.cudaActive || d3d11VideoItem.d3d11Active || vaapiDmabufVideoItem.dmabufActive
     // The updater's state (bridge.updateStatus(), updater/src/service.rs);
-    // the banner and Settings → Updates show it.
+    // the banner and the Updates panel of the window without a link show it.
     property var updateStatus: ({ state: "idle", current: "", latest: "", autoCheck: true })
     property int hostCursorX: streamWidth / 2
     property int hostCursorY: streamHeight / 2
@@ -656,12 +584,22 @@ ApplicationWindow {
             if (linkDialog.openIfPending()) return;
 
             if (url !== "") {
+                launcherView.showMessage("");
                 window.isStreamMode = true;
                 bridge.setVideoSink(videoOutput.videoSink);
                 bridge.startStream();
                 bridge.requestSettings();
                 rootContainer.forceActiveFocus();
             }
+        }
+
+        // A link's one-time ticket was refused (or the server not reached).
+        onLinkFailed: (message) => {
+            console.log("Link could not be used: " + message);
+            window.show();
+            window.raise();
+            if (window.isStreamMode) window.showToast(I18n.t(message));
+            else launcherView.showMessage(I18n.t(message));
         }
 
         onShareStatus: (message) => {
@@ -680,8 +618,7 @@ ApplicationWindow {
                 return;
             }
             window.isStreamMode = false;
-            homeView.showError(I18n.tError(message));
-            homeView.forceActiveFocus();
+            launcherView.showMessage(I18n.tError(message));
         }
 
         // The source being shown could not be connected, or closed: the
@@ -700,20 +637,9 @@ ApplicationWindow {
                 return;
             }
             window.isStreamMode = false;
-            homeView.showError(message);
-            homeView.forceActiveFocus();
+            launcherView.showMessage(message);
         }
 
-        // The source being shown listed its displays: kept with its card, for
-        // the display choice in its stream settings.
-        onSourceDisplaysUpdated: (displaysJson, current) => {
-            homeView.sourceDisplaysSeen(displaysJson, current);
-        }
-
-        onCapabilitiesUpdated: (displaysJson, encodersJson, gpuInfo, hostOs, sourcesJson) => {
-            dashboardView.settingsModal.updateCapabilities(displaysJson, encodersJson, sourcesJson);
-            homeView.peerCapabilities(displaysJson, encodersJson, hostOs, sourcesJson);
-        }
     }
 
     // Periodic timer to poll statistics from Rust backend
@@ -735,7 +661,7 @@ ApplicationWindow {
         }
     }
 
-    // Periodic timer to poll events (REST / WS login / pairing results) from Rust backend
+    // Periodic timer to poll events (links arriving, links that failed) from the Rust backend
     Timer {
         interval: 100
         running: true
@@ -1117,11 +1043,17 @@ ApplicationWindow {
     // Overlay Menu Bar
     LunarisMenuBar {
         id: menuBar
+        objectName: "menuBar"
         anchors.horizontalCenter: parent.horizontalCenter
         isPointerLocked: window.isPointerLocked
         showStats: window.showStats
         hideLocalCursor: window.hideLocalCursor
         hostOs: window.agentHostOs
+
+        onSessionSettingsRequested: {
+            if (sessionSettings.opened) sessionSettings.close();
+            else sessionSettings.open();
+        }
 
         onSendKeysRequested: (keys) => {
             window.sendKeyCombo(keys);
@@ -1130,7 +1062,7 @@ ApplicationWindow {
 
         onSendFilesRequested: {
             if (!ViewPrefs.fileTransfer) {
-                shareToast.text = I18n.t("File transfer is turned off in Settings");
+                shareToast.text = I18n.t("File transfer is turned off in the session settings");
                 shareToast.opacity = 1;
                 shareToastTimer.restart();
                 return;
@@ -1195,9 +1127,7 @@ ApplicationWindow {
                 Qt.quit();
             } else {
                 window.isStreamMode = false;
-                if (homeView.dashboard.isLoggedIn) bridge.fetchHosts();
-                homeView.setStatus("", false);
-                homeView.forceActiveFocus();
+                sessionSettings.close();
             }
         }
     }
@@ -1213,7 +1143,7 @@ ApplicationWindow {
             dropHint.visible = false;
             if (!drop.hasUrls) return;
             if (!ViewPrefs.fileTransfer) {
-                shareToast.text = I18n.t("File transfer is turned off in Settings");
+                shareToast.text = I18n.t("File transfer is turned off in the session settings");
                 shareToast.opacity = 1;
                 shareToastTimer.restart();
                 return;
@@ -1243,12 +1173,23 @@ ApplicationWindow {
         }
     }
 
-    // Files of a remote computer (its own connection): from a computer card,
-    // the session menu, or files dropped on the stream.
+    // Files of the remote computer (its own connection): from the session
+    // menu, or files dropped on the stream.
     FileManager {
         id: fileManager
         anchors.fill: parent
         z: 960
+    }
+
+    // This device's settings for the session (the menu's gear).
+    SessionSettings {
+        id: sessionSettings
+        showStats: window.showStats
+        renderBackend: window.renderBackend
+        systemKeysKind: window.systemKeysKind
+        onStatsToggled: (on) => window.showStats = on
+        onRenderBackendPicked: (backend) => menuBar.setRenderBackend(backend)
+        onClosed: if (window.isStreamMode) rootContainer.forceActiveFocus()
     }
 
     // Clipboard/file sharing news (progress, saved, errors).
@@ -1360,7 +1301,8 @@ ApplicationWindow {
     }
     }
 
-    // Update notice above Home (UpdateBanner.qml), from the updater's state.
+    // Update notice above the window without a link (UpdateBanner.qml),
+    // from the updater's state.
     UpdateBanner {
         id: updateBanner
         status: window.updateStatus
@@ -1371,36 +1313,20 @@ ApplicationWindow {
         z: 9999
     }
 
-    // Home: this computer, remote computers, settings
-    Home {
-        id: homeView
+    // Started without a link: where streams come from (the server's web
+    // page), the trusted servers, language, theme, updates, version.
+    Launcher {
+        id: launcherView
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.bottom: parent.bottom
         anchors.top: updateBanner.visible ? updateBanner.bottom : parent.top
         visible: !window.isStreamMode
-        focus: !window.isStreamMode
-
-        onStartSessionRequested: (server, token, hostId, hostName, appId, res, fps, codec, bitrate, queueLimit, disableCuda, renderBackend, inputProtocol, encoder, displayId, sourceId) => {
-            window.renderBackend = String(renderBackend || (disableCuda ? "software" : "auto_gpu")).toLowerCase();
-            window.useCuda = window.renderBackend !== "software";
-            window.isStreamMode = true;
-            var parts = res.split("x");
-            if (parts.length === 2) {
-                window.streamWidth = parseInt(parts[0]);
-                window.streamHeight = parseInt(parts[1]);
-            }
-            bridge.startGameSessionWithBackend(server, token, hostId, hostName, appId, res, fps, codec, bitrate, queueLimit, disableCuda, window.renderBackend, inputProtocol, encoder, displayId, sourceId || "");
-            bridge.setVideoSink(videoOutput.videoSink);
-            bridge.requestSettings();
-            rootContainer.forceActiveFocus();
-        }
+        updateStatus: window.updateStatus
     }
     }
 
     property bool isStreamMode: false
-    // The server sign-in and computer list (inside Home's Server tab).
-    readonly property var dashboardView: homeView.dashboard
     property int streamWidth: 1920
     property int streamHeight: 1080
 
@@ -1416,8 +1342,6 @@ ApplicationWindow {
         function onFileTransferChanged() { window.applySharing(); }
         function onGamepadChanged() { window.applySharing(); }
         function onSystemKeysChanged() { bridge.saveStore("view_prefs", ViewPrefs.toJson()); }
-        function onComputerViewChanged() { bridge.saveStore("view_prefs", ViewPrefs.toJson()); }
-        function onComputerTypeChanged() { bridge.saveStore("view_prefs", ViewPrefs.toJson()); }
     }
     function applySharing() {
         bridge.setShareOptions(ViewPrefs.clipboardSync, ViewPrefs.fileTransfer);
@@ -1441,13 +1365,7 @@ ApplicationWindow {
         window.x = (Screen.width - window.width) / 2;
         window.y = (Screen.height - window.height) / 2;
 
-        window.autostartEnabled = bridge.isAutostartEnabled();
-
-        if (bridge.shouldStartMinimized()) {
-            window.visible = false;
-        } else {
-            window.visible = true;
-        }
+        window.visible = true;
 
         if (bridge.hasConnectionArgs()) {
             window.isStreamMode = true;
@@ -1463,14 +1381,13 @@ ApplicationWindow {
 
     // The updater checks by itself (shortly after the start, then daily,
     // unless turned off); this shows its state. Once an update is
-    // installed the app quits and starts again with its agent and server.
+    // installed the app quits and starts again.
     function pollUpdate() {
         var s;
         try { s = JSON.parse(bridge.updateStatus()); } catch (e) { return; }
         window.updateStatus = s;
         if (s.state === "restart" && bridge.updateRestart()) {
             window.exitRequested = true;
-            bridge.stopLocalAgent();
             Qt.quit();
         }
     }
@@ -1483,111 +1400,8 @@ ApplicationWindow {
     }
 
 
-    // ---------------------------------------------------------------
-    // Someone connected without the password: let them in? (the app's
-    // agent asks, see host.rs / agent approval.rs). Like AnyDesk's accept
-    // window and RustDesk's "accept via click".
-    // ---------------------------------------------------------------
-    Timer {
-        interval: 600
-        running: true
-        repeat: true
-        onTriggered: {
-            var list = [];
-            try { list = JSON.parse(bridge.hostApprovals()); } catch (e) { list = []; }
-            if (list.length === 0) {
-                if (approvalDialog.opened) approvalDialog.close();
-                approvalDialog.question = null;
-                return;
-            }
-            var q = list[0];
-            if (!approvalDialog.question || approvalDialog.question.id !== q.id) {
-                approvalDialog.question = q;
-                approvalDialog.secondsLeft = q.timeout_s || 30;
-                if (!window.visible) window.show();
-                window.raise();
-                window.requestActivate();
-                window.alert(0);
-                approvalDialog.open();
-            }
-        }
-    }
-
-    DialogFrame {
-        id: approvalDialog
-        property var question: null
-        property int secondsLeft: 30
-        width: 440
-        closePolicy: Popup.NoAutoClose
-        function answer(accept) {
-            if (question) bridge.hostAnswerApproval(question.id, accept);
-            question = null;
-            close();
-        }
-        Timer {
-            interval: 1000
-            repeat: true
-            running: approvalDialog.opened
-            onTriggered: if (approvalDialog.secondsLeft > 0) approvalDialog.secondsLeft--
-        }
-        contentItem: ColumnLayout {
-            spacing: 12
-            RowLayout {
-                spacing: 12
-                Rectangle {
-                    width: 40; height: 40; radius: 10
-                    color: Theme.accentA(0.15)
-                    Icon { anchors.centerIn: parent; name: "monitor"; size: 20; color: Theme.accentFg }
-                }
-                ColumnLayout {
-                    Layout.fillWidth: true
-                    spacing: 2
-                    Text {
-                        Layout.fillWidth: true
-                        text: approvalDialog.question && approvalDialog.question.kind === "files"
-                            ? I18n.t("Someone wants to transfer files")
-                            : I18n.t("Someone wants to control this computer")
-                        color: Theme.textStrong
-                        font.pixelSize: 16
-                        font.weight: Font.DemiBold
-                        wrapMode: Text.WordWrap
-                    }
-                    Text {
-                        Layout.fillWidth: true
-                        // (Who asks is what the other side says of itself.)
-                        textFormat: Text.PlainText
-                        text: approvalDialog.question ? approvalDialog.question.requester : ""
-                        color: Theme.text
-                        font.pixelSize: 13
-                        elide: Text.ElideRight
-                    }
-                }
-            }
-            Text {
-                Layout.fillWidth: true
-                text: approvalDialog.question && approvalDialog.question.kind === "files"
-                    ? I18n.t("They will be able to see, download and upload files on this computer.")
-                    : I18n.t("They will see your screen and can use the keyboard and mouse. Only accept people you know.")
-                color: Theme.textMuted
-                font.pixelSize: 12
-                wrapMode: Text.WordWrap
-            }
-            RowLayout {
-                Layout.fillWidth: true
-                spacing: 8
-                Text {
-                    Layout.fillWidth: true
-                    text: I18n.t("Declined automatically in %1 s").arg(approvalDialog.secondsLeft)
-                    color: Theme.textMuted
-                    font.pixelSize: 11
-                }
-                SecondaryButton { text: I18n.t("Decline"); onClicked: approvalDialog.answer(false) }
-                PrimaryButton { text: I18n.t("Accept"); onClicked: approvalDialog.answer(true) }
-            }
-        }
-    }
-    // A lunaris:// link to a server other than the one this app is signed in
-    // to: nothing connects until the user says so.
+    // A lunaris:// link to a server that is not trusted: nothing connects
+    // until the user says so.
     DialogFrame {
         id: linkDialog
         property string server: ""
@@ -1595,6 +1409,7 @@ ApplicationWindow {
         property bool answered: false
         width: 460
         function openIfPending() {
+            trustBox.checked = false;
             var raw = bridge.pendingLinkInfo();
             if (raw === "") return false;
             var info = {};
@@ -1608,15 +1423,10 @@ ApplicationWindow {
         function answer(accept) {
             if (answered) return;
             answered = true;
-            var ok = bridge.answerPendingLink(accept);
+            // Yes: the stream starts with deeplinkReceived once the app has
+            // traded the link's one-time ticket with the server.
+            bridge.answerPendingLink(accept, accept && trustBox.checked);
             close();
-            if (accept && ok) {
-                window.isStreamMode = true;
-                bridge.setVideoSink(videoOutput.videoSink);
-                bridge.startStream();
-                bridge.requestSettings();
-                rootContainer.forceActiveFocus();
-            }
         }
         onOpened: linkCancelButton.forceActiveFocus()
         onClosed: answer(false)
@@ -1646,9 +1456,16 @@ ApplicationWindow {
                 font.pixelSize: 12
                 elide: Text.ElideRight
             }
+            CheckRow {
+                id: trustBox
+                Layout.fillWidth: true
+                text: I18n.t("Always trust this server")
+            }
             Text {
                 Layout.fillWidth: true
-                text: I18n.t("Clipboard and file transfer stay off in this session.")
+                text: trustBox.checked
+                    ? I18n.t("Links to this server will connect without asking, with clipboard and file transfer.")
+                    : I18n.t("Clipboard and file transfer stay off in this session.")
                 color: Theme.textMuted
                 font.pixelSize: 12
                 wrapMode: Text.WordWrap

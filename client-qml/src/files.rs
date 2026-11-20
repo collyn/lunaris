@@ -231,8 +231,7 @@ fn conn() -> Result<Arc<Conn>, String> {
 
 /// Opens the file connection to `host_id` (closing any other): to its own
 /// files, or to those of `source_id`, a computer it shows through a
-/// connector. For a computer the app added for itself the server is
-/// "bridge:" (own_computers.rs) and the source is that computer.
+/// connector (the computer of the session being shown).
 pub fn open(server_url: String, token: String, host_id: String, host_name: String, source_id: Option<String>) {
     let source_id = source_id.filter(|id| !id.is_empty());
     close();
@@ -294,18 +293,6 @@ impl PeerConnectionEventHandler for FilesHandler {
 }
 
 async fn connect(server_url: String, token: String, host_id: String, source_id: Option<String>) -> Result<(), String> {
-    // A computer the app added for itself: the session goes to the app's
-    // helper on this computer (started now if it is not running), as the
-    // stream's does. Its address and password never leave this task.
-    let (server_url, token) = if crate::own_computers::is_bridge(&server_url) {
-        let (host, source) = (host_id.clone(), source_id.clone());
-        let (address, password) = tokio::task::spawn_blocking(move || crate::own_computers::session_endpoint(&host, source.as_deref()))
-            .await
-            .map_err(|e| e.to_string())??;
-        (format!("ws://{}", address), password)
-    } else {
-        (server_url, token)
-    };
     // Straight to an agent: TLS and a password proof, no password in the URL
     // (the same connection the stream uses).
     let direct = (host_id == "direct")
@@ -313,13 +300,13 @@ async fn connect(server_url: String, token: String, host_id: String, source_id: 
         .flatten()
         .map(|a| a.trim_end_matches('/').to_string());
     let ws = if let Some(address) = direct {
-        agent::direct::connect(&address, "/ws/client", &token, &crate::host::client_name_query())
+        agent::direct::connect(&address, "/ws/client", &token, &crate::session_info::client_name_query())
             .await
             .map_err(|e| format!("cannot reach the computer: {}", e))?
             .ws
     } else {
         let encoded: String = url::form_urlencoded::byte_serialize(token.as_bytes()).collect();
-        let ws_url = format!("{}/ws/client?token={}{}", server_url.trim_end_matches('/').replacen("http", "ws", 1), encoded, crate::host::client_name_query());
+        let ws_url = format!("{}/ws/client?token={}{}", server_url.trim_end_matches('/').replacen("http", "ws", 1), encoded, crate::session_info::client_name_query());
         tokio::time::timeout(Duration::from_secs(10), tokio_tungstenite::connect_async(ws_url.as_str()))
             .await
             .map_err(|_| "cannot reach the server".to_string())?
@@ -354,7 +341,7 @@ async fn connect(server_url: String, token: String, host_id: String, source_id: 
                 match sig {
                     SignalingMessage::Error { message } => return Err(message),
                     SignalingMessage::AccessRequest { status, .. } => {
-                        if let Some(refusal) = crate::host::access_refusal(&status) {
+                        if let Some(refusal) = crate::session_info::access_refusal(&status) {
                             return Err(refusal);
                         }
                         if status == "waiting" {

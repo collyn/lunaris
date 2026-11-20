@@ -1,0 +1,65 @@
+# Lunaris server: accounts, host directory, signaling, TURN relay and the web
+# console (the only place it is managed from). Installed by the lunaris-server
+# package (scripts/packaging/linux/make-server-deb.sh).
+#
+# Settings: /etc/lunaris/server.env (KEY=value, see `lunaris-server help`);
+# restart the service after editing it.
+# Data: /var/lib/lunaris (database, agent token, sign-in key, TLS certificate,
+# setup_code.txt until the first admin is made), owned by the lunaris user.
+#
+# The server gateway (server/src/gateway.rs): with lunaris-agent installed the
+# server runs `lunaris-agent --cli --bridge-only` as its child, under this
+# same sandbox (config in /var/lib/lunaris/gateway). It only connects out to
+# the RustDesk, Sunshine, RDP and VNC computers added through it and listens
+# on 127.0.0.1; it encodes in software (PrivateDevices: no GPU), which works
+# with MemoryDenyWriteExecute and @system-service (x264/x265/SVT-AV1 asm is not
+# JIT). LUNARIS_GATEWAY=off in server.env turns it off for good.
+[Unit]
+Description=Lunaris remote desktop server
+Documentation=https://github.com/collyn/lunaris
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/lunaris-server run
+EnvironmentFile=-/etc/lunaris/server.env
+Environment=LUNARIS_DATA_DIR=/var/lib/lunaris
+User=lunaris
+Group=lunaris
+WorkingDirectory=/var/lib/lunaris
+StateDirectory=lunaris
+StateDirectoryMode=0700
+Restart=on-failure
+RestartSec=3
+
+# Only for a port below 1024 in server.env (SERVER_PORT=80, LUNARIS_HTTPS_PORT=443).
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+# AF_NETLINK: the TURN relay and WebRTC list the network interfaces.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

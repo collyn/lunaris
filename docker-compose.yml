@@ -3,6 +3,11 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      # The server gateway (reach RustDesk, Sunshine, RDP and VNC computers
+      # through the server itself): put the agent's AppImage of the same
+      # release in the image (amd64; see the Dockerfile).
+      # args:
+      #   AGENT_APPIMAGE_URL: https://github.com/collyn/lunaris/releases/download/v<version>/lunaris-agent-linux-x86_64.AppImage
     container_name: lunaris-server
     restart: unless-stopped
     ports:
@@ -12,14 +17,16 @@ services:
       - "3478:3478/udp"
       - "49160-49260:49160-49260/udp"
     volumes:
-      # Database, agent token and the initial admin password live here.
+      # Database, agent token and keys live here (and, until the first admin
+      # is made, setup_code.txt).
       - lunaris-data:/data
     environment:
       - SERVER_PORT=8090
       - RUST_LOG=info
-      # Initial admin password (first start only). When unset a random one is
-      # generated: read it with
-      # `docker exec lunaris-server cat /data/initial_admin_password.txt`.
+      # Without it, the web console's setup page makes the first admin with the
+      # one-time code from `docker exec lunaris-server cat /data/setup_code.txt`.
+      # With it (first start only), the `admin` account gets this password and
+      # there is no setup page:
       # - LUNARIS_ADMIN_PASSWORD=change-me
       # Token agents use to register (generated on first start when unset; read it with
       # `docker exec lunaris-server cat /data/server_token.txt`):
@@ -29,6 +36,9 @@ services:
       # Without it the relay stays off (the container's own address is
       # unreachable from outside).
       # - LUNARIS_TURN_PUBLIC_IP=192.168.1.10
+      # The server gateway: off|on (otherwise switched on the web page's
+      # Server tab; on by default when the image has the agent).
+      # - LUNARIS_GATEWAY=off
 
 volumes:
   lunaris-data:

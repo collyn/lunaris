@@ -80,5 +80,6 @@ build-all:
     paths:
       - target/release/server
       - target/release/client-desktop
-      - target/release/agent
+      - target/release/lunaris-agent
+      - target/release/lunaris-approval-helper
     expire_in: 1 week

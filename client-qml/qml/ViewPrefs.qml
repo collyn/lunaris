@@ -1,8 +1,9 @@
 pragma Singleton
 import QtQuick
 
-// Settings of this device's viewing, not of a remote computer: applied right
-// away and saved by main.qml (store "view_prefs"). The web client keeps the
+// Settings of this device's viewing, not of a remote computer (the session
+// menu's settings, SessionSettings.qml): applied right away and saved by
+// main.qml (store "view_prefs"). The web client keeps the
 // same ones in its browser (streamOptions.ts).
 QtObject {
     // "fit" whole picture | "fill" cover the window | "stretch" | "native" 1:1
@@ -24,12 +25,6 @@ QtObject {
     // streamingpreferences.cpp 155-156); "always" is how RustDesk works, and
     // the default here, as for a remote desktop.
     property string systemKeys: "always"
-    // The lists of computers (Home's and the Server tab's): "grid" of cards
-    // or "list" of rows, and the type of computer shown ("" = all; a
-    // connector's id or "lunaris"). The web client keeps the same in its
-    // browser (computerCards.ts).
-    property string computerView: "grid"
-    property string computerType: ""
 
     readonly property var displayModes: [
         { value: "fit", label: "Fit window" },
@@ -41,7 +36,7 @@ QtObject {
     function toJson() {
         return JSON.stringify({ displayMode: displayMode, audioEnabled: audioEnabled, volume: volume,
                                 recordMicrophone: recordMicrophone, clipboardSync: clipboardSync, fileTransfer: fileTransfer, gamepad: gamepad,
-                                systemKeys: systemKeys, computerView: computerView, computerType: computerType });
+                                systemKeys: systemKeys });
     }
     function fromJson(text) {
         if (!text) return;
@@ -55,8 +50,6 @@ QtObject {
             if (typeof p.fileTransfer === "boolean") fileTransfer = p.fileTransfer;
             if (typeof p.gamepad === "boolean") gamepad = p.gamepad;
             if (["off", "fullscreen", "always"].indexOf(p.systemKeys) !== -1) systemKeys = p.systemKeys;
-            if (["grid", "list"].indexOf(p.computerView) !== -1) computerView = p.computerView;
-            if (typeof p.computerType === "string" && /^[A-Za-z0-9._-]{0,64}$/.test(p.computerType)) computerType = p.computerType;
         } catch (e) { console.log("view_prefs: " + e); }
     }
 }

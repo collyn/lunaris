@@ -52,6 +52,13 @@ use tracing::{debug, info, warn};
 use crate::approval::ApproveMode;
 use crate::direct::{Limits, UnauthSlot};
 
+/// This process's RustDesk login limits (as direct.rs `process_limits`, but
+/// apart from the direct listener's).
+fn process_limits() -> Arc<Mutex<Limits>> {
+    static LIMITS: std::sync::OnceLock<Arc<Mutex<Limits>>> = std::sync::OnceLock::new();
+    LIMITS.get_or_init(Arc::default).clone()
+}
+
 /// rustdesk/src/rendezvous_mediator.rs `get_direct_port`: RENDEZVOUS_PORT + 2
 /// (hbb_common/src/config.rs `RENDEZVOUS_PORT` = 21116). It is also the port
 /// the client adds when only an address is typed (rustdesk/src/client.rs
@@ -112,6 +119,7 @@ pub async fn run_listener(config: RustdeskConfig) -> anyhow::Result<()> {
         Arc::new(session::MediaScreen),
         session::system_asker(),
         Arc::new(crate::approval::attended),
+        process_limits(),
     )
     .await
 }
@@ -124,6 +132,7 @@ pub(crate) async fn serve_listener(
     screen: Arc<dyn session::Screen>,
     asker: session::Asker,
     attended: Arc<dyn Fn() -> bool + Send + Sync>,
+    limits: Arc<Mutex<Limits>>,
 ) -> anyhow::Result<()> {
     let local = listener.local_addr().map(|a| a.to_string()).unwrap_or_default();
     info!(
@@ -135,13 +144,18 @@ pub(crate) async fn serve_listener(
     );
     let ctx = Arc::new(Shared {
         config,
-        limits: Arc::new(Mutex::new(Limits::default())),
+        // Kept while the listener starts again (`run_listener`): a lockout
+        // is not undone by new settings.
+        limits,
         screen,
         asker,
         attended,
         viewing: AtomicBool::new(false),
     });
+    // The connections end with the listener (its settings changed).
+    let mut connections = tokio::task::JoinSet::new();
     loop {
+        while connections.try_join_next().is_some() {}
         let (stream, peer) = match listener.accept().await {
             Ok(conn) => conn,
             Err(e) => {
@@ -160,7 +174,7 @@ pub(crate) async fn serve_listener(
         let _ = stream.set_nodelay(true);
         debug!("RustDesk direct access from {}", peer);
         let ctx = ctx.clone();
-        tokio::spawn(async move {
+        connections.spawn(async move {
             let reason = session::serve(stream, peer, slot, ctx).await;
             // A session's start and end are logged in session.rs; this also
             // covers every port scan.

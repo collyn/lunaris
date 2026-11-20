@@ -13,6 +13,9 @@ use common::{
 use webrtc::peer_connection::{PeerConnection, RTCIceCandidateInit, RTCSessionDescription};
 
 pub mod approval;
+#[cfg(target_os = "linux")]
+mod autostart;
+mod cli;
 mod bridge;
 pub mod bridge_agent;
 mod buffer;
@@ -25,7 +28,9 @@ pub mod pairing;
 mod rtcp_forward;
 pub mod connector;
 pub mod rustdesk;
+pub mod settings;
 mod share;
+mod status;
 mod video;
 #[cfg(target_os = "windows")]
 pub mod win_service;
@@ -53,40 +58,72 @@ use crate::bridge::{
 use crate::pairing::AgentConfig;
 
 #[derive(Parser, Debug)]
-#[command(author, version, about, long_about = None)]
+#[command(
+    name = "lunaris-agent",
+    author,
+    version,
+    about = "The Lunaris agent: shares this computer with a Lunaris server (a daemon, no window)",
+    long_about = "The Lunaris agent: shares this computer with a Lunaris server. It has no window: \
+it runs as a service and is managed from the server's web page.\n\n\
+  lunaris-agent --enroll --server URL     join a server (install token in LUNARIS_INSTALL_TOKEN)\n\
+  lunaris-agent --cli                     run the agent (what the services run)\n\
+  lunaris-agent status                    server, connection, addresses, settings\n\
+  lunaris-agent set KEY VALUE             change a setting (then restart the agent)\n\n\
+--system uses the headless system service's config (Linux: /var/lib/lunaris-agent, \
+Windows: the LunarisAgentService's, %ProgramData%\\Lunaris); run it as root / administrator."
+)]
 struct Args {
-    #[arg(long, default_value = "127.0.0.1")]
+    #[command(subcommand)]
+    command: Option<Command>,
+
+    #[arg(long, default_value = "127.0.0.1", hide = true)]
     host_ip: String,
 
-    #[arg(long)]
+    #[arg(long, hide = true)]
     pair: bool,
 
-    #[arg(long)]
+    #[arg(long, hide = true)]
     pin: Option<String>,
 
+    /// With --enroll: the Lunaris server (https://host:port, wss://..., host:port)
     #[arg(long)]
     server: Option<String>,
 
+    /// This computer's name on the server (default: the name saved by
+    /// --enroll, else the host name)
     #[arg(long)]
     name: Option<String>,
 
+    /// Run the agent in the foreground (what the services run). The agent
+    /// has no window, so this is also what happens without any command.
     #[arg(long)]
     cli: bool,
 
-    /// Config file (default: %APPDATA%\\lunaris-agent / ~/.config/lunaris-agent,
-    /// or ./agent_config.json when it exists)
-    #[arg(long)]
+    /// Config file (default: ~/.config/lunaris-agent/agent_config.json,
+    /// %APPDATA%\lunaris-agent\agent_config.json, or ./agent_config.json
+    /// when it exists)
+    #[arg(long, global = true, conflicts_with = "system")]
     config: Option<String>,
 
+    /// Use the config of the system service instead of the user's: Linux
+    /// /var/lib/lunaris-agent/agent_config.json (lunaris-agent-system.service,
+    /// headless machines), Windows %ProgramData%\Lunaris\agent_config.json
+    /// (the LunarisAgentService service). Needs root / an elevated prompt.
+    #[arg(long, global = true)]
+    system: bool,
+
+    /// Merge the settings of another agent_config.json into the config
     #[arg(long)]
     import_config: Option<String>,
 
     /// Join a Lunaris server with an install token and exit (what the
     /// one-line installer runs): saves --server, the token (from
     /// --install-token or LUNARIS_INSTALL_TOKEN), a new agent key and
-    /// --name in the config, and starts the agent at login (Linux; on
-    /// Windows the service does). The token is used once, at the first
-    /// connection.
+    /// --name in the config, and sets up the start: Linux the systemd user
+    /// service lunaris-agent.service (desktop session; a login autostart
+    /// entry where systemd is missing), or with --system the system service
+    /// lunaris-agent-system.service; on Windows the service does. The token
+    /// is used once, at the first connection.
     #[arg(long, requires = "server")]
     enroll: bool,
 
@@ -100,7 +137,9 @@ struct Args {
     #[arg(long, requires = "enroll", value_name = "HEX")]
     server_cert_sha256: Option<String>,
 
-    #[arg(long)]
+    /// The agent window's start at login (removed): Linux and macOS run the
+    /// agent as with --cli; Windows exits (the service runs the agent).
+    #[arg(long, hide = true)]
     minimized: bool,
 
     /// Try to open each encoder at 1920x1080@60 and print which ones work, then exit
@@ -116,14 +155,25 @@ struct Args {
     #[arg(long)]
     direct_port: Option<u16>,
 
-    /// The app shows the "accept this connection?" questions: they go to
-    /// stdout and the answers come on stdin (see approval.rs); logs go to
-    /// stderr.
+    /// Allow the administrators of the Lunaris server to change this
+    /// computer's settings (and see its access password); saved in the
+    /// config as `allow_server_settings`. Works with --enroll too.
+    #[arg(long, conflicts_with = "deny_server_settings")]
+    allow_server_settings: bool,
+
+    /// The server may only read this computer's settings (the default);
+    /// saved in the config.
     #[arg(long)]
+    deny_server_settings: bool,
+
+    /// The "accept this connection?" questions go to stdout and the answers
+    /// come on stdin (see approval.rs); logs go to stderr. Without it the
+    /// approval helper (lunaris-approval-helper) answers, when one runs.
+    #[arg(long, hide = true)]
     approval_stdio: bool,
 
-    /// The Lunaris app's helper for computers of other types it added for
-    /// itself (see bridge_agent.rs): this computer only, sources only.
+    /// The Lunaris server's gateway (see bridge_agent.rs): listens on
+    /// 127.0.0.1 only and shows sources only, never this computer.
     #[arg(long, hide = true)]
     bridge_only: bool,
 
@@ -151,6 +201,30 @@ struct Args {
     uninstall_service: bool,
 }
 
+#[derive(clap::Subcommand, Debug)]
+enum Command {
+    /// Show the server, whether the agent runs and is connected, the
+    /// addresses for direct connections and the settings (the access
+    /// password only with --show-password)
+    Status {
+        /// Also print the access password
+        #[arg(long)]
+        show_password: bool,
+    },
+    /// Change one setting in the config. A running agent uses it once it
+    /// starts again (systemctl --user restart lunaris-agent, systemctl
+    /// restart lunaris-agent-system, or restart the Windows service).
+    /// The server's administrators change the same settings on its web
+    /// page when this computer allows it (server-settings allow).
+    Set {
+        #[arg(value_enum)]
+        key: cli::SettingKey,
+        /// on|off for switches; `password`: `random`, or `-` to read it from
+        /// stdin; `server-token`: `-` (read from stdin)
+        value: String,
+    },
+}
+
 /// `--probe-encoders`: open each codec's encoder for real and report it.
 fn probe_encoders() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let _ = tracing_subscriber::registry()
@@ -172,29 +246,33 @@ fn probe_encoders() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     Ok(())
 }
 
+/// The config of the system service (`--system`), where there is one.
+pub fn system_config_path() -> Option<std::path::PathBuf> {
+    #[cfg(target_os = "linux")]
+    {
+        Some(std::path::PathBuf::from(SYSTEM_DATA_DIR).join("agent_config.json"))
+    }
+    #[cfg(target_os = "windows")]
+    {
+        Some(win_service::data_dir().join("agent_config.json"))
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    {
+        None
+    }
+}
+
+/// Linux: the data folder of `lunaris-agent-system.service` (its
+/// StateDirectory), owned by the `lunaris-agent` user.
+#[cfg(target_os = "linux")]
+pub const SYSTEM_DATA_DIR: &str = "/var/lib/lunaris-agent";
+
 /// Runs the agent with command-line arguments (the first one is the program
-/// name), headless, as `lunaris agent` does.
+/// name): the `lunaris-agent` program.
 pub fn run<I, T>(args: I) -> std::process::ExitCode
 where
     I: IntoIterator<Item = T>,
     T: Into<std::ffi::OsString> + Clone,
-{
-    run_with_gui::<I, T, fn() -> std::io::Stderr>(args, None)
-}
-
-/// A desktop window around the agent: where log output goes, and the
-/// function that runs the window (the standalone `agent` binary has one).
-pub struct Gui<W> {
-    pub log_writer: W,
-    pub run: fn(minimized: bool),
-}
-
-/// Like [`run`]; without `--cli` (or `--pair`) it opens `gui` instead.
-pub fn run_with_gui<I, T, W>(args: I, gui: Option<Gui<W>>) -> std::process::ExitCode
-where
-    I: IntoIterator<Item = T>,
-    T: Into<std::ffi::OsString> + Clone,
-    W: for<'a> tracing_subscriber::fmt::MakeWriter<'a> + Send + Sync + 'static,
 {
     let args: Vec<std::ffi::OsString> = args.into_iter().map(Into::into).collect();
     // The root capture service (Linux, see capture_service.rs).
@@ -229,6 +307,13 @@ where
         if args.service_run {
             win_service::service_run_main();
         }
+        // The start at login of the agent window that once was (HKCU Run,
+        // `--minimized`): the LunarisAgentService service runs the agent
+        // now, a second one in the user's session would only compete.
+        if args.minimized && !args.cli {
+            eprintln!("The Lunaris agent has no window any more: it runs as the LunarisAgentService service.");
+            return std::process::ExitCode::SUCCESS;
+        }
     }
     let runtime = match tokio::runtime::Runtime::new() {
         Ok(rt) => rt,
@@ -237,7 +322,7 @@ where
             return std::process::ExitCode::FAILURE;
         }
     };
-    match runtime.block_on(main_async(args, gui)) {
+    match runtime.block_on(main_async(args)) {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("error: {e}");
@@ -246,14 +331,17 @@ where
     }
 }
 
-async fn main_async<W>(args: Args, gui: Option<Gui<W>>) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
-where
-    W: for<'a> tracing_subscriber::fmt::MakeWriter<'a> + Send + Sync + 'static,
-{
+async fn main_async(args: Args) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if args.probe_encoders {
         return probe_encoders();
     }
-    crate::pairing::set_config_path(args.config.clone());
+    let config_arg = if args.system {
+        let path = system_config_path().ok_or("--system: there is no system service on this platform")?;
+        Some(path.to_string_lossy().into_owned())
+    } else {
+        args.config.clone()
+    };
+    crate::pairing::set_config_path(config_arg);
     let config_path = crate::pairing::config_path().to_string();
 
     // If import_config is specified, we perform the import first
@@ -276,41 +364,17 @@ where
         info!("Configuration imported and merged successfully!");
     }
 
+    match &args.command {
+        Some(Command::Status { show_password }) => return cli::status(&config_path, *show_password).await,
+        Some(Command::Set { key, value }) => return cli::set(&config_path, *key, value),
+        None => {}
+    }
+
     if args.enroll {
         return enroll(&args, &config_path);
     }
 
-    if let Some(gui) = gui {
-        if !args.cli && !args.pair {
-            // Log output goes to the window.
-            let _ = tracing_subscriber::registry()
-                .with(tracing_subscriber::EnvFilter::new(
-                    std::env::var("RUST_LOG").unwrap_or_else(|_| {
-                        {
-                            if cfg!(debug_assertions) {
-                                "info,agent=info,webrtc_sctp=off,dtls=error,rtc_sctp=off,rtc_dtls=error"
-                            } else {
-                                "info,agent=info,lunaris_media=info,webrtc_sctp=off,dtls=error,webrtc_ice=warn,rtc_sctp=off,rtc_dtls=error,rtc_ice=warn"
-                            }
-                        }
-                        .into()
-                    }),
-                ))
-                .with(
-                    tracing_subscriber::fmt::layer()
-                        .with_writer(gui.log_writer)
-                        .with_ansi(false),
-                )
-                .try_init();
-
-            info!("Launching Lunaris Agent in Desktop GUI mode...");
-            (gui.run)(args.minimized);
-            return Ok(());
-        }
-    }
-
-    // CLI mode execution
-    // Init standard tracing logger
+    // The agent itself (`--cli`, or nothing given: there is no window).
     let _ = tracing_subscriber::registry()
         .with(tracing_subscriber::EnvFilter::new(
             std::env::var("RUST_LOG").unwrap_or_else(|_| {
@@ -327,6 +391,9 @@ where
         approval::attach_stdio();
     }
 
+    if args.minimized && !args.cli {
+        info!("Started by the agent window's old login entry (--minimized): running the agent without a window");
+    }
     info!("Launching Lunaris Agent in CLI mode...");
 
     // --name, else the name saved by --enroll, else the host name.
@@ -343,20 +410,42 @@ where
     }
 
     if args.bridge_only {
-        // Its own config file, which may not be there yet (no computer
-        // added): then there is nothing to show, and every session says so.
-        let config = crate::pairing::load_config(&config_path).unwrap_or_else(|_| crate::pairing::new_config());
+        // Its own config file, made on the first start (the id it is known
+        // by stays the same, and the sources added through it are kept there).
+        let config = bridge_agent::load_or_make_config(&config_path)?;
         return bridge_agent::run(config, name).await;
     }
 
-    // Load or create agent config
-    let mut config = match crate::pairing::load_config(&config_path) {
-        Ok(c) => c,
-        Err(e) => {
-            error!("Failed to load agent config from {}: {:?}", config_path, e);
-            std::process::exit(1);
+    // Load the config; a first start without one makes a new one (no
+    // server: direct connections only, once turned on), as the agent
+    // window did. One that exists but can't be read is left alone.
+    let mut config = if std::path::Path::new(&config_path).exists() {
+        match crate::pairing::load_config(&config_path) {
+            Ok(c) => c,
+            Err(e) => {
+                error!("Failed to load agent config from {}: {:?}", config_path, e);
+                std::process::exit(1);
+            }
         }
+    } else {
+        let config = crate::pairing::new_config();
+        if let Some(dir) = std::path::Path::new(&config_path).parent().filter(|d| !d.as_os_str().is_empty()) {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        match crate::pairing::save_config(&config, &config_path) {
+            Ok(()) => info!("No config yet: made a new one in {} (join a server with --enroll)", config_path),
+            Err(e) => warn!("Could not save a new config in {}: {}", config_path, e),
+        }
+        config
     };
+
+    if let Some(allow) = server_settings_flag(&args) {
+        config.allow_server_settings = allow;
+        match crate::pairing::update_config_file(&config_path, &config, |c| c.allow_server_settings = allow) {
+            Ok(()) => info!("Changes of this computer's settings from the server: {}", if allow { "allowed" } else { "not allowed" }),
+            Err(e) => warn!("Could not save allow_server_settings to {}: {}", config_path, e),
+        }
+    }
 
     if args.direct || args.direct_port.is_some() {
         config.direct_enabled = true;
@@ -375,23 +464,32 @@ where
             println!("    {}:{}", addr, config.direct_port);
         }
         // Printed, not logged, and only to a terminal: when stdout is a file
-        // or a pipe (the Windows service's log, the app) it would be stored.
+        // or a pipe (the Windows service's log, the journal) it would be
+        // stored. `lunaris-agent status --show-password` shows it later.
         use std::io::IsTerminal;
         if std::io::stdout().is_terminal() {
             println!("Access password: {}", config.direct_password);
         } else {
-            println!("Access password: not shown here (output is not a terminal); it is in {}", config_path);
+            println!("Access password: not shown here (output is not a terminal); see `lunaris-agent status --show-password`");
         }
     }
 
+    // A daemon: the person here answers through the approval helper, if
+    // one connects (approval.rs); `--approval-stdio` answers on stdio.
+    if !args.approval_stdio {
+        approval::spawn_helper_listener();
+    }
+
     // A package upgrade or a new AppImage does not restart this headless
-    // agent (started at login, `--cli`): it starts the new program itself
-    // once its file was replaced. Not the app's own agent (approval on
-    // stdio): the app restarts that one.
+    // agent: it starts the new program itself once its file was replaced.
+    // Not with approval on stdio: whoever runs it restarts it.
     #[cfg(target_os = "linux")]
     if !args.approval_stdio {
         updater::restart::watch_executable(std::time::Duration::from_secs(30));
     }
+
+    // For `lunaris-agent status`: whether this agent runs and is connected.
+    let _status = status::RunState::start(&config_path, &config.server_url);
 
     run_agent(config, name).await
 }
@@ -430,19 +528,33 @@ fn normalize_server_url(given: &str) -> Result<(String, String), String> {
 /// `--enroll`: joins this computer to a server with an install token (see
 /// the flag). Never prints the token.
 fn enroll(args: &Args, config_path: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    #[cfg(target_os = "linux")]
+    if args.system {
+        // The service's folder, made for its user before the token goes in.
+        autostart::prepare_system_dir()?;
+    }
     let server_url = enroll_config(args, config_path)?;
     println!("Saved the server {} in {}.", server_url, config_path);
     #[cfg(target_os = "linux")]
-    match crate::pairing::enable_cli_autostart(config_path) {
-        Ok((entry, true)) => println!(
-            "The Lunaris Agent app already starts at login with these settings ({}); it joins the server then. Left as it is.",
-            entry.display()
-        ),
-        Ok((entry, false)) => println!("The agent starts at login ({}).", entry.display()),
-        Err(e) => eprintln!("warning: could not set up the start at login: {e}"),
+    {
+        let started = if args.system {
+            autostart::enable_system_service()
+        } else {
+            autostart::enable_user_start(config_path)
+        };
+        match started {
+            Ok(note) => println!("{note}"),
+            Err(e) => eprintln!("warning: could not set up the start of the agent: {e}"),
+        }
     }
     #[cfg(target_os = "macos")]
-    crate::pairing::set_autostart_enabled_impl(true);
+    crate::pairing::enable_macos_login_start();
+    #[cfg(target_os = "windows")]
+    println!(
+        "The LunarisAgentService service runs the agent with {}; restart it to join now (`{} --install-service` from an elevated prompt installs and restarts it).",
+        system_config_path().map(|p| p.display().to_string()).unwrap_or_default(),
+        std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_else(|_| "lunaris-agent.exe".into()),
+    );
     println!("This computer joins the server the next time the agent starts (the install token is used then).");
     Ok(())
 }
@@ -517,8 +629,22 @@ fn enroll_config(args: &Args, config_path: &str) -> Result<String, Box<dyn std::
         config.name = name.trim().to_string();
     }
     config.autostart = true;
+    if let Some(allow) = server_settings_flag(args) {
+        config.allow_server_settings = allow;
+    }
     crate::pairing::save_config(&config, config_path)?;
     Ok(server_url)
+}
+
+/// `--allow-server-settings` / `--deny-server-settings`, when given.
+fn server_settings_flag(args: &Args) -> Option<bool> {
+    if args.allow_server_settings {
+        Some(true)
+    } else if args.deny_server_settings {
+        Some(false)
+    } else {
+        None
+    }
 }
 
 pub async fn run_agent(
@@ -526,10 +652,6 @@ pub async fn run_agent(
     name: String,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     CONNECTED_TO_SERVER.store(false, std::sync::atomic::Ordering::SeqCst);
-    // Before any session can create a capture backend. Like the other
-    // settings, a change applies when the agent (re)starts: the app and the
-    // agent window restart it after saving one.
-    apply_wayland_capture(&config);
     if crate::pairing::ensure_client_id(&mut config) {
         let id = config.client_unique_id.clone();
         warn!("The config had no computer id; using a new one: {}", id);
@@ -545,64 +667,20 @@ pub async fn run_agent(
 
     let hub = hub::Hub::new(config.client_unique_id.clone());
     let (agent_tx, router) = hub::spawn_router(hub.clone());
-    let (inbound_tx, inbound_rx) = mpsc::unbounded_channel::<SignalingMessage>();
+    let (inbound_tx, mut inbound_rx) = mpsc::unbounded_channel::<SignalingMessage>();
     let mut tasks = AbortOnDrop(vec![router]);
     // A set-up of a computer being added (a pairing that waits for its PIN)
     // does not outlive the agent that started it.
     let _setups = crate::connector::sources::StopSetupsOnDrop(crate::pairing::config_path().to_string());
-
-    if config.direct_enabled {
-        if crate::pairing::ensure_direct_password(&mut config) {
-            if let Err(e) = crate::pairing::save_config(&config, crate::pairing::config_path()) {
-                warn!("Could not save the new direct-access password: {}", e);
-            }
-        }
-        let port = config.direct_port;
-        let direct_config = direct::DirectConfig {
-            port,
-            password: config.direct_password.clone(),
-            approve_mode: approval::ApproveMode::parse(&config.approve_mode),
-            name: name.clone(),
-        };
-        let hub = hub.clone();
-        let inbound_tx = inbound_tx.clone();
-        tasks.0.push(tokio::spawn(async move {
-            if let Err(e) = direct::run_listener(direct_config, hub, inbound_tx).await {
-                let msg = format!("Direct connections unavailable: cannot listen on port {}: {}", port, e);
-                error!("{}", msg);
-                if let Ok(mut last) = LAST_ERROR.lock() {
-                    *last = Some(msg);
-                }
-            }
-        }));
-    }
-
-    if let Some(port) = config.rustdesk_port {
-        // The RustDesk client logs in with the access password.
-        if crate::pairing::ensure_direct_password(&mut config) {
-            if let Err(e) = crate::pairing::save_config(&config, crate::pairing::config_path()) {
-                warn!("Could not save the new access password: {}", e);
-            }
-        }
-        let rustdesk_config = rustdesk::RustdeskConfig {
-            port,
-            password: config.direct_password.clone(),
-            approve_mode: approval::ApproveMode::parse(&config.approve_mode),
-            allow_clipboard: config.allow_clipboard,
-            agent_id: config.client_unique_id.clone(),
-            name: name.clone(),
-            // RustDesk's file manager: its own switch, and never when file
-            // transfer is off on this computer; held to `file_access`.
-            file_transfer: config.rustdesk_file_transfer && config.allow_file_transfer,
-            file_access: files::Access::from_config(&file_access_setting(&config)),
-            file_home: None,
-        };
-        tasks.0.push(tokio::spawn(async move {
-            if let Err(e) = rustdesk::run_listener(rustdesk_config).await {
-                error!("RustDesk compatibility unavailable: cannot listen on port {}: {}", port, e);
-            }
-        }));
-    }
+    // The config as the local parts run with it, for the server connection
+    // (which stays when they start again after a change from the server).
+    let (config_tx, config_rx) = tokio::sync::watch::channel(config.clone());
+    // Servers connected to this computer by its address: they stay while the
+    // local parts start again, and end with this agent.
+    let links = direct::Links::default();
+    let _links_end = CloseLinksOnDrop(links.clone());
+    // Changes from the server saved from now on.
+    let mut settings_changes = crate::settings::changes();
 
     if config.server_url.trim().is_empty() {
         info!("No Lunaris server configured: direct connections only.");
@@ -625,16 +703,168 @@ pub async fn run_agent(
             name.clone(),
             hub.clone(),
             inbound_tx.clone(),
+            config_rx,
         )));
     }
 
     info!("Starting Host Agent: {} ({})", name, config.client_unique_id);
-    // `inbound_tx` stays alive here, so the session logic runs until this
-    // future is dropped (GUI stop) even when nothing is connected.
-    run_session_logic(config, agent_tx, inbound_rx).await;
+    loop {
+        // Before any session can create a capture backend. Like the other
+        // settings, a change applies when the agent (re)starts (after
+        // `lunaris-agent set`, the service is restarted); a change from the
+        // server (settings.rs) starts these local parts again.
+        apply_wayland_capture(&config);
+        let local = start_local_services(&mut config, &name, &hub, &inbound_tx, &links);
+        // `inbound_tx` stays alive here, so the session logic runs until
+        // this future is dropped (GUI stop) even when nothing is connected.
+        let restart = tokio::select! {
+            _ = run_session_logic(config.clone(), agent_tx.clone(), &mut inbound_rx) => false,
+            _ = settings_changes.changed() => true,
+        };
+        local.stop().await;
+        if !restart {
+            break;
+        }
+        // Seen now: the config read below has it (and any made meanwhile
+        // wakes the next round).
+        settings_changes.borrow_and_update();
+        match crate::pairing::load_config(crate::pairing::config_path()) {
+            Ok(saved) => {
+                let password_changed = saved.direct_password != config.direct_password;
+                config = with_saved_settings(config, saved);
+                let closed = links.keep_admitted(
+                    config.direct_enabled,
+                    password_changed,
+                    approval::ApproveMode::parse(&config.approve_mode),
+                );
+                if closed > 0 {
+                    info!("Settings changed: {} server link(s) let in under the old ones closed; they connect again", closed);
+                }
+            }
+            Err(e) => warn!("The changed settings could not be read again ({}); going on with the ones before", e),
+        }
+        config_tx.send_replace(config.clone());
+        info!("Settings changed: direct connections, RustDesk compatibility and sessions start again with them");
+    }
     drop(inbound_tx);
     drop(tasks);
     Ok(())
+}
+
+/// `running` with the settings of `saved` (the file after a change from the
+/// server): its identity and server stay as they started.
+fn with_saved_settings(running: AgentConfig, saved: AgentConfig) -> AgentConfig {
+    AgentConfig {
+        client_unique_id: running.client_unique_id,
+        server_url: running.server_url,
+        server_token: running.server_token,
+        agent_key: running.agent_key,
+        install_token: running.install_token,
+        server_cert_sha256: running.server_cert_sha256,
+        server_cert_host: running.server_cert_host,
+        name: running.name,
+        ..saved
+    }
+}
+
+/// The agent's local listeners (direct connections, RustDesk
+/// compatibility), started again when the settings change. Dropped (the
+/// GUI drops `run_agent` to stop the agent), they are aborted: they must
+/// not go on with the old settings and keep their ports.
+struct LocalServices(Vec<tokio::task::JoinHandle<()>>);
+
+impl LocalServices {
+    /// Stops them and waits until their ports are free again.
+    async fn stop(mut self) {
+        let tasks = std::mem::take(&mut self.0);
+        for task in &tasks {
+            task.abort();
+        }
+        for task in tasks {
+            let _ = task.await;
+        }
+    }
+}
+
+impl Drop for LocalServices {
+    fn drop(&mut self) {
+        for task in &self.0 {
+            task.abort();
+        }
+    }
+}
+
+/// Closes the agent's server links when `run_agent` stops.
+struct CloseLinksOnDrop(direct::Links);
+
+impl Drop for CloseLinksOnDrop {
+    fn drop(&mut self) {
+        self.0.close_all();
+    }
+}
+
+fn start_local_services(
+    config: &mut AgentConfig,
+    name: &str,
+    hub: &Arc<hub::Hub>,
+    inbound_tx: &mpsc::UnboundedSender<SignalingMessage>,
+    links: &direct::Links,
+) -> LocalServices {
+    let mut tasks = Vec::new();
+    if config.direct_enabled {
+        if crate::pairing::ensure_direct_password(config) {
+            if let Err(e) = crate::pairing::save_config(config, crate::pairing::config_path()) {
+                warn!("Could not save the new direct-access password: {}", e);
+            }
+        }
+        let port = config.direct_port;
+        let direct_config = direct::DirectConfig {
+            port,
+            password: config.direct_password.clone(),
+            approve_mode: approval::ApproveMode::parse(&config.approve_mode),
+            name: name.to_string(),
+            links: links.clone(),
+        };
+        let hub = hub.clone();
+        let inbound_tx = inbound_tx.clone();
+        tasks.push(tokio::spawn(async move {
+            if let Err(e) = direct::run_listener(direct_config, hub, inbound_tx).await {
+                let msg = format!("Direct connections unavailable: cannot listen on port {}: {}", port, e);
+                error!("{}", msg);
+                if let Ok(mut last) = LAST_ERROR.lock() {
+                    *last = Some(msg);
+                }
+            }
+        }));
+    }
+
+    if let Some(port) = config.rustdesk_port {
+        // The RustDesk client logs in with the access password.
+        if crate::pairing::ensure_direct_password(config) {
+            if let Err(e) = crate::pairing::save_config(config, crate::pairing::config_path()) {
+                warn!("Could not save the new access password: {}", e);
+            }
+        }
+        let rustdesk_config = rustdesk::RustdeskConfig {
+            port,
+            password: config.direct_password.clone(),
+            approve_mode: approval::ApproveMode::parse(&config.approve_mode),
+            allow_clipboard: config.allow_clipboard,
+            agent_id: config.client_unique_id.clone(),
+            name: name.to_string(),
+            // RustDesk's file manager: its own switch, and never when file
+            // transfer is off on this computer; held to `file_access`.
+            file_transfer: config.rustdesk_file_transfer && config.allow_file_transfer,
+            file_access: files::Access::from_config(&file_access_setting(config)),
+            file_home: None,
+        };
+        tasks.push(tokio::spawn(async move {
+            if let Err(e) = rustdesk::run_listener(rustdesk_config).await {
+                error!("RustDesk compatibility unavailable: cannot listen on port {}: {}", port, e);
+            }
+        }));
+    }
+    LocalServices(tasks)
 }
 
 /// Hands the config's `wayland_capture` to lunaris-media, which reads it
@@ -743,11 +973,12 @@ async fn run_server_connection(
     name: String,
     hub: Arc<hub::Hub>,
     inbound_tx: mpsc::UnboundedSender<SignalingMessage>,
+    mut settings: tokio::sync::watch::Receiver<AgentConfig>,
 ) {
     let mut last_error = String::new();
     let mut failures: u32 = 0;
     loop {
-        let wait = match connect_server_once(&mut config, &name, &hub, &inbound_tx).await {
+        let wait = match connect_server_once(&mut config, &name, &hub, &inbound_tx, &mut settings).await {
             Ok(()) => {
                 info!("Disconnected from the signaling server. Reconnecting in 3 seconds...");
                 last_error.clear();
@@ -785,6 +1016,7 @@ async fn connect_server_once(
     name: &str,
     hub: &Arc<hub::Hub>,
     inbound_tx: &mpsc::UnboundedSender<SignalingMessage>,
+    settings: &mut tokio::sync::watch::Receiver<AgentConfig>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let codec_support = Some(codec_support_bits());
 
@@ -870,13 +1102,16 @@ async fn connect_server_once(
     hub.set_server(Some(server_tx.clone()));
     // The server is told which other computers this one shows, and which
     // kinds it can show (again whenever it changes them).
-    let manageable = config.server_sessions.trim() != "ask";
+    // `server_sessions` as the agent's local parts run with it now (a
+    // change from the server applies here too, without a new connection).
+    let mut ask = settings.borrow_and_update().server_sessions.trim() == "ask";
+    let mut manageable = !ask;
     let server_tx_for_sources = server_tx.clone();
     // Again when a set-up (a pairing) has added one, whoever still asks about it.
-    let _announcing = crate::connector::sources::announce_changes(server_tx.clone(), manageable);
+    let mut _announcing = crate::connector::sources::announce_changes(server_tx.clone(), manageable);
     crate::direct::refresh_local_addresses().await;
     let _ = server_tx.send(crate::connector::sources::announcement(manageable));
-    let gate = ServerGate::new(config.server_sessions.trim() == "ask", server_tx, inbound_tx.clone());
+    let mut gate = ServerGate::new(ask, server_tx.clone(), inbound_tx.clone());
 
     // Outbound: the hub routes the session logic's replies for server clients here.
     let write_task = tokio::spawn(async move {
@@ -893,7 +1128,30 @@ async fn connect_server_once(
         }
     });
 
-    while let Some(message_result) = ws_read.next().await {
+    loop {
+        let message_result = tokio::select! {
+            message = ws_read.next() => match message {
+                Some(message) => message,
+                None => break,
+            },
+            changed = settings.changed() => {
+                if changed.is_err() {
+                    // The agent stops.
+                    break;
+                }
+                let now_ask = settings.borrow_and_update().server_sessions.trim() == "ask";
+                if now_ask != ask {
+                    // The sessions ended with the change: what the person
+                    // here granted before goes with them.
+                    ask = now_ask;
+                    manageable = !ask;
+                    gate = ServerGate::new(ask, server_tx.clone(), inbound_tx.clone());
+                    _announcing = crate::connector::sources::announce_changes(server_tx.clone(), manageable);
+                    let _ = server_tx.send(crate::connector::sources::announcement(manageable));
+                }
+                continue;
+            }
+        };
         let text = match message_result {
             Ok(WsMessage::Text(text)) => text,
             Ok(_) => continue,
@@ -917,6 +1175,19 @@ async fn connect_server_once(
                     for message in crate::connector::sources::reply(request_id, &change, requester.as_deref(), "the server", manageable) {
                         let _ = tx.send(message);
                     }
+                });
+            }
+            Ok(ServerToAgentMessage::Settings { request_id, request, requester }) => {
+                let tx = server_tx_for_sources.clone();
+                tokio::task::spawn_blocking(move || {
+                    let answer = crate::settings::reply(
+                        request_id,
+                        &request,
+                        requester.as_deref(),
+                        &crate::settings::Channel::server(),
+                        crate::pairing::config_path(),
+                    );
+                    let _ = tx.send(answer);
                 });
             }
             // What a newer server may send is not written out: it can hold
@@ -1335,7 +1606,7 @@ mod server_tls {
 /// `file_access` as it applies here. Not set: "home", but "full" when
 /// running as LocalSystem (the Windows service's agent), whose home folder
 /// is the system profile; the person used to reach every drive there.
-fn file_access_setting(config: &AgentConfig) -> String {
+pub(crate) fn file_access_setting(config: &AgentConfig) -> String {
     let value = config.file_access.trim();
     if !value.is_empty() {
         return value.to_string();
@@ -1382,7 +1653,7 @@ fn clamp_stream_request(
 async fn run_session_logic(
     config: AgentConfig,
     agent_tx: mpsc::UnboundedSender<AgentMessage>,
-    mut inbound: mpsc::UnboundedReceiver<SignalingMessage>,
+    inbound: &mut mpsc::UnboundedReceiver<SignalingMessage>,
 ) {
     let active_session: Arc<Mutex<Option<Arc<BridgeSession>>>> = Arc::new(Mutex::new(None));
     // The client connection that owns `active_session`.
@@ -1504,7 +1775,7 @@ async fn run_session_logic(
                         let _ = agent_tx.send(AgentMessage::Signaling(SignalingMessage::SourceStatus {
                             target_id: client_id.clone(),
                             status: "failed".into(),
-                            reason: Some("That computer is not there any more".into()),
+                            reason: Some("This is a gateway with no screen of its own: connect to a computer added through it".into()),
                         }));
                         continue;
                     }
@@ -1941,6 +2212,15 @@ mod enroll_tests {
         // Same server: the pin stays.
         assert_eq!(again.server_cert_sha256, "ab".repeat(32));
         assert_eq!(again.name, "Lab 1");
+        // The server may not change the settings unless the installer says so.
+        assert!(!again.allow_server_settings);
+        enroll_config(&args(&["--allow-server-settings"]), &path_s).unwrap();
+        assert!(crate::pairing::load_config(&path_s).unwrap().allow_server_settings);
+        enroll_config(&args(&[]), &path_s).unwrap();
+        assert!(crate::pairing::load_config(&path_s).unwrap().allow_server_settings, "kept when not given");
+        enroll_config(&args(&["--deny-server-settings"]), &path_s).unwrap();
+        assert!(!crate::pairing::load_config(&path_s).unwrap().allow_server_settings);
+        assert!(Args::try_parse_from(["agent", "--allow-server-settings", "--deny-server-settings"]).is_err());
 
         // Bad input changes nothing.
         let bad = Args::try_parse_from(["agent", "--enroll", "--server", "srv", "--install-token", "nope"]).unwrap();
@@ -1948,6 +2228,100 @@ mod enroll_tests {
         assert!(enroll_config(&args(&["--server-cert-sha256", "xyz"]), &path_s).is_err());
         assert!(Args::try_parse_from(["agent", "--enroll"]).is_err(), "--enroll needs --server");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod local_services_tests {
+    use super::*;
+
+    fn free_port() -> u16 {
+        std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap().local_addr().unwrap().port()
+    }
+
+    async fn listening(port: u16) -> bool {
+        tokio::net::TcpStream::connect(("127.0.0.1", port)).await.is_ok()
+    }
+
+    async fn until(port: u16, open: bool) {
+        for _ in 0..200 {
+            if listening(port).await == open {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("port {} is not {}", port, if open { "open" } else { "closed" });
+    }
+
+    /// A change from the server starts the listeners again with the new
+    /// settings: the old port is freed at once (so the same port can be
+    /// taken again), the new one listens.
+    #[tokio::test]
+    async fn the_listeners_start_again_with_new_settings() {
+        let hub = hub::Hub::new("AGENT".into());
+        let (inbound_tx, _inbound_rx) = mpsc::unbounded_channel::<SignalingMessage>();
+        let links = direct::Links::default();
+        let mut config = crate::pairing::new_config();
+        config.direct_enabled = true;
+        config.direct_port = free_port();
+        let first = config.direct_port;
+        let services = start_local_services(&mut config, "Test", &hub, &inbound_tx, &links);
+        until(first, true).await;
+        services.stop().await;
+        assert!(!listening(first).await, "stopped means the port is free");
+        // The same port again (a change that kept it), then another one.
+        let services = start_local_services(&mut config, "Test", &hub, &inbound_tx, &links);
+        until(first, true).await;
+        services.stop().await;
+        config.direct_port = free_port();
+        let services = start_local_services(&mut config, "Test", &hub, &inbound_tx, &links);
+        until(config.direct_port, true).await;
+        assert!(!listening(first).await);
+        services.stop().await;
+        // Direct access off: nothing listens.
+        config.direct_enabled = false;
+        let services = start_local_services(&mut config, "Test", &hub, &inbound_tx, &links);
+        assert!(services.0.is_empty());
+    }
+
+    /// Dropping `run_agent` stops the agent (as the bridge and tests do):
+    /// its listeners go with it and free their ports, so the next start can
+    /// listen there again.
+    #[tokio::test]
+    async fn dropped_listeners_free_their_ports() {
+        let hub = hub::Hub::new("AGENT".into());
+        let (inbound_tx, _inbound_rx) = mpsc::unbounded_channel::<SignalingMessage>();
+        let links = direct::Links::default();
+        let mut config = crate::pairing::new_config();
+        config.direct_enabled = true;
+        config.direct_password = "a-password".into();
+        config.direct_port = free_port();
+        config.rustdesk_port = Some(free_port());
+        let (direct_port, rustdesk_port) = (config.direct_port, config.rustdesk_port.unwrap());
+        let services = start_local_services(&mut config, "Test", &hub, &inbound_tx, &links);
+        until(direct_port, true).await;
+        until(rustdesk_port, true).await;
+        drop(services);
+        until(direct_port, false).await;
+        until(rustdesk_port, false).await;
+        // Taken again by the next start.
+        let services = start_local_services(&mut config, "Test", &hub, &inbound_tx, &links);
+        until(direct_port, true).await;
+        services.stop().await;
+    }
+
+    #[test]
+    fn a_reload_keeps_the_identity_and_the_server() {
+        let mut running = crate::pairing::new_config();
+        running.server_url = "wss://server.example:8443".into();
+        running.agent_key = "k".repeat(64);
+        let mut saved = crate::pairing::new_config();
+        saved.direct_port = 9100;
+        saved.allow_clipboard = false;
+        let merged = with_saved_settings(running.clone(), saved);
+        assert_eq!((merged.client_unique_id, merged.server_url, merged.agent_key), (running.client_unique_id, running.server_url, running.agent_key));
+        assert_eq!(merged.direct_port, 9100);
+        assert!(!merged.allow_clipboard);
     }
 }
 

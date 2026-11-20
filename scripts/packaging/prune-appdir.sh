@@ -2,7 +2,7 @@
 # Removes what the Lunaris AppImages never use from a deployed AppDir, so the
 # download stays small. Sourced by make-appimage.sh.
 #
-# What the apps need (from their QML, agent-app/qml and client-qml/qml):
+# What the client needs (from its QML, client-qml/qml; the agent AppImage has no Qt):
 #   QtQuick, QtQuick.Controls (Basic and Fusion), QtQuick.Layouts, QtQuick.Shapes
 #   (client), QtQuick.Window/Templates (dependencies), Qt.labs.platform (tray icon,
 #   file dialogs), QtMultimedia (client: VideoOutput / QVideoSink only).

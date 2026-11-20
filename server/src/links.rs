@@ -106,11 +106,22 @@ pub fn normalize_address(text: &str) -> Option<String> {
 
 /// Starts (or restarts, with a new password) the link to `address`.
 pub fn start(state: &Arc<SignalingState>, address: String, password: String, host_id: Option<String>) {
+    let link = spawn(state, address.clone(), password, host_id, ADDED_BY_ADDRESS);
+    state.links.by_address.lock().unwrap().insert(address, link);
+}
+
+/// How the log names a computer added by address.
+const ADDED_BY_ADDRESS: &str = "added by address";
+
+/// A link that is kept up until the returned `Link` is dropped, not in the
+/// list of computers added by address (the server gateway, gateway.rs).
+/// `what` names it in the log.
+pub(crate) fn spawn(state: &Arc<SignalingState>, address: String, password: String, host_id: Option<String>, what: &'static str) -> Link {
     let error = Arc::new(Mutex::new(None));
     let known_id = Arc::new(Mutex::new(host_id));
-    let task = tokio::spawn(run(state.clone(), address.clone(), password.clone(), error.clone(), known_id.clone()));
-    let link = Link { task, error, host_id: known_id, needs_approval: password.trim().is_empty() };
-    state.links.by_address.lock().unwrap().insert(address, link);
+    let needs_approval = password.trim().is_empty();
+    let task = tokio::spawn(run(state.clone(), address, password, error.clone(), known_id.clone(), what));
+    Link { task, error, host_id: known_id, needs_approval }
 }
 
 /// Starts the links saved in the database (server start).
@@ -137,17 +148,18 @@ async fn run(
     password: String,
     error: Arc<Mutex<Option<String>>>,
     host_id: Arc<Mutex<Option<String>>>,
+    what: &'static str,
 ) {
     loop {
-        let wait = match connect_once(&state, &address, &password, &error, &host_id).await {
+        let wait = match connect_once(&state, &address, &password, &error, &host_id, what).await {
             Ok(()) => {
-                info!("Lost the connection to {} (added by address); reconnecting", address);
+                info!("Lost the connection to {} ({}); reconnecting", address, what);
                 RETRY
             }
             Err((message, refused)) => {
                 let changed = error.lock().unwrap().as_deref() != Some(message.as_str());
                 if changed {
-                    warn!("Cannot connect to {} (added by address): {}", address, message);
+                    warn!("Cannot connect to {} ({}): {}", address, what, message);
                 } else {
                     debug!("Cannot connect to {}: {}", address, message);
                 }
@@ -167,6 +179,7 @@ async fn connect_once(
     password: &str,
     error: &Arc<Mutex<Option<String>>>,
     host_id: &Arc<Mutex<Option<String>>>,
+    what: &str,
 ) -> Result<(), (String, bool)> {
     let name_query = format!("name={}", urlencoding::encode(&server_name()));
     let (ws, local_ip) = match direct_auth::connect(address, "/ws/server", password, &name_query).await {
@@ -218,11 +231,21 @@ async fn connect_once(
             .bind(address)
             .execute(&state.db)
             .await;
+        // The name it was added with becomes its shown name (everywhere a
+        // host's name is read: sources, groups), unless it has one.
+        let _ = sqlx::query(
+            "UPDATE hosts SET display_name = (SELECT NULLIF(name, '') FROM address_hosts WHERE address = ?)
+             WHERE id = ? AND display_name IS NULL",
+        )
+        .bind(address)
+        .bind(&id)
+        .execute(&state.db)
+        .await;
     }
     if let Some(ip) = local_ip {
         state.agent_local_ips.write().unwrap().insert(id.clone(), ip);
     }
-    info!("Connected to {} ({}) added by address {}", name, id, address);
+    info!("Connected to {} ({}), {} {}", name, id, what, address);
 
     // Also when the link is stopped (removed, new password) mid-way.
     let _registered = Registered { state: state.clone(), id: id.clone(), conn_id };

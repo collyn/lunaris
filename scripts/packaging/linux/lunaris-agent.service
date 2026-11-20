@@ -1,0 +1,30 @@
+# Lunaris agent in a desktop session (systemd *user* service): shares this
+# user's screen, keyboard and mouse with the Lunaris server it joined.
+# Installed by the lunaris-agent package in /usr/lib/systemd/user.
+#
+# Not enabled for every user: `lunaris-agent --enroll` (run as the desktop
+# user, as the one-line installer does) enables it for that user only, like
+#   systemctl --user enable lunaris-agent.service
+# It starts with the graphical session (GNOME, KDE Plasma and other systemd
+# sessions), after they put DISPLAY / WAYLAND_DISPLAY in the user manager.
+# Desktops without graphical-session.target use the login autostart entry
+# --enroll writes instead (~/.config/autostart/lunaris-agent.desktop).
+#
+# Config: ~/.config/lunaris-agent/agent_config.json (`lunaris-agent status`,
+# `lunaris-agent set`). Log: journalctl --user -u lunaris-agent
+# Headless computers use lunaris-agent-system.service instead.
+[Unit]
+Description=Lunaris agent (shares this desktop session)
+Documentation=https://github.com/collyn/lunaris
+PartOf=graphical-session.target
+After=graphical-session.target
+ConditionPathExists=%E/lunaris-agent/agent_config.json
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/lunaris-agent --cli
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=graphical-session.target

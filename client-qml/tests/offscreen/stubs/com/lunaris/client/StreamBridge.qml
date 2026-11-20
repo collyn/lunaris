@@ -9,8 +9,6 @@ StubBridge {
     id: stub
     objectName: "bridge"
 
-    // The sessions asked for, newest last: { server, token, hostId, name, displayId, sourceId }.
-    property var sessions: []
     property int stopped: 0
 
     signal statsUpdated(real ping, real decode, real frames, real bit, string requestedCodec, string negotiatedCodec, string decodeBackend, string presentBackend, bool gpuDecodeEnabled, string fallbackReason, int packetLossEvents, int packetsLost, int queueLagEvents, int maxQueueLag, string connectionType)
@@ -30,24 +28,22 @@ StubBridge {
     signal sourceStatus(string status, string reason)
     signal sourceDisplaysUpdated(string displaysJson, string current)
 
-    function startGameSessionWithBackend(server, token, hostId, hostName, appId, res, fps, codec, bitrate, queueLimit, disableCuda, renderBackend, inputProtocol, encoder, displayId, sourceId) {
-        stub.sessions = stub.sessions.concat([{ server: server, token: token, hostId: hostId, name: hostName, displayId: displayId, sourceId: sourceId }]);
-    }
-    function startStream() {}
+    property int started: 0
+    function startStream() { stub.started += 1; }
     function stopStream() { stub.stopped += 1; }
     function setVideoSink(sink) {}
     function requestSettings() {}
-    function updateStreamConfigWithBackend(res, fps, codec, bitrate, queueLimit, disableCuda, renderBackend, inputProtocol) {}
+    // The stream settings asked for, newest last: { res, fps, codec, bitrate, queueLimit, renderBackend, inputProtocol }.
+    property var configs: []
+    function updateStreamConfigWithBackend(res, fps, codec, bitrate, queueLimit, disableCuda, renderBackend, inputProtocol) {
+        stub.configs = stub.configs.concat([{ res: res, fps: fps, codec: codec, bitrate: bitrate, queueLimit: queueLimit, renderBackend: renderBackend, inputProtocol: inputProtocol }]);
+    }
     function pollStats() {}
     function pollCursor() {}
     function pollEvents() {}
     function hasConnectionArgs() { return false; }
     function pendingLinkInfo() { return ""; }
     function answerPendingLink(accept) { return false; }
-    function shouldStartMinimized() { return false; }
-    function stopLocalAgent() {}
-    function hostApprovals() { return "[]"; }
-    function hostAnswerApproval(id, accept) {}
     function sendMouseMove(x, y, w, h, rx, ry, locked) {}
     function sendMouseClick(button, down) {}
     function sendMouseWheel(x, y) {}
@@ -65,13 +61,17 @@ StubBridge {
     function warpCursor(x, y) {}
     function setKeyboardGrab(grab) { stub.keyboardGrabs = stub.keyboardGrabs.concat([grab]); }
     function setPointerLocked(locked) {}
-    function setAudio(on, volume) {}
-    function setRecordMicrophone(on) {}
-    function setShareOptions(clipboard, files) {}
-    function setGamepadEnabled(on) {}
+    // What the session settings applied last.
+    property var audio: ({ on: true, volume: 100 })
+    property bool microphone: false
+    property var share: ({ clipboard: true, files: true })
+    property bool gamepad: true
+    function setAudio(on, volume) { stub.audio = { on: on, volume: volume }; }
+    function setRecordMicrophone(on) { stub.microphone = on; }
+    function setShareOptions(clipboard, files) { stub.share = { clipboard: clipboard, files: files }; }
+    function setGamepadEnabled(on) { stub.gamepad = on; }
     function gamepadsJson() { return "[]"; }
     function vibrateGamepad(slot) {}
-    function filesOpen(server, token, hostId, name) {}
     function filesOpenCurrent() { return false; }
     function filesClose() {}
     function filesVersion() { return 0; }

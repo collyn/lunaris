@@ -14,7 +14,10 @@
 //!     (Sunshine: `sunshine.log` in the temp folder, sunshinesvc.cpp:131-146).
 //!  2. `--install-service` copies and migrates nothing; it only says how to
 //!     import the calling user's settings.
-//!  3. Connection approval is unattended (nobody to ask on stdin).
+//!  3. Connection approval: nobody to ask on stdin; the person at the
+//!     console answers through the optional approval helper
+//!     (`lunaris-approval-helper`, started at logon), see the
+//!     approval-channel crate; without it only the password lets anyone in.
 //! Every other difference is listed at the function that has it.
 //!
 //! Command lines (the same for the standalone agent and, with the leading

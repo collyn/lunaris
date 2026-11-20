@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Builds lunaris-agent and lunaris-client RPMs (Fedora) from prebuilt binaries.
+# Builds the lunaris-agent (no Qt), lunaris-approval-helper and lunaris-client
+# RPMs (Fedora) from prebuilt binaries.
 #
 # Usage: make-rpm.sh <cargo target dir> <output dir> <static ffmpeg prefix>
 set -euo pipefail
@@ -11,14 +12,17 @@ VERSION="$(sed -n '/^\[workspace.package\]/,/^\[/s/^version *= *"\(.*\)"/\1/p' "
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
-"$HERE/stage.sh" agent "$TARGET/release/agent" "$WORK/agent" "$FFMPEG"
+"$HERE/stage.sh" agent "$TARGET/release/lunaris-agent" "$WORK/agent" "$FFMPEG"
+"$HERE/stage.sh" approval-helper "$TARGET/release/lunaris-approval-helper" "$WORK/approval-helper" "$FFMPEG"
 "$HERE/stage.sh" client "$TARGET/release/client-desktop" "$WORK/client" "$FFMPEG"
-strip --strip-unneeded "$WORK/agent/usr/bin/lunaris-agent" "$WORK/client/usr/bin/lunaris-client"
+strip --strip-unneeded "$WORK/agent/usr/bin/lunaris-agent" "$WORK/approval-helper/usr/bin/lunaris-approval-helper" \
+    "$WORK/client/usr/bin/lunaris-client"
 
 rpmbuild -bb "$HERE/lunaris.spec" \
     --define "_topdir $WORK/rpmbuild" \
     --define "lunaris_version $VERSION" \
     --define "stage_agent $WORK/agent" \
+    --define "stage_helper $WORK/approval-helper" \
     --define "stage_client $WORK/client"
 
 find "$WORK/rpmbuild/RPMS" -name '*.rpm' -exec cp {} "$OUT/" \;

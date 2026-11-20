@@ -481,8 +481,9 @@ const SETUP_STARTING: &str = "Getting ready...";
 const MAX_SETUPS: usize = 8;
 const TOO_MANY_SETUPS: &str = "Too many computers are being set up at the moment. Finish or close one first.";
 
-/// One writer of a config file at a time (a set-up ends when it ends).
-static CONFIG_WRITES: Mutex<()> = Mutex::new(());
+/// One writer of a config file at a time (a set-up ends when it ends;
+/// settings.rs takes it too).
+pub(crate) static CONFIG_WRITES: Mutex<()> = Mutex::new(());
 
 /// How long the parts of a set-up may take.
 #[derive(Clone, Copy)]

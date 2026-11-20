@@ -1,6 +1,6 @@
-//! In-app updates of the Lunaris app (`client-desktop`) and the standalone
-//! agent window (`agent-app`), and the "a new version exists" notice of the
-//! standalone server.
+//! In-app updates of the Lunaris app (`client-desktop`), the restart of the
+//! agent (`lunaris-agent`, no window) when its program file is replaced, and
+//! the "a new version exists" notice of the standalone server.
 //!
 //! The flow (see [`service`]): ask GitHub for the latest stable release,
 //! compare its version with this build's, work out how this copy was

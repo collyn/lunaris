@@ -1,0 +1,2 @@
+# The lunaris-server service account (systemd-sysusers, sysusers.d(5)).
+u lunaris - "Lunaris server" /var/lib/lunaris /usr/sbin/nologin

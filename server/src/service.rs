@@ -49,17 +49,22 @@ fn print_summary(data_dir: &std::path::Path, env_file: &str, port: u16, existing
     println!("Lunaris server is running on port {port} (http://<this-machine>:{port}).");
     println!("  Settings: {env_file}");
     println!("  Data:     {}", data_dir.display());
-    let pw_file = data_dir.join("initial_admin_password.txt");
-    match wait_for_file(&pw_file, if existing_db { 2 } else { 15 }) {
-        Some(pw) => {
-            println!();
-            println!("  Admin login:  admin / {pw}");
-            println!("  (saved in {} — change it after signing in)", pw_file.display());
-        }
-        None if existing_db => {
-            println!("  Existing database kept; sign in with your current admin account.")
-        }
-        None => println!("  The initial admin password will be written to {}.", pw_file.display()),
+    // The setup code itself is not printed (terminal output gets copied
+    // into tickets and logs): only where it is.
+    let code_file = data_dir.join(crate::setup::CODE_FILE);
+    if existing_db && !code_file.exists() {
+        println!("  Existing database kept; sign in with your current admin account.");
+    } else if wait_for_file(&code_file, 15).is_some() {
+        println!();
+        println!("  First start: open http://<this-machine>:{port} and create the first admin");
+        println!("  with the one-time setup code in {}", code_file.display());
+        #[cfg(unix)]
+        println!("    sudo cat {}", code_file.display());
+        #[cfg(windows)]
+        println!("  (readable by Administrators only)");
+    } else {
+        println!("  No setup code yet: when LUNARIS_ADMIN_PASSWORD is set in the settings, sign in");
+        println!("  as admin with it; otherwise the code will be in {}.", code_file.display());
     }
     if let Some(token) = wait_for_file(&data_dir.join("server_token.txt"), 5) {
         println!("  Agent token:  {token}");
@@ -80,6 +85,20 @@ mod imp {
     const CONF_DIR: &str = "/etc/lunaris";
     const ENV_FILE: &str = "/etc/lunaris/server.env";
     const DATA_DIR: &str = "/var/lib/lunaris";
+    /// The unit of the lunaris-server .deb (scripts/packaging/linux/make-server-deb.sh).
+    const PACKAGE_UNIT: &str = "/usr/lib/systemd/system/lunaris-server.service";
+
+    /// The packaged service is the package manager's: a second unit in /etc
+    /// would hide it and run another binary with another user.
+    fn refuse_if_packaged(what: &str) -> Result<(), String> {
+        if Path::new(PACKAGE_UNIT).exists() {
+            return Err(format!(
+                "lunaris-server is installed from a package here, which already runs the \
+                 `{SERVICE}` service; {what} (settings: {ENV_FILE}, data: {DATA_DIR})"
+            ));
+        }
+        Ok(())
+    }
 
     pub fn unit_file() -> String {
         format!(
@@ -141,6 +160,7 @@ mod imp {
 
     pub fn install(args: &[String]) -> Result<(), String> {
         let port_arg = parse_port(args)?;
+        refuse_if_packaged("change the port in the settings and run `systemctl restart lunaris-server`")?;
         require_root()?;
 
         let exe = std::env::current_exe().map_err(|e| e.to_string())?;
@@ -184,6 +204,7 @@ mod imp {
 
     pub fn uninstall(args: &[String]) -> Result<(), String> {
         let purge = args.iter().any(|a| a == "--purge");
+        refuse_if_packaged("remove it with `apt remove lunaris-server` (`apt purge` also deletes the data)")?;
         require_root()?;
         let _ = systemctl(&["disable", "--now", SERVICE]);
         let _ = std::fs::remove_file(UNIT_PATH);
@@ -234,9 +255,49 @@ pub mod imp {
     const DISPLAY: &str = "Lunaris Server";
     const FIREWALL_RULE: &str = "Lunaris Server";
 
-    pub fn data_dir() -> PathBuf {
+    /// `%ProgramData%\Lunaris`: the agent's service folder, where older
+    /// servers kept their data too.
+    fn shared_dir() -> PathBuf {
         let base = std::env::var_os("ProgramData").unwrap_or_else(|| "C:\\ProgramData".into());
         Path::new(&base).join("Lunaris")
+    }
+
+    /// `%ProgramData%\Lunaris\Server`: the server's own folder.
+    pub fn data_dir() -> PathBuf {
+        shared_dir().join("Server")
+    }
+
+    /// Makes the data folder for SYSTEM and Administrators only (refusing a
+    /// link) and moves an older server's files into it from the shared
+    /// folder (`paths::SERVER_FILES` only, never the agent's). The service
+    /// must not be running (its database would be open). Returns the folder
+    /// and the names moved.
+    pub fn prepare_data_dir() -> Result<(PathBuf, Vec<String>), String> {
+        let shared = shared_dir();
+        // The parent: whoever controls it could swap the server's folder.
+        // Locked as the agent's service locks it, unless it already is.
+        if !crate::win_acl::is_locked_dir(&shared) {
+            crate::win_acl::secure_dir(&shared)?;
+        }
+        let dir = data_dir();
+        crate::win_acl::secure_dir(&dir)?;
+        let moved = crate::paths::move_server_files(&shared, &dir, crate::win_acl::owned_by_admins);
+        if !moved.is_empty() {
+            // Moved files keep their old permissions: reset them.
+            crate::win_acl::secure_dir(&dir)?;
+        }
+        Ok((dir, moved))
+    }
+
+    /// `lunaris-server prepare-data-dir` (server-installer.nsi, with the
+    /// service stopped).
+    pub fn prepare_data_dir_command() -> Result<(), String> {
+        let (dir, moved) = prepare_data_dir()?;
+        println!("Data folder: {}", dir.display());
+        if !moved.is_empty() {
+            println!("Moved from {}: {}", shared_dir().display(), moved.join(", "));
+        }
+        Ok(())
     }
 
     fn install_dir() -> PathBuf {
@@ -299,8 +360,10 @@ pub mod imp {
             std::fs::copy(&exe, &bin).map_err(|e| format!("copy to {}: {e}", bin.display()))?;
         }
 
-        let data = data_dir();
-        std::fs::create_dir_all(&data).map_err(|e| format!("{}: {e}", data.display()))?;
+        let (data, moved) = prepare_data_dir()?;
+        if !moved.is_empty() {
+            println!("Moved the server's data from {} to {}: {}", shared_dir().display(), data.display(), moved.join(", "));
+        }
         let env_file = data.join("server.env");
         if !env_file.exists() {
             std::fs::write(&env_file, default_env_file(port_arg.unwrap_or(8090)))
@@ -370,8 +433,10 @@ pub mod imp {
         netsh(&["advfirewall", "firewall", "delete", "rule", &format!("name={FIREWALL_RULE}")]);
         let _ = std::fs::remove_dir_all(install_dir());
         if purge {
+            // The server's own folder only: the agent's files are in the
+            // folder above it.
             let _ = std::fs::remove_dir_all(data_dir());
-            println!("Removed the service, program files and all data.");
+            println!("Removed the service, program files and the server's data ({}).", data_dir().display());
         } else {
             println!("Removed the service and program files.");
             println!("Kept settings and data in {}; add --purge to delete them.", data_dir().display());
@@ -407,14 +472,31 @@ pub mod imp {
         let _ = run_service();
     }
 
+    /// Where the service says why it did not start when its data folder
+    /// can't be used (its own log is in that folder), for SYSTEM and
+    /// Administrators only, as the agent's service does.
+    fn record_startup_error(message: &str) {
+        let base = std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into());
+        let path = Path::new(&base).join("Temp").join("LunarisServer-error.log");
+        let _ = crate::win_acl::write_private(&path, format!("Lunaris server service did not start: {message}\r\n").as_bytes());
+    }
+
     fn run_service() -> windows_service::Result<()> {
-        let data = data_dir();
-        let _ = std::fs::create_dir_all(&data);
+        let (data, moved) = match prepare_data_dir() {
+            Ok(prepared) => prepared,
+            Err(e) => {
+                record_startup_error(&e);
+                return Ok(());
+            }
+        };
         if std::env::var_os("LUNARIS_DATA_DIR").is_none() {
             std::env::set_var("LUNARIS_DATA_DIR", &data);
         }
         crate::paths::load_env_file(&data.join("server.env"));
         crate::init_logging(Some(&data.join("server.log")));
+        if !moved.is_empty() {
+            tracing::info!("Moved the server's data from {:?} to {:?}: {}", shared_dir(), data, moved.join(", "));
+        }
 
         let stop = Arc::new(tokio::sync::Notify::new());
         let stop_handler = stop.clone();
@@ -479,7 +561,7 @@ mod imp {
 
 pub use imp::{install, status, uninstall};
 #[cfg(windows)]
-pub use imp::run_dispatcher;
+pub use imp::{prepare_data_dir, prepare_data_dir_command, run_dispatcher};
 
 #[cfg(all(test, target_os = "linux"))]
 mod tests {

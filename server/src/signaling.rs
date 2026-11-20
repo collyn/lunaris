@@ -82,8 +82,13 @@ pub struct SignalingState {
     pub local_sessions: RwLock<HashMap<String, Arc<crate::bridge::BridgeSession>>>,
     /// Computers added by address (the server connects to them).
     pub links: crate::links::Links,
+    /// The agent the server runs itself (gateway.rs).
+    pub gateway: crate::gateway::Gateway,
     /// Computers of other types that agents show (sources.rs).
     pub sources: crate::sources::Registry,
+    /// Requests about computers' own settings waiting for their agents
+    /// (host_settings.rs).
+    pub host_settings: crate::host_settings::Pending,
     /// Failed sign-ins per client address and per (username, address).
     pub login_ip_limit: FailureLimiter,
     pub login_user_limit: FailureLimiter,
@@ -91,6 +96,12 @@ pub struct SignalingState {
     pub agent_token_limit: FailureLimiter,
     /// Sign-ins waiting for their two-factor code (mfa.rs).
     pub mfa: crate::mfa::MfaState,
+    /// conn_id -> the one host (and source of it, or None for its own
+    /// screen) a connection signed in with a link token may address
+    /// (`Claims::host`, link_tickets.rs).
+    pub client_scopes: RwLock<HashMap<String, (String, Option<String>)>>,
+    /// Unknown link tickets per client address.
+    pub link_ticket_limit: FailureLimiter,
 }
 
 impl SignalingState {
@@ -110,13 +121,17 @@ impl SignalingState {
             client_asked: RwLock::new(std::collections::HashSet::new()),
             local_sessions: RwLock::new(HashMap::new()),
             links: crate::links::Links::default(),
+            gateway: crate::gateway::Gateway::from_env(),
             sources: crate::sources::Registry::default(),
+            host_settings: crate::host_settings::Pending::default(),
             login_ip_limit: FailureLimiter::standard(),
             login_user_limit: FailureLimiter::standard(),
             // Higher: a stale agent retrying every few seconds must not lock
             // out every agent behind its address; the token is long and random.
             agent_token_limit: FailureLimiter::new(300, std::time::Duration::from_secs(300), 10_000),
             mfa: crate::mfa::MfaState::default(),
+            client_scopes: RwLock::new(HashMap::new()),
+            link_ticket_limit: FailureLimiter::standard(),
         }
     }
 
@@ -476,7 +491,7 @@ pub async fn client_ws_handler(
     }
     let local_ip = addrs.local.map(|a| a.ip());
     ws.max_message_size(CLIENT_MAX_MESSAGE)
-        .on_upgrade(move |socket| handle_client_socket(socket, claims.sub, local_ip, state))
+        .on_upgrade(move |socket| handle_client_socket(socket, claims.sub, claims.host.map(|h| (h, claims.source)), local_ip, state))
 }
 
 // --- Agent Connection Handler ---
@@ -720,6 +735,9 @@ pub(crate) async fn agent_message(state: &Arc<SignalingState>, agent_id: &str, m
         AgentMessage::SourceChanged { request_id, id, error, setup } => {
             crate::sources::changed(state, agent_id, &request_id, id, error, setup);
         }
+        AgentMessage::SettingsAnswer { request_id, settings, password, error, code } => {
+            crate::host_settings::answered(state, agent_id, &request_id, settings, password, error, code);
+        }
     }
 }
 
@@ -817,6 +835,8 @@ async fn handle_agent_socket(socket: WebSocket, params: AgentParams, state: Arc<
 async fn handle_client_socket(
     socket: WebSocket,
     client_id: String,
+    // The one host (and source) it may address: a token from a link ticket.
+    scope: Option<(String, Option<String>)>,
     local_ip: Option<IpAddr>,
     state: Arc<SignalingState>,
 ) {
@@ -836,6 +856,9 @@ async fn handle_client_socket(
     }
     if let Some(ip) = local_ip {
         state.client_local_ips.write().unwrap().insert(conn_id_str.clone(), ip);
+    }
+    if let Some(scope) = scope {
+        state.client_scopes.write().unwrap().insert(conn_id_str.clone(), scope);
     }
     info!("Client WebSocket connected: {} (conn: {})", client_id, conn_id_str);
 
@@ -924,6 +947,7 @@ async fn handle_client_socket(
     state.clients.write().unwrap().remove(&conn_id_str);
     state.client_connections.write().unwrap().remove(&conn_id_str);
     state.client_local_ips.write().unwrap().remove(&conn_id_str);
+    state.client_scopes.write().unwrap().remove(&conn_id_str);
     state.client_asked.write().unwrap().retain(|(c, _)| *c != conn_id_str);
 
     // A file-transfer connection: its agent closes that connection only.
@@ -1575,6 +1599,13 @@ fn agent_reply_target(sig: &SignalingMessage) -> Option<&str> {
 
 /// Whether a client connection may send `sig` to `host_id`: the user may use
 /// the host (same rule as the host list), or it is ending its own session.
+/// A connection signed in with a link token addresses only its link's host,
+/// and of it only the link's source (or, without one, its own screen).
+/// Such a connection may ask for the host's capabilities (the stream window
+/// does, to pick a codec, for a source too), but not for its app list
+/// unless the link is for the screen; and it may stop the host's screen
+/// stream (`StopActiveStream`, which stops whichever one runs there) only
+/// when that is its own: never with a source's link.
 async fn client_may_address(
     state: &SignalingState,
     user_id: &str,
@@ -1582,10 +1613,26 @@ async fn client_may_address(
     sig: &SignalingMessage,
     host_id: &str,
 ) -> bool {
+    let own_stream = || state.client_to_agent.read().unwrap().get(conn_id).is_some_and(|h| h == host_id);
+    let scope = state.client_scopes.read().unwrap().get(conn_id).cloned();
+    if let Some((scope_host, scope_source)) = scope {
+        let source = match sig {
+            SignalingMessage::RequestSession { source_id, .. }
+            | SignalingMessage::RequestFileSession { source_id, .. } => source_id.as_ref(),
+            _ => scope_source.as_ref(),
+        };
+        if scope_host != host_id || source != scope_source.as_ref() {
+            return false;
+        }
+        match sig {
+            SignalingMessage::StopActiveStream { .. } if scope_source.is_some() || !own_stream() => return false,
+            SignalingMessage::GetAppList { .. } if scope_source.is_some() => return false,
+            _ => {}
+        }
+    }
     if matches!(sig, SignalingMessage::EndSession { .. }) {
-        let own_stream = state.client_to_agent.read().unwrap().get(conn_id).is_some_and(|h| h == host_id);
         let own_file = state.file_sessions.read().unwrap().contains_key(conn_id);
-        if own_stream || own_file {
+        if own_stream() || own_file {
             return true;
         }
     }
@@ -1660,6 +1707,108 @@ mod tests {
         handle_client_signaling(SignalingMessage::GetCapabilities { target_id: "h1".into() }, "u1", "c1", state.clone()).await;
         assert!(matches!(
             agent_rx.recv().await,
+            Some(ServerToAgentMessage::Signaling(SignalingMessage::GetCapabilities { .. }))
+        ));
+    }
+
+    /// A connection signed in with a link token (link_tickets.rs) reaches
+    /// only its link's host, even for an admin who may use every host.
+    #[tokio::test]
+    async fn a_link_token_connection_reaches_only_its_host() {
+        let state = state().await;
+        exec(&state, "INSERT INTO users (id, username, password_hash, role, is_active) VALUES ('boss', 'boss', 'x', 'admin', 1)").await;
+        let mut h1 = agent(&state, "h1");
+        let mut h2 = agent(&state, "h2");
+        let mut rx = client(&state, "c1", "boss");
+        state.client_scopes.write().unwrap().insert("c1".into(), ("h1".into(), None));
+
+        handle_client_signaling(SignalingMessage::GetCapabilities { target_id: "h2".into() }, "boss", "c1", state.clone()).await;
+        assert!(matches!(rx.rx_try(), Some(ServerToClientMessage::Signaling(SignalingMessage::Error { .. }))));
+        assert!(h2.rx_try().is_none());
+        handle_client_signaling(
+            SignalingMessage::RequestFileSession { host_id: "h2".into(), source_id: None },
+            "boss",
+            "c1",
+            state.clone(),
+        )
+        .await;
+        assert!(matches!(rx.rx_try(), Some(ServerToClientMessage::Signaling(SignalingMessage::Error { .. }))));
+        assert!(h2.rx_try().is_none());
+
+        // Not a source of its host either: links name the host's own screen.
+        handle_client_signaling(
+            SignalingMessage::RequestFileSession { host_id: "h1".into(), source_id: Some("s1".into()) },
+            "boss",
+            "c1",
+            state.clone(),
+        )
+        .await;
+        assert!(matches!(rx.rx_try(), Some(ServerToClientMessage::Signaling(SignalingMessage::Error { .. }))));
+        assert!(h1.rx_try().is_none());
+
+        handle_client_signaling(SignalingMessage::GetCapabilities { target_id: "h1".into() }, "boss", "c1", state.clone()).await;
+        assert!(matches!(
+            h1.rx_try(),
+            Some(ServerToAgentMessage::Signaling(SignalingMessage::GetCapabilities { .. }))
+        ));
+
+        // Scoped to a source of h1: that source only, not h1's own screen.
+        let mut rx3 = client(&state, "c3", "boss");
+        state.client_scopes.write().unwrap().insert("c3".into(), ("h1".into(), Some("s1".into())));
+        handle_client_signaling(
+            SignalingMessage::RequestFileSession { host_id: "h1".into(), source_id: None },
+            "boss",
+            "c3",
+            state.clone(),
+        )
+        .await;
+        assert!(matches!(rx3.rx_try(), Some(ServerToClientMessage::Signaling(SignalingMessage::Error { .. }))));
+        handle_client_signaling(
+            SignalingMessage::RequestFileSession { host_id: "h1".into(), source_id: Some("s2".into()) },
+            "boss",
+            "c3",
+            state.clone(),
+        )
+        .await;
+        assert!(matches!(rx3.rx_try(), Some(ServerToClientMessage::Signaling(SignalingMessage::Error { .. }))));
+        assert!(h1.rx_try().is_none());
+        handle_client_signaling(
+            SignalingMessage::RequestFileSession { host_id: "h1".into(), source_id: Some("s1".into()) },
+            "boss",
+            "c3",
+            state.clone(),
+        )
+        .await;
+        assert!(matches!(
+            h1.rx_try(),
+            Some(ServerToAgentMessage::Signaling(SignalingMessage::IncomingFileSession { .. }))
+        ));
+        // Capabilities (the stream window picks its codec), but not the
+        // app list, and never stopping the host's own screen stream.
+        handle_client_signaling(SignalingMessage::GetCapabilities { target_id: "h1".into() }, "boss", "c3", state.clone()).await;
+        assert!(matches!(h1.rx_try(), Some(ServerToAgentMessage::Signaling(SignalingMessage::GetCapabilities { .. }))));
+        for sig in [
+            SignalingMessage::GetAppList { target_id: "h1".into() },
+            SignalingMessage::StopActiveStream { target_id: "h1".into() },
+        ] {
+            handle_client_signaling(sig, "boss", "c3", state.clone()).await;
+            assert!(matches!(rx3.rx_try(), Some(ServerToClientMessage::Signaling(SignalingMessage::Error { .. }))));
+            assert!(h1.rx_try().is_none());
+        }
+        // The screen's link stops only a stream that is its own.
+        handle_client_signaling(SignalingMessage::StopActiveStream { target_id: "h1".into() }, "boss", "c1", state.clone()).await;
+        assert!(matches!(rx.rx_try(), Some(ServerToClientMessage::Signaling(SignalingMessage::Error { .. }))));
+        assert!(h1.rx_try().is_none());
+        state.client_to_agent.write().unwrap().insert("c1".into(), "h1".into());
+        handle_client_signaling(SignalingMessage::StopActiveStream { target_id: "h1".into() }, "boss", "c1", state.clone()).await;
+        assert!(matches!(h1.rx_try(), Some(ServerToAgentMessage::Signaling(SignalingMessage::StopActiveStream { .. }))));
+        state.client_to_agent.write().unwrap().remove("c1");
+
+        // Another connection of the same user without the scope: every host.
+        let _rx2 = client(&state, "c2", "boss");
+        handle_client_signaling(SignalingMessage::GetCapabilities { target_id: "h2".into() }, "boss", "c2", state.clone()).await;
+        assert!(matches!(
+            h2.rx_try(),
             Some(ServerToAgentMessage::Signaling(SignalingMessage::GetCapabilities { .. }))
         ));
     }

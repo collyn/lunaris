@@ -2,7 +2,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
-// The slim notice above Home: a newer Lunaris release, the progress of its
+// The slim notice above the window shown without a link: a newer Lunaris release, the progress of its
 // download and install, or why the update failed. `status` is the parsed
 // bridge.updateStatus() (updater/src/service.rs); Update, Download and the
 // restart go through the bridge.

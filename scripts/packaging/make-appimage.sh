@@ -3,8 +3,8 @@
 # (see build-appimages.sh).
 #
 # Usage: make-appimage.sh <agent|client-desktop|client-qml> <binary> <output-dir>
-#   agent           Lunaris-Agent-<version>-x86_64.AppImage   (agent-app: the agent with its window)
-#   client-desktop  client-desktop-x86_64.AppImage            (the unified app: client + agent + server)
+#   agent           Lunaris-Agent-<version>-x86_64.AppImage   (lunaris-agent: command line, no Qt)
+#   client-desktop  client-desktop-x86_64.AppImage            (the stream window, opened from the server's web page)
 #   client-qml      client-qml-x86_64.AppImage                (the same program, kept for old links)
 #
 # Env: APPIMAGE_ZSTD_LEVEL  squashfs zstd level (default 22)
@@ -22,15 +22,15 @@ DEPS=/opt/deps
 case "$VARIANT" in
     agent)
         NAME=lunaris-agent TITLE="Lunaris Agent" ICON_NAME=lunaris-agent
-        COMMENT="Share this computer's screen with Lunaris clients"
-        QML_DIR="$ROOT/agent-app/qml" ICON_SRC="$ROOT/agent-app/qml/icons/icon.png" ICON_SIZE=256
-        EXEC=lunaris-agent MIME="" CONFIG_DIR=lunaris-agent
-        OUTFILE="$OUT/Lunaris-Agent-${VERSION}-x86_64.AppImage" SMOKE_ARGS=(--minimized)
+        COMMENT="Share this computer with a Lunaris server (command line)"
+        QML_DIR="" ICON_SRC="$ROOT/approval-helper/qml/icons/icon.png" ICON_SIZE=256
+        EXEC=lunaris-agent MIME="" CONFIG_DIR=lunaris-agent QT=0
+        OUTFILE="$OUT/Lunaris-Agent-${VERSION}-x86_64.AppImage" SMOKE_ARGS=()
         ;;
     client-desktop | client-qml)
         NAME=$VARIANT TITLE="Lunaris Client" ICON_NAME=lunaris-client
-        COMMENT="Connect to computers running the Lunaris agent"
-        QML_DIR="$ROOT/client-qml/qml" EXEC=$VARIANT MIME="MimeType=x-scheme-handler/lunaris;" CONFIG_DIR=""
+        COMMENT="The stream window of the computers of a Lunaris server"
+        QML_DIR="$ROOT/client-qml/qml" EXEC=$VARIANT MIME="MimeType=x-scheme-handler/lunaris;" CONFIG_DIR="" QT=1
         if [[ "$VARIANT" == client-desktop ]]; then
             ICON_SRC="$ROOT/client-desktop/icons/128x128.png" ICON_SIZE=128
         else
@@ -56,9 +56,10 @@ cat > "$USR/share/applications/$NAME.desktop" <<DESKTOP
 Type=Application
 Name=$TITLE
 Comment=$COMMENT
-Exec=$EXEC %u
+Exec=$EXEC $([[ $QT == 1 ]] && echo %u)
 Icon=$ICON_NAME
-Terminal=false
+Terminal=$([[ $QT == 1 ]] && echo false || echo true)
+$([[ $QT == 1 ]] || echo NoDisplay=true)
 Categories=Network;RemoteAccess;
 $MIME
 DESKTOP
@@ -75,8 +76,10 @@ LIC="$USR/share/licenses"
 mkdir -p "$LIC"
 install -Dm644 "$ROOT/LICENSE" "$LIC/lunaris/LICENSE"
 cp -r "$DEPS/share/licenses/." "$LIC/"
-install -Dm644 "$QTDIR/../../Licenses/LICENSE.LGPL3" "$LIC/qt/LICENSE.LGPL3" 2>/dev/null \
-    || find "$QTDIR/.." -maxdepth 3 -iname 'LICENSE.LGPL*' -exec install -Dm644 {} "$LIC/qt/" \; -quit 2>/dev/null || true
+if [[ $QT == 1 ]]; then
+    install -Dm644 "$QTDIR/../../Licenses/LICENSE.LGPL3" "$LIC/qt/LICENSE.LGPL3" 2>/dev/null \
+        || find "$QTDIR/.." -maxdepth 3 -iname 'LICENSE.LGPL*' -exec install -Dm644 {} "$LIC/qt/" \; -quit 2>/dev/null || true
+fi
 install -Dm644 "$HERE/THIRD-PARTY-NOTICES.md" "$LIC/THIRD-PARTY-NOTICES.md"
 
 # AppRun: offer --setup-host / --licenses; the agent also keeps agent_config.json in
@@ -141,6 +144,7 @@ LD_ARGS=(--appdir "$APPDIR" --custom-apprun "$WORK/AppRun"
 
 cd "$WORK"
 
+if [[ $QT == 1 ]]; then
 # 1. Deploy Qt (libraries, plugins, the QML modules the app imports) and their dependencies.
 linuxdeploy-x86_64 "${LD_ARGS[@]}" --plugin qt
 
@@ -159,8 +163,10 @@ linuxdeploy-x86_64 --appdir "$APPDIR" --exclude-library 'libpipewire-0.3.so*' \
 prune_appdir "$APPDIR" "$VARIANT"
 
 # 3b. Client: the CPU video path (QVideoSink) must work with what is left.
-if [[ "$VARIANT" != agent ]]; then
-    "$HERE/videosink-check.sh" "$APPDIR"
+"$HERE/videosink-check.sh" "$APPDIR"
+else
+# The agent has no Qt: only its own libraries (and their dependencies).
+linuxdeploy-x86_64 "${LD_ARGS[@]}"
 fi
 
 # 4. Squashfs image, written by appimagetool (the tool linuxdeploy's appimage plugin
@@ -183,7 +189,8 @@ rm -f "$OUTFILE"
 "$APPIMAGETOOL" --no-appstream "${COMP_ARGS[@]}" "$APPDIR" "$OUTFILE"
 ls -l "$OUTFILE"
 
-# 5. Start it with the build machine's Qt hidden.
+# 5. Start it with the build machine's Qt hidden (the agent: headless, with a
+#    new config in a throw-away HOME).
 if [[ -z "${SKIP_SMOKE:-}" ]]; then
     "$HERE/smoke-appimage.sh" "$OUTFILE" 8 "${SMOKE_ARGS[@]}"
 fi

@@ -1,0 +1,9 @@
+<!DOCTYPE RCC><RCC version="1.0">
+<qresource prefix="/">
+    <file>Main.qml</file>
+    <file>Theme.qml</file>
+    <file>ApprovalDialog.qml</file>
+    <file>qmldir</file>
+    <file>icons/icon.png</file>
+</qresource>
+</RCC>

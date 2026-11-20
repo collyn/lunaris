@@ -1,16 +1,9 @@
 //! Windows: the program's icon and its manifest.
 //!
-//! The manifest asks for administrator rights. A process without them
-//! cannot send keys or clicks to windows of elevated programs (User
-//! Interface Privilege Isolation): Task Manager, installers, an elevated
-//! terminal would ignore the person remoting this computer. The host agent
-//! is a child of this program and inherits its rights. What an elevated
-//! process still cannot reach is the secure desktop (the consent prompt
-//! itself, the sign-in screen); that takes a service.
-//!
-//! Starting with Windows is then done by a scheduled task
-//! (client-qml/src/win_autostart.rs): the Run key does not start programs
-//! that need elevation.
+//! The manifest asks for no administrator rights (`asInvoker`): the app only
+//! shows streams. Earlier versions were also the host agent and asked for
+//! them, to send input to elevated windows of this computer; that is
+//! lunaris-agent's now.
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");

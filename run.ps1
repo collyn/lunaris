@@ -524,7 +524,8 @@ function Package-App {
     # Package Host Agent
     Write-Host "Packaging Host Agent..." -ForegroundColor Yellow
     New-Item -ItemType Directory -Force -Path lunaris-agent | Out-Null
-    Copy-Item target/release/agent.exe -Destination lunaris-agent/
+    Copy-Item target/release/lunaris-agent.exe -Destination lunaris-agent/
+    if (Test-Path target/release/lunaris-approval-helper.exe) { Copy-Item target/release/lunaris-approval-helper.exe -Destination lunaris-agent/ }
     Copy-Item "$env:VCPKG_ROOT/installed/x64-windows/bin/*.dll" -Destination lunaris-agent/ -ErrorAction SilentlyContinue
     if (Test-Path lunaris-agent-windows.zip) { Remove-Item lunaris-agent-windows.zip }
     Compress-Archive -Path lunaris-agent/* -DestinationPath lunaris-agent-windows.zip

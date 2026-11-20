@@ -1,7 +1,7 @@
 [Desktop Entry]
 Type=Application
 Name=Lunaris Client
-Comment=Connect to computers running the Lunaris agent
+Comment=The stream window of the computers of a Lunaris server
 Exec=lunaris-client %u
 Icon=lunaris-client
 Terminal=false

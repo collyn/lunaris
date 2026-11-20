@@ -13,16 +13,14 @@ pub mod deeplink;
 pub mod display_gpu;
 pub mod files;
 pub mod gamepad;
-pub mod host;
-pub mod local_server;
+pub mod legacy_autostart;
 pub mod luma_tap;
-pub mod own_computers;
 pub mod pointer_in_picture;
 pub mod input;
 pub mod protocol;
 pub mod secure_fs;
+pub mod session_info;
 pub mod share;
-pub mod win_autostart;
 
 use bridge::{AppArgs, PendingDashboardEvent, APP_ARGS};
 
@@ -107,7 +105,9 @@ fn handle_single_instance() -> bool {
                 // Same checks as a link on the command line; a bad line is
                 // ignored (the listener must not panic).
                 let url = url.trim();
-                match deeplink::judge(url) {
+                // A trusted server's ticket is traded in the background
+                // (`Redeeming`): this thread stays free for the next message.
+                match deeplink::judge(url, false) {
                     deeplink::Verdict::Connect(args) => {
                         info!(
                             "Single-instance: link to {} (host {})",
@@ -119,6 +119,9 @@ fn handle_single_instance() -> bool {
                         push_event(PendingDashboardEvent::DeepLinkReceived {
                             url: "lunaris://connect".to_string(),
                         });
+                    }
+                    deeplink::Verdict::Redeeming => {
+                        info!("Single-instance: link to a trusted server, trading its ticket");
                     }
                     deeplink::Verdict::NeedsConfirmation => {
                         info!("Single-instance: link to an unknown server, asking the user");
@@ -142,14 +145,19 @@ fn parse_args() -> Option<AppArgs> {
         return None;
     }
 
-    // Check if deep linked: lunaris://connect?host_id=...&server=...&token=...
+    // Check if deep linked: lunaris://connect?host_id=...&server=...&ticket=...
     if args[1].starts_with("lunaris://") {
-        return match deeplink::judge(&args[1]) {
+        // Blocking: the app starts for this one session (`APP_ARGS`); the
+        // single-instance listener already runs on its own thread.
+        return match deeplink::judge(&args[1], true) {
             deeplink::Verdict::Connect(a) => {
                 deeplink::mark_trusted_session();
                 Some(a)
             }
-            // The dashboard opens and asks (main.qml).
+            // Not when blocking; the window opens and the session starts
+            // when the ticket is traded.
+            deeplink::Verdict::Redeeming => None,
+            // The window opens and asks (main.qml).
             deeplink::Verdict::NeedsConfirmation => None,
             deeplink::Verdict::Invalid => {
                 warn!("Ignored an invalid lunaris:// link");
@@ -312,6 +320,12 @@ fn parse_args() -> Option<AppArgs> {
 }
 
 pub fn run() {
+    // Started with the computer by an entry of an earlier version (it hosted
+    // this computer or sat in the tray): the entry goes, and so does this.
+    if legacy_autostart::started_by_old_entry() {
+        legacy_autostart::remove();
+        return;
+    }
     if handle_single_instance() {
         return;
     }
@@ -347,6 +361,10 @@ pub fn run() {
         warn!("Failed to auto-register protocol handler: {:?}", e);
     }
 
+    // The server earlier versions were signed in to becomes a trusted one
+    // (before the link on the command line is judged).
+    deeplink::migrate_signed_in_server();
+
     let parsed_args = parse_args();
     if let Some(args) = parsed_args {
         let mut shown = args.clone();
@@ -357,7 +375,7 @@ pub fn run() {
             std::process::exit(1);
         }
     } else {
-        info!("No stream configurations provided on command-line. Starting in Launcher Dashboard mode.");
+        info!("No link on the command line: showing the window that points to the web page.");
     }
 
     // ── GPU present auto-configuration ──────────────────────────────────────
@@ -479,25 +497,19 @@ pub fn run() {
         }
     }
 
-    // 1. Create the Qt application. It must be a QApplication (QtWidgets):
-    // the tray icon/menu from Qt.labs.platform fall back to widgets on KDE.
+    // 1. Create the Qt application (a QApplication: QtWidgets).
     bridge::qobject::create_widgets_application();
 
     // Register our custom QML video rendering item
     bridge::qobject::register_gpu_video_item_type();
     bridge::qobject::register_native_video_item_types();
 
-    // 2. Create QQmlApplicationEngine
-    // Remote control of this computer, when it was left on. Not for a
-    // one-stream launch (lunaris:// link): its exit would stop it again.
+    // Updates: the automatic check (at start, then daily) and the notice
+    // and Updates panel of the window shown without a link. Not for a
+    // one-stream launch (lunaris:// link).
     if APP_ARGS.get().is_none() {
-        host::start_if_enabled();
-        local_server::start_if_enabled();
-    }
-
-    // Updates: the automatic check (at start, then daily) and the window's
-    // notice and Updates settings. Not for a one-stream launch.
-    if APP_ARGS.get().is_none() {
+        // Earlier versions' start-with-the-computer entries go.
+        legacy_autostart::remove();
         updater::service::init(updater::App::Client, &app_settings_dir());
     }
 
@@ -514,13 +526,7 @@ pub fn run() {
     // 4. Exec event loop
     bridge::qobject::exec_widgets_application();
 
-    // Clean up local agent if running
-    bridge::stop_local_agent();
-    host::shutdown();
-    own_computers::shutdown();
-    local_server::shutdown();
-    // After an update the window quit: start the new version (it starts
-    // its agent and server again, as at every start).
+    // After an update the window quit: start the new version.
     updater::restart::relaunch_if_requested();
 }
 

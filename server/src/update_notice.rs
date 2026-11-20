@@ -18,6 +18,44 @@ use tracing::{debug, warn};
 
 static ENABLED: AtomicBool = AtomicBool::new(false);
 
+/// What the last check found, for the server's info page (server_info.rs).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CheckResult {
+    /// Unix seconds.
+    pub checked_at: u64,
+    /// The newest stable release ("0.6.7") and its page; None when the
+    /// check failed.
+    pub latest: Option<(String, String)>,
+    /// Why the check failed.
+    pub error: Option<String>,
+}
+
+static LAST: std::sync::Mutex<Option<CheckResult>> = std::sync::Mutex::new(None);
+
+/// Whether this server checks for new versions (the standalone server,
+/// without LUNARIS_NO_UPDATE_CHECK).
+pub fn checks() -> bool {
+    ENABLED.load(Ordering::SeqCst) && std::env::var_os("LUNARIS_NO_UPDATE_CHECK").is_none()
+}
+
+/// The last check's result; None before the first one has finished.
+pub fn last() -> Option<CheckResult> {
+    LAST.lock().unwrap().clone()
+}
+
+fn remember(latest: Option<(String, String)>, error: Option<String>) {
+    let checked_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    *LAST.lock().unwrap() = Some(CheckResult { checked_at, latest, error });
+}
+
+/// Whether `latest` (a version or tag) is newer than this server.
+pub fn is_newer(latest: &str) -> bool {
+    updater::version::is_newer(updater::CURRENT_VERSION, latest)
+}
+
 const HOST: &str = "api.github.com";
 const PATH: &str = "/repos/collyn/lunaris/releases/latest";
 
@@ -28,22 +66,34 @@ pub fn enable() {
 
 /// Starts the daily check on the current tokio runtime when enabled.
 pub(crate) fn spawn() {
-    if !ENABLED.load(Ordering::SeqCst) || std::env::var_os("LUNARIS_NO_UPDATE_CHECK").is_some() {
+    if !checks() {
         return;
     }
     tokio::spawn(async {
         tokio::time::sleep(Duration::from_secs(30)).await;
         loop {
             match tokio::time::timeout(Duration::from_secs(60), fetch_latest()).await {
-                Ok(Ok(release)) if updater::version::is_newer(updater::CURRENT_VERSION, &release.tag) => warn!(
-                    "Lunaris {} is available (this server is {}): {}",
-                    release.version,
-                    updater::CURRENT_VERSION,
-                    release.page_url
-                ),
-                Ok(Ok(_)) => debug!("Update check: this server is the latest version"),
-                Ok(Err(e)) => debug!("Update check failed: {e}"),
-                Err(_) => debug!("Update check failed: timed out"),
+                Ok(Ok(release)) => {
+                    if is_newer(&release.tag) {
+                        warn!(
+                            "Lunaris {} is available (this server is {}): {}",
+                            release.version,
+                            updater::CURRENT_VERSION,
+                            release.page_url
+                        );
+                    } else {
+                        debug!("Update check: this server is the latest version");
+                    }
+                    remember(Some((release.version, release.page_url)), None);
+                }
+                Ok(Err(e)) => {
+                    debug!("Update check failed: {e}");
+                    remember(None, Some(e));
+                }
+                Err(_) => {
+                    debug!("Update check failed: timed out");
+                    remember(None, Some("timed out".into()));
+                }
             }
             tokio::time::sleep(Duration::from_secs(24 * 3600)).await;
         }

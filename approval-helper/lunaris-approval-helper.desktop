@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Lunaris Agent (connection requests)
+Comment=Asks you before anyone connects to this computer without the password
+Exec=lunaris-approval-helper
+Icon=lunaris-approval-helper
+Terminal=false
+NoDisplay=true
+X-GNOME-Autostart-enabled=true

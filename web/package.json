@@ -12,9 +12,14 @@
     "test:pointer": "node --test tests/pointerInPicture.test.ts tests/pointerShown.test.ts",
     "test:cards": "node --test tests/computerCards.test.ts",
     "test:keyboard": "node --test tests/keyboard.test.ts",
+    "test:computer-settings": "node --test tests/computerSettings.test.ts",
     "test:stats": "node --test tests/streamStats.test.ts",
     "test:install": "node --test tests/installCommand.test.ts",
-    "test:mfa": "node --test tests/mfa.test.ts"
+    "test:mfa": "node --test tests/mfa.test.ts",
+    "test:setup": "node --test tests/setup.test.ts",
+    "test:stream-prefs": "node --test tests/streamPrefs.test.ts",
+    "test:favourites": "node --test tests/favourites.test.ts",
+    "test:server-info": "node --test tests/serverInfo.test.ts"
   },
   "dependencies": {
     "react": "^19.2.6",

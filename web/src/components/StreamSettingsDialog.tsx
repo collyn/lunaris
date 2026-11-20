@@ -66,12 +66,34 @@ type Props = {
   unsupportedCodecs?: string[];
   /** Per-codec labels (e.g. "Auto (H264)", "AV1 (Unsupported by browser)"). */
   codecLabels?: Record<string, string>;
-  /** Encoders the remote computer reported, added to the standard list. */
+  /** Encoders the remote computer reported: the list to choose from (the
+   *  standard list while none are known). */
   encoders?: string[];
+  /** Settings of one computer: "Use defaults" forgets what it has of its
+   *  own (`ownSettings`: it has some now). */
+  onUseDefaults?: () => void;
+  ownSettings?: boolean;
   showNativeClient?: boolean;
   /** This device's display and sound in a session. Without it the dialog
    *  keeps them itself, as this browser's defaults. */
   viewer?: ViewerSettings;
+};
+
+/** The encoders offered when the remote computer has not said which it has. */
+const STANDARD_ENCODERS = ['native', 'ffmpeg', 'nvenc', 'amf', 'qsv', 'vaapi', 'software'];
+const ENCODER_LABELS: Record<string, string> = {
+  native: 'Native GPU', ffmpeg: 'FFmpeg GPU', nvenc: 'NVENC', amf: 'AMF', qsv: 'QSV', vaapi: 'VAAPI', software: 'Software',
+};
+const encoderLabel = (e: string) => ENCODER_LABELS[e] || e;
+
+/** The encoders to choose from (besides Auto): those the remote computer
+ *  reported, else the standard ones; the chosen one stays in the list. */
+const encoderChoices = (reported: string[], chosen: string): string[] => {
+  const known = reported.map(e => e.toLowerCase()).filter(e => e && e !== 'auto');
+  const list = [...new Set(known.length > 0 ? known : STANDARD_ENCODERS)];
+  const current = chosen.toLowerCase();
+  if (current && current !== 'auto' && !list.includes(current)) list.push(current);
+  return list;
 };
 
 type Category = 'video' | 'display' | 'audio' | 'sharing' | 'host' | 'input' | 'controllers';
@@ -149,7 +171,7 @@ const useStoredViewer = (): ViewerSettings => {
  */
 export default function StreamSettingsDialog({
   hostName, hostAddress, sourceOnly, hostInfo, values, onChange, onCancel, onSave, saveLabel, footerNote, displays, unsupportedCodecs = [],
-  codecLabels = {}, encoders = [], showNativeClient, viewer: viewerProp,
+  codecLabels = {}, encoders = [], showNativeClient, viewer: viewerProp, onUseDefaults, ownSettings,
 }: Props) {
   const [category, setCategory] = useState<Category>('video');
   // Ask the remote computer to record its microphone too (sent with the
@@ -348,16 +370,7 @@ export default function StreamSettingsDialog({
                   <Row title={t('Encoder')} hint={t("Auto picks the remote computer's hardware encoder (NVENC, VAAPI, QSV, AMF) and falls back to the CPU.")}>
                     <select value={values.encoder} onChange={(e) => onChange('encoder', e.target.value)}>
                       <option value="auto">{t('Auto (recommended)')}</option>
-                      <option value="native">Native GPU</option>
-                      <option value="ffmpeg">FFmpeg GPU</option>
-                      <option value="nvenc">NVENC</option>
-                      <option value="amf">AMF</option>
-                      <option value="qsv">QSV</option>
-                      <option value="vaapi">VAAPI</option>
-                      <option value="software">Software</option>
-                      {encoders.map(e => e.toLowerCase())
-                        .filter(e => !['auto', 'native', 'ffmpeg', 'nvenc', 'amf', 'qsv', 'vaapi', 'software'].includes(e))
-                        .map(e => <option key={e} value={e}>{e}</option>)}
+                      {encoderChoices(encoders, values.encoder).map(e => <option key={e} value={e}>{encoderLabel(e)}</option>)}
                     </select>
                   </Row>
                 </div>}
@@ -368,6 +381,10 @@ export default function StreamSettingsDialog({
                     <select value={values.display} onChange={(e) => onChange('display', e.target.value)}>
                       <option value="default">{t('Default')}</option>
                       {(displays || []).map(d => <option key={d.id} value={d.id}>{d.label}</option>)}
+                      {/* Chosen before, not listed now (the computer has not answered yet). */}
+                      {values.display !== 'default' && !(displays || []).some(d => d.id === values.display) && (
+                        <option value={values.display}>{values.display}</option>
+                      )}
                     </select>
                   </Row>
                 </div>
@@ -421,6 +438,15 @@ export default function StreamSettingsDialog({
         <footer className="ssd-footer">
           <span className="ssd-footer-note">{footerNote ?? (hostName ? t('Used when you connect to %1.', hostName) : '')}</span>
           <div className="ssd-actions">
+            {onUseDefaults && (
+              <button
+                type="button"
+                className="btn-secondary"
+                disabled={!ownSettings}
+                title={t('Forget the settings this computer has of its own: it uses the default settings again.')}
+                onClick={onUseDefaults}
+              >{t('Use defaults')}</button>
+            )}
             <button type="button" className="btn-secondary" onClick={onCancel}>{t('Cancel')}</button>
             <button type="button" className="btn-primary" onClick={onSave}>{saveLabel ?? t('Save')}</button>
           </div>

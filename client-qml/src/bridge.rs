@@ -5,109 +5,15 @@ use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone)]
 pub enum PendingDashboardEvent {
-    LoginResult {
-        success: bool,
-        error_msg: String,
-        token: String,
-        username: String,
-        server: String,
-    },
-
-    HostsResult {
-        success: bool,
-        error_msg: String,
-        hosts_json: String,
-    },
-
-    AppsResult {
-        success: bool,
-        error_msg: String,
-        host_id: String,
-        apps_json: String,
-    },
-    CredentialsLoaded {
-        success: bool,
-        server: String,
-        token: String,
-        username: String,
-    },
-    AgentTokenResult {
-        success: bool,
-        error_msg: String,
-        token: String,
-    },
+    /// A link to start (or an empty url: show the window).
     DeepLinkReceived {
         url: String,
     },
-    /// Answer to `api_request`: HTTP status (0 = no connection) and body.
-    ApiResult {
-        req_id: String,
-        status: i32,
-        body: String,
+    /// A link could not be used (its ticket was refused or the server not
+    /// reached): `message` is for the user (English, translated in QML).
+    LinkFailed {
+        message: String,
     },
-    /// The password was right and the account has two-factor sign-in on:
-    /// the code from the authenticator app is next (`login_mfa`).
-    MfaRequired {
-        server: String,
-        username: String,
-    },
-}
-
-/// The sign-in waiting for its two-factor code: server and mfa_token (kept
-/// here, out of QML; short-lived and single-use on the server).
-static PENDING_MFA: Mutex<Option<(String, String)>> = Mutex::new(None);
-
-/// What POST /api/auth/login (or /api/auth/login/mfa) answered.
-#[derive(Debug, PartialEq)]
-pub(crate) enum LoginAnswer {
-    Session { token: String, username: String },
-    Mfa { mfa_token: String, username: String },
-    Error(String),
-}
-
-pub(crate) fn parse_login_answer(ok: bool, text: &str, fallback_error: &str) -> LoginAnswer {
-    let value: serde_json::Value = serde_json::from_str(text).unwrap_or(serde_json::Value::Null);
-    let field = |k: &str| value.get(k).and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(str::to_string);
-    if ok && value.get("mfa_required").and_then(|v| v.as_bool()) == Some(true) {
-        if let Some(mfa_token) = field("mfa_token") {
-            return LoginAnswer::Mfa { mfa_token, username: field("username").unwrap_or_default() };
-        }
-    }
-    if ok {
-        if let Some(token) = field("token") {
-            return LoginAnswer::Session { token, username: field("username").unwrap_or_default() };
-        }
-    }
-    LoginAnswer::Error(field("error").unwrap_or_else(|| fallback_error.to_string()))
-}
-
-/// Turns a sign-in answer into the events QML sees.
-fn finish_login(server: &str, answer: LoginAnswer) {
-    let event = match answer {
-        LoginAnswer::Session { token, username } => {
-            *PENDING_MFA.lock().unwrap() = None;
-            save_settings(server, &token, &username);
-            PendingDashboardEvent::LoginResult {
-                success: true,
-                error_msg: String::new(),
-                token,
-                username,
-                server: server.to_string(),
-            }
-        }
-        LoginAnswer::Mfa { mfa_token, username } => {
-            *PENDING_MFA.lock().unwrap() = Some((server.to_string(), mfa_token));
-            PendingDashboardEvent::MfaRequired { server: server.to_string(), username }
-        }
-        LoginAnswer::Error(error_msg) => PendingDashboardEvent::LoginResult {
-            success: false,
-            error_msg,
-            token: String::new(),
-            username: String::new(),
-            server: String::new(),
-        },
-    };
-    PENDING_EVENTS.lock().unwrap().push(event);
 }
 
 pub static PENDING_EVENTS: std::sync::Mutex<Vec<PendingDashboardEvent>> =
@@ -137,9 +43,6 @@ pub struct AppArgs {
 }
 
 pub static APP_ARGS: std::sync::OnceLock<AppArgs> = std::sync::OnceLock::new();
-/// Saved computers that answered the last check (`probe_peer`).
-static PEER_ONLINE: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, bool>>> =
-    std::sync::LazyLock::new(Default::default);
 pub static ACTIVE_CONFIG: std::sync::Mutex<Option<AppArgs>> = std::sync::Mutex::new(None);
 
 pub const RENDER_BACKEND_AUTO_GPU: &str = "auto_gpu";
@@ -365,13 +268,6 @@ impl StreamBridgeRust {
     }
 }
 
-#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
-struct SavedSettings {
-    server_url: String,
-    token: String,
-    username: String,
-}
-
 fn get_config_path() -> std::path::PathBuf {
     let mut path = if let Ok(home) = std::env::var("HOME") {
         std::path::PathBuf::from(home)
@@ -386,35 +282,10 @@ fn get_config_path() -> std::path::PathBuf {
     path
 }
 
-fn load_settings() -> Option<SavedSettings> {
-    let path = get_config_path();
-    if !path.exists() {
-        return None;
-    }
-    let data = std::fs::read_to_string(path).ok()?;
-    serde_json::from_str(&data).ok()
-}
-
-fn save_settings(server_url: &str, token: &str, username: &str) {
-    let path = get_config_path();
-    let settings = SavedSettings {
-        server_url: server_url.to_string(),
-        token: token.to_string(),
-        username: username.to_string(),
-    };
-    if let Ok(data) = serde_json::to_string_pretty(&settings) {
-        let _ = crate::secure_fs::write_private(&path, data);
-    }
-}
-
-/// The server the user is signed in to (saved login), for judging links.
-pub(crate) fn saved_server_url() -> Option<String> {
-    load_settings().map(|s| s.server_url).filter(|s| !s.is_empty())
-}
-
-fn clear_settings() {
-    let path = get_config_path();
-    let _ = std::fs::remove_file(path);
+/// A file in the app's private settings folder (`~/.lunaris`), next to
+/// client_config.json.
+pub(crate) fn app_config_file(name: &str) -> std::path::PathBuf {
+    get_config_path().with_file_name(name)
 }
 
 /// Paths or file:// URLs, one per line.
@@ -432,8 +303,8 @@ fn local_paths(text: &str) -> Vec<std::path::PathBuf> {
         .collect()
 }
 
-/// The agent's "host:port" when this is a direct connection (QML passes
-/// server "ws://<address>" and host "direct"), None for a server.
+/// The agent's "host:port" when this is a direct connection (command line
+/// `--server ws://<address> --host-id direct`), None for a server.
 fn direct_address<'a>(server_url: &'a str, host_id: &str) -> Option<&'a str> {
     if host_id != "direct" {
         return None;
@@ -442,33 +313,10 @@ fn direct_address<'a>(server_url: &'a str, host_id: &str) -> Option<&'a str> {
     Some(address.trim_end_matches('/'))
 }
 
-/// The last direct connection (no server), remembered like the login.
-#[derive(serde::Serialize, serde::Deserialize, Default)]
-struct DirectTarget {
-    address: String,
-    password: String,
-}
-
-fn direct_target_path() -> std::path::PathBuf {
-    get_config_path().with_file_name("direct_connection.json")
-}
-
 /// File of a JSON store the UI keeps (`load_store`/`save_store`).
 fn store_path(name: &str) -> Option<std::path::PathBuf> {
-    matches!(name, "app_settings" | "peers" | "view_prefs")
+    matches!(name, "app_settings" | "view_prefs")
         .then(|| get_config_path().with_file_name(format!("{}.json", name)))
-}
-
-fn load_direct_target() -> Option<DirectTarget> {
-    serde_json::from_str(&std::fs::read_to_string(direct_target_path()).ok()?).ok()
-}
-
-fn save_direct_target_file(target: &DirectTarget) {
-    let path = direct_target_path();
-    if let Ok(data) = serde_json::to_string_pretty(target) {
-        // Holds an access password: owner-only.
-        let _ = crate::secure_fs::write_private(&path, data);
-    }
 }
 
 /// Why the stream couldn't start, set by the stream task and reported to QML
@@ -487,7 +335,7 @@ pub static PENDING_SOURCE_DISPLAYS: std::sync::Mutex<Option<(String, String)>> =
 
 /// The delay between the agent and the computer it shows, there and back,
 /// in microseconds, as the agent last told it on the general data channel
-/// (`own_computers::source_latency_ms`); 0 when it told none (it shows its
+/// (`session_info::source_latency_ms`); 0 when it told none (it shows its
 /// own screen, or its connector does not measure it). Added to the ping
 /// shown; put back to 0 when a session starts or stops.
 pub static SOURCE_LATENCY_US: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
@@ -524,25 +372,9 @@ fn decode_codecs_for_request(decodable: Vec<String>, chosen: &str) -> Vec<String
     codecs
 }
 
-/// Why a session to one of the app's own computers of other types could
-/// not start: already a sentence for the user.
-#[derive(Debug)]
-struct BridgeSessionError(String);
-
-impl std::fmt::Display for BridgeSessionError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl std::error::Error for BridgeSessionError {}
-
 /// A message for the user from a stream task error.
 fn describe_stream_error(e: &anyhow::Error) -> String {
     use tokio_tungstenite::tungstenite::Error as WsError;
-    if let Some(bridge) = e.downcast_ref::<BridgeSessionError>() {
-        return bridge.0.clone();
-    }
     // Direct connections: already full sentences (e.g. an agent too old for TLS).
     if let Some(direct) = e.downcast_ref::<agent::direct::ConnectError>() {
         return direct.to_string();
@@ -562,156 +394,6 @@ fn describe_stream_error(e: &anyhow::Error) -> String {
         }
     }
     format!("Connection failed: {}", e)
-}
-
-pub static LOCAL_AGENT_CHILD: std::sync::Mutex<Option<std::process::Child>> =
-    std::sync::Mutex::new(None);
-
-fn get_agent_config_path() -> std::path::PathBuf {
-    let mut path = if let Ok(home) = std::env::var("HOME") {
-        std::path::PathBuf::from(home)
-    } else if let Ok(user_profile) = std::env::var("USERPROFILE") {
-        std::path::PathBuf::from(user_profile)
-    } else {
-        std::path::PathBuf::from(".")
-    };
-    path.push(".lunaris");
-    let _ = crate::secure_fs::create_private_dir(&path);
-    path.push("agent_config.json");
-    path
-}
-
-fn prepare_agent_config(server_url: &str, server_token: &str) -> std::path::PathBuf {
-    let path = get_agent_config_path();
-    let mut config_json = if path.exists() {
-        if let Ok(content) = std::fs::read_to_string(&path) {
-            serde_json::from_str::<serde_json::Value>(&content)
-                .unwrap_or_else(|_| serde_json::json!({}))
-        } else {
-            serde_json::json!({})
-        }
-    } else {
-        serde_json::json!({})
-    };
-
-    config_json["server_url"] = serde_json::json!(server_url);
-    config_json["server_token"] = serde_json::json!(server_token);
-
-    if let Ok(data) = serde_json::to_string_pretty(&config_json) {
-        let _ = crate::secure_fs::write_private(&path, data);
-    }
-    path
-}
-
-#[allow(dead_code)]
-fn get_autostart_path_linux() -> Option<std::path::PathBuf> {
-    let home = std::env::var("HOME").ok()?;
-    let mut path = std::path::PathBuf::from(home);
-    path.push(".config");
-    path.push("autostart");
-    let _ = std::fs::create_dir_all(&path);
-    path.push("lunaris-client.desktop");
-    Some(path)
-}
-
-#[allow(dead_code)]
-fn get_autostart_path_macos() -> Option<std::path::PathBuf> {
-    let home = std::env::var("HOME").ok()?;
-    let mut path = std::path::PathBuf::from(home);
-    path.push("Library");
-    path.push("LaunchAgents");
-    let _ = std::fs::create_dir_all(&path);
-    path.push("com.lunaris.client.plist");
-    Some(path)
-}
-
-fn is_autostart_enabled_impl() -> bool {
-    #[cfg(target_os = "linux")]
-    {
-        if let Some(path) = get_autostart_path_linux() {
-            return path.exists();
-        }
-    }
-    #[cfg(target_os = "macos")]
-    {
-        if let Some(path) = get_autostart_path_macos() {
-            return path.exists();
-        }
-    }
-    #[cfg(target_os = "windows")]
-    {
-        return crate::win_autostart::is_enabled();
-    }
-    #[allow(unreachable_code)]
-    false
-}
-
-fn set_autostart_enabled_impl(enabled: bool) {
-    let exe_path = match std::env::current_exe() {
-        Ok(path) => path.to_string_lossy().to_string(),
-        Err(_) => return,
-    };
-
-    if enabled {
-        #[cfg(target_os = "linux")]
-        {
-            if let Some(path) = get_autostart_path_linux() {
-                let content = format!(
-                    "[Desktop Entry]\nType=Application\nName=Lunaris Client\nExec=\"{}\" --minimized\nIcon=lunaris-client\nX-GNOME-Autostart-enabled=true\n",
-                    exe_path
-                );
-                let _ = std::fs::write(path, content);
-            }
-        }
-        #[cfg(target_os = "macos")]
-        {
-            if let Some(path) = get_autostart_path_macos() {
-                let content = format!(
-                    r#"<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>com.lunaris.client</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>{}</string>
-        <string>--minimized</string>
-    </array>
-    <key>RunAtLoad</key>
-    <true/>
-</dict>
-</plist>"#,
-                    exe_path
-                );
-                let _ = std::fs::write(path, content);
-            }
-        }
-        #[cfg(target_os = "windows")]
-        {
-            // A scheduled task, not the Run key: see win_autostart.rs.
-            if let Err(e) = crate::win_autostart::enable(&exe_path) {
-                eprintln!("Autostart could not be set: {}", e);
-            }
-        }
-    } else {
-        #[cfg(target_os = "linux")]
-        {
-            if let Some(path) = get_autostart_path_linux() {
-                let _ = std::fs::remove_file(path);
-            }
-        }
-        #[cfg(target_os = "macos")]
-        {
-            if let Some(path) = get_autostart_path_macos() {
-                let _ = std::fs::remove_file(path);
-            }
-        }
-        #[cfg(target_os = "windows")]
-        {
-            crate::win_autostart::disable();
-        }
-    }
 }
 
 #[cxx_qt::bridge]
@@ -960,60 +642,11 @@ pub mod qobject {
         );
 
         #[qsignal]
-        fn login_result(
-            self: Pin<&mut StreamBridge>,
-            success: bool,
-            error_msg: QString,
-            token: QString,
-            username: QString,
-            server: QString,
-        );
-
-        /// The password was right; the account wants a code from its
-        /// authenticator app (answer with `login_mfa`).
-        #[qsignal]
-        fn mfa_required(self: Pin<&mut StreamBridge>, server: QString, username: QString);
-
-        #[qsignal]
-        fn hosts_result(
-            self: Pin<&mut StreamBridge>,
-            success: bool,
-            error_msg: QString,
-            hosts_json: QString,
-        );
-
-        #[qsignal]
-        fn apps_result(
-            self: Pin<&mut StreamBridge>,
-            success: bool,
-            error_msg: QString,
-            host_id: QString,
-            apps_json: QString,
-        );
-
-        #[qsignal]
-        fn credentials_loaded(
-            self: Pin<&mut StreamBridge>,
-            success: bool,
-            server: QString,
-            token: QString,
-            username: QString,
-        );
-
-        #[qsignal]
-        fn agent_token_result(
-            self: Pin<&mut StreamBridge>,
-            success: bool,
-            error_msg: QString,
-            token: QString,
-        );
-
-        #[qsignal]
         fn deeplink_received(self: Pin<&mut StreamBridge>, url: QString);
 
-        /// Answer to `api_request` (status 0 = the server could not be reached).
+        /// A lunaris:// link could not be used (message for the user).
         #[qsignal]
-        fn api_result(self: Pin<&mut StreamBridge>, req_id: QString, status: i32, body: QString);
+        fn link_failed(self: Pin<&mut StreamBridge>, message: QString);
 
         /// The stream could not start or ended with an error (message for the user).
         #[qsignal]
@@ -1141,256 +774,29 @@ pub mod qobject {
         #[qinvokable]
         fn pending_link_info(self: Pin<&mut StreamBridge>) -> QString;
 
-        /// Answer to that question; true when the stream may start.
+        /// Answer to that question (`trust_always`: keep the server in the
+        /// trusted list). True when there was a link; its stream starts
+        /// with `deeplink_received` once its ticket is traded.
         #[qinvokable]
-        fn answer_pending_link(self: Pin<&mut StreamBridge>, accept: bool) -> bool;
+        fn answer_pending_link(self: Pin<&mut StreamBridge>, accept: bool, trust_always: bool) -> bool;
 
+        /// The servers whose links connect without asking (the window shown
+        /// without a link lists them): `[{"server", "web"}]`, `web` being the
+        /// address of its web page.
         #[qinvokable]
-        fn load_saved_credentials(self: Pin<&mut StreamBridge>);
+        fn trusted_servers(self: Pin<&mut StreamBridge>) -> QString;
 
+        /// Adds a server the user typed to that list; its web page's address,
+        /// or "" when it is not a server address.
         #[qinvokable]
-        fn login(
-            self: Pin<&mut StreamBridge>,
-            server: QString,
-            username: QString,
-            password: QString,
-        );
+        fn add_trusted_server(self: Pin<&mut StreamBridge>, address: QString) -> QString;
 
-        /// The second step of signing in: a code from the authenticator app,
-        /// or (`recovery`) one of the recovery codes. Answers with
-        /// `login_result`.
+        /// Takes a server off that list: its links ask again.
         #[qinvokable]
-        fn login_mfa(self: Pin<&mut StreamBridge>, code: QString, recovery: bool);
-
-        /// Forgets a sign-in waiting for its code.
-        #[qinvokable]
-        fn cancel_mfa(self: Pin<&mut StreamBridge>);
-
-        #[qinvokable]
-        fn logout(self: Pin<&mut StreamBridge>);
-
-        #[qinvokable]
-        fn fetch_hosts(self: Pin<&mut StreamBridge>);
-
-        /// Calls the signed-in server's REST API (`path` like "/api/admin/users")
-        /// with the saved token; the answer comes back as `api_result(req_id, …)`.
-        #[qinvokable]
-        fn api_request(
-            self: Pin<&mut StreamBridge>,
-            req_id: QString,
-            method: QString,
-            path: QString,
-            body: QString,
-        );
-
-        #[qinvokable]
-        fn delete_host(self: Pin<&mut StreamBridge>, host_id: QString);
-
-        #[qinvokable]
-        fn fetch_apps(self: Pin<&mut StreamBridge>, host_id: QString);
-
-        #[qinvokable]
-        fn fetch_capabilities(self: Pin<&mut StreamBridge>, server: QString, token: QString, host_id: QString);
-
-        #[qinvokable]
-        fn start_game_session(
-            self: Pin<&mut StreamBridge>,
-            server: QString,
-            token: QString,
-            host_id: QString,
-            host_name: QString,
-            app_id: i32,
-            res: QString,
-            fps: i32,
-            codec: QString,
-            bitrate: i32,
-            mouse_queue_limit: i32,
-            disable_cuda: bool,
-            input_protocol: QString,
-            encoder: QString,
-            display_id: QString,
-            source_id: QString,
-        );
-
-        #[qinvokable]
-        fn start_game_session_with_backend(
-            self: Pin<&mut StreamBridge>,
-            server: QString,
-            token: QString,
-            host_id: QString,
-            host_name: QString,
-            app_id: i32,
-            res: QString,
-            fps: i32,
-            codec: QString,
-            bitrate: i32,
-            mouse_queue_limit: i32,
-            disable_cuda: bool,
-            render_backend: QString,
-            input_protocol: QString,
-            encoder: QString,
-            display_id: QString,
-            source_id: QString,
-        );
+        fn remove_trusted_server(self: Pin<&mut StreamBridge>, server: QString) -> bool;
 
         #[qinvokable]
         fn poll_events(self: Pin<&mut StreamBridge>);
-
-        #[qinvokable]
-        fn fetch_agent_token(self: Pin<&mut StreamBridge>, server: QString, token: QString);
-
-        #[qinvokable]
-        fn start_local_agent(
-            self: Pin<&mut StreamBridge>,
-            server: QString,
-            token: QString,
-            name: QString,
-        );
-
-        #[qinvokable]
-        fn stop_local_agent(self: Pin<&mut StreamBridge>);
-
-        #[qinvokable]
-        fn is_local_agent_running(self: Pin<&mut StreamBridge>) -> bool;
-
-        #[qinvokable]
-        fn get_local_hostname(self: Pin<&mut StreamBridge>) -> QString;
-
-        /// Remote control of this computer, as JSON: enabled, running, port,
-        /// password, addresses, hostname, error.
-        #[qinvokable]
-        fn host_status(self: Pin<&mut StreamBridge>) -> QString;
-
-        /// Turns remote control on; returns an error message or "".
-        #[qinvokable]
-        fn host_start(self: Pin<&mut StreamBridge>) -> QString;
-
-        /// Turns remote control off; returns an error message or "".
-        #[qinvokable]
-        fn host_stop(self: Pin<&mut StreamBridge>) -> QString;
-
-        /// Sets the access password ("" = a new random one); returns an
-        /// error message or "".
-        #[qinvokable]
-        fn host_set_password(self: Pin<&mut StreamBridge>, password: QString) -> QString;
-
-        /// Registers this computer with the signed-in server (`server`
-        /// http(s)://host:port, `token` its agent token). Returns
-        /// "registered", "already", "elsewhere <server>" or "error: ...".
-        #[qinvokable]
-        fn host_use_server(self: Pin<&mut StreamBridge>, server: QString, token: QString) -> QString;
-
-        /// Whether clients may share the clipboard / send files to this
-        /// computer; returns an error message or "".
-        #[qinvokable]
-        fn host_set_sharing(self: Pin<&mut StreamBridge>, clipboard: bool, files: bool) -> QString;
-
-        /// Whether file transfer may reach the whole disk or only the home
-        /// folder; returns an error message or "".
-        #[qinvokable]
-        fn host_set_file_access(self: Pin<&mut StreamBridge>, full: bool) -> QString;
-
-        /// How connections are accepted: "password", "click" or
-        /// "password-click"; returns an error message or "".
-        #[qinvokable]
-        fn host_set_approve_mode(self: Pin<&mut StreamBridge>, mode: QString) -> QString;
-
-        /// Screen capture on a Linux Wayland session: "auto" or "portal";
-        /// returns an error message or "".
-        #[qinvokable]
-        fn host_set_wayland_capture(self: Pin<&mut StreamBridge>, mode: QString) -> QString;
-
-        /// Connections waiting to be accepted here, as JSON:
-        /// [{id, requester, kind, timeout_s}].
-        #[qinvokable]
-        fn host_approvals(self: Pin<&mut StreamBridge>) -> QString;
-
-        #[qinvokable]
-        fn host_answer_approval(self: Pin<&mut StreamBridge>, id: i32, accept: bool);
-
-        /// Sets the port for direct connections; returns an error message or "".
-        #[qinvokable]
-        fn host_set_port(self: Pin<&mut StreamBridge>, port: i32) -> QString;
-
-        /// Lets RustDesk clients connect by IP address on `port`, or not;
-        /// returns an error message or "".
-        #[qinvokable]
-        fn host_set_rustdesk(self: Pin<&mut StreamBridge>, enabled: bool, port: i32) -> QString;
-
-        /// Lets RustDesk clients use their file manager on this computer,
-        /// or not; returns an error message or "".
-        #[qinvokable]
-        fn host_set_rustdesk_files(self: Pin<&mut StreamBridge>, enabled: bool) -> QString;
-
-        /// The types a computer can be added with besides Lunaris, as JSON:
-        /// `[{id, name, fields: [{key, label, kind, default, required}]}]`.
-        #[qinvokable]
-        fn bridge_connectors(self: Pin<&mut StreamBridge>) -> QString;
-
-        /// The computers of other types the app added for itself, as JSON:
-        /// `[{id, name, connector, connector_name, values}]`; `values` has
-        /// the fields that are not secrets.
-        #[qinvokable]
-        fn bridge_sources(self: Pin<&mut StreamBridge>) -> QString;
-
-        /// Whether one of them answers (checked in the background, every
-        /// 15 seconds): 1 yes, 0 no (shut down, cannot be reached), -1 not
-        /// known (not checked yet, or nothing to check).
-        #[qinvokable]
-        fn bridge_source_online(self: Pin<&mut StreamBridge>, id: QString) -> i32;
-
-        /// Adds one; `values_json` is `{"<field key>": "<value>"}`. Returns
-        /// `{"id": ...}` or `{"error": ...}`, or, when its type has a set-up
-        /// (a pairing), `{"setup": ..., "message": ..., "code": ...}`: what
-        /// to show the person; ask on with `bridgeSourceSetup`.
-        #[qinvokable]
-        fn bridge_add_source(self: Pin<&mut StreamBridge>, name: QString, connector: QString, values_json: QString) -> QString;
-
-        /// `bridgeAddSource`, saying which computer it is: `group` is the
-        /// group of the computers that are one with it ("" for none, "*" to
-        /// let it join a computer at the same address).
-        #[qinvokable]
-        fn bridge_add_source_grouped(self: Pin<&mut StreamBridge>, name: QString, connector: QString, values_json: QString, group: QString) -> QString;
-
-        /// Where that set-up is: `{"state":"pending","message":...,"code":...}`,
-        /// `{"state":"done","id":...}` or `{"state":"failed","error":...}`.
-        #[qinvokable]
-        fn bridge_source_setup(self: Pin<&mut StreamBridge>, setup: QString) -> QString;
-
-        /// Stops that set-up (the window was closed).
-        #[qinvokable]
-        fn bridge_cancel_setup(self: Pin<&mut StreamBridge>, setup: QString);
-
-        /// Changes one: its name and its fields (an empty or missing field
-        /// keeps its value). Returns `{"id": ...}` or `{"error": ...}`.
-        #[qinvokable]
-        fn bridge_update_source(self: Pin<&mut StreamBridge>, id: QString, name: QString, values_json: QString) -> QString;
-
-        /// `bridgeUpdateSource`, and its group: "" takes it out of its
-        /// group, "*" keeps it.
-        #[qinvokable]
-        fn bridge_update_source_grouped(self: Pin<&mut StreamBridge>, id: QString, name: QString, values_json: QString, group: QString) -> QString;
-
-        /// Removes one; returns an error message or "".
-        #[qinvokable]
-        fn bridge_remove_source(self: Pin<&mut StreamBridge>, id: QString) -> QString;
-
-        /// The app's own Lunaris server, as JSON: enabled, running, ours,
-        /// port, local_url, lan_url, admin_password, data_dir, error.
-        #[qinvokable]
-        fn server_status(self: Pin<&mut StreamBridge>) -> QString;
-
-        /// Starts the app's server; returns an error message or "".
-        #[qinvokable]
-        fn server_start(self: Pin<&mut StreamBridge>) -> QString;
-
-        /// Stops the app's server; returns an error message or "".
-        #[qinvokable]
-        fn server_stop(self: Pin<&mut StreamBridge>) -> QString;
-
-        /// Sets the server's port; returns an error message or "".
-        #[qinvokable]
-        fn server_set_port(self: Pin<&mut StreamBridge>, port: i32) -> QString;
 
         /// Stream sound on/off and volume (0-100), applied right away.
         #[qinvokable]
@@ -1414,15 +820,6 @@ pub mod qobject {
         #[qinvokable]
         fn vibrate_gamepad(self: Pin<&mut StreamBridge>, slot: i32);
 
-        /// File transfer on its own connection (files.rs) for the file
-        /// manager page. Open for a computer, or for the one being streamed.
-        #[qinvokable]
-        fn files_open(self: Pin<&mut StreamBridge>, server_url: QString, token: QString, host_id: QString, host_name: QString);
-        /// The files of a source of `host_id` (a computer it shows through
-        /// a connector). For a computer the app added for itself:
-        /// server "bridge:", host "direct", no token.
-        #[qinvokable]
-        fn files_open_source(self: Pin<&mut StreamBridge>, server_url: QString, token: QString, host_id: QString, host_name: QString, source_id: QString);
         #[qinvokable]
         fn files_open_current(self: Pin<&mut StreamBridge>) -> bool;
         #[qinvokable]
@@ -1472,34 +869,6 @@ pub mod qobject {
         #[qinvokable]
         fn screen_refresh_rate(self: Pin<&mut StreamBridge>) -> f64;
 
-        /// Last direct connection (address "host:port" and password), "" if none.
-        #[qinvokable]
-        fn saved_direct_address(self: Pin<&mut StreamBridge>) -> QString;
-
-        #[qinvokable]
-        fn saved_direct_password(self: Pin<&mut StreamBridge>) -> QString;
-
-        #[qinvokable]
-        fn save_direct_target(self: Pin<&mut StreamBridge>, address: QString, password: QString);
-
-        /// Checks in the background whether a saved computer ("host:port")
-        /// answers; `peer_online` gives the result.
-        #[qinvokable]
-        fn probe_peer(self: Pin<&mut StreamBridge>, address: QString);
-
-        /// 1 reachable, 0 not, -1 not checked yet.
-        #[qinvokable]
-        fn peer_online(self: Pin<&mut StreamBridge>, address: QString) -> i32;
-
-        #[qinvokable]
-        fn is_autostart_enabled(self: Pin<&mut StreamBridge>) -> bool;
-
-        #[qinvokable]
-        fn set_autostart_enabled(self: Pin<&mut StreamBridge>, enabled: bool);
-
-        #[qinvokable]
-        fn should_start_minimized(self: Pin<&mut StreamBridge>) -> bool;
-
         /// "Check now" (in the background; `update_status` shows the result).
         #[qinvokable]
         fn check_for_updates(self: Pin<&mut StreamBridge>);
@@ -1513,7 +882,7 @@ pub mod qobject {
         fn update_install(self: Pin<&mut StreamBridge>);
 
         /// After the install: true when the app should quit now (it then
-        /// starts again with its agent and server).
+        /// starts again).
         #[qinvokable]
         fn update_restart(self: Pin<&mut StreamBridge>) -> bool;
 
@@ -2071,802 +1440,31 @@ impl qobject::StreamBridge {
         }
     }
 
-    pub fn answer_pending_link(self: Pin<&mut Self>, accept: bool) -> bool {
+    /// The answer to a link to an untrusted server. Yes: the session starts
+    /// once the link's ticket is traded (`deeplinkReceived`), not here.
+    pub fn answer_pending_link(self: Pin<&mut Self>, accept: bool, trust_always: bool) -> bool {
         if accept {
-            crate::deeplink::confirm_pending()
+            crate::deeplink::confirm_pending(trust_always)
         } else {
             crate::deeplink::cancel_pending();
             false
         }
     }
 
-    pub fn load_saved_credentials(self: Pin<&mut Self>) {
-        if let Some(settings) = load_settings() {
-            PENDING_EVENTS
-                .lock()
-                .unwrap()
-                .push(PendingDashboardEvent::CredentialsLoaded {
-                    success: true,
-                    server: settings.server_url,
-                    token: settings.token,
-                    username: settings.username,
-                });
-        } else {
-            PENDING_EVENTS
-                .lock()
-                .unwrap()
-                .push(PendingDashboardEvent::CredentialsLoaded {
-                    success: false,
-                    server: "".to_string(),
-                    token: "".to_string(),
-                    username: "".to_string(),
-                });
-        }
+    pub fn trusted_servers(self: Pin<&mut Self>) -> QString {
+        let list: Vec<serde_json::Value> = crate::deeplink::trusted_servers()
+            .into_iter()
+            .map(|(server, web)| serde_json::json!({ "server": server, "web": web }))
+            .collect();
+        QString::from(&serde_json::Value::Array(list).to_string())
     }
 
-    pub fn login(self: Pin<&mut Self>, server: QString, username: QString, password: QString) {
-        let server_str = server.to_string();
-        let username_str = username.to_string();
-        let password_str = password.to_string();
-
-        let mut rust_obj = self.rust_mut();
-        let rt = rust_obj.get_or_init_runtime();
-
-        rt.spawn(async move {
-            let client = reqwest::Client::new();
-            let url = format!("{}/api/auth/login", server_str);
-            let res = client
-                .post(&url)
-                .json(&serde_json::json!({
-                    "username": username_str,
-                    "password": password_str
-                }))
-                .send()
-                .await;
-
-            match res {
-                Ok(resp) => {
-                    let ok = resp.status().is_success();
-                    let text = resp.text().await.unwrap_or_default();
-                    finish_login(&server_str, parse_login_answer(ok, &text, "Login failed"));
-                }
-                Err(e) => {
-                    let err_msg = format!("Connection failed: {}", e);
-                    PENDING_EVENTS
-                        .lock()
-                        .unwrap()
-                        .push(PendingDashboardEvent::LoginResult {
-                            success: false,
-                            error_msg: err_msg,
-                            token: "".to_string(),
-                            username: "".to_string(),
-                            server: "".to_string(),
-                        });
-                }
-            }
-        });
+    pub fn add_trusted_server(self: Pin<&mut Self>, address: QString) -> QString {
+        QString::from(&crate::deeplink::add_typed_server(&address.to_string()).unwrap_or_default())
     }
 
-    pub fn login_mfa(self: Pin<&mut Self>, code: QString, recovery: bool) {
-        let code = code.to_string().trim().to_string();
-        let Some((server_str, mfa_token)) = PENDING_MFA.lock().unwrap().clone() else {
-            finish_login("", LoginAnswer::Error("This sign-in has expired. Sign in again.".into()));
-            return;
-        };
-        let body = if recovery {
-            serde_json::json!({ "mfa_token": mfa_token, "recovery_code": code })
-        } else {
-            let digits: String = code.chars().filter(|c| c.is_ascii_digit()).collect();
-            serde_json::json!({ "mfa_token": mfa_token, "code": digits })
-        };
-        let mut rust_obj = self.rust_mut();
-        let rt = rust_obj.get_or_init_runtime();
-        rt.spawn(async move {
-            let res = reqwest::Client::new()
-                .post(format!("{}/api/auth/login/mfa", server_str))
-                .json(&body)
-                .send()
-                .await;
-            let answer = match res {
-                Ok(resp) => {
-                    let ok = resp.status().is_success();
-                    let text = resp.text().await.unwrap_or_default();
-                    parse_login_answer(ok, &text, "Wrong code")
-                }
-                Err(e) => LoginAnswer::Error(format!("Connection failed: {}", e)),
-            };
-            if matches!(&answer, LoginAnswer::Error(e) if e.starts_with("This sign-in has expired")) {
-                *PENDING_MFA.lock().unwrap() = None;
-            }
-            finish_login(&server_str, answer);
-        });
-    }
-
-    pub fn cancel_mfa(self: Pin<&mut Self>) {
-        *PENDING_MFA.lock().unwrap() = None;
-    }
-
-    pub fn logout(self: Pin<&mut Self>) {
-        *PENDING_MFA.lock().unwrap() = None;
-        clear_settings();
-    }
-
-    pub fn fetch_hosts(self: Pin<&mut Self>) {
-        let settings = match load_settings() {
-            Some(s) => s,
-            None => {
-                PENDING_EVENTS
-                    .lock()
-                    .unwrap()
-                    .push(PendingDashboardEvent::HostsResult {
-                        success: false,
-                        error_msg: "Not authenticated".to_string(),
-                        hosts_json: "".to_string(),
-                    });
-                return;
-            }
-        };
-
-        let server_str = settings.server_url;
-        let token_str = settings.token;
-
-        let mut rust_obj = self.rust_mut();
-        let rt = rust_obj.get_or_init_runtime();
-
-        rt.spawn(async move {
-            let client = reqwest::Client::new();
-            let url = format!("{}/api/hosts", server_str);
-            let res = client
-                .get(&url)
-                .header("Authorization", format!("Bearer {}", token_str))
-                .send()
-                .await;
-
-            match res {
-                Ok(resp) => {
-                    if resp.status().is_success() {
-                        if let Ok(hosts) = resp.json::<Vec<common::HostInfo>>().await {
-                            if let Ok(hosts_json) = serde_json::to_string(&hosts) {
-                                PENDING_EVENTS.lock().unwrap().push(
-                                    PendingDashboardEvent::HostsResult {
-                                        success: true,
-                                        error_msg: "".to_string(),
-                                        hosts_json,
-                                    },
-                                );
-                                return;
-                            }
-                        }
-                    } else if resp.status() == 401 {
-                        PENDING_EVENTS
-                            .lock()
-                            .unwrap()
-                            .push(PendingDashboardEvent::HostsResult {
-                                success: false,
-                                error_msg: "Unauthorized".to_string(),
-                                hosts_json: "".to_string(),
-                            });
-                        return;
-                    }
-                    PENDING_EVENTS
-                        .lock()
-                        .unwrap()
-                        .push(PendingDashboardEvent::HostsResult {
-                            success: false,
-                            error_msg: "Failed to fetch host list".to_string(),
-                            hosts_json: "".to_string(),
-                        });
-                }
-                Err(e) => {
-                    let err_msg = format!("Connection failed: {}", e);
-                    PENDING_EVENTS
-                        .lock()
-                        .unwrap()
-                        .push(PendingDashboardEvent::HostsResult {
-                            success: false,
-                            error_msg: err_msg,
-                            hosts_json: "".to_string(),
-                        });
-                }
-            }
-        });
-    }
-
-    pub fn api_request(
-        self: Pin<&mut Self>,
-        req_id: QString,
-        method: QString,
-        path: QString,
-        body: QString,
-    ) {
-        let req_id = req_id.to_string();
-        let push = |req_id: String, status: i32, body: String| {
-            PENDING_EVENTS
-                .lock()
-                .unwrap()
-                .push(PendingDashboardEvent::ApiResult {
-                    req_id,
-                    status,
-                    body,
-                });
-        };
-        let Some(settings) = load_settings() else {
-            push(req_id, 401, r#"{"error":"Not signed in"}"#.to_string());
-            return;
-        };
-        let path = path.to_string();
-        if !path.starts_with("/api/") {
-            push(req_id, 400, r#"{"error":"Bad path"}"#.to_string());
-            return;
-        }
-        let method = match method.to_string().to_ascii_uppercase().as_str() {
-            "GET" => reqwest::Method::GET,
-            "POST" => reqwest::Method::POST,
-            "PUT" => reqwest::Method::PUT,
-            "DELETE" => reqwest::Method::DELETE,
-            _ => {
-                push(req_id, 400, r#"{"error":"Bad method"}"#.to_string());
-                return;
-            }
-        };
-        let body = body.to_string();
-        let url = format!("{}{}", settings.server_url.trim_end_matches('/'), path);
-        let token = settings.token;
-
-        let mut rust_obj = self.rust_mut();
-        let rt = rust_obj.get_or_init_runtime();
-        rt.spawn(async move {
-            let client = reqwest::Client::new();
-            let mut req = client
-                .request(method, &url)
-                .header("Authorization", format!("Bearer {}", token))
-                .timeout(std::time::Duration::from_secs(30));
-            if !body.is_empty() {
-                req = req.header("Content-Type", "application/json").body(body);
-            }
-            match req.send().await {
-                Ok(resp) => {
-                    let status = resp.status().as_u16() as i32;
-                    let text = resp.text().await.unwrap_or_default();
-                    push(req_id, status, text);
-                }
-                Err(e) => push(
-                    req_id,
-                    0,
-                    serde_json::json!({ "error": format!("Connection failed: {}", e) })
-                        .to_string(),
-                ),
-            }
-        });
-    }
-
-    pub fn delete_host(self: Pin<&mut Self>, host_id: QString) {
-        let host_id_str = host_id.to_string();
-        let settings = match load_settings() {
-            Some(s) => s,
-            None => {
-                PENDING_EVENTS
-                    .lock()
-                    .unwrap()
-                    .push(PendingDashboardEvent::HostsResult {
-                        success: false,
-                        error_msg: "Not authenticated".to_string(),
-                        hosts_json: "".to_string(),
-                    });
-                return;
-            }
-        };
-
-        let server_str = settings.server_url;
-        let token_str = settings.token;
-
-        let mut rust_obj = self.rust_mut();
-        let rt = rust_obj.get_or_init_runtime();
-
-        rt.spawn(async move {
-            let client = reqwest::Client::new();
-            let delete_url = format!("{}/api/hosts/{}", server_str, host_id_str);
-            let delete_res = client
-                .delete(&delete_url)
-                .header("Authorization", format!("Bearer {}", token_str))
-                .send()
-                .await;
-
-            match delete_res {
-                Ok(resp) if resp.status().is_success() => {
-                    let hosts_url = format!("{}/api/hosts", server_str);
-                    match client
-                        .get(&hosts_url)
-                        .header("Authorization", format!("Bearer {}", token_str))
-                        .send()
-                        .await
-                    {
-                        Ok(hosts_resp) if hosts_resp.status().is_success() => {
-                            if let Ok(hosts) = hosts_resp.json::<Vec<common::HostInfo>>().await {
-                                if let Ok(hosts_json) = serde_json::to_string(&hosts) {
-                                    PENDING_EVENTS.lock().unwrap().push(
-                                        PendingDashboardEvent::HostsResult {
-                                            success: true,
-                                            error_msg: "".to_string(),
-                                            hosts_json,
-                                        },
-                                    );
-                                    return;
-                                }
-                            }
-                            PENDING_EVENTS.lock().unwrap().push(
-                                PendingDashboardEvent::HostsResult {
-                                    success: false,
-                                    error_msg: "Host deleted, but failed to refresh host list"
-                                        .to_string(),
-                                    hosts_json: "".to_string(),
-                                },
-                            );
-                        }
-                        Ok(hosts_resp) if hosts_resp.status() == 401 => {
-                            PENDING_EVENTS.lock().unwrap().push(
-                                PendingDashboardEvent::HostsResult {
-                                    success: false,
-                                    error_msg: "Unauthorized".to_string(),
-                                    hosts_json: "".to_string(),
-                                },
-                            );
-                        }
-                        Ok(_) => {
-                            PENDING_EVENTS.lock().unwrap().push(
-                                PendingDashboardEvent::HostsResult {
-                                    success: false,
-                                    error_msg: "Host deleted, but failed to refresh host list"
-                                        .to_string(),
-                                    hosts_json: "".to_string(),
-                                },
-                            );
-                        }
-                        Err(e) => {
-                            PENDING_EVENTS.lock().unwrap().push(
-                                PendingDashboardEvent::HostsResult {
-                                    success: false,
-                                    error_msg: format!("Host deleted, refresh failed: {}", e),
-                                    hosts_json: "".to_string(),
-                                },
-                            );
-                        }
-                    }
-                }
-                Ok(resp) if resp.status() == 401 => {
-                    PENDING_EVENTS
-                        .lock()
-                        .unwrap()
-                        .push(PendingDashboardEvent::HostsResult {
-                            success: false,
-                            error_msg: "Unauthorized".to_string(),
-                            hosts_json: "".to_string(),
-                        });
-                }
-                Ok(_) => {
-                    PENDING_EVENTS
-                        .lock()
-                        .unwrap()
-                        .push(PendingDashboardEvent::HostsResult {
-                            success: false,
-                            error_msg: "Failed to delete host".to_string(),
-                            hosts_json: "".to_string(),
-                        });
-                }
-                Err(e) => {
-                    PENDING_EVENTS
-                        .lock()
-                        .unwrap()
-                        .push(PendingDashboardEvent::HostsResult {
-                            success: false,
-                            error_msg: format!("Connection failed: {}", e),
-                            hosts_json: "".to_string(),
-                        });
-                }
-            }
-        });
-    }
-
-    pub fn fetch_apps(self: Pin<&mut Self>, host_id: QString) {
-        let host_id_str = host_id.to_string();
-
-        let settings = match load_settings() {
-            Some(s) => s,
-            None => {
-                PENDING_EVENTS
-                    .lock()
-                    .unwrap()
-                    .push(PendingDashboardEvent::AppsResult {
-                        success: false,
-                        error_msg: "Not authenticated".to_string(),
-                        host_id: host_id_str,
-                        apps_json: "".to_string(),
-                    });
-                return;
-            }
-        };
-
-        let server_str = settings.server_url;
-        let token_str = settings.token;
-
-        let mut rust_obj = self.rust_mut();
-        let rt = rust_obj.get_or_init_runtime();
-
-        rt.spawn(async move {
-            let encoded_token: String =
-                url::form_urlencoded::byte_serialize(token_str.as_bytes()).collect();
-            let ws_url = format!(
-                "{}/ws/client?token={}",
-                server_str.replace("http", "ws"),
-                encoded_token
-            );
-            // Never log ws_url itself: it carries the session token.
-            println!("fetch_apps connecting to ws at: {}/ws/client", server_str.replace("http", "ws"));
-
-            let connect_result = connect_async(&ws_url).await;
-            let (mut ws_stream, _) = match connect_result {
-                Ok(c) => c,
-                Err(e) => {
-                    let err_msg = format!("WebSocket connection failed: {}", e);
-                    PENDING_EVENTS
-                        .lock()
-                        .unwrap()
-                        .push(PendingDashboardEvent::AppsResult {
-                            success: false,
-                            error_msg: err_msg,
-                            host_id: host_id_str,
-                            apps_json: "".to_string(),
-                        });
-                    return;
-                }
-            };
-
-            let get_app_msg = ClientMessage::Signaling(SignalingMessage::GetAppList {
-                target_id: host_id_str.clone(),
-            });
-
-            if let Ok(text) = serde_json::to_string(&get_app_msg) {
-                if let Err(e) = ws_stream.send(WsMessage::Text(text.into())).await {
-                    let err_msg = format!("Failed to send GetAppList request: {}", e);
-                    PENDING_EVENTS
-                        .lock()
-                        .unwrap()
-                        .push(PendingDashboardEvent::AppsResult {
-                            success: false,
-                            error_msg: err_msg,
-                            host_id: host_id_str,
-                            apps_json: "".to_string(),
-                        });
-                    return;
-                }
-            }
-
-            let result = tokio::time::timeout(std::time::Duration::from_secs(5), async {
-                while let Some(msg_result) = ws_stream.next().await {
-                    match msg_result {
-                        Ok(WsMessage::Text(text)) => {
-                            if let Ok(server_msg) =
-                                serde_json::from_str::<common::ServerToClientMessage>(&text)
-                            {
-                                match server_msg {
-                                    common::ServerToClientMessage::Signaling(sig) => match sig {
-                                        SignalingMessage::AppListResponse { apps, .. } => {
-                                            return Ok(apps);
-                                        }
-                                        SignalingMessage::Error { message } => {
-                                            return Err(message);
-                                        }
-                                        _ => {}
-                                    },
-                                }
-                            }
-                        }
-                        Ok(_) => {}
-                        Err(e) => {
-                            return Err(format!("WebSocket error: {}", e));
-                        }
-                    }
-                }
-                Err("Connection closed before response received".to_string())
-            })
-            .await;
-
-            let _ = ws_stream.close(None).await;
-
-            match result {
-                Ok(Ok(apps)) => {
-                    if let Ok(apps_json) = serde_json::to_string(&apps) {
-                        PENDING_EVENTS
-                            .lock()
-                            .unwrap()
-                            .push(PendingDashboardEvent::AppsResult {
-                                success: true,
-                                error_msg: "".to_string(),
-                                host_id: host_id_str,
-                                apps_json,
-                            });
-                    } else {
-                        PENDING_EVENTS
-                            .lock()
-                            .unwrap()
-                            .push(PendingDashboardEvent::AppsResult {
-                                success: false,
-                                error_msg: "Failed to serialize apps".to_string(),
-                                host_id: host_id_str,
-                                apps_json: "".to_string(),
-                            });
-                    }
-                }
-                Ok(Err(e)) => {
-                    PENDING_EVENTS
-                        .lock()
-                        .unwrap()
-                        .push(PendingDashboardEvent::AppsResult {
-                            success: false,
-                            error_msg: e,
-                            host_id: host_id_str,
-                            apps_json: "".to_string(),
-                        });
-                }
-                Err(_) => {
-                    PENDING_EVENTS
-                        .lock()
-                        .unwrap()
-                        .push(PendingDashboardEvent::AppsResult {
-                            success: false,
-                            error_msg: "Timed out waiting for application list".to_string(),
-                            host_id: host_id_str,
-                            apps_json: "".to_string(),
-                        });
-                }
-            }
-        });
-    }
-
-    pub fn fetch_capabilities(self: Pin<&mut Self>, server: QString, token: QString, host_id: QString) {
-        let server_str = server.to_string();
-        let token_str = token.to_string();
-        let host_id_str = host_id.to_string();
-        // A computer the app added for itself has nothing to ask: its
-        // displays come with a session, and its helper is not started just
-        // to open the settings.
-        if crate::own_computers::is_bridge(&server_str) {
-            return;
-        }
-
-        let mut rust_obj = self.rust_mut();
-        let rt = rust_obj.get_or_init_runtime();
-
-        rt.spawn(async move {
-            let connect_result = match direct_address(&server_str, &host_id_str) {
-                Some(address) => agent::direct::connect(address, "/ws/client", &token_str, &crate::host::client_name_query())
-                    .await
-                    .map(|c| c.ws)
-                    .map_err(|e| e.to_string()),
-                None => {
-                    let encoded_token: String =
-                        url::form_urlencoded::byte_serialize(token_str.as_bytes()).collect();
-                    let ws_url = format!(
-                        "{}/ws/client?token={}",
-                        server_str.replace("http", "ws"),
-                        encoded_token
-                    );
-                    connect_async(&ws_url).await.map(|(ws, _)| ws).map_err(|e| e.to_string())
-                }
-            };
-            let mut ws_stream = match connect_result {
-                Ok(c) => c,
-                Err(e) => {
-                    eprintln!("fetch_capabilities: WebSocket connection failed: {}", e);
-                    return;
-                }
-            };
-
-            let get_caps_msg = ClientMessage::Signaling(SignalingMessage::GetCapabilities {
-                target_id: host_id_str.clone(),
-            });
-
-            if let Ok(text) = serde_json::to_string(&get_caps_msg) {
-                if let Err(e) = ws_stream.send(WsMessage::Text(text.into())).await {
-                    eprintln!("fetch_capabilities: Failed to send GetCapabilities: {}", e);
-                    return;
-                }
-            }
-
-            let result = tokio::time::timeout(std::time::Duration::from_secs(5), async {
-                while let Some(msg_result) = ws_stream.next().await {
-                    match msg_result {
-                        Ok(WsMessage::Text(text)) => {
-                            if let Ok(server_msg) =
-                                serde_json::from_str::<common::ServerToClientMessage>(&text)
-                            {
-                                match server_msg {
-                                    common::ServerToClientMessage::Signaling(sig) => match sig {
-                                        SignalingMessage::CapabilitiesResponse {
-                                            displays,
-                                            encoders,
-                                            gpu_info,
-                                            host_os,
-                                            sources,
-                                            ..
-                                        } => {
-                                            return Ok((displays, encoders, gpu_info, host_os, sources));
-                                        }
-                                        SignalingMessage::Error { message } => {
-                                            return Err(message);
-                                        }
-                                        _ => {}
-                                    },
-                                }
-                            }
-                        }
-                        Ok(_) => {}
-                        Err(e) => {
-                            return Err(format!("WebSocket error: {}", e));
-                        }
-                    }
-                }
-                Err("Connection closed before response received".to_string())
-            })
-            .await;
-
-            let _ = ws_stream.close(None).await;
-
-            match result {
-                Ok(Ok((displays, encoders, gpu_info, host_os, sources))) => {
-                    let displays_json =
-                        serde_json::to_string(&displays).unwrap_or_else(|_| "[]".to_string());
-                    let encoders_json =
-                        serde_json::to_string(&encoders).unwrap_or_else(|_| "[]".to_string());
-                    *PENDING_CAPABILITIES.lock().unwrap() = Some(PendingCapabilities {
-                        displays_json,
-                        encoders_json,
-                        sources_json: serde_json::to_string(&sources).unwrap_or_else(|_| "[]".to_string()),
-                        gpu_info: gpu_info.unwrap_or_default(),
-                        host_os: host_os.unwrap_or_default(),
-                    });
-                }
-                Ok(Err(e)) => {
-                    eprintln!("fetch_capabilities error: {}", e);
-                }
-                Err(_) => {
-                    eprintln!("fetch_capabilities: Timed out waiting for CapabilitiesResponse");
-                }
-            }
-        });
-    }
-
-    pub fn start_game_session(
-        self: Pin<&mut Self>,
-        server: QString,
-        token: QString,
-        host_id: QString,
-        host_name: QString,
-        app_id: i32,
-        res: QString,
-        fps: i32,
-        codec: QString,
-        bitrate: i32,
-        mouse_queue_limit: i32,
-        disable_cuda: bool,
-        input_protocol: QString,
-        encoder: QString,
-        display_id: QString,
-        source_id: QString,
-    ) {
-        let render_backend =
-            cxx_qt_lib::QString::from(&render_backend_from_disable_cuda(disable_cuda));
-        self.start_game_session_with_backend(
-            server,
-            token,
-            host_id,
-            host_name,
-            app_id,
-            res,
-            fps,
-            codec,
-            bitrate,
-            mouse_queue_limit,
-            disable_cuda,
-            render_backend,
-            input_protocol,
-            encoder,
-            display_id,
-            source_id,
-        );
-    }
-
-    pub fn start_game_session_with_backend(
-        mut self: Pin<&mut Self>,
-        server: QString,
-        token: QString,
-        host_id: QString,
-        host_name: QString,
-        app_id: i32,
-        res: QString,
-        fps: i32,
-        codec: QString,
-        bitrate: i32,
-        mouse_queue_limit: i32,
-        disable_cuda: bool,
-        render_backend: QString,
-        input_protocol: QString,
-        encoder: QString,
-        display_id: QString,
-        source_id: QString,
-    ) {
-        let server_str = server.to_string();
-        let token_str = token.to_string();
-        let host_id_str = host_id.to_string();
-        let host_name_str = host_name.to_string();
-        let res_str = res.to_string();
-        let codec_str = codec.to_string().to_lowercase();
-        let input_proto_str = input_protocol.to_string().to_lowercase();
-        let render_backend_str =
-            normalize_render_backend(&render_backend.to_string(), disable_cuda);
-        let effective_disable_cuda = render_backend_disables_cuda(&render_backend_str);
-        let encoder_str = encoder.to_string().to_lowercase();
-        let display_str = display_id.to_string();
-        let source_str = source_id.to_string();
-
-        let mut width = 1280;
-        let mut height = 720;
-        if res_str.contains('x') {
-            let parts: Vec<&str> = res_str.split('x').collect();
-            if parts.len() == 2 {
-                if let (Ok(w), Ok(h)) = (parts[0].parse::<u32>(), parts[1].parse::<u32>()) {
-                    width = w;
-                    height = h;
-                }
-            }
-        }
-
-        let app_id_opt = if app_id < 0 {
-            None
-        } else {
-            Some(app_id as u32)
-        };
-
-        let args = AppArgs {
-            host_id: host_id_str,
-            server_url: server_str,
-            token: token_str,
-            width,
-            height,
-            fps: fps as u32,
-            bitrate: bitrate as u32,
-            codec: codec_str,
-            app_id: app_id_opt,
-            mouse_queue_limit: mouse_queue_limit as u32,
-            host_name: host_name_str,
-            disable_cuda: effective_disable_cuda,
-            render_backend: render_backend_str,
-            input_protocol: input_proto_str,
-            encoder: if encoder_str.is_empty() || encoder_str == "auto" {
-                None
-            } else {
-                Some(encoder_str)
-            },
-            display_id: if display_str.is_empty() || display_str == "default" {
-                None
-            } else {
-                Some(display_str)
-            },
-            source_id: (!source_str.is_empty()).then_some(source_str),
-        };
-
-        {
-            let mut active_config_lock = ACTIVE_CONFIG.lock().unwrap();
-            *active_config_lock = Some(args);
-        }
-        // A session the user started: the count of restarts a source asked
-        // for begins anew, and what an earlier session's source said is forgotten.
-        *SOURCE_RESTARTS.lock().unwrap() = (0, None);
-        *PENDING_SOURCE_STATUS.lock().unwrap() = None;
-        *PENDING_SOURCE_DISPLAYS.lock().unwrap() = None;
-
-        println!("Configuring session from dashboard. Launching stream...");
-        self.as_mut().start_stream();
+    pub fn remove_trusted_server(self: Pin<&mut Self>, server: QString) -> bool {
+        crate::deeplink::remove_trusted_server(&server.to_string())
     }
 
     pub fn poll_events(mut self: Pin<&mut Self>) {
@@ -2876,366 +1474,15 @@ impl qobject::StreamBridge {
         };
         for event in events {
             match event {
-                PendingDashboardEvent::LoginResult {
-                    success,
-                    error_msg,
-                    token,
-                    username,
-                    server,
-                } => {
-                    let err_qstr = QString::from(&error_msg);
-                    let tok_qstr = QString::from(&token);
-                    let user_qstr = QString::from(&username);
-                    let srv_qstr = QString::from(&server);
-                    self.as_mut()
-                        .login_result(success, err_qstr, tok_qstr, user_qstr, srv_qstr);
-                }
-
-                PendingDashboardEvent::MfaRequired { server, username } => {
-                    self.as_mut()
-                        .mfa_required(QString::from(&server), QString::from(&username));
-                }
-
-                PendingDashboardEvent::HostsResult {
-                    success,
-                    error_msg,
-                    hosts_json,
-                } => {
-                    let err_qstr = QString::from(&error_msg);
-                    let hosts_qstr = QString::from(&hosts_json);
-                    self.as_mut().hosts_result(success, err_qstr, hosts_qstr);
-                }
-
-                PendingDashboardEvent::AppsResult {
-                    success,
-                    error_msg,
-                    host_id,
-                    apps_json,
-                } => {
-                    let err_qstr = QString::from(&error_msg);
-                    let host_qstr = QString::from(&host_id);
-                    let apps_qstr = QString::from(&apps_json);
-                    self.as_mut()
-                        .apps_result(success, err_qstr, host_qstr, apps_qstr);
-                }
-                PendingDashboardEvent::CredentialsLoaded {
-                    success,
-                    server,
-                    token,
-                    username,
-                } => {
-                    let srv_qstr = QString::from(&server);
-                    let tok_qstr = QString::from(&token);
-                    let user_qstr = QString::from(&username);
-                    self.as_mut()
-                        .credentials_loaded(success, srv_qstr, tok_qstr, user_qstr);
-                }
-                PendingDashboardEvent::AgentTokenResult {
-                    success,
-                    error_msg,
-                    token,
-                } => {
-                    let err_qstr = QString::from(&error_msg);
-                    let tok_qstr = QString::from(&token);
-                    self.as_mut()
-                        .agent_token_result(success, err_qstr, tok_qstr);
-                }
-                PendingDashboardEvent::ApiResult {
-                    req_id,
-                    status,
-                    body,
-                } => {
-                    self.as_mut().api_result(
-                        QString::from(&req_id),
-                        status,
-                        QString::from(&body),
-                    );
-                }
                 PendingDashboardEvent::DeepLinkReceived { url } => {
                     let url_qstr = QString::from(&url);
                     self.as_mut().deeplink_received(url_qstr);
                 }
+                PendingDashboardEvent::LinkFailed { message } => {
+                    self.as_mut().link_failed(QString::from(&message));
+                }
             }
         }
-    }
-
-    pub fn fetch_agent_token(self: Pin<&mut Self>, server: QString, token: QString) {
-        let server_str = server.to_string();
-        let token_str = token.to_string();
-
-        let mut rust_obj = self.rust_mut();
-        let rt = rust_obj.get_or_init_runtime();
-
-        rt.spawn(async move {
-            let client = reqwest::Client::new();
-            let url = format!("{}/api/agent/token", server_str.trim_end_matches('/'));
-            let res = client
-                .get(&url)
-                .header("Authorization", format!("Bearer {}", token_str))
-                .send()
-                .await;
-
-            match res {
-                Ok(resp) => {
-                    let status = resp.status();
-                    let text = resp.text().await.unwrap_or_default();
-                    if status.is_success() {
-                        if let Ok(data) = serde_json::from_str::<serde_json::Value>(&text) {
-                            if let Some(agent_tok) = data.get("token").and_then(|t| t.as_str()) {
-                                PENDING_EVENTS.lock().unwrap().push(
-                                    PendingDashboardEvent::AgentTokenResult {
-                                        success: true,
-                                        error_msg: "".to_string(),
-                                        token: agent_tok.to_string(),
-                                    },
-                                );
-                                return;
-                            }
-                        }
-                    }
-
-                    // The token that adds computers to the server is for
-                    // administrators only.
-                    let err_msg = if status == reqwest::StatusCode::FORBIDDEN {
-                            "Only an administrator can add a computer to the server. Ask an administrator to do it.".to_string()
-                        } else if let Ok(err_data) = serde_json::from_str::<serde_json::Value>(&text) {
-                            err_data
-                                .get("error")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("Failed to fetch agent token")
-                                .to_string()
-                        } else {
-                            "Failed to fetch agent token".to_string()
-                        };
-
-                    PENDING_EVENTS
-                        .lock()
-                        .unwrap()
-                        .push(PendingDashboardEvent::AgentTokenResult {
-                            success: false,
-                            error_msg: err_msg,
-                            token: "".to_string(),
-                        });
-                }
-                Err(e) => {
-                    let err_msg = format!("Connection failed: {}", e);
-                    PENDING_EVENTS
-                        .lock()
-                        .unwrap()
-                        .push(PendingDashboardEvent::AgentTokenResult {
-                            success: false,
-                            error_msg: err_msg,
-                            token: "".to_string(),
-                        });
-                }
-            }
-        });
-    }
-
-    pub fn start_local_agent(self: Pin<&mut Self>, server: QString, token: QString, name: QString) {
-        let server_str = server.to_string();
-        let token_str = token.to_string();
-        let name_str = name.to_string();
-
-        // 1. Prepare agent config json
-        let config_path = prepare_agent_config(&server_str, &token_str);
-
-        // 2. Locate agent executable
-        let exe_dir = std::env::current_exe().ok().and_then(|mut path| {
-            path.pop();
-            Some(path)
-        });
-
-        if let Some(mut path) = exe_dir {
-            #[cfg(target_os = "windows")]
-            let agent_name = "agent.exe";
-            #[cfg(not(target_os = "windows"))]
-            let agent_name = "agent";
-            path.push(agent_name);
-
-            if path.exists() {
-                let config_path_str = config_path.to_string_lossy().to_string();
-
-                // Stop any running local agent first
-                stop_local_agent();
-
-                // Spawn subprocess
-                #[cfg(target_os = "windows")]
-                use std::os::windows::process::CommandExt;
-
-                let mut cmd = std::process::Command::new(path);
-                cmd.arg("--config")
-                    .arg(config_path_str)
-                    .arg("--name")
-                    .arg(&name_str)
-                    .arg("--server")
-                    .arg(&server_str)
-                    .arg("--cli")
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null());
-
-                #[cfg(target_os = "windows")]
-                cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
-
-                let child = cmd.spawn();
-
-                match child {
-                    Ok(c) => {
-                        let mut lock = LOCAL_AGENT_CHILD.lock().unwrap();
-                        *lock = Some(c);
-                        println!("Spawned local agent process successfully.");
-                    }
-                    Err(e) => {
-                        eprintln!("Failed to spawn local agent: {:?}", e);
-                    }
-                }
-            } else {
-                eprintln!("Local agent executable not found at: {:?}", path);
-            }
-        }
-    }
-
-    pub fn stop_local_agent(self: Pin<&mut Self>) {
-        stop_local_agent();
-    }
-
-    pub fn is_local_agent_running(self: Pin<&mut Self>) -> bool {
-        let mut lock = LOCAL_AGENT_CHILD.lock().unwrap();
-        if let Some(child) = lock.as_mut() {
-            match child.try_wait() {
-                Ok(None) => true,
-                _ => {
-                    *lock = None;
-                    false
-                }
-            }
-        } else {
-            false
-        }
-    }
-
-    pub fn host_status(self: Pin<&mut Self>) -> QString {
-        QString::from(&crate::host::cached_status_json())
-    }
-
-    pub fn host_start(self: Pin<&mut Self>) -> QString {
-        QString::from(&crate::host::start().err().unwrap_or_default())
-    }
-
-    pub fn host_stop(self: Pin<&mut Self>) -> QString {
-        QString::from(&crate::host::stop().err().unwrap_or_default())
-    }
-
-    pub fn host_set_password(self: Pin<&mut Self>, password: QString) -> QString {
-        let password = password.to_string();
-        let password = (!password.trim().is_empty()).then_some(password);
-        QString::from(&crate::host::set_password(password).err().unwrap_or_default())
-    }
-
-    pub fn host_use_server(self: Pin<&mut Self>, server: QString, token: QString) -> QString {
-        let result = crate::host::use_server(&server.to_string(), &token.to_string());
-        QString::from(&result.unwrap_or_else(|e| format!("error: {}", e)))
-    }
-
-    pub fn host_set_sharing(self: Pin<&mut Self>, clipboard: bool, files: bool) -> QString {
-        QString::from(&crate::host::set_sharing(clipboard, files).err().unwrap_or_default())
-    }
-
-    pub fn host_set_file_access(self: Pin<&mut Self>, full: bool) -> QString {
-        QString::from(&crate::host::set_file_access(full).err().unwrap_or_default())
-    }
-
-    pub fn host_set_approve_mode(self: Pin<&mut Self>, mode: QString) -> QString {
-        QString::from(&crate::host::set_approve_mode(&mode.to_string()).err().unwrap_or_default())
-    }
-
-    pub fn host_set_wayland_capture(self: Pin<&mut Self>, mode: QString) -> QString {
-        QString::from(&crate::host::set_wayland_capture(&mode.to_string()).err().unwrap_or_default())
-    }
-
-    pub fn host_approvals(self: Pin<&mut Self>) -> QString {
-        QString::from(&crate::host::approvals_json())
-    }
-
-    pub fn host_answer_approval(self: Pin<&mut Self>, id: i32, accept: bool) {
-        crate::host::answer_approval(id.max(0) as u64, accept);
-    }
-
-    pub fn host_set_rustdesk(self: Pin<&mut Self>, enabled: bool, port: i32) -> QString {
-        let result = u16::try_from(port)
-            .map_err(|_| "Use a port from 1024 to 65535".to_string())
-            .and_then(|port| crate::host::set_rustdesk(enabled, port));
-        QString::from(&result.err().unwrap_or_default())
-    }
-
-    pub fn host_set_rustdesk_files(self: Pin<&mut Self>, enabled: bool) -> QString {
-        QString::from(&crate::host::set_rustdesk_file_transfer(enabled).err().unwrap_or_default())
-    }
-
-    pub fn bridge_connectors(self: Pin<&mut Self>) -> QString {
-        QString::from(&crate::own_computers::connectors_json())
-    }
-
-    pub fn bridge_sources(self: Pin<&mut Self>) -> QString {
-        QString::from(&crate::own_computers::sources_json())
-    }
-
-    pub fn bridge_source_online(self: Pin<&mut Self>, id: QString) -> i32 {
-        crate::own_computers::source_online(&id.to_string())
-    }
-
-    pub fn bridge_add_source(self: Pin<&mut Self>, name: QString, connector: QString, values_json: QString) -> QString {
-        QString::from(&crate::own_computers::add_source(&name.to_string(), &connector.to_string(), &values_json.to_string(), crate::own_computers::GROUP_UNSAID))
-    }
-
-    pub fn bridge_add_source_grouped(self: Pin<&mut Self>, name: QString, connector: QString, values_json: QString, group: QString) -> QString {
-        QString::from(&crate::own_computers::add_source(&name.to_string(), &connector.to_string(), &values_json.to_string(), &group.to_string()))
-    }
-
-    pub fn bridge_source_setup(self: Pin<&mut Self>, setup: QString) -> QString {
-        QString::from(&crate::own_computers::source_setup(&setup.to_string()))
-    }
-
-    pub fn bridge_cancel_setup(self: Pin<&mut Self>, setup: QString) {
-        crate::own_computers::cancel_setup(&setup.to_string());
-    }
-
-    pub fn bridge_update_source(self: Pin<&mut Self>, id: QString, name: QString, values_json: QString) -> QString {
-        QString::from(&crate::own_computers::update_source(&id.to_string(), &name.to_string(), &values_json.to_string(), crate::own_computers::GROUP_UNSAID))
-    }
-
-    pub fn bridge_update_source_grouped(self: Pin<&mut Self>, id: QString, name: QString, values_json: QString, group: QString) -> QString {
-        QString::from(&crate::own_computers::update_source(&id.to_string(), &name.to_string(), &values_json.to_string(), &group.to_string()))
-    }
-
-    pub fn bridge_remove_source(self: Pin<&mut Self>, id: QString) -> QString {
-        QString::from(&crate::own_computers::remove_source(&id.to_string()))
-    }
-
-    pub fn host_set_port(self: Pin<&mut Self>, port: i32) -> QString {
-        let result = u16::try_from(port)
-            .map_err(|_| "Use a port from 1024 to 65535".to_string())
-            .and_then(crate::host::set_port);
-        QString::from(&result.err().unwrap_or_default())
-    }
-
-    pub fn server_status(self: Pin<&mut Self>) -> QString {
-        QString::from(&crate::local_server::cached_status_json())
-    }
-
-    pub fn server_start(self: Pin<&mut Self>) -> QString {
-        QString::from(&crate::local_server::start().err().unwrap_or_default())
-    }
-
-    pub fn server_stop(self: Pin<&mut Self>) -> QString {
-        QString::from(&crate::local_server::stop().err().unwrap_or_default())
-    }
-
-    pub fn server_set_port(self: Pin<&mut Self>, port: i32) -> QString {
-        let result = u16::try_from(port)
-            .map_err(|_| "Use a port from 1024 to 65535".to_string())
-            .and_then(crate::local_server::set_port);
-        QString::from(&result.err().unwrap_or_default())
     }
 
     pub fn set_audio(self: Pin<&mut Self>, enabled: bool, volume: i32) {
@@ -3261,14 +1508,6 @@ impl qobject::StreamBridge {
 
     pub fn vibrate_gamepad(self: Pin<&mut Self>, slot: i32) {
         crate::gamepad::vibrate(slot);
-    }
-
-    pub fn files_open(self: Pin<&mut Self>, server_url: QString, token: QString, host_id: QString, host_name: QString) {
-        crate::files::open(server_url.to_string(), token.to_string(), host_id.to_string(), host_name.to_string(), None);
-    }
-
-    pub fn files_open_source(self: Pin<&mut Self>, server_url: QString, token: QString, host_id: QString, host_name: QString, source_id: QString) {
-        crate::files::open(server_url.to_string(), token.to_string(), host_id.to_string(), host_name.to_string(), Some(source_id.to_string()));
     }
 
     pub fn files_open_current(self: Pin<&mut Self>) -> bool {
@@ -3362,66 +1601,6 @@ impl qobject::StreamBridge {
         qobject::window_screen_refresh_rate()
     }
 
-    pub fn saved_direct_address(self: Pin<&mut Self>) -> QString {
-        QString::from(&load_direct_target().map(|t| t.address).unwrap_or_default())
-    }
-
-    pub fn saved_direct_password(self: Pin<&mut Self>) -> QString {
-        QString::from(&load_direct_target().map(|t| t.password).unwrap_or_default())
-    }
-
-    pub fn probe_peer(self: Pin<&mut Self>, address: QString) {
-        let address = address.to_string();
-        let mut rust_obj = self.rust_mut();
-        let rt = rust_obj.get_or_init_runtime();
-        rt.spawn(async move {
-            let ok = matches!(
-                tokio::time::timeout(
-                    std::time::Duration::from_millis(1500),
-                    tokio::net::TcpStream::connect(address.as_str()),
-                )
-                .await,
-                Ok(Ok(_))
-            );
-            PEER_ONLINE.lock().unwrap().insert(address, ok);
-        });
-    }
-
-    pub fn peer_online(self: Pin<&mut Self>, address: QString) -> i32 {
-        match PEER_ONLINE.lock().unwrap().get(&address.to_string()) {
-            Some(true) => 1,
-            Some(false) => 0,
-            None => -1,
-        }
-    }
-
-    pub fn save_direct_target(self: Pin<&mut Self>, address: QString, password: QString) {
-        save_direct_target_file(&DirectTarget {
-            address: address.to_string(),
-            password: password.to_string(),
-        });
-    }
-
-    pub fn get_local_hostname(self: Pin<&mut Self>) -> QString {
-        let name = hostname::get()
-            .ok()
-            .and_then(|s| s.into_string().ok())
-            .unwrap_or_else(|| "Local Host".to_string());
-        QString::from(&name)
-    }
-
-    pub fn is_autostart_enabled(self: Pin<&mut Self>) -> bool {
-        is_autostart_enabled_impl()
-    }
-
-    pub fn set_autostart_enabled(self: Pin<&mut Self>, enabled: bool) {
-        set_autostart_enabled_impl(enabled);
-    }
-
-    pub fn should_start_minimized(self: Pin<&mut Self>) -> bool {
-        std::env::args().any(|arg| arg == "--minimized")
-    }
-
     pub fn check_for_updates(self: Pin<&mut Self>) {
         updater::service::check_now();
     }
@@ -3444,15 +1623,6 @@ impl qobject::StreamBridge {
 
     pub fn set_update_auto_check(self: Pin<&mut Self>, enabled: bool) {
         updater::service::set_auto_check(enabled);
-    }
-}
-
-pub fn stop_local_agent() {
-    let mut lock = LOCAL_AGENT_CHILD.lock().unwrap();
-    if let Some(mut child) = lock.take() {
-        let _ = child.kill();
-        let _ = child.wait();
-        println!("Local agent stopped.");
     }
 }
 
@@ -3923,9 +2093,9 @@ impl PeerConnectionEventHandler for ClientEventHandler {
                         match event {
                             DataChannelEvent::OnMessage(msg) => {
                                 // A source lists its displays here too.
-                                if let Some(displays) = crate::own_computers::source_displays(&msg.data) {
+                                if let Some(displays) = crate::session_info::source_displays(&msg.data) {
                                     *PENDING_SOURCE_DISPLAYS.lock().unwrap() = Some(displays);
-                                } else if let Some(ms) = crate::own_computers::source_latency_ms(&msg.data) {
+                                } else if let Some(ms) = crate::session_info::source_latency_ms(&msg.data) {
                                     // And how far it is from the computer it shows.
                                     SOURCE_LATENCY_US.store((ms * 1000.0).round() as u32, std::sync::atomic::Ordering::Relaxed);
                                 } else {
@@ -5261,33 +3431,17 @@ async fn run_webrtc_client_task(
     input_senders: Arc<Mutex<Option<super::input::InputSenders>>>,
     active_decoder: Arc<Mutex<Option<std::thread::JoinHandle<()>>>>,
 ) -> Result<(), anyhow::Error> {
-    // A computer the app added for itself ("bridge:"): the session goes to
-    // the app's helper on this computer, which is started now if it is not
-    // running. Its address and password are worked out here and never
-    // leave this task.
-    let (server_url, token) = if crate::own_computers::is_bridge(&server_url) {
-        let host = host_id.clone();
-        let source = source_id.clone();
-        let (address, password) =
-            tokio::task::spawn_blocking(move || crate::own_computers::session_endpoint(&host, source.as_deref()))
-                .await
-                .map_err(|e| anyhow::anyhow!("{}", e))?
-                .map_err(BridgeSessionError)?;
-        (format!("ws://{}", address), password)
-    } else {
-        (server_url, token)
-    };
     let ws_stream = if let Some(address) = direct_address(&server_url, &host_id) {
         // Straight to the agent: TLS and a password proof, no password in the URL.
         println!("Connecting directly to {}", address);
-        agent::direct::connect(address, "/ws/client", &token, &crate::host::client_name_query()).await?.ws
+        agent::direct::connect(address, "/ws/client", &token, &crate::session_info::client_name_query()).await?.ws
     } else {
         let encoded_token: String = url::form_urlencoded::byte_serialize(token.as_bytes()).collect();
         let ws_url = format!(
             "{}/ws/client?token={}{}",
             server_url.replace("http", "ws"),
             encoded_token,
-            crate::host::client_name_query()
+            crate::session_info::client_name_query()
         );
         // Never log ws_url itself: it carries the session token.
         println!("Connecting to signaling server at: {}/ws/client", server_url.replace("http", "ws"));
@@ -5877,7 +4031,7 @@ async fn run_webrtc_client_task(
                                     if let Some(ref mut s) = *STREAM_STATS.lock().unwrap() {
                                         // To the agent and back, plus from the agent to the
                                         // computer it shows and back when it shows another.
-                                        s.ping = crate::own_computers::shown_ping_ms(
+                                        s.ping = crate::session_info::shown_ping_ms(
                                             dynamic_ping,
                                             SOURCE_LATENCY_US.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1000.0,
                                         );
@@ -5924,7 +4078,7 @@ async fn run_webrtc_client_task(
                         break;
                     }
                     SignalingMessage::AccessRequest { status, .. } => {
-                        if let Some(refusal) = crate::host::access_refusal(&status) {
+                        if let Some(refusal) = crate::session_info::access_refusal(&status) {
                             return Err(anyhow::anyhow!(refusal));
                         }
                         if status == "waiting" {
@@ -6108,30 +4262,3 @@ mod host_cursor_tests {
     }
 }
 
-#[cfg(test)]
-mod login_answer_tests {
-    use super::{parse_login_answer, LoginAnswer};
-
-    #[test]
-    fn session_mfa_and_errors() {
-        assert_eq!(
-            parse_login_answer(true, r#"{"token":"t","username":"alice","role":"user"}"#, "Login failed"),
-            LoginAnswer::Session { token: "t".into(), username: "alice".into() }
-        );
-        // Two-factor on: never a session, whatever else is in the answer.
-        assert_eq!(
-            parse_login_answer(true, r#"{"mfa_required":true,"mfa_token":"m","username":"alice","expires_in":300}"#, "x"),
-            LoginAnswer::Mfa { mfa_token: "m".into(), username: "alice".into() }
-        );
-        assert_eq!(
-            parse_login_answer(true, r#"{"mfa_required":true}"#, "Login failed"),
-            LoginAnswer::Error("Login failed".into())
-        );
-        assert_eq!(
-            parse_login_answer(false, r#"{"error":"Wrong code"}"#, "x"),
-            LoginAnswer::Error("Wrong code".into())
-        );
-        assert_eq!(parse_login_answer(false, r#"{"token":"t"}"#, "No"), LoginAnswer::Error("No".into()));
-        assert_eq!(parse_login_answer(true, "<html>", "Login failed"), LoginAnswer::Error("Login failed".into()));
-    }
-}

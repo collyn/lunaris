@@ -168,6 +168,14 @@ pub(crate) struct Video {
     pub task: JoinHandle<()>,
 }
 
+/// A capture is not left running by a session that ends without
+/// `stop_video` (its task aborted: new settings, the agent stops).
+impl Drop for Video {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
 /// What the session uses of this computer: the picture, the input
 /// injector and the clipboard (lunaris-media and share.rs; replaced in
 /// tests).
@@ -463,6 +471,15 @@ struct PendingApproval {
     lr: LoginRequest,
 }
 
+/// Aborts a task when dropped.
+struct AbortOnDrop(tokio::task::AbortHandle);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 /// Marks the one viewer; cleared when the session ends.
 struct Viewing(Arc<Shared>);
 
@@ -483,15 +500,14 @@ impl Drop for Viewing {
 
 /// Stops a capture and waits until it is gone.
 async fn stop_video(video: Video) {
-    let Video { events, commands, task } = video;
+    let mut video = video;
     // Nothing reads the events any more: the pipeline must not wait on them.
-    drop(events);
-    let _ = commands.send(PipelineCommand::Stop).await;
-    let mut task = task;
-    if tokio::time::timeout(Duration::from_secs(5), &mut task).await.is_err() {
+    video.events.close();
+    let _ = video.commands.send(PipelineCommand::Stop).await;
+    if tokio::time::timeout(Duration::from_secs(5), &mut video.task).await.is_err() {
         warn!("RustDesk session: the media pipeline did not stop in time");
-        task.abort();
     }
+    // Dropping `video` aborts what is left of it.
 }
 
 /// The capture of an authorized session and what was sent of it.
@@ -1890,6 +1906,10 @@ pub(crate) async fn serve(stream: TcpStream, peer: SocketAddr, slot: UnauthSlot,
     let (tx, rx) = mpsc::channel(MAX_QUEUED_MESSAGES);
     let queued = Arc::new(Queued::default());
     let mut writer = tokio::spawn(write_loop(writer, rx, queued.clone()));
+    // The writer ends with the session also when the session's task is
+    // aborted (the listener starts again or stops); the capture does too
+    // (`Video`'s drop), and the viewer's place is freed (`Viewing`).
+    let _writer_ends = AbortOnDrop(writer.abort_handle());
 
     let mut session = Session {
         hash: Hash { salt: login::salt_for(&ctx.config.agent_id), challenge: login::new_challenge() },
@@ -2249,7 +2269,7 @@ mod tests {
                 }
             })
         });
-        tokio::spawn(serve_listener(listener, config, screen.clone(), asker, Arc::new(|| true)));
+        tokio::spawn(serve_listener(listener, config, screen.clone(), asker, Arc::new(|| true), Arc::default()));
         (addr, screen)
     }
 

@@ -10,7 +10,8 @@ on:
       - 'server/**'
       - 'Dockerfile'
       - 'agent/**'
-      - 'agent-app/**'
+      - 'approval-channel/**'
+      - 'approval-helper/**'
       - 'client-qml/**'
       - 'client-desktop/**'
       - 'updater/**'
@@ -77,11 +78,25 @@ jobs:
           done
           file lunaris-server-linux-*/lunaris-server
 
+      # The same static binaries as lunaris-server_<ver>_{amd64,arm64}.deb:
+      # system user, hardened systemd unit, enabled and started on install.
+      - name: Build server .deb packages
+        run: |
+          bash scripts/packaging/linux/make-server-deb.sh lunaris-server-linux-x86_64/lunaris-server amd64 server-deb
+          bash scripts/packaging/linux/make-server-deb.sh lunaris-server-linux-aarch64/lunaris-server arm64 server-deb
+          for deb in server-deb/*.deb; do dpkg-deb --info "$deb"; dpkg-deb --contents "$deb"; done
+
       - name: Upload Server Artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: server-linux
           path: lunaris-server-linux-*.tar.gz
+
+      - name: Upload Server .deb Artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: server-linux-deb
+          path: server-deb/*.deb
 
   build-server-docker:
     name: Build Server Docker image
@@ -107,7 +122,8 @@ jobs:
           docker run -d --name lunaris -p 8090:8090 lunaris-server:ci
           for i in $(seq 1 30); do curl -fsS http://127.0.0.1:8090/ >/dev/null && break; sleep 1; done
           curl -fsS http://127.0.0.1:8090/ | grep -q '<div id="root">'
-          docker exec lunaris test -s /data/initial_admin_password.txt
+          docker exec lunaris test -s /data/setup_code.txt
+          curl -fsS http://127.0.0.1:8090/api/setup | grep -q '"needed":true'
           docker logs lunaris 2>&1 | tail -20
 
   build-linux-packages:
@@ -144,20 +160,8 @@ jobs:
           path: /opt/lunaris-ffmpeg
           key: ffmpeg-static-${{ matrix.format }}-${{ hashFiles('scripts/packaging/build-ffmpeg-static.sh') }}
 
-      # The client app carries the server, and the server embeds web/dist: without
-      # this the packaged app answers 404 for the web console.
-      - name: Setup Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: 20
-          cache: 'npm'
-          cache-dependency-path: web/package-lock.json
-
-      - name: Build Web Frontend
-        run: |
-          cd web
-          npm ci
-          npm run build
+      # (No web client here: the agent and the client (the stream window)
+      # embed none; the server packages are built by build-server-linux.)
 
       # Crates and the build of the dependencies: a change to lunaris alone
       # then rebuilds only what changed. Keyed like the AppImage cache.
@@ -189,7 +193,7 @@ jobs:
   # installs the built packages in a bare container and starts both apps.
   test-linux-packages:
     name: Install .deb on ${{ matrix.image }}
-    needs: build-linux-packages
+    needs: [build-linux-packages, build-server-linux]
     runs-on: ubuntu-latest
     container: ${{ matrix.image }}
     strategy:
@@ -206,11 +210,24 @@ jobs:
           name: linux-packages-deb
           path: dist
 
+      # The server package too (amd64 only: these runners are x86_64). In a
+      # container without systemd its postinst still creates the user and
+      # server.env; the smoke test then runs the binary in the foreground.
+      - name: Download server package
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: server-linux-deb
+          path: server-deb
+
+      - name: Add the server package
+        run: cp server-deb/lunaris-server_*_amd64.deb dist/
+
       - name: Install and start
         run: bash scripts/packaging/linux/smoke-deb.sh dist
 
   # The agent and the client AppImages, built together in one Ubuntu 22.04
-  # container (Qt 6.8 + a trimmed static FFmpeg, see Containerfile.appimage):
+  # container (Qt 6.8 for the client, a trimmed static FFmpeg, see
+  # Containerfile.appimage; the agent AppImage has no Qt):
   # runs on glibc >= 2.35, no distro FFmpeg or Qt is bundled. build-appimages.sh
   # prunes the bundles, runs a start-up check on each (smoke-appimage.sh, under
   # xvfb) and repeats it in a bare ubuntu:22.04 container.
@@ -221,24 +238,9 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      # The image, Qt, both cargo targets and the web client need ~15 GB.
+      # The image, Qt and both cargo targets need ~15 GB.
       - name: Free disk space
         run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
-
-      - name: Setup Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: 20
-          cache: 'npm'
-          cache-dependency-path: web/package-lock.json
-
-      # client-desktop is also the server (`lunaris server`): the web client is
-      # embedded in the binary, so it is built before the container starts.
-      - name: Build Web Frontend
-        run: |
-          cd web
-          npm ci
-          npm run build
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
@@ -404,6 +406,8 @@ jobs:
           ls C:/ffmpeg/lib | head -20
         shell: bash
 
+      # For the server (server.exe embeds web/dist); the client and the agent
+      # embed no web client.
       - name: Build Web Frontend
         run: |
           cd web
@@ -422,6 +426,12 @@ jobs:
           Copy-Item target/release/server.exe -Destination lunaris-server/lunaris-server.exe
           Copy-Item LICENSE -Destination lunaris-server/
           Compress-Archive -Path lunaris-server/* -DestinationPath lunaris-server-windows-x86_64.zip
+
+          # Installer: the LunarisServer Windows service, firewall rule and a
+          # locked-down %ProgramData%\Lunaris (scripts/packaging/server-installer.nsi).
+          $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.*)"' | Select-Object -First 1).Matches[0].Groups[1].Value
+          makensis /DVERSION=$version scripts/packaging/server-installer.nsi
+          if ($LASTEXITCODE -ne 0) { throw "makensis failed" }
         shell: pwsh
 
       - name: Upload Server Artifact
@@ -429,6 +439,12 @@ jobs:
         with:
           name: server-windows
           path: lunaris-server-windows-x86_64.zip
+
+      - name: Upload Server Installer Artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: server-installer-windows
+          path: lunaris-server-installer.exe
 
       - name: Package Client Desktop
         run: |
@@ -455,28 +471,41 @@ jobs:
 
       - name: Package Agent
         run: |
-          # Self-contained folder: Qt (+ QML modules), FFmpeg, opus/openssl and
-          # the MSVC runtime, so it runs on a clean Windows install.
-          New-Item -ItemType Directory -Force -Path lunaris-agent
-          Copy-Item target/release/agent.exe -Destination lunaris-agent/lunaris-agent.exe
-          & "${env:QT_ROOT_DIR}/bin/windeployqt.exe" --qmldir agent-app/qml --no-translations --no-opengl-sw --no-compiler-runtime lunaris-agent/lunaris-agent.exe
-          if ($LASTEXITCODE -ne 0) { throw "windeployqt failed" }
-          # Drop what the app does not use (see the script), then add our FFmpeg.
-          ./scripts/packaging/windows/prune-qt.ps1 -Dir lunaris-agent
+          # Two self-contained folders that the installer puts in one install
+          # folder (the agent only lets a helper from its own folder answer):
+          #   lunaris-agent/            the command-line agent (the LunarisAgentService
+          #                             service runs it; no Qt), FFmpeg, the MSVC runtime
+          #   lunaris-approval-helper/  the optional tray (Qt + its QML modules)
+          New-Item -ItemType Directory -Force -Path lunaris-agent, lunaris-approval-helper
+          Copy-Item target/release/lunaris-agent.exe -Destination lunaris-agent/
+          Copy-Item "$env:VCToolsRedistDir/x64/Microsoft.VC143.CRT/*.dll" -Destination lunaris-agent/
           Copy-Item "C:/ffmpeg/bin/*.dll" -Destination lunaris-agent/
           Copy-Item LICENSE, scripts/packaging/THIRD-PARTY-NOTICES.md -Destination lunaris-agent/
-          Get-ChildItem lunaris-agent | Select-Object -First 40 Name
+
+          Copy-Item target/release/lunaris-approval-helper.exe -Destination lunaris-approval-helper/
+          & "${env:QT_ROOT_DIR}/bin/windeployqt.exe" --qmldir approval-helper/qml --no-translations --no-opengl-sw --no-compiler-runtime lunaris-approval-helper/lunaris-approval-helper.exe
+          if ($LASTEXITCODE -ne 0) { throw "windeployqt failed" }
+          # Drop what the helper does not use (see the script; it adds the MSVC runtime).
+          ./scripts/packaging/windows/prune-qt.ps1 -Dir lunaris-approval-helper
+          Get-ChildItem lunaris-agent, lunaris-approval-helper | Select-Object -First 60 Name
 
           # Smoke tests with nothing but Windows on PATH and the build machine's
-          # Qt hidden: a missing DLL makes the process die at load (0xC0000135),
-          # a missing QML module shows in its error output.
+          # Qt hidden: a missing DLL makes the process die at load (0xC0000135).
+          # The agent (from its folder alone: it needs no Qt) prints its help and
+          # its status (no config yet); the helper exits at once here (no agent
+          # service to answer for) after loading its DLLs.
           $clean = "C:\Windows\System32;C:\Windows"
-          $p = Start-Process lunaris-agent/lunaris-agent.exe -ArgumentList "--help" -PassThru -Wait -Environment @{ PATH = $clean }
+          $p = Start-Process lunaris-agent/lunaris-agent.exe -ArgumentList "--help" -PassThru -Wait -NoNewWindow -Environment @{ PATH = $clean }
           if ($p.ExitCode -ne 0) { throw "lunaris-agent --help exited with $($p.ExitCode)" }
-          ./scripts/packaging/windows/smoke-qml.ps1 -Exe lunaris-agent/lunaris-agent.exe -ExeArgs "--minimized"
-          Remove-Item "$env:APPDATA/lunaris-agent" -Recurse -Force -ErrorAction SilentlyContinue
+          $p = Start-Process lunaris-agent/lunaris-agent.exe -ArgumentList "--config", "$env:RUNNER_TEMP\smoke_config.json", "status" -PassThru -Wait -NoNewWindow -Environment @{ PATH = $clean }
+          if ($p.ExitCode -ne 0) { throw "lunaris-agent status exited with $($p.ExitCode)" }
+          $p = Start-Process lunaris-approval-helper/lunaris-approval-helper.exe -PassThru -Wait -Environment @{ PATH = $clean }
+          if ($p.ExitCode -ne 0) { throw "lunaris-approval-helper exited with $($p.ExitCode)" }
 
-          Compress-Archive -Path lunaris-agent/* -DestinationPath lunaris-agent-windows.zip
+          # The zip: both in one folder, as installed.
+          New-Item -ItemType Directory -Force -Path lunaris-agent-zip
+          Copy-Item -Recurse lunaris-agent/*, lunaris-approval-helper/* -Destination lunaris-agent-zip/ -Force
+          Compress-Archive -Path lunaris-agent-zip/* -DestinationPath lunaris-agent-windows.zip
 
           $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.*)"' | Select-Object -First 1).Matches[0].Groups[1].Value
           makensis /DVERSION=$version scripts/packaging/agent-installer.nsi
@@ -530,6 +559,12 @@ jobs:
           name: server-linux
           path: ./artifacts/linux-server
 
+      - name: Download Linux Server packages
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: server-linux-deb
+          path: ./artifacts/linux-server-deb
+
       - name: Download Linux Client Desktop Artifact
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
@@ -547,6 +582,12 @@ jobs:
         with:
           name: server-windows
           path: ./artifacts/windows-server
+
+      - name: Download Windows Server Installer Artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: server-installer-windows
+          path: ./artifacts/windows-server-installer
 
       - name: Download Windows Client Desktop Artifact
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
@@ -601,6 +642,7 @@ jobs:
 
           # Linux
           mv ./artifacts/linux-server/lunaris-server-linux-*.tar.gz ./release-files/
+          mv ./artifacts/linux-server-deb/lunaris-server_*.deb ./release-files/
           mv ./artifacts/linux-client-desktop/client-desktop-x86_64.AppImage ./release-files/lunaris-client-desktop-linux.AppImage
           mv ./artifacts/linux-client-qml/client-qml-x86_64.AppImage ./release-files/lunaris-client-qml-linux.AppImage
           mv ./artifacts/linux-packages/* ./release-files/
@@ -608,6 +650,7 @@ jobs:
 
           # Windows
           mv ./artifacts/windows-server/lunaris-server-windows-x86_64.zip ./release-files/
+          mv ./artifacts/windows-server-installer/lunaris-server-installer.exe ./release-files/lunaris-server-installer-windows.exe
           mv ./artifacts/windows-client-desktop/lunaris-client-desktop-windows.zip ./release-files/
           mv ./artifacts/windows-client-qml/lunaris-client-qml-windows.zip ./release-files/
           mv ./artifacts/windows-agent/lunaris-agent-windows.zip ./release-files/
@@ -678,6 +721,7 @@ jobs:
             release-files/*.rpm
             release-files/*.pkg.tar.zst
             release-files/lunaris-server-windows-x86_64.zip
+            release-files/lunaris-server-installer-windows.exe
             release-files/lunaris-client-desktop-windows.zip
             release-files/lunaris-client-qml-windows.zip
             release-files/lunaris-agent-windows.zip

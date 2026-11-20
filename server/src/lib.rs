@@ -16,18 +16,27 @@ mod admin;
 mod auth;
 pub mod bridge;
 mod db;
+mod gateway;
+mod host_admin;
+mod host_settings;
+mod server_info;
+mod import;
 mod install;
+mod link_tickets;
 mod links;
 mod mfa;
 mod paths;
 mod queue;
 mod security;
 mod service;
+mod setup;
 mod sources;
 mod tls;
 mod turn;
 pub mod update_notice;
 mod web;
+#[cfg(windows)]
+mod win_acl;
 
 pub mod signaling;
 
@@ -141,14 +150,23 @@ Commands:
   install [--port <port>]     Install and start as a system service
                               (systemd on Linux, Windows service on Windows)
   uninstall [--purge]         Remove the service (--purge also deletes data)
+  import <dir> [--replace]    Copy the accounts and computers of the desktop
+                              app's built-in server (its data folder <dir>)
+                              into this service's data folder; stop the
+                              service first. Run as root / Administrator.
   status                      Show the service status
   help, version
 
 Environment: SERVER_PORT (default 8090), LUNARIS_HTTPS_PORT (default 8443,
 off to disable), LUNARIS_TLS_CERT + LUNARIS_TLS_KEY (PEM; default: a
 self-signed certificate kept in the data directory), LUNARIS_DATA_DIR (database, token,
-sign-in key, initial admin password; default: working directory), LUNARIS_TOKEN, JWT_SECRET,
-LUNARIS_ADMIN_PASSWORD (first start only), DATABASE_URL, RUST_LOG.
+sign-in key, first-start setup code; default: working directory), LUNARIS_TOKEN, JWT_SECRET,
+LUNARIS_ADMIN_PASSWORD (first start only: makes the `admin` account and skips
+the setup page), DATABASE_URL, RUST_LOG, LUNARIS_GATEWAY (off|on|<path of
+lunaris-agent>: the server gateway, which runs lunaris-agent to reach
+RustDesk, Sunshine, RDP and VNC computers through this server; on by default
+when lunaris-agent is installed, switched on the web page's Server tab),
+LUNARIS_GATEWAY_LOG (its log level).
 ";
 
 /// Runs the server command line (without the program name), as the `server`
@@ -160,6 +178,9 @@ pub fn run(args: Vec<String>) -> std::process::ExitCode {
         Some("install") => service::install(rest),
         Some("uninstall") => service::uninstall(rest),
         Some("status") => service::status(),
+        Some("import") => import::run(rest),
+        #[cfg(windows)]
+        Some("prepare-data-dir") => service::prepare_data_dir_command(),
         #[cfg(windows)]
         Some("service") => service::run_dispatcher(),
         Some("help" | "-h" | "--help") => {
@@ -259,7 +280,9 @@ pub(crate) async fn run_server(
     let database_url = find_database_url();
 
     info!("Initializing SQLite database: {}", database_url);
-    let pool = init_db(&database_url, &paths::data_file("initial_admin_password.txt")).await?;
+    let pool = init_db(&database_url).await?;
+    // The first admin: the setup page with a one-time code, or LUNARIS_ADMIN_PASSWORD.
+    setup::prepare(&pool, &paths::data_file(setup::CODE_FILE), std::env::var("LUNARIS_ADMIN_PASSWORD").ok()).await?;
 
     let agent_token = get_or_generate_agent_token();
     // The token itself stays out of the log (logs get shared and collected).
@@ -272,6 +295,9 @@ pub(crate) async fn run_server(
     let turn = turn::TurnService::start_from_env().await;
     let signaling_state = Arc::new(SignalingState::new(pool.clone(), agent_token, turn));
     links::start_saved(&signaling_state).await;
+    // The agent the server runs itself, when it is on and found (gateway.rs).
+    gateway::start(&signaling_state).await;
+    let gateway_state = signaling_state.clone();
 
     // Configure CORS
     let cors = CorsLayer::new()
@@ -286,6 +312,8 @@ pub(crate) async fn run_server(
     let mut app = Router::new()
         .route("/api/auth/login", post(login_handler))
         .route("/api/auth/me", get(admin::get_current_user))
+        // First start: the first admin, made with the setup code (setup.rs).
+        .route("/api/setup", get(setup::status).post(setup::complete))
         // Two-factor sign-in with an authenticator app (mfa.rs).
         .route("/api/auth/login/mfa", post(mfa::login_mfa_handler))
         .route("/api/auth/mfa", get(mfa::status))
@@ -297,6 +325,18 @@ pub(crate) async fn run_server(
         .route("/api/hosts", get(hosts_handler))
         .route("/api/hosts/{id}", delete(delete_host_handler))
         .route("/api/admin/hosts/{id}/reset-key", post(admin::reset_host_key))
+        // The name a computer is shown with; a computer added by address (host_admin.rs).
+        .route("/api/admin/hosts/{id}/name", axum::routing::put(host_admin::rename_host))
+        .route("/api/admin/hosts/{id}/address", axum::routing::put(host_admin::update_address_host))
+        // Version, update, ports and data folder (server_info.rs).
+        .route("/api/server/info", get(server_info::info))
+        // The server gateway: its state and its switch (gateway.rs).
+        .route("/api/admin/server/gateway", get(gateway::get_gateway).put(gateway::put_gateway))
+        .route(
+            "/api/admin/hosts/{id}/settings",
+            get(host_settings::get_settings).put(host_settings::put_settings),
+        )
+        .route("/api/admin/hosts/{id}/settings/password", post(host_settings::password))
         .route("/api/hosts/address", post(add_host_by_address_handler))
         // Computers of other types, shown through a Lunaris computer (sources.rs).
         .route("/api/sources", get(sources::list_sources))
@@ -311,6 +351,10 @@ pub(crate) async fn run_server(
             "/api/hosts/{id}/sources/setup/{setup}",
             get(sources::setup_state).delete(sources::cancel_setup),
         )
+        // lunaris://connect links carry a one-time ticket, not the sign-in
+        // token (link_tickets.rs).
+        .route("/api/links/ticket", post(link_tickets::create_ticket))
+        .route("/api/links/redeem", post(link_tickets::redeem_ticket))
         .route("/api/agent/token", get(agent_token_handler))
         .route("/api/server/ports", get(ports_handler))
         .route(
@@ -392,6 +436,8 @@ pub(crate) async fn run_server(
     if let Some(task) = https {
         task.abort();
     }
+    // Its standard input closes, then it is killed if it is still there.
+    gateway_state.gateway.shutdown().await;
     served?;
 
     Ok(())
@@ -529,15 +575,23 @@ async fn hosts_handler(
     // the signaling WebSocket applies).
     let access = security::host_access(&state.db, &user.user_id).await.map_err(db_error)?;
     #[allow(clippy::type_complexity)]
-    let all: Vec<(String, String, String, Option<String>, Option<i64>, Option<String>)> =
-        sqlx::query_as("SELECT id, name, status, ip_address, server_codec_mode_support, addresses FROM hosts")
+    let all: Vec<(String, String, String, Option<String>, Option<i64>, Option<String>, Option<String>)> =
+        sqlx::query_as("SELECT id, name, status, ip_address, server_codec_mode_support, addresses, display_name FROM hosts")
             .fetch_all(&state.db)
             .await
             .map_err(db_error)?;
     #[allow(clippy::type_complexity)]
-    let rows: Vec<(String, String, String, Option<String>, Option<i64>, Option<String>)> = all
+    let rows: Vec<(String, String, String, Option<String>, Option<i64>, Option<String>, Option<String>)> = all
             .into_iter()
             .filter(|(id, ..)| access.allows(id))
+            .collect();
+    // The names computers added by address were given, by address.
+    let address_names: std::collections::HashMap<String, String> =
+        sqlx::query_as::<_, (String, String)>("SELECT address, name FROM address_hosts WHERE name <> ''")
+            .fetch_all(&state.db)
+            .await
+            .map_err(db_error)?
+            .into_iter()
             .collect();
 
     let active_host_ids: std::collections::HashSet<String> = {
@@ -547,12 +601,17 @@ async fn hosts_handler(
 
     let mut futures = Vec::new();
 
-    for (id, name, status_str, ip_address, server_codec_mode_support, addresses) in rows {
+    for (id, agent_name, status_str, ip_address, server_codec_mode_support, addresses, display_name) in rows {
+        // An administrator's name for it, else the one its agent announces.
+        let display_name = display_name.filter(|n| !n.trim().is_empty());
+        let name = display_name.clone().unwrap_or_else(|| agent_name.clone());
+        let agent_name = display_name.is_some().then_some(agent_name);
         let addresses: Vec<String> = addresses.and_then(|a| serde_json::from_str(&a).ok()).unwrap_or_default();
         let ip_address_clone = ip_address.clone();
         let db_pool = state.db.clone();
         let is_currently_busy = active_host_ids.contains(&id);
         let state_clone = state.clone();
+        let is_gateway = state.gateway.is_gateway(&id);
 
         let fut = async move {
             let is_agent_online = state_clone.agents.read().unwrap().contains_key(&id);
@@ -597,6 +656,8 @@ async fn hosts_handler(
                 address: None,
                 link_error: None,
                 needs_approval: false,
+                agent_name,
+                gateway: is_gateway,
             }
         };
         futures.push(fut);
@@ -612,10 +673,17 @@ async fn hosts_handler(
                 h.address = Some(link.address.clone());
                 h.link_error = link.error.clone();
                 h.needs_approval = link.needs_approval;
+                // The name it was added with, until an administrator renames it.
+                if h.agent_name.is_none() {
+                    if let Some(given) = address_names.get(&link.address) {
+                        h.agent_name = Some(std::mem::replace(&mut h.name, given.clone()));
+                    }
+                }
             }
             None if access.is_all() => hosts.push(HostInfo {
                 id: format!("address:{}", link.address),
-                name: link.address.clone(),
+                name: address_names.get(&link.address).cloned().unwrap_or_else(|| link.address.clone()),
+                agent_name: None,
                 status: HostStatus::Offline,
                 ip_address: None,
                 addresses: Vec::new(),
@@ -624,6 +692,7 @@ async fn hosts_handler(
                 address: Some(link.address.clone()),
                 link_error: link.error.clone().or_else(|| Some("connecting…".into())),
                 needs_approval: link.needs_approval,
+                gateway: false,
             }),
             None => {}
         }
@@ -643,12 +712,19 @@ async fn add_host_by_address_handler(
         return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": "Not a valid address" }))).into_response();
     };
     let password = req.password.unwrap_or_default().trim().to_string();
+    let name = match req.name.as_deref().map(host_admin::clean_name).transpose() {
+        Ok(name) => name.flatten().unwrap_or_default(),
+        Err(why) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": why }))).into_response(),
+    };
+    // Again: a new password, and a new name when one is given.
     let saved = sqlx::query(
-        "INSERT INTO address_hosts (address, password) VALUES (?, ?)
-         ON CONFLICT(address) DO UPDATE SET password = excluded.password",
+        "INSERT INTO address_hosts (address, password, name) VALUES (?, ?, ?)
+         ON CONFLICT(address) DO UPDATE SET password = excluded.password,
+           name = CASE WHEN excluded.name <> '' THEN excluded.name ELSE address_hosts.name END",
     )
     .bind(&address)
     .bind(&password)
+    .bind(&name)
     .execute(&state.db)
     .await;
     if let Err(e) = saved {
@@ -673,6 +749,15 @@ async fn delete_host_handler(
     State(state): State<Arc<SignalingState>>,
 ) -> impl IntoResponse {
     let host_id = host_id_path.0;
+    // The server's own gateway goes when it is turned off, not here (it
+    // would come back at once); once off, its entry may be removed.
+    if state.gateway.is_gateway(&host_id) && state.gateway.enabled() {
+        return (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({ "error": "This is the server gateway: turn it off on the Server page instead" })),
+        )
+            .into_response();
+    }
     info!("Unpairing host: {}", host_id);
 
     // A computer added by address: stop connecting to it.
@@ -842,6 +927,40 @@ mod tests {
         // The role claimed in the token is not trusted.
         let mut forged_role = parts(auth::create_jwt("u1", "alice", "admin", 0).unwrap());
         assert!(auth::AdminUser::from_request_parts(&mut forged_role, &state).await.is_err());
+    }
+
+    /// The list shows an administrator's name first, then the name a
+    /// computer was added by address with, then its agent's; the agent's
+    /// name is given beside a name that is not its own.
+    #[tokio::test]
+    async fn hosts_list_uses_display_names() {
+        let state = state_with_users().await;
+        sqlx::query("UPDATE users SET role = 'admin' WHERE id = 'u1'").execute(&state.db).await.unwrap();
+        for sql in [
+            "INSERT INTO hosts (id, name, status, display_name) VALUES ('h1', 'DESKTOP-1', 'Offline', 'Office')",
+            "INSERT INTO hosts (id, name, status) VALUES ('h2', 'DESKTOP-2', 'Offline')",
+            "INSERT INTO hosts (id, name, status) VALUES ('h3', 'DESKTOP-3', 'Offline')",
+            "INSERT INTO address_hosts (address, password, host_id, name) VALUES ('192.0.2.3:8091', '', 'h3', 'Den')",
+            "INSERT INTO address_hosts (address, password, host_id, name) VALUES ('192.0.2.4:8091', '', NULL, 'Lab')",
+        ] {
+            sqlx::query(sql).execute(&state.db).await.unwrap();
+        }
+        links::start(&state, "192.0.2.3:8091".into(), String::new(), Some("h3".into()));
+        links::start(&state, "192.0.2.4:8091".into(), String::new(), None);
+        let user = AuthenticatedUser { user_id: "u1".into(), username: "alice".into(), role: "admin".into() };
+        let r = hosts_handler(user, State(state.clone())).await.ok().unwrap().into_response();
+        let bytes = axum::body::to_bytes(r.into_body(), 1 << 20).await.unwrap();
+        let list: Vec<serde_json::Value> = serde_json::from_slice(&bytes).unwrap();
+        let find = |id: &str| list.iter().find(|h| h["id"] == id).cloned().unwrap();
+        assert_eq!(find("h1")["name"], "Office");
+        assert_eq!(find("h1")["agent_name"], "DESKTOP-1");
+        assert_eq!(find("h2")["name"], "DESKTOP-2");
+        assert!(find("h2").get("agent_name").is_none());
+        assert_eq!(find("h3")["name"], "Den");
+        assert_eq!(find("h3")["agent_name"], "DESKTOP-3");
+        assert_eq!(find("address:192.0.2.4:8091")["name"], "Lab");
+        state.links.stop("192.0.2.3:8091");
+        state.links.stop("192.0.2.4:8091");
     }
 
     /// The self-signed hint is only for pages served by the server's own

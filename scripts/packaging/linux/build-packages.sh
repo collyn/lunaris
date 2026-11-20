@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Builds the Linux distro packages inside a matching container:
-#   deb   ubuntu:24.04   → lunaris-{agent,client}_<ver>_amd64.deb (Ubuntu 24.04+, Debian 13+)
+#   deb   ubuntu:24.04   → lunaris-{agent,approval-helper,client}_<ver>_amd64.deb (Ubuntu 24.04+, Debian 13+)
 #                          one package for all of them: built on the oldest release, checked
 #                          on each by smoke-deb.sh (run in ubuntu:24.04, ubuntu:26.04, debian:13)
-#   rpm   fedora:44      → lunaris-{agent,client}-<ver>-1.fcNN.x86_64.rpm
-#   arch  archlinux      → lunaris-{agent,client}-<ver>-1-x86_64.pkg.tar.zst (makepkg)
+#   rpm   fedora:44      → lunaris-{agent,approval-helper,client}-<ver>-1.fcNN.x86_64.rpm
+#   arch  archlinux      → lunaris-{agent,approval-helper,client}-<ver>-1-x86_64.pkg.tar.zst (makepkg)
 #
 # Usage (as root in the container, repo at the working directory):
 #   scripts/packaging/linux/build-packages.sh deb|rpm|arch <output dir>
@@ -84,21 +84,22 @@ build_ffmpeg() {
 
 build_binaries() {
     export PKG_CONFIG_PATH="$FFMPEG_PREFIX/lib/pkgconfig" QMAKE=/usr/bin/qmake6
-    # The client app's server embeds web/dist at build time; without it the
-    # web console answers 404. Build it first: (cd web && npm ci && npm run build).
-    if [[ ! -f web/dist/index.html ]]; then
-        echo "error: web/dist is missing: build the web client first (cd web && npm ci && npm run build)" >&2
-        exit 1
-    fi
-    # One cargo run for both apps: built separately, the crates they share
-    # (agent, lunaris-media, webrtc, ...) get different features and are
-    # compiled twice (7 more minutes in CI).
-    cargo build --release --locked -p agent-app -p client-desktop --features static-ffmpeg --target-dir "$TARGET"
-    for b in agent client-desktop; do
+    # (The client is the stream window only: it embeds no web client. The
+    # server, which does, is packaged by make-server-deb.sh.)
+    # One cargo run for all programs: built separately, the crates they
+    # share (agent, lunaris-media, webrtc, ...) get different features and
+    # are compiled twice (7 more minutes in CI). The agent links no Qt; the
+    # approval helper and the client do.
+    cargo build --release --locked -p agent -p approval-helper -p client-desktop \
+        --features agent/static-ffmpeg,client-desktop/static-ffmpeg --target-dir "$TARGET"
+    for b in lunaris-agent client-desktop; do
         if ldd "$TARGET/release/$b" | grep -qE 'libav(codec|util)|libx264'; then
             echo "error: $b still links FFmpeg dynamically" >&2; exit 1
         fi
     done
+    if ldd "$TARGET/release/lunaris-agent" | grep -q 'libQt6'; then
+        echo "error: lunaris-agent links Qt" >&2; exit 1
+    fi
 }
 
 install_deps

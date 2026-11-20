@@ -11,6 +11,7 @@ import { PictureReader, PointerInPictureDrag, SentPositions, buildTemplates, mat
 import { hostPointerInPicture, saysPointerAlwaysInPicture, showsHostCursor, showsOwnCursor, streamCursorCss, type PointerView } from '../pointerShown';
 import { agentRoundTripMs, decodeStatText, decoderName, encodeStatText, pingStatText, shownPingMs, sourceLatencyMs } from '../streamStats';
 import { KEY_COMBOS, PressedKeys, applyKeyboardLock, combosFor, comboStrokes, keyboardLockFor, readSystemKeys, tapsUnderMeta, vkOfCode } from '../keyboard';
+import { hostPrefsKey, overrideOf, prefsFor, sourcePrefsKey, updateComputerPrefs, type ComputerPrefs } from '../streamPrefs';
 
 /** Windows virtual-key codes for the phone keys bar and keyboard keys. */
 /** The keys bar above the phone keyboard, in order. The first eleven are the
@@ -326,10 +327,14 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   const [selectedAppId, setSelectedAppId] = useState<number | null>(appId ?? null);
   const [isStoppingStream, setIsStoppingStream] = useState<boolean>(false);
   
-  // Settings States
-  const [activeResolution, setActiveResolution] = useState<string>(() => localStorage.getItem('lunaris_stream_res') || '1080p');
-  const [activeFps, setActiveFps] = useState<number>(() => Number(localStorage.getItem('lunaris_stream_fps') || '60'));
-  const [activeBitrate, setActiveBitrate] = useState<number>(() => Number(localStorage.getItem('lunaris_stream_bitrate') || '15000'));
+  // Settings States: this computer's own (streamPrefs.ts), else this
+  // browser's defaults. Changes made in the session are kept for this computer.
+  const prefsKey = sourceId ? sourcePrefsKey(hostId, sourceId) : hostPrefsKey(hostId);
+  const [initialPrefs] = useState(() => prefsFor(localStorage, prefsKey));
+  const rememberPrefs = (change: Partial<ComputerPrefs>) => updateComputerPrefs(localStorage, prefsKey, change);
+  const [activeResolution, setActiveResolution] = useState<string>(initialPrefs.resolution);
+  const [activeFps, setActiveFps] = useState<number>(initialPrefs.fps);
+  const [activeBitrate, setActiveBitrate] = useState<number>(initialPrefs.bitrate);
   const [activeCodec, setActiveCodec] = useState<string>(() => {
     const savedCodec = localStorage.getItem('lunaris_stream_codec') || 'auto';
 
@@ -344,11 +349,11 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       localStorage.setItem('lunaris_codec_auto_reset_v2', 'true');
       if (savedCodec === 'h264') {
         localStorage.setItem('lunaris_stream_codec', 'auto');
-        return 'auto';
+        return overrideOf(localStorage, prefsKey).codec || 'auto';
       }
     }
 
-    return savedCodec;
+    return overrideOf(localStorage, prefsKey).codec || savedCodec;
   });
   const [mouseQueueLimit, setMouseQueueLimit] = useState<number>(() => {
     const val = localStorage.getItem('lunaris_mouse_queue_limit');
@@ -365,15 +370,14 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   const [draftCodec, setDraftCodec] = useState<string>(activeCodec);
   const [draftMouseQueueLimit, setDraftMouseQueueLimit] = useState<number>(mouseQueueLimit);
   const [draftInputProtocol, setDraftInputProtocol] = useState<string>(activeInputProtocol);
-  const [activeEncoder, setActiveEncoder] = useState<string>(() => localStorage.getItem('lunaris_stream_encoder') || 'auto');
-  // The remembered display is one of the host's own: a source has other
-  // displays, so its session starts from the source's own choice.
-  const [activeDisplay, setActiveDisplay] = useState<string>(() => sourceId ? 'default' : (localStorage.getItem('lunaris_stream_display') || 'default'));
+  const [activeEncoder, setActiveEncoder] = useState<string>(initialPrefs.encoder);
+  // A source's display is its own (prefsFor: not the host's default).
+  const [activeDisplay, setActiveDisplay] = useState<string>(initialPrefs.display);
   const [draftEncoder, setDraftEncoder] = useState<string>(activeEncoder);
   const [draftDisplay, setDraftDisplay] = useState<string>(activeDisplay);
   // Chroma subsampling: '420' (default, every encoder) or '444' (sharper
   // coloured text; H.264 High 4:4:4 via NVENC or x264 on the host).
-  const [activeChroma, setActiveChroma] = useState<'420' | '444'>(() => localStorage.getItem('lunaris_stream_chroma') === '444' ? '444' : '420');
+  const [activeChroma, setActiveChroma] = useState<'420' | '444'>(initialPrefs.chroma === '444' ? '444' : '420');
   const [draftChroma, setDraftChroma] = useState<'420' | '444'>(activeChroma);
   // 4:4:4 is only negotiated as H.264 High 4:4:4 Predictive (profile-level-id f4…).
   const sessionCodec = (codec: string) => (activeChroma === '444' ? 'h264' : codec);
@@ -3079,18 +3083,20 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   };
 
   const applyDraftSettings = () => {
-    // Save options to localStorage
-    localStorage.setItem('lunaris_stream_res', draftResolution);
-    localStorage.setItem('lunaris_stream_fps', String(draftFps));
-    localStorage.setItem('lunaris_stream_bitrate', String(draftBitrate));
-    localStorage.setItem('lunaris_stream_codec', draftCodec);
+    // The picture's settings are kept for this computer; the rest are this browser's.
+    rememberPrefs({
+      resolution: draftResolution,
+      fps: draftFps,
+      bitrate: draftBitrate,
+      codec: draftCodec,
+      chroma: draftChroma,
+      encoder: draftEncoder,
+      display: draftDisplay,
+    });
     localStorage.setItem('lunaris_mouse_queue_limit', String(draftMouseQueueLimit));
     localStorage.setItem('lunaris_tauri_use_native', String(draftUseNativeClient));
     localStorage.setItem('lunaris_input_protocol', draftInputProtocol);
     localStorage.setItem('lunaris_canvas_renderer_v2', String(draftUseCanvasRenderer));
-    localStorage.setItem('lunaris_stream_encoder', draftEncoder);
-    if (!sourceId) localStorage.setItem('lunaris_stream_display', draftDisplay);
-    localStorage.setItem('lunaris_stream_chroma', draftChroma);
     
     // Check if settings requiring reconnect changed
     const reconnectNeeded = 
@@ -3129,30 +3135,30 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
 
   const updateSetting = (key: string, value: any) => {
     if (key === 'res') {
-      localStorage.setItem('lunaris_stream_res', value);
+      rememberPrefs({ resolution: value });
       setActiveResolution(value);
       setDraftResolution(value);
       if (value !== activeResolution) setStatus("Connecting...");
     } else if (key === 'fps') {
       const numValue = Number(value);
-      localStorage.setItem('lunaris_stream_fps', String(numValue));
+      rememberPrefs({ fps: numValue });
       setActiveFps(numValue);
       setDraftFps(numValue);
       // Dynamic: no reconnect needed, useEffect sends command via data channel
     } else if (key === 'bitrate') {
       const numValue = Number(value);
-      localStorage.setItem('lunaris_stream_bitrate', String(numValue));
+      rememberPrefs({ bitrate: numValue });
       setActiveBitrate(numValue);
       setDraftBitrate(numValue);
       // Dynamic: no reconnect needed, useEffect sends command via data channel
     } else if (key === 'codec') {
-      localStorage.setItem('lunaris_stream_codec', value);
+      rememberPrefs({ codec: value });
       setActiveCodec(value);
       setDraftCodec(value);
       if (value !== activeCodec) setStatus("Connecting...");
     } else if (key === 'chroma') {
       const chroma = value === '444' ? '444' : '420';
-      localStorage.setItem('lunaris_stream_chroma', chroma);
+      rememberPrefs({ chroma });
       setActiveChroma(chroma);
       setDraftChroma(chroma);
       if (chroma !== activeChroma) setStatus("Connecting...");
@@ -3167,8 +3173,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       setDraftInputProtocol(value);
       if (value !== activeInputProtocol) setStatus("Connecting...");
     } else if (key === 'display') {
-      // A source's display is not remembered: the stored one is the host's.
-      if (!activeSource) localStorage.setItem('lunaris_stream_display', value);
+      rememberPrefs({ display: value });
       setActiveDisplay(value);
       setDraftDisplay(value);
       if (value !== activeDisplay) setStatus("Connecting...");
@@ -4151,7 +4156,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
             onCancel={cancelDraftSettings}
             onSave={applyDraftSettings}
             saveLabel={t('Apply')}
-            footerNote={t('Applies to this session.')}
+            footerNote={t('Applies to this session and is kept for this computer.')}
             displays={availableDisplays.map(d => ({
               id: d.id,
               label: `${d.name} (${d.width}x${d.height} @ ${Math.round(d.refresh_rate)}Hz)${d.is_primary ? ' ★' : ''}`,
@@ -4325,7 +4330,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
           onCancel={cancelDraftSettings}
           onSave={applyDraftSettings}
           saveLabel={t('Apply')}
-          footerNote={t('Applies to this session.')}
+          footerNote={t('Applies to this session and is kept for this computer.')}
           displays={availableDisplays.map(d => ({
             id: d.id,
             label: `${d.name} (${d.width}x${d.height} @ ${Math.round(d.refresh_rate)}Hz)${d.is_primary ? ' ★' : ''}`,

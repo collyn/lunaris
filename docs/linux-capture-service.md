@@ -47,8 +47,9 @@ root: lunaris-agent --capture-service             user session: lunaris-agent
   uses KMS, even when they are available, so the person at the computer
   approves through the portal and the desktop shows its sharing indicator.
   (The portal's restore token still remembers an earlier approval.) It
-  applies when the agent starts; the app and the agent window restart it
-  when the setting changes. `LUNARIS_CAPTURE` is a developer override and
+  applies when the agent starts (`lunaris-agent set wayland-capture ...`,
+  then restart the agent; a change from the server's web page restarts it
+  by itself). `LUNARIS_CAPTURE` is a developer override and
   wins over the setting.
 * With the service the agent can list and show every monitor (RustDesk
   sessions included), not just the one picked in the portal.
@@ -116,8 +117,8 @@ is about who gets frames.
    compared by device and inode. Allow-listed files and all their parent
    directories must be owned by root and not writable by group/others, so an
    unprivileged user cannot replace them. The package allows
-   `/usr/bin/lunaris-agent` (itself) and `/usr/bin/lunaris-client` (the app
-   contains the agent). The AppImage install allows its AppImage through the
+   `/usr/bin/lunaris-agent` (itself: the agent of the user's session, run as
+   the systemd user service `lunaris-agent`). The AppImage install allows its AppImage through the
    `APPIMAGE` variable (see limits).
 3. No `LD_PRELOAD`/`LD_AUDIT` (nor `LD_LIBRARY_PATH` for normal binaries)
    and no tracer attached (`TracerPid`).
@@ -191,8 +192,9 @@ because the agent binary links Qt/FFmpeg; worth trying.)
 * The monitor layout comes from `kscreen-doctor`/`xrandr`; on GNOME the
   XWayland names may not match KMS connector names (single-monitor laptops
   are unaffected; otherwise monitors are assumed left to right).
-* The `lunaris-client` package does not install the unit; it is allowed as a
-  client of the service installed by `lunaris-agent`.
+* Only the agent of the active desktop user gets frames: the headless system
+  service `lunaris-agent-system` (user `lunaris-agent`) never does, and the
+  `lunaris-client` stream window shares nothing.
 * Multi-GPU: displays on several GPUs are listed; the encoder follows the
   GPU of the display being streamed. Buffers with planes in separate buffer
   objects are not supported (not seen on scan-out buffers).

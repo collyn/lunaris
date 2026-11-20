@@ -227,6 +227,82 @@ impl Drop for PromptSlot {
     }
 }
 
+/// The limits of the direct listeners of this process: kept while the
+/// listener starts again with new settings (and while the agent is
+/// restarted by its window), so a lockout for wrong passwords is not undone
+/// by a restart.
+pub(crate) fn process_limits() -> Arc<Mutex<Limits>> {
+    static LIMITS: std::sync::OnceLock<Arc<Mutex<Limits>>> = std::sync::OnceLock::new();
+    LIMITS.get_or_init(Arc::default).clone()
+}
+
+/// The Lunaris servers connected to this agent by its address
+/// (`/ws/server`) during one run of the agent (`run_agent`, which closes
+/// them all when it stops: `close_all`). They outlive the listener when it
+/// starts again with new settings, unless those would not let them in any
+/// more (`keep_admitted`).
+#[derive(Clone, Default)]
+pub struct Links(Arc<Mutex<LinkTasks>>);
+
+#[derive(Default)]
+struct LinkTasks {
+    /// Let in with the access password.
+    trusted: tokio::task::JoinSet<()>,
+    /// Let in without it: their clients are accepted by the person here.
+    untrusted: tokio::task::JoinSet<()>,
+}
+
+impl Links {
+    fn spawn(&self, trusted: bool, link: impl std::future::Future<Output = ()> + Send + 'static) {
+        let mut tasks = self.0.lock().unwrap();
+        while tasks.trusted.try_join_next().is_some() {}
+        while tasks.untrusted.try_join_next().is_some() {}
+        if trusted {
+            tasks.trusted.spawn(link);
+        } else {
+            tasks.untrusted.spawn(link);
+        }
+    }
+
+    /// After a change of the settings: closes the links the listener would
+    /// not let in now. One that proved the old password is closed when the
+    /// password changed (its server connects again and must prove the new
+    /// one; the change itself never comes over a link, settings.rs), or when
+    /// the password no longer lets anyone in ("click"); one let in without
+    /// it when nobody may be let in that way any more ("password"). All of
+    /// them when direct access is turned off.
+    pub fn keep_admitted(&self, direct_enabled: bool, password_changed: bool, mode: ApproveMode) -> usize {
+        let keep_trusted = direct_enabled && !password_changed && mode != ApproveMode::Click;
+        let keep_untrusted = direct_enabled && mode != ApproveMode::Password;
+        let mut tasks = self.0.lock().unwrap();
+        let mut closed = 0;
+        if !keep_trusted {
+            closed += tasks.trusted.len();
+            tasks.trusted.abort_all();
+        }
+        if !keep_untrusted {
+            closed += tasks.untrusted.len();
+            tasks.untrusted.abort_all();
+        }
+        closed
+    }
+
+    /// Closes every link (the agent stops).
+    pub fn close_all(&self) {
+        let mut tasks = self.0.lock().unwrap();
+        tasks.trusted.abort_all();
+        tasks.untrusted.abort_all();
+    }
+
+    #[cfg(test)]
+    fn open(&self) -> usize {
+        let mut tasks = self.0.lock().unwrap();
+        while tasks.trusted.try_join_next().is_some() {}
+        while tasks.untrusted.try_join_next().is_some() {}
+        tasks.trusted.len() + tasks.untrusted.len()
+    }
+}
+
 /// Compares in constant time: both sides are hashed first, so the lengths
 /// compared are always the same.
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
@@ -428,6 +504,8 @@ pub struct DirectConfig {
     pub approve_mode: ApproveMode,
     /// This computer's name, told to servers that connect (`/ws/server`).
     pub name: String,
+    /// Where the servers that connect (`/ws/server`) are kept.
+    pub links: Links,
 }
 
 /// Accepts direct clients on `port` until the task is aborted.
@@ -439,7 +517,7 @@ pub async fn run_listener(
     // All interfaces on purpose: direct clients come from the LAN or a VPN.
     let listener = TcpListener::bind(("0.0.0.0", config.port)).await?;
     let asker: Asker = Arc::new(|requester, kind| Box::pin(async move { approval::ask(&requester, kind).await }));
-    serve_listener(listener, config, hub, inbound_tx, asker).await
+    serve_listener(listener, config, hub, inbound_tx, asker, process_limits()).await
 }
 
 /// As `run_listener`, on a listener the caller bound (the bridge-only
@@ -451,7 +529,7 @@ pub(crate) async fn run_listener_on(
     inbound_tx: mpsc::UnboundedSender<SignalingMessage>,
 ) -> anyhow::Result<()> {
     let asker: Asker = Arc::new(|requester, kind| Box::pin(async move { approval::ask(&requester, kind).await }));
-    serve_listener(listener, config, hub, inbound_tx, asker).await
+    serve_listener(listener, config, hub, inbound_tx, asker, process_limits()).await
 }
 
 /// Asks the person here (approval::ask; replaced in tests).
@@ -463,6 +541,7 @@ async fn serve_listener(
     hub: Arc<Hub>,
     inbound_tx: mpsc::UnboundedSender<SignalingMessage>,
     asker: Asker,
+    limits: Arc<Mutex<Limits>>,
 ) -> anyhow::Result<()> {
     let tls = match handshake::make_tls_server() {
         Ok(tls) => Some(Arc::new(tls)),
@@ -478,9 +557,13 @@ async fn serve_listener(
         if tls.is_some() { "TLS on" } else { "TLS OFF" },
         config.approve_mode
     );
-    let limits = Arc::new(Mutex::new(Limits::default()));
     let config = Arc::new(config);
+    // The connections end with the listener (its settings changed: a client
+    // let in with the old password is not kept); a server link goes on
+    // (`handle_connection`, `Links`).
+    let mut connections = tokio::task::JoinSet::new();
     loop {
+        while connections.try_join_next().is_some() {}
         let (stream, peer) = match listener.accept().await {
             Ok(conn) => conn,
             Err(e) => {
@@ -502,7 +585,7 @@ async fn serve_listener(
             inbound_tx: inbound_tx.clone(),
             asker: asker.clone(),
         };
-        tokio::spawn(async move {
+        connections.spawn(async move {
             if let Err(e) = handle_connection(stream, peer, slot, ctx).await {
                 debug!("Direct connection from {} ended: {}", peer, e);
             }
@@ -684,7 +767,11 @@ async fn handle_connection(stream: TcpStream, peer: SocketAddr, slot: UnauthSlot
         inbound_tx: ctx.inbound_tx,
     };
     if link {
-        serve_link(ws, ctx.config, conn).await;
+        // Not with the listener: a server that connects to this computer
+        // stays connected while the listener starts again with new
+        // settings (`Links::keep_admitted`), until the agent stops.
+        let links = ctx.config.links.clone();
+        links.spawn(trusted, serve_link(ws, ctx.config, conn));
     } else {
         serve_client(ws, conn).await;
     }
@@ -747,8 +834,9 @@ async fn serve_client(ws: Ws, conn: Conn) {
     let (ws_write, mut ws_read) = ws.split();
     let (tx, rx) = mpsc::unbounded_channel::<ServerToClientMessage>();
     conn.hub.add_direct_client(conn_id.clone(), tx.clone());
-    let writer = spawn_writer(ws_write, rx);
     let conn = Arc::new(conn);
+    // Also when the listener's task is aborted (new settings, agent stops).
+    let _cleanup = ClientGone { conn: conn.clone(), conn_id: conn_id.clone(), writer: spawn_writer(ws_write, rx) };
     // What the person here accepted, per kind, for as long as this connection lasts.
     let accepted = Arc::new(Mutex::new(Kinds::default()));
     let asking = Arc::new(AtomicBool::new(false));
@@ -814,12 +902,24 @@ async fn serve_client(ws: Ws, conn: Conn) {
         });
     }
 
-    info!("Direct client {} disconnected", conn_id);
-    conn.hub.remove_direct_client(&conn_id);
-    // Like the server on a client disconnect: end that client's session (the
-    // session logic ignores this when the client had none).
-    let _ = conn.inbound_tx.send(SignalingMessage::EndSession { target_id: conn_id });
-    writer.abort();
+}
+
+/// What ends with a direct client, however it ends.
+struct ClientGone {
+    conn: Arc<Conn>,
+    conn_id: String,
+    writer: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for ClientGone {
+    fn drop(&mut self) {
+        info!("Direct client {} disconnected", self.conn_id);
+        self.conn.hub.remove_direct_client(&self.conn_id);
+        // Like the server on a client disconnect: end that client's session
+        // (the session logic ignores this when the client had none).
+        let _ = self.conn.inbound_tx.send(SignalingMessage::EndSession { target_id: self.conn_id.clone() });
+        self.writer.abort();
+    }
 }
 
 /// A Lunaris server that connected to this agent (the computer was added to
@@ -834,7 +934,13 @@ async fn serve_link(ws: Ws, config: Arc<DirectConfig>, conn: Conn) {
     let (ws_write, mut ws_read) = ws.split();
     let (tx, rx) = mpsc::unbounded_channel::<AgentMessage>();
     conn.hub.add_link(link_id.clone(), tx.clone());
-    let writer = spawn_writer(ws_write, rx);
+    // Also when the link is closed from here (`Links`).
+    let _cleanup = LinkGone {
+        hub: conn.hub.clone(),
+        inbound_tx: conn.inbound_tx.clone(),
+        link_id: link_id.clone(),
+        writer: spawn_writer(ws_write, rx),
+    };
     let codec_support = tokio::task::spawn_blocking(crate::codec_support_bits).await.ok();
     let _ = tx.send(AgentMessage::Register {
         id: conn.hub.agent_id().to_string(),
@@ -875,6 +981,17 @@ async fn serve_link(ws: Ws, config: Arc<DirectConfig>, conn: Conn) {
                     for message in crate::connector::sources::reply(request_id, &change, requester.as_deref(), &via, trusted) {
                         let _ = tx.send(message);
                     }
+                });
+                continue;
+            }
+            Ok(ServerToAgentMessage::Settings { request_id, request, requester }) => {
+                // This computer's own settings (settings.rs): changed only by
+                // a server that proved the password, and never so that this
+                // link is cut.
+                let channel = crate::settings::Channel { via: format!("server link {}", link_id), link: true, trusted: conn.trusted };
+                let tx = tx.clone();
+                tokio::task::spawn_blocking(move || {
+                    let _ = tx.send(crate::settings::reply(request_id, &request, requester.as_deref(), &channel, crate::pairing::config_path()));
                 });
                 continue;
             }
@@ -931,11 +1048,24 @@ async fn serve_link(ws: Ws, config: Arc<DirectConfig>, conn: Conn) {
         });
     }
 
-    info!("Server link {} closed", link_id);
-    for client in conn.hub.remove_link(&link_id) {
-        let _ = conn.inbound_tx.send(SignalingMessage::EndSession { target_id: client });
+}
+
+/// What ends with a server link, however it ends.
+struct LinkGone {
+    hub: Arc<Hub>,
+    inbound_tx: mpsc::UnboundedSender<SignalingMessage>,
+    link_id: String,
+    writer: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for LinkGone {
+    fn drop(&mut self) {
+        info!("Server link {} closed", self.link_id);
+        for client in self.hub.remove_link(&self.link_id) {
+            let _ = self.inbound_tx.send(SignalingMessage::EndSession { target_id: client });
+        }
+        self.writer.abort();
     }
-    writer.abort();
 }
 
 #[cfg(test)]
@@ -1102,9 +1232,45 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap().to_string();
         let (tx, rx) = mpsc::unbounded_channel();
-        let config = DirectConfig { port: 0, password: password.into(), approve_mode: mode, name: "test".into() };
-        tokio::spawn(serve_listener(listener, config, Hub::new("AGENT".into()), tx, asker));
+        let config = DirectConfig { port: 0, password: password.into(), approve_mode: mode, name: "test".into(), links: Links::default() };
+        tokio::spawn(serve_listener(listener, config, Hub::new("AGENT".into()), tx, asker, Arc::default()));
         (addr, rx)
+    }
+
+    /// Links stay across new settings that would let them in again, and
+    /// all end with the agent.
+    #[tokio::test]
+    async fn links_are_kept_only_while_the_settings_let_them_in() {
+        let links = Links::default();
+        let forever = || std::future::pending::<()>();
+        let open = |trusted: bool| {
+            links.spawn(trusted, forever());
+        };
+        open(true);
+        open(false);
+        assert_eq!(links.keep_admitted(true, false, ApproveMode::PasswordClick), 0);
+        assert_eq!(links.open(), 2);
+        // A new password: the one that proved the old one goes.
+        assert_eq!(links.keep_admitted(true, true, ApproveMode::PasswordClick), 1);
+        tokio::task::yield_now().await;
+        assert_eq!(links.open(), 1);
+        // Password only: nobody is let in without it any more.
+        open(true);
+        assert_eq!(links.keep_admitted(true, false, ApproveMode::Password), 1);
+        tokio::task::yield_now().await;
+        assert_eq!(links.open(), 1);
+        // Everyone asked: the password lets nobody in by itself.
+        open(false);
+        assert_eq!(links.keep_admitted(true, false, ApproveMode::Click), 1);
+        tokio::task::yield_now().await;
+        assert_eq!(links.open(), 1);
+        // Direct access off, then the agent stops.
+        assert_eq!(links.keep_admitted(false, false, ApproveMode::Click), 1);
+        open(true);
+        open(false);
+        links.close_all();
+        tokio::task::yield_now().await;
+        assert_eq!(links.open(), 0);
     }
 
     fn never_asked() -> Asker {
