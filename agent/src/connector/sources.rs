@@ -103,8 +103,9 @@ pub fn listing_json(sources: &[SourceConfig], connectors: &[Description]) -> Str
 }
 
 /// The fields of a form, checked: only the connector's own fields are
-/// kept. `stored` is what a source being edited has: a field left empty
-/// keeps its stored value. The error is a text for the person and names
+/// kept. `stored` is what a source being edited has: a field left out, or a
+/// secret or required field left empty, keeps its stored value; an optional
+/// field sent empty is cleared. The error is a text for the person and names
 /// fields, never what was typed in them.
 fn read_values(description: &Description, values_json: &str, stored: Option<&BTreeMap<String, String>>) -> Result<BTreeMap<String, String>, String> {
     let typed: BTreeMap<String, String> =
@@ -114,10 +115,16 @@ fn read_values(description: &Description, values_json: &str, stored: Option<&BTr
         if RESERVED_KEYS.contains(&field.key.as_str()) {
             continue;
         }
-        let value = typed.get(&field.key).map(String::as_str).unwrap_or("");
+        let sent = typed.get(&field.key);
+        let value = sent.map(String::as_str).unwrap_or("");
         // A password is kept as typed; anything else without the spaces around it.
         let value = if field.kind == "secret" { value } else { value.trim() };
         if value.is_empty() {
+            // Sent empty on purpose: an optional field that is no secret is
+            // cleared (a form that shows the stored values sends it so).
+            if sent.is_some() && stored.is_some() && field.kind != "secret" && !field.required {
+                continue;
+            }
             if let Some(kept) = stored.and_then(|stored| stored.get(&field.key)) {
                 values.insert(field.key.clone(), kept.clone());
             } else if field.required {
@@ -322,15 +329,7 @@ pub fn views_json(sources: &[SourceConfig], connectors: &[Description]) -> Strin
         .iter()
         .map(|source| {
             let description = connectors.iter().find(|c| c.id == source.target.connector);
-            let values: BTreeMap<&str, &str> = description
-                .map(|d| {
-                    d.fields
-                        .iter()
-                        .filter(|field| field.kind != "secret")
-                        .filter_map(|field| source.target.values.get(&field.key).map(|value| (field.key.as_str(), value.as_str())))
-                        .collect()
-                })
-                .unwrap_or_default();
+            let values = description.map(|d| form_values(source, d)).unwrap_or_default();
             let mut view = serde_json::json!({
                 "id": source.id,
                 "name": source.name,
@@ -820,18 +819,24 @@ impl Drop for StopSetupsOnDrop {
 }
 
 /// What a server is told when the agent connects and when its sources
-/// change: the sources (id, name, connector, group) and the connectors there are.
+/// change: the sources (id, name, connector, group, fields that are not
+/// secrets), the connectors there are and this computer's addresses.
 pub fn announcement(manageable: bool) -> common::AgentMessage {
     let configured = crate::connector::configured_sources();
     let available = crate::connector::available(&crate::connector::connectors_dir());
-    let mut sources = source_infos(&configured);
+    let mut sources = source_infos(&configured, &available);
     // Whether each is there, as far as it is known (`reachability`).
     if let Some(monitor) = crate::connector::reachability::agent_monitor() {
         for (info, source) in sources.iter_mut().zip(&configured) {
             info.online = monitor.status(&source.target, available.iter().find(|c| c.id == source.target.connector));
         }
     }
-    common::AgentMessage::Sources { sources, connectors: connector_infos(&available), manageable }
+    common::AgentMessage::Sources {
+        sources,
+        connectors: connector_infos(&available),
+        manageable,
+        addresses: crate::direct::known_local_addresses(),
+    }
 }
 
 /// The connectors as the server and the viewers are told them.
@@ -866,9 +871,22 @@ pub fn connector_infos(connectors: &[Description]) -> Vec<common::ConnectorInfoM
         .collect()
 }
 
-/// The sources as the server is told them: id, name, connector and group,
-/// nothing of their fields.
-pub fn source_infos(sources: &[SourceConfig]) -> Vec<common::SourceInfoMsg> {
+/// The values of `source`'s form fields that are not secrets: a password
+/// never leaves the config, and neither does a value that is no field of
+/// the form (what a set-up stored).
+fn form_values(source: &SourceConfig, description: &Description) -> BTreeMap<String, String> {
+    description
+        .fields
+        .iter()
+        .filter(|field| field.kind != "secret")
+        .filter_map(|field| source.target.values.get(&field.key).map(|value| (field.key.clone(), value.clone())))
+        .collect()
+}
+
+/// The sources as the server is told them: id, name, connector, group and
+/// the fields that are not secrets (`form_values`; none for a connector
+/// that is not in `connectors`).
+pub fn source_infos(sources: &[SourceConfig], connectors: &[Description]) -> Vec<common::SourceInfoMsg> {
     sources
         .iter()
         .map(|s| common::SourceInfoMsg {
@@ -877,6 +895,7 @@ pub fn source_infos(sources: &[SourceConfig]) -> Vec<common::SourceInfoMsg> {
             connector: s.target.connector.clone(),
             group: group_of(s).map(str::to_string),
             online: None,
+            values: connectors.iter().find(|c| c.id == s.target.connector).map(|d| form_values(s, d)),
         })
         .collect()
 }
@@ -988,7 +1007,7 @@ mod tests {
         for chosen_from in [connectors_json(&connectors()), listing] {
             assert!(chosen_from.contains("\"note\":\"Demo must be running on that computer.\""), "{}", chosen_from);
         }
-        assert_eq!(source_infos(&config.sources)[0].name, "Living room PC");
+        assert_eq!(source_infos(&config.sources, &[])[0].name, "Living room PC");
         // What the connector can do goes with it, so that a client offers only that.
         let mut with_files = connectors();
         with_files[0].capabilities.files = true;
@@ -1099,6 +1118,12 @@ mod tests {
         assert_eq!(config.sources[0].target.get("password"), "second");
         assert_eq!(update(&mut config, &all, &id, "Office 2", r#"{"port": "0"}"#).unwrap_err(), "Port must be a port from 1 to 65535");
         assert_eq!(config.sources[0].target.get("port"), "5000");
+        // A form that shows the stored values sends a cleared field empty:
+        // an optional one is cleared, a required one or a secret is kept.
+        update(&mut config, &all, &id, "Office 2", r#"{"host": "", "port": "", "password": ""}"#).unwrap();
+        let source = &config.sources[0];
+        assert_eq!((source.target.get("host"), source.target.get("port"), source.target.get("password")), ("10.0.0.6", "", "second"));
+        assert!(!source.target.values.contains_key("port"));
         assert_eq!(update(&mut config, &all, &id, " ", "{}").unwrap_err(), "Give the computer a name");
         assert_eq!(update(&mut config, &all, "nope", "X", "{}").unwrap_err(), "That computer is not there any more");
     }
@@ -1148,7 +1173,7 @@ mod tests {
         let first = add(&mut config, &all, "Den PC", "demo", r#"{"host": "Den-PC.lan", "password": "p"}"#).unwrap();
         // The only one: no group, and nothing new on the wire or in the file.
         assert_eq!(group(&config, &first), None);
-        assert_eq!(serde_json::to_string(&source_infos(&config.sources)).unwrap(), format!(r#"[{{"id":"{}","name":"Den PC","connector":"demo"}}]"#, first));
+        assert_eq!(serde_json::to_string(&source_infos(&config.sources, &[])).unwrap(), format!(r#"[{{"id":"{}","name":"Den PC","connector":"demo"}}]"#, first));
         assert!(!serde_json::to_string(&config.sources).unwrap().contains("group"));
 
         // Another address: a computer of its own.
@@ -1168,7 +1193,7 @@ mod tests {
 
         // The group is told with the id and the name, and it is a word of
         // its own: nothing of the address is in it or beside it.
-        let told = serde_json::to_string(&source_infos(&config.sources)).unwrap();
+        let told = serde_json::to_string(&source_infos(&config.sources, &[])).unwrap();
         assert!(told.contains(&format!(r#""group":"{}""#, shared)) && !told.to_lowercase().contains("den-pc.lan"), "{}", told);
         for listed in [listing_json(&config.sources, &all), views_json(&config.sources, &all)] {
             assert!(listed.contains(&format!(r#""group":"{}""#, shared)), "{}", listed);
@@ -1222,7 +1247,7 @@ mod tests {
 
         // A group in the file that is not fit to be one is not told to anyone.
         config.sources[1].group = Some("<img src=x>".into());
-        assert_eq!(source_infos(&config.sources)[1].group, None);
+        assert_eq!(source_infos(&config.sources, &[])[1].group, None);
         assert!(!views_json(&config.sources, &all).contains("img") && !listing_json(&config.sources, &all).contains("img"));
         // ... and a new one at its address gives both a real one.
         let fresh = add(&mut AgentConfig { sources: vec![config.sources[1].clone()], ..AgentConfig::default() }, &all, "New", "demo", values);
@@ -1446,7 +1471,8 @@ mod tests {
             // The connector is not installed any more: still nothing.
             views_json(&sources, &[]),
             listing_json(&sources, &[]),
-            serde_json::to_string(&source_infos(&sources)).unwrap(),
+            serde_json::to_string(&source_infos(&sources, &[])).unwrap(),
+            serde_json::to_string(&source_infos(&sources, &all)).unwrap(),
             serde_json::to_string(&connector_infos(&all)).unwrap(),
             format!("{:?}", sources),
             format!("{:?}", source.target),

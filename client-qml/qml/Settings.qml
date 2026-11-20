@@ -13,6 +13,9 @@ Rectangle {
 
     // Name of the computer being configured (header).
     property string hostName: ""
+    // Where it is (its IP addresses, or a source's host), shown beside its
+    // name; "" when not known.
+    property string hostAddress: ""
     // "video" | "host" | "decoding" | "input"
     property string category: "video"
 
@@ -274,12 +277,34 @@ Rectangle {
             Rectangle {
                 visible: settingsRoot.hostName !== ""
                 anchors.verticalCenter: parent.verticalCenter
-                implicitWidth: hostLabel.implicitWidth + 18
+                implicitWidth: hostPill.implicitWidth + 18
                 implicitHeight: 24
                 radius: 12
                 color: Theme.surface2
                 border.color: Theme.border
-                Text { textFormat: Text.PlainText; id: hostLabel; anchors.centerIn: parent; text: settingsRoot.hostName; color: Theme.textMuted; font.pixelSize: 12 }
+                Row {
+                    id: hostPill
+                    anchors.centerIn: parent
+                    spacing: 6
+                    Text { textFormat: Text.PlainText; id: hostLabel; text: settingsRoot.hostName; color: Theme.textMuted; font.pixelSize: 12; anchors.verticalCenter: parent.verticalCenter }
+                    // Read only: the computer's IP addresses.
+                    Text {
+                        id: hostAddressLabel
+                        objectName: "hostAddress"
+                        visible: settingsRoot.hostAddress !== ""
+                        width: Math.min(implicitWidth, 260)
+                        textFormat: Text.PlainText
+                        text: settingsRoot.hostAddress
+                        color: Theme.textSubtle
+                        font.pixelSize: 11
+                        font.family: "monospace"
+                        elide: Text.ElideRight
+                        anchors.verticalCenter: parent.verticalCenter
+                        HoverHandler { id: hostAddressHover }
+                        ToolTip.visible: hostAddressHover.hovered && hostAddressLabel.truncated
+                        ToolTip.text: I18n.t("IP Address") + ": " + settingsRoot.hostAddress
+                    }
+                }
             }
         }
         IconButton {

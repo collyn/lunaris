@@ -324,13 +324,14 @@ type Searchable = {
   title: string;
   methods: {
     label: string;
-    host?: { name?: string; address?: string; ip_address?: string | null };
-    source?: { name?: string; host_name?: string; connector: string };
+    host?: { name?: string; address?: string; ip_address?: string | null; addresses?: string[] };
+    source?: { name?: string; host_name?: string; connector: string; address?: string };
   }[];
 };
 
 /** What a search looks in: the card's name, and for each way to connect its
- *  name, address and the computer it is reached through. Folded (foldText). */
+ *  name, address (a Lunaris computer's own IP addresses, a source's
+ *  "host:port") and the computer it is reached through. Folded (foldText). */
 export function cardSearchText(card: Searchable): string {
   const parts: unknown[] = [card.title];
   for (const m of card.methods) {
@@ -338,8 +339,9 @@ export function cardSearchText(card: Searchable): string {
     if (m.host) {
       parts.push(m.host.name, m.host.address, m.host.ip_address);
       if (typeof m.host.address === 'string') parts.push(m.host.address.replace(/:8091$/, ''));
+      if (Array.isArray(m.host.addresses)) parts.push(...m.host.addresses);
     }
-    if (m.source) parts.push(m.source.name, m.source.host_name);
+    if (m.source) parts.push(m.source.name, m.source.host_name, m.source.address);
   }
   return foldText(parts.filter((p) => p !== undefined && p !== null && p !== '').join('\n'));
 }

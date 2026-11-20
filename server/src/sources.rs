@@ -36,7 +36,7 @@
 //! once, neither stored nor logged. Of a set-up the server remembers only
 //! which computer it is on.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
@@ -137,13 +137,15 @@ pub(crate) async fn announced(
             let connector_name = connectors.iter().find(|c| c.id == source.connector).map(|c| c.name.as_str()).unwrap_or(&source.connector);
             // What an agent calls a group is kept only when it can be one.
             let group = source.group.as_deref().filter(|group| common::valid_source_group(group));
-            sqlx::query("INSERT OR REPLACE INTO host_sources (host_id, source_id, name, connector, connector_name, source_group) VALUES (?, ?, ?, ?, ?, ?)")
+            let values = source.values.as_ref().map(|values| shown_values(values)).and_then(|v| serde_json::to_string(&v).ok());
+            sqlx::query("INSERT OR REPLACE INTO host_sources (host_id, source_id, name, connector, connector_name, source_group, source_values) VALUES (?, ?, ?, ?, ?, ?, ?)")
                 .bind(agent_id)
                 .bind(&source.id)
                 .bind(&source.name)
                 .bind(&source.connector)
                 .bind(connector_name)
                 .bind(group)
+                .bind(values)
                 .execute(&mut *tx)
                 .await?;
         }
@@ -159,6 +161,53 @@ pub(crate) async fn announced(
     if !removals.is_empty() {
         // Not awaited: the answers come through this agent's messages.
         tokio::spawn(apply_removals(state.clone(), agent_id.to_string(), removals, ids));
+    }
+}
+
+/// Most fields of one source kept, and the longest value (characters).
+const MAX_VALUES: usize = 32;
+const MAX_VALUE_CHARS: usize = 256;
+
+/// What is kept of the field values an agent announced: bounded, and never
+/// a field whose name says it is a secret (agents leave those out; this is
+/// in case one does not).
+fn shown_values(values: &BTreeMap<String, String>) -> BTreeMap<String, String> {
+    values
+        .iter()
+        .filter(|(key, _)| {
+            let key = key.to_ascii_lowercase();
+            !["password", "secret", "token", "key", "cert"].iter().any(|word| key.contains(word))
+        })
+        .take(MAX_VALUES)
+        .map(|(key, value)| (key.chars().take(64).collect(), value.chars().take(MAX_VALUE_CHARS).collect()))
+        .collect()
+}
+
+/// Where a source is, for its card: its `host` field, with the `port` when
+/// one is set ("192.168.1.5:3389"). None when it has no host field.
+fn address_of(values: &BTreeMap<String, String>) -> Option<String> {
+    let host = values.get("host").map(|h| h.trim()).filter(|h| !h.is_empty())?;
+    match values.get("port").map(|p| p.trim()).filter(|p| !p.is_empty()) {
+        Some(port) if host.contains(':') && !host.starts_with('[') => Some(format!("[{}]:{}", host, port)),
+        Some(port) => Some(format!("{}:{}", host, port)),
+        None => Some(host.to_string()),
+    }
+}
+
+/// An agent said its own addresses: kept with its host, to show while it is
+/// away too. An agent from before this says none, and what was kept stays.
+pub(crate) async fn addresses_announced(state: &Arc<SignalingState>, agent_id: &str, addresses: Vec<String>) {
+    let addresses: Vec<String> = addresses
+        .into_iter()
+        .filter(|a| a.parse::<std::net::IpAddr>().is_ok())
+        .take(16)
+        .collect();
+    if addresses.is_empty() {
+        return;
+    }
+    let Ok(json) = serde_json::to_string(&addresses) else { return };
+    if let Err(e) = sqlx::query("UPDATE hosts SET addresses = ? WHERE id = ?").bind(json).bind(agent_id).execute(&state.db).await {
+        warn!("The addresses of {} could not be saved: {}", agent_id, e);
     }
 }
 
@@ -219,6 +268,14 @@ struct SourceEntry {
     /// has none.
     #[serde(skip_serializing_if = "Option::is_none")]
     group: Option<String>,
+    /// Where it is ("host" or "host:port"), for its card. Left out when its
+    /// agent did not say (from before this) or it has no host field.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    address: Option<String>,
+    /// The fields of its form that are not secrets, for an edit form:
+    /// administrators only (they are the ones who edit).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    values: Option<BTreeMap<String, String>>,
 }
 
 /// The group of a source as `access` may see it: a group that names a
@@ -241,8 +298,10 @@ pub async fn list_sources(user: crate::auth::AuthenticatedUser, State(state): St
             return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": "Internal Database Error" }))).into_response();
         }
     };
-    let rows: Vec<(String, String, String, String, String, String, Option<String>)> = match sqlx::query_as(
-        "SELECT s.host_id, h.name, s.source_id, s.name, s.connector, s.connector_name, s.source_group
+    let admin = user.role == "admin";
+    #[allow(clippy::type_complexity)]
+    let rows: Vec<(String, String, String, String, String, String, Option<String>, Option<String>)> = match sqlx::query_as(
+        "SELECT s.host_id, h.name, s.source_id, s.name, s.connector, s.connector_name, s.source_group, s.source_values
          FROM host_sources s INNER JOIN hosts h ON h.id = s.host_id
          ORDER BY s.name COLLATE NOCASE, s.source_id",
     )
@@ -260,7 +319,8 @@ pub async fn list_sources(user: crate::auth::AuthenticatedUser, State(state): St
     let entries: Vec<SourceEntry> = rows
         .into_iter()
         .filter(|row| access.allows(&row.0))
-        .map(|(host_id, host_name, id, name, connector, connector_name, group)| {
+        .map(|(host_id, host_name, id, name, connector, connector_name, group, values)| {
+            let values: Option<BTreeMap<String, String>> = values.and_then(|v| serde_json::from_str(&v).ok());
             let agent_online = online.contains_key(&host_id);
             let reachable = announced.get(&host_id).filter(|_| agent_online).and_then(|a| a.reachable.get(&id).copied());
             SourceEntry {
@@ -276,6 +336,8 @@ pub async fn list_sources(user: crate::auth::AuthenticatedUser, State(state): St
                 name,
                 connector,
                 connector_name,
+                address: values.as_ref().and_then(address_of),
+                values: values.filter(|_| admin),
             }
         })
         .collect();
@@ -627,7 +689,7 @@ mod tests {
     }
 
     fn source(id: &str, name: &str) -> SourceInfoMsg {
-        SourceInfoMsg { id: id.into(), name: name.into(), connector: "rustdesk".into(), group: None, online: None }
+        SourceInfoMsg { id: id.into(), name: name.into(), connector: "rustdesk".into(), group: None, online: None, values: None }
     }
 
     async fn body(response: impl IntoResponse) -> (StatusCode, serde_json::Value) {
@@ -734,7 +796,7 @@ mod tests {
             assert_eq!(group, &None, "a form without a group says nothing about it");
             assert_eq!((name.as_str(), connector.as_str()), ("Den PC", "rustdesk"));
             assert_eq!(values.get("password").map(String::as_str), Some("s3cret-pw"));
-            crate::signaling::agent_message(&agent_state, "h1", AgentMessage::Sources { sources: vec![source("den-pc-ab12", "Den PC")], connectors: vec![rustdesk()], manageable: true }).await;
+            crate::signaling::agent_message(&agent_state, "h1", AgentMessage::Sources { sources: vec![source("den-pc-ab12", "Den PC")], connectors: vec![rustdesk()], manageable: true, addresses: vec![] }).await;
             // An answer from another agent with the same request id is not believed.
             crate::signaling::agent_message(&agent_state, "h2", AgentMessage::SourceChanged { request_id: request_id.clone(), id: None, error: Some("forged".into()), setup: None }).await;
             crate::signaling::agent_message(&agent_state, "h1", AgentMessage::SourceChanged { request_id, id: Some("den-pc-ab12".into()), error: None, setup: None }).await;
@@ -786,7 +848,7 @@ mod tests {
         let agent = tokio::spawn(async move {
             let Some(ServerToAgentMessage::ChangeSource { request_id, change, .. }) = to_agent.recv().await else { panic!("no ChangeSource") };
             assert_eq!(change, SourceChange::Remove { id: "den-pc-ab12".into() });
-            crate::signaling::agent_message(&agent_state, "h1", AgentMessage::Sources { sources: vec![], connectors: vec![rustdesk()], manageable: true }).await;
+            crate::signaling::agent_message(&agent_state, "h1", AgentMessage::Sources { sources: vec![], connectors: vec![rustdesk()], manageable: true, addresses: vec![] }).await;
             crate::signaling::agent_message(&agent_state, "h1", AgentMessage::SourceChanged { request_id, id: Some("den-pc-ab12".into()), error: None, setup: None }).await;
         });
         let (status, _) = body(remove_source(admin(), Path(("h1".into(), "den-pc-ab12".into())), State(state.clone())).await).await;
@@ -794,6 +856,55 @@ mod tests {
         agent.await.unwrap();
         let (_, list) = body(list_sources(user("admin"), State(state.clone())).await).await;
         assert!(list.as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_source_shows_its_address_to_its_users_and_its_fields_to_administrators() {
+        let state = state().await;
+        let _h1 = connect(&state, "h1");
+        let values: BTreeMap<String, String> = [("host", "192.168.1.5"), ("port", "3390"), ("username", "huy"), ("password", "leaked-pw")]
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        let den = SourceInfoMsg { values: Some(values), ..source("den-1", "Den PC") };
+        crate::signaling::agent_message(
+            &state,
+            "h1",
+            AgentMessage::Sources { sources: vec![den, source("old-2", "Old agent's")], connectors: vec![rustdesk()], manageable: true, addresses: vec!["192.168.1.20".into(), "not an ip".into()] },
+        )
+        .await;
+
+        let (_, list) = body(list_sources(user("admin"), State(state.clone())).await).await;
+        let den = list.as_array().unwrap().iter().find(|s| s["id"] == "den-1").unwrap().clone();
+        assert_eq!(den["address"], "192.168.1.5:3390");
+        assert_eq!(den["values"]["username"], "huy");
+        // A secret is not kept even when an agent sends one.
+        assert!(!list.to_string().contains("leaked-pw"));
+        let old = list.as_array().unwrap().iter().find(|s| s["id"] == "old-2").unwrap().clone();
+        assert!(old.get("address").is_none() && old.get("values").is_none());
+
+        // A user who may use the computer sees where it is, not its fields.
+        let (_, list) = body(list_sources(user("alice"), State(state.clone())).await).await;
+        let den = list.as_array().unwrap().iter().find(|s| s["id"] == "den-1").unwrap().clone();
+        assert_eq!(den["address"], "192.168.1.5:3390");
+        assert!(den.get("values").is_none());
+
+        // The computer's own addresses (only real ones), kept with its host;
+        // an agent that says none leaves them.
+        let stored: Option<String> = sqlx::query_scalar("SELECT addresses FROM hosts WHERE id = 'h1'").fetch_one(&state.db).await.unwrap();
+        assert_eq!(stored.as_deref(), Some(r#"["192.168.1.20"]"#));
+        addresses_announced(&state, "h1", vec![]).await;
+        let stored: Option<String> = sqlx::query_scalar("SELECT addresses FROM hosts WHERE id = 'h1'").fetch_one(&state.db).await.unwrap();
+        assert_eq!(stored.as_deref(), Some(r#"["192.168.1.20"]"#));
+    }
+
+    #[test]
+    fn an_address_is_the_host_with_its_port() {
+        let v = |pairs: &[(&str, &str)]| pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect::<BTreeMap<_, _>>();
+        assert_eq!(address_of(&v(&[("host", " pc.lan ")])).as_deref(), Some("pc.lan"));
+        assert_eq!(address_of(&v(&[("host", "10.0.0.2"), ("port", "")])).as_deref(), Some("10.0.0.2"));
+        assert_eq!(address_of(&v(&[("host", "fe80::1"), ("port", "5900")])).as_deref(), Some("[fe80::1]:5900"));
+        assert_eq!(address_of(&v(&[("port", "5900")])), None);
     }
 
     #[tokio::test]
@@ -1069,7 +1180,7 @@ mod tests {
         assert_eq!(status(&list), [("a-off".into(), true, Some(true)), ("b-on".into(), false, Some(false)), ("c-new".into(), true, None)]);
 
         // Through the agent's connection, as the agent sends it.
-        crate::signaling::agent_message(&state, "h1", AgentMessage::Sources { sources: vec![checked("a-off", "A off", Some(false))], connectors: vec![rustdesk()], manageable: true }).await;
+        crate::signaling::agent_message(&state, "h1", AgentMessage::Sources { sources: vec![checked("a-off", "A off", Some(false))], connectors: vec![rustdesk()], manageable: true, addresses: vec![] }).await;
         let (_, list) = body(list_sources(user("alice"), State(state.clone())).await).await;
         assert_eq!(status(&list), [("a-off".into(), false, Some(false))]);
 
@@ -1202,7 +1313,7 @@ mod tests {
         let agent_state = state.clone();
         let agent = tokio::spawn(async move {
             let (request_id, _) = asked(&mut to_agent).await;
-            crate::signaling::agent_message(&agent_state, "h1", AgentMessage::Sources { sources: vec![SourceInfoMsg { id: "den-pc-ab12".into(), name: "Den PC".into(), connector: "sunshine".into(), group: None, online: None }], connectors: vec![rustdesk()], manageable: true }).await;
+            crate::signaling::agent_message(&agent_state, "h1", AgentMessage::Sources { sources: vec![SourceInfoMsg { id: "den-pc-ab12".into(), name: "Den PC".into(), connector: "sunshine".into(), group: None, online: None, values: None }], connectors: vec![rustdesk()], manageable: true, addresses: vec![] }).await;
             crate::signaling::agent_message(&agent_state, "h1", AgentMessage::SourceChanged { request_id, id: Some("den-pc-ab12".into()), error: None, setup: None }).await;
             to_agent
         });

@@ -713,7 +713,8 @@ pub(crate) async fn agent_message(state: &Arc<SignalingState>, agent_id: &str, m
         AgentMessage::Signaling(sig) => {
             handle_agent_signaling(sig, agent_id, state.clone()).await;
         }
-        AgentMessage::Sources { sources, connectors, manageable } => {
+        AgentMessage::Sources { sources, connectors, manageable, addresses } => {
+            crate::sources::addresses_announced(state, agent_id, addresses).await;
             crate::sources::announced(state, agent_id, sources, connectors, manageable).await;
         }
         AgentMessage::SourceChanged { request_id, id, error, setup } => {
@@ -1880,7 +1881,7 @@ mod tests {
         match client_rx.rx_try() {
             Some(ServerToClientMessage::Signaling(SignalingMessage::CapabilitiesResponse { target_id, sources, .. })) => {
                 assert_eq!(target_id, "h1");
-                assert_eq!(sources, vec![common::SourceInfoMsg { id: "office-pc".into(), name: "Office PC".into(), connector: "rustdesk".into(), group: None, online: None }]);
+                assert_eq!(sources, vec![common::SourceInfoMsg { id: "office-pc".into(), name: "Office PC".into(), connector: "rustdesk".into(), group: None, online: None, values: None }]);
             }
             _ => panic!("the client got no CapabilitiesResponse"),
         }

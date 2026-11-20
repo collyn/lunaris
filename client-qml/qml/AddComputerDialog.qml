@@ -75,6 +75,9 @@ DialogFrame {
     property string editThroughName: ""
     // Edit: the stored values that may be shown (never a secret).
     property var editValues: ({})
+    // Edit: whether `editValues` are what is stored (a server from before
+    // this sends none: the form then starts empty and keeps what is left so).
+    property bool editValuesKnown: false
     property string error: ""
     property bool busy: false
 
@@ -221,10 +224,11 @@ DialogFrame {
         throughHost = throughOptions.length > 0 ? throughOptions[0].value : "";
     }
 
-    // A field that may stay empty in the form: on the server every field
-    // (its values are never sent back), in the app the secrets.
+    // A field that may stay empty in the form (it keeps what is stored): a
+    // secret (never shown), and on a server that does not send the stored
+    // values every field.
     function keepsEmpty(field) {
-        return dlg.editing && (dlg.serverMode || field.kind === "secret");
+        return dlg.editing && (field.kind === "secret" || (dlg.serverMode && !dlg.editValuesKnown));
     }
 
     function clearForm() {
@@ -247,6 +251,7 @@ DialogFrame {
         sourceId = "";
         editName = "";
         editValues = ({});
+        editValuesKnown = false;
         methodCard = { key: String(card.key || ""), title: String(card.title || ""), group: String(card.group || "") };
         typeId = typeOptions.length > 0 ? typeOptions[0].value : "";
         nameField.text = methodCard.title;
@@ -263,6 +268,7 @@ DialogFrame {
         sourceId = "";
         editName = "";
         editValues = ({});
+        editValuesKnown = false;
         typeId = "lunaris";
         nameField.text = "";
         open();
@@ -270,7 +276,8 @@ DialogFrame {
     }
 
     // `source`: { id, name, connector, connector_name, host_id (server) };
-    // `values`: what may be shown of its fields. `same`: the cards it can be
+    // `values`: what may be shown of its fields (left out: not known, as
+    // from a server before they were sent). `same`: the cards it can be
     // said to be the same computer as, and `sameNow` the one it is on.
     function openEdit(source, values, same, sameNow) {
         methodCard = null;
@@ -281,7 +288,8 @@ DialogFrame {
         sourceId = source.id;
         editName = source.name || "";
         editTypeName = source.connector_name || source.connector || "";
-        editValues = values || ({});
+        editValuesKnown = values !== undefined && values !== null && typeof values === "object";
+        editValues = editValuesKnown ? values : ({});
         throughHost = source.host_id || "";
         editThroughName = source.host_name || "";
         typeId = source.connector || "";
@@ -311,6 +319,10 @@ DialogFrame {
             if (text === "") {
                 if (keepsEmpty(field)) continue;
                 if (field.required) { error = I18n.t("%1 is required").arg(I18n.t(field.label)); return; }
+                // Edit: an optional field whose stored value was shown and is
+                // now empty is sent empty (cleared); one that had none is left out.
+                if (dlg.editing && dlg.editValuesKnown && String(dlg.editValues[field.key] || "") !== "")
+                    values[field.key] = "";
                 if (dlg.editing) continue;
             } else if (field.kind === "port" && !(/^[0-9]{1,5}$/.test(text) && parseInt(text) >= 1 && parseInt(text) <= 65535)) {
                 error = I18n.t("%1 must be a port from 1 to 65535").arg(I18n.t(field.label));
@@ -802,7 +814,7 @@ DialogFrame {
                         // Many options, or long ones: a drop-down.
                         readonly property bool asList: Cards.choiceAsList(field)
                         // Edit: what is stored and may be shown; add: the connector's default.
-                        readonly property string first: dlg.editing ? String(dlg.editValues[field.key] || "")
+                        readonly property string first: dlg.editing ? (secret ? "" : String(dlg.editValues[field.key] || ""))
                                                                     : String(field["default"] || "")
                         property string picked: first
                         readonly property string value: choice ? picked : fieldInput.text
@@ -832,7 +844,7 @@ DialogFrame {
                                 // (A port's box is too narrow for a hint; the note below says it.)
                                 placeholder: !dlg.editing || fieldItem.port ? ""
                                     : fieldItem.secret ? I18n.t("Leave empty to keep the password")
-                                    : dlg.serverMode ? I18n.t("Leave empty to keep it") : ""
+                                    : dlg.keepsEmpty(fieldItem.field) ? I18n.t("Leave empty to keep it") : ""
                                 input.validator: fieldItem.port ? portValidator : null
                                 input.maximumLength: fieldItem.port ? 5 : 255
                                 input.inputMethodHints: fieldItem.secret ? Qt.ImhSensitiveData | Qt.ImhNoPredictiveText : Qt.ImhNone
@@ -900,8 +912,14 @@ DialogFrame {
             }
 
             Note {
-                visible: dlg.editing && dlg.serverMode && dlg.connector !== null
+                visible: dlg.editing && dlg.serverMode && !dlg.editValuesKnown && dlg.connector !== null
                 text: I18n.t("Leave a field empty to keep it. The server never shows what is stored.")
+            }
+            Note {
+                objectName: "passwordsNote"
+                visible: dlg.editing && dlg.serverMode && dlg.editValuesKnown && dlg.connector !== null
+                    && (dlg.connector.fields || []).some(function (f) { return f.kind === "secret"; })
+                text: I18n.t("Passwords are not shown: leave one empty to keep it.")
             }
 
             // ---- Edit: which computer it is ----

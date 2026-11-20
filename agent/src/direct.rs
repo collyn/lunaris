@@ -377,6 +377,21 @@ impl Kinds {
     }
 }
 
+/// The addresses `refresh_local_addresses` found last.
+static KNOWN_ADDRESSES: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// Looks up this computer's addresses again (`local_addresses`), for
+/// `known_local_addresses`: done when a connection to a server starts.
+pub async fn refresh_local_addresses() {
+    let addresses = local_addresses().await;
+    *KNOWN_ADDRESSES.lock().unwrap() = addresses;
+}
+
+/// This computer's addresses as last looked up (empty before the first).
+pub fn known_local_addresses() -> Vec<String> {
+    KNOWN_ADDRESSES.lock().unwrap().clone()
+}
+
 /// This computer's IPv4 addresses a direct client could use (LAN, VPN),
 /// without loopback and link-local ones, sorted.
 pub async fn local_addresses() -> Vec<String> {
@@ -827,6 +842,7 @@ async fn serve_link(ws: Ws, config: Arc<DirectConfig>, conn: Conn) {
         codec_support,
     });
     // The other computers this one shows, and the kinds it can show.
+    refresh_local_addresses().await;
     let _ = tx.send(crate::connector::sources::announcement(conn.trusted));
     // Again when a set-up (a pairing) has added one, whoever still asks about it.
     let _announcing = crate::connector::sources::announce_changes(tx.clone(), conn.trusted);

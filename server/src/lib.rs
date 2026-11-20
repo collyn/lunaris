@@ -528,12 +528,14 @@ async fn hosts_handler(
     // Admins see every host, others the hosts of their groups (the same rule
     // the signaling WebSocket applies).
     let access = security::host_access(&state.db, &user.user_id).await.map_err(db_error)?;
-    let all: Vec<(String, String, String, Option<String>, Option<i64>)> =
-        sqlx::query_as("SELECT id, name, status, ip_address, server_codec_mode_support FROM hosts")
+    #[allow(clippy::type_complexity)]
+    let all: Vec<(String, String, String, Option<String>, Option<i64>, Option<String>)> =
+        sqlx::query_as("SELECT id, name, status, ip_address, server_codec_mode_support, addresses FROM hosts")
             .fetch_all(&state.db)
             .await
             .map_err(db_error)?;
-    let rows: Vec<(String, String, String, Option<String>, Option<i64>)> = all
+    #[allow(clippy::type_complexity)]
+    let rows: Vec<(String, String, String, Option<String>, Option<i64>, Option<String>)> = all
             .into_iter()
             .filter(|(id, ..)| access.allows(id))
             .collect();
@@ -545,7 +547,8 @@ async fn hosts_handler(
 
     let mut futures = Vec::new();
 
-    for (id, name, status_str, ip_address, server_codec_mode_support) in rows {
+    for (id, name, status_str, ip_address, server_codec_mode_support, addresses) in rows {
+        let addresses: Vec<String> = addresses.and_then(|a| serde_json::from_str(&a).ok()).unwrap_or_default();
         let ip_address_clone = ip_address.clone();
         let db_pool = state.db.clone();
         let is_currently_busy = active_host_ids.contains(&id);
@@ -588,6 +591,7 @@ async fn hosts_handler(
                 name,
                 status,
                 ip_address: ip_address_clone,
+                addresses,
                 server_codec_mode_support: server_codec_mode_support.map(|v| v as u32),
                 agent_connected: is_agent_online,
                 address: None,
@@ -614,6 +618,7 @@ async fn hosts_handler(
                 name: link.address.clone(),
                 status: HostStatus::Offline,
                 ip_address: None,
+                addresses: Vec::new(),
                 server_codec_mode_support: None,
                 agent_connected: false,
                 address: Some(link.address.clone()),

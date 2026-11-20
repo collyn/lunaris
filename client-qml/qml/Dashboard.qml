@@ -169,7 +169,11 @@ Rectangle {
     }
     function editSource(source) {
         var same = sameOptionsFor(source);
-        addHostDialog.openEdit(Object.assign({ isSource: true }, source), ({}), same.options, same.now);
+        // What the server sends of its fields (administrators, servers from
+        // this version on); left out, the form starts empty and keeps what
+        // is left empty.
+        var values = source.values !== null && typeof source.values === "object" ? source.values : undefined;
+        addHostDialog.openEdit(Object.assign({ isSource: true }, source), values, same.options, same.now);
     }
     // The group that was said with a form (AddComputerDialog), as the
     // server takes it. "@<card key>" is a card that has no group yet (one
@@ -274,6 +278,7 @@ Rectangle {
         }
         dashboardRoot.activeConfigHost = card.isSource ? { id: key, name: card.name, isSource: true } : card;
         settingsModal.hostName = card.name;
+        settingsModal.hostAddress = Cards.methodAddress(card.isSource ? { source: card } : { host: card });
         // A source card is that computer and no other; its displays are its own.
         settingsModal.sourceOnly = !!card.isSource;
         settingsModal.sourceDisplays = dashboardRoot.seenSourceDisplays[card.isSource ? card.host_id : card.id] || ({});
@@ -1082,6 +1087,8 @@ Rectangle {
                         // through a Lunaris computer: online when that is).
                         readonly property var item: dashboardRoot.methodItem(method)
                         readonly property bool isSource: !!method.source
+                        // Where it is (its IP addresses, or a source's host): "" when not known.
+                        readonly property string address: Cards.methodAddress(method)
                         readonly property string status: isSource ? (item.online ? "Online" : "Offline") : item.status
                         function connect() { dashboardRoot.connectMethod(cardData, method); }
                         // Which of the card's buttons it has (the grid's card and the list's row alike).
@@ -1202,15 +1209,20 @@ Rectangle {
                                     anchors.bottomMargin: 10
                                     spacing: 6
 
+                                    // (A source chosen on a card with several ways
+                                    // says its address beside "via" below.)
                                     Row {
-                                        visible: !hostDelegate.isSource
+                                        visible: !hostDelegate.isSource || (hostDelegate.address !== "" && !hostDelegate.multi)
                                         width: parent.width
                                         Text { text: I18n.t("IP Address"); font.pixelSize: 11; color: Theme.textSubtle; width: 80 }
                                         Text {
+                                            objectName: "cardAddress"
+                                            width: parent.width - 80
                                             textFormat: Text.PlainText
-                                            text: hostDelegate.item.address ? String(hostDelegate.item.address).replace(/:8091$/, "")
-                                                : (hostDelegate.item.ip_address || I18n.t("Connected via Agent"))
+                                            text: hostDelegate.address !== "" ? hostDelegate.address
+                                                : (hostDelegate.isSource ? "" : I18n.t("Connected via Agent"))
                                             font.pixelSize: 11; font.bold: true; font.family: "monospace"; color: Theme.text
+                                            elide: Text.ElideRight
                                         }
                                     }
 
@@ -1222,7 +1234,8 @@ Rectangle {
                                         Text {
                                             width: parent.width
                                             textFormat: Text.PlainText
-                                            text: hostDelegate.isSource ? I18n.t("via %1").arg(hostDelegate.item.host_name) : ""
+                                            text: hostDelegate.isSource ? I18n.t("via %1").arg(hostDelegate.item.host_name)
+                                                + (hostDelegate.address !== "" ? "  ·  " + hostDelegate.address : "") : ""
                                             font.pixelSize: 11
                                             color: Theme.textSubtle
                                             elide: Text.ElideRight
@@ -1507,11 +1520,12 @@ Rectangle {
                                             Text {
                                                 width: parent.width - 13
                                                 textFormat: Text.PlainText
+                                                objectName: "rowDetail"
                                                 text: I18n.t(hostDelegate.status) + "  ·  " + (hostDelegate.isSource
                                                     ? I18n.t("via %1").arg(hostDelegate.item.host_name)
+                                                      + (hostDelegate.address !== "" ? "  ·  " + hostDelegate.address : "")
                                                     : (hostDelegate.item.link_error ? I18n.t(hostDelegate.item.link_error)
-                                                       : (hostDelegate.item.address ? String(hostDelegate.item.address).replace(/:8091$/, "")
-                                                          : (hostDelegate.item.ip_address || I18n.t("Connected via Agent")))))
+                                                       : (hostDelegate.address || I18n.t("Connected via Agent"))))
                                                 font.pixelSize: 12
                                                 color: !hostDelegate.isSource && hostDelegate.item.link_error ? Theme.danger : Theme.textMuted
                                                 elide: Text.ElideRight

@@ -44,6 +44,16 @@ export type ViewerSettings = {
 
 type Props = {
   hostName?: string;
+  /** Where the computer is (its IP addresses, or a source's host:port),
+   *  shown beside its name in the header like the app's; '' when not known. */
+  hostAddress?: string;
+  /** The computer is reached through another one (a source): its picture
+   *  arrives as that computer encoded it, so there is no encoder to choose,
+   *  and its displays are its own (listed once a session has started). */
+  sourceOnly?: boolean;
+  /** What is known about the computer (name, status, addresses), shown
+   *  read-only first under "Remote computer". */
+  hostInfo?: { label: string; value: string }[];
   values: StreamSettingsValues;
   onChange: <K extends keyof StreamSettingsValues>(key: K, value: StreamSettingsValues[K]) => void;
   onCancel: () => void;
@@ -98,6 +108,14 @@ const Switch = ({ checked, disabled, onChange, label }: { checked: boolean; disa
   </label>
 );
 
+const readShowStats = (): boolean => {
+  try {
+    const stored = localStorage.getItem('lunaris_show_stats');
+    if (stored !== null) return stored !== 'false';
+  } catch { /* storage unavailable */ }
+  return !(window.matchMedia?.('(pointer: coarse)').matches && Math.min(window.innerWidth, window.innerHeight) < 600);
+};
+
 /** Display and sound kept in this browser when no session applies them. */
 const useStoredViewer = (): ViewerSettings => {
   const [displayMode, setMode] = useState<DisplayMode>(readDisplayMode);
@@ -105,7 +123,12 @@ const useStoredViewer = (): ViewerSettings => {
   const [volume, setVol] = useState<number>(readVolume);
   const [clipboardSync, setClip] = useState<boolean>(readClipboardSync);
   const [fileTransfer, setFiles] = useState<boolean>(readFileTransfer);
+  // The statistics overlay as the next session starts it (StreamPlayer reads
+  // the same key; on by default except on phones).
+  const [showStats, setStats] = useState<boolean>(readShowStats);
   return {
+    showStats,
+    setShowStats: (v) => { setStats(v); localStorage.setItem('lunaris_show_stats', String(v)); },
     clipboardSync,
     setClipboardSync: (v) => { setClip(v); localStorage.setItem('lunaris_clipboard_sync', String(v)); },
     fileTransfer,
@@ -125,7 +148,7 @@ const useStoredViewer = (): ViewerSettings => {
  * same layout and choices.
  */
 export default function StreamSettingsDialog({
-  hostName, values, onChange, onCancel, onSave, saveLabel, footerNote, displays, unsupportedCodecs = [],
+  hostName, hostAddress, sourceOnly, hostInfo, values, onChange, onCancel, onSave, saveLabel, footerNote, displays, unsupportedCodecs = [],
   codecLabels = {}, encoders = [], showNativeClient, viewer: viewerProp,
 }: Props) {
   const [category, setCategory] = useState<Category>('video');
@@ -139,6 +162,9 @@ export default function StreamSettingsDialog({
   const canvasSupported = typeof (window as any).MediaStreamTrackProcessor !== 'undefined';
   const webTransportSupported = typeof (window as any).WebTransport !== 'undefined';
   const [gamepadOn, setGamepadOn] = useState<boolean>(readGamepadEnabled);
+  // The app's "System shortcuts" has a third choice, "While the pointer is
+  // over the picture": a browser gives a page those keys (Keyboard Lock) in
+  // full screen only, so here it is "In full screen only" or "Never".
   const [systemKeysOn, setSystemKeysOn] = useState<boolean>(readSystemKeys);
   const keyboardLockSupported = typeof navigator !== 'undefined' && !!(navigator as any).keyboard?.lock;
 
@@ -158,7 +184,14 @@ export default function StreamSettingsDialog({
             <span className="ssd-crumb">{t('Stream settings')}</span>
             <span className="ssd-crumb-sep" aria-hidden="true">›</span>
             <span className="ssd-crumb-current">{t(current.label)}</span>
-            {hostName && <span className="ssd-host">{hostName}</span>}
+            {hostName && (
+              <span className="ssd-host">
+                <span className="ssd-host-name" title={hostName}>{hostName}</span>
+                {hostAddress && (
+                  <span className="ssd-host-address" title={`${t('IP Address')}: ${hostAddress}`}>{hostAddress}</span>
+                )}
+              </span>
+            )}
           </div>
           <button type="button" className="ssd-close" onClick={onCancel} aria-label={t('Close')} title={t('Close')}>
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M6 6l12 12M18 6L6 18" /></svg>
@@ -230,7 +263,7 @@ export default function StreamSettingsDialog({
               <>
                 <h3 className="ssd-section">{t('Picture on screen')}</h3>
                 <div className="ssd-card">
-                  <Row title={t('Display mode')} hint={t('How the remote screen fits this window. Applies right away.')}>
+                  <Row title={t('Display mode')} hint={t('How the remote screen fits this window. Applies right away to every computer.')}>
                     <select value={viewer.displayMode} onChange={(e) => viewer.setDisplayMode(e.target.value as DisplayMode)}>
                       {DISPLAY_MODES.map(m => <option key={m.value} value={m.value}>{t(m.label)}</option>)}
                     </select>
@@ -282,7 +315,7 @@ export default function StreamSettingsDialog({
               <>
                 <h3 className="ssd-section">{t('Clipboard')}</h3>
                 <div className="ssd-card">
-                  <Row title={t('Sync clipboard')} hint={t('Text you copy here can be pasted on the remote computer, and the other way round. In the browser, paste with Ctrl+V in the stream; on http pages copied remote text arrives with your next key press or click.')}>
+                  <Row title={t('Sync clipboard')} hint={t('Text you copy here can be pasted on the remote computer, and the other way round. The remote computer can turn this off for itself.') + ' ' + t('In the browser, paste with Ctrl+V in the stream; on http pages copied remote text arrives with your next key press or click.')}>
                     <Switch label={t('Sync clipboard')} checked={viewer.clipboardSync} onChange={viewer.setClipboardSync} />
                   </Row>
                 </div>
@@ -297,8 +330,21 @@ export default function StreamSettingsDialog({
 
             {category === 'host' && (
               <>
-                <h3 className="ssd-section">{t('Encoding')}</h3>
-                <div className="ssd-card">
+                {hostInfo && hostInfo.length > 0 && (
+                  <>
+                    <h3 className="ssd-section">{t('This computer')}</h3>
+                    <dl className="ssd-card ssd-info">
+                      {hostInfo.map(item => (
+                        <div className="ssd-info-row" key={item.label}>
+                          <dt>{item.label}</dt>
+                          <dd>{item.value}</dd>
+                        </div>
+                      ))}
+                    </dl>
+                  </>
+                )}
+                {!sourceOnly && <h3 className="ssd-section">{t('Encoding')}</h3>}
+                {!sourceOnly && <div className="ssd-card">
                   <Row title={t('Encoder')} hint={t("Auto picks the remote computer's hardware encoder (NVENC, VAAPI, QSV, AMF) and falls back to the CPU.")}>
                     <select value={values.encoder} onChange={(e) => onChange('encoder', e.target.value)}>
                       <option value="auto">{t('Auto (recommended)')}</option>
@@ -314,11 +360,11 @@ export default function StreamSettingsDialog({
                         .map(e => <option key={e} value={e}>{e}</option>)}
                     </select>
                   </Row>
-                </div>
+                </div>}
 
                 <h3 className="ssd-section">{t('Screen')}</h3>
                 <div className="ssd-card">
-                  <Row title={t('Monitor')} hint={t('Which screen of the remote computer to show.')}>
+                  <Row title={t('Display')} hint={t('Which screen of the remote computer to show.')}>
                     <select value={values.display} onChange={(e) => onChange('display', e.target.value)}>
                       <option value="default">{t('Default')}</option>
                       {(displays || []).map(d => <option key={d.id} value={d.id}>{d.label}</option>)}
@@ -343,8 +389,15 @@ export default function StreamSettingsDialog({
                       {MOUSE_QUEUES.map(q => <option key={q} value={q}>{mouseQueueLabel(q)}{q === 256 ? ' ' + t('(recommended)') : ''}</option>)}
                     </select>
                   </Row>
-                  <Row title={t('System shortcuts in full screen')} hint={t('In full screen, send the key combinations the browser and this computer keep for themselves (Alt+Tab, the Windows key, Ctrl+W and others) to the remote computer. Hold Esc to leave full screen. Works in Chrome and Edge; other browsers do not allow it. Applies right away.') + (keyboardLockSupported ? '' : ' ' + t('(not supported by this browser)'))}>
-                    <Switch label={t('System shortcuts in full screen')} checked={systemKeysOn} onChange={(v) => { setSystemKeysOn(v); localStorage.setItem('lunaris_system_keys', String(v)); }} />
+                  <Row title={t('System shortcuts')} hint={t('In full screen, send the key combinations the browser and this computer keep for themselves (Alt+Tab, the Windows key, Ctrl+W and others) to the remote computer. Hold Esc to leave full screen. Works in Chrome and Edge; other browsers do not allow it. Applies right away.') + (keyboardLockSupported ? '' : ' ' + t('(not supported by this browser)'))}>
+                    <select
+                      value={systemKeysOn ? 'fullscreen' : 'off'}
+                      aria-label={t('System shortcuts')}
+                      onChange={(e) => { const on = e.target.value === 'fullscreen'; setSystemKeysOn(on); localStorage.setItem('lunaris_system_keys', String(on)); }}
+                    >
+                      <option value="fullscreen">{t('In full screen only')}</option>
+                      <option value="off">{t('Never')}</option>
+                    </select>
                   </Row>
                 </div>
               </>

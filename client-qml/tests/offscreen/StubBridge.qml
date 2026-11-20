@@ -109,11 +109,11 @@ QtObject {
     property var ownSources: firstOwnSources
     readonly property var firstHosts: [
         { id: "0F3A9C2E-77B1-4C1D-9A55-1B2C3D4E5F60", name: "Office PC", status: "Online", address: "192.168.1.20:8091" },
-        { id: "5D21B7AA-0C4E-4F7B-8E11-99A0B1C2D3E4", name: "Lab PC", status: "Offline", ip_address: "10.0.0.7" }
+        { id: "5D21B7AA-0C4E-4F7B-8E11-99A0B1C2D3E4", name: "Lab PC", status: "Offline", ip_address: "10.0.0.7", addresses: ["192.168.1.40", "100.64.0.40"] }
     ]
     property var hosts: firstHosts
     readonly property var firstServerSources: [
-        { host_id: "0F3A9C2E-77B1-4C1D-9A55-1B2C3D4E5F60", host_name: "Office PC", id: "lab-server-9f31", name: "Lab server", connector: "rustdesk", connector_name: "RustDesk (by IP address)", online: true, capabilities: { files: true } },
+        { host_id: "0F3A9C2E-77B1-4C1D-9A55-1B2C3D4E5F60", host_name: "Office PC", id: "lab-server-9f31", name: "Lab server", connector: "rustdesk", connector_name: "RustDesk (by IP address)", online: true, capabilities: { files: true }, address: "192.168.1.30" },
         { host_id: "5D21B7AA-0C4E-4F7B-8E11-99A0B1C2D3E4", host_name: "Lab PC", id: "press-7c02", name: "Press room", connector: "acme-view", connector_name: "Acme Viewer", online: false }
     ]
     property var serverSources: firstServerSources

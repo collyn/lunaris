@@ -257,10 +257,13 @@ test('which fields of a form share a row', () => {
 // ---- Search and the type filter (the same cases as tst_computers.qml's test_find) ----
 
 const findCards = () => buildCards(
-  [{ ...host('h1', 'Máy văn phòng'), address: '192.168.1.20:8091' } as CardHost, host('h2', 'Lab PC', 'Offline')],
+  [
+    { ...host('h1', 'Máy văn phòng'), address: '192.168.1.20:8091' } as CardHost,
+    { ...host('h2', 'Lab PC', 'Offline'), addresses: ['10.8.0.7', '192.168.50.11'] } as CardHost,
+  ],
   [
     source('rd-1', 'Đức laptop', 'rustdesk', { group: 'host:h1' }),
-    source('sun-1', 'Den PC', 'sunshine', { host_name: 'Gateway' }),
+    { ...source('sun-1', 'Den PC', 'sunshine', { host_name: 'Gateway' }), address: '192.168.1.5:47989' } as CardSource,
     source('vnc-1', 'Kiosk', 'vnc', { connector_name: 'VNC (screen sharing)' }),
     source('odd-1', 'Press room', 'acme-view', { connector_name: 'Acme Viewer' }),
   ],
@@ -279,6 +282,10 @@ test('search finds by name, address and source names, accents aside', () => {
   assert.deepEqual(titles('duc'), ['Máy văn phòng'], 'a source on the card is found');
   assert.deepEqual(titles('192.168.1.20'), ['Máy văn phòng']);
   assert.deepEqual(titles('gateway'), ['Den PC'], 'the computer a source is reached through');
+  assert.deepEqual(titles('10.8.0.7'), ['Lab PC'], "a Lunaris computer's own addresses, each");
+  assert.deepEqual(titles('192.168.50.11'), ['Lab PC']);
+  assert.deepEqual(titles('192.168.1.5:47989'), ['Den PC'], "a source's address");
+  assert.deepEqual(titles('192.168.1'), ['Máy văn phòng', 'Den PC']);
   assert.deepEqual(titles('kiosk vnc'), ['Kiosk'], 'every word must be found');
   assert.deepEqual(titles('kiosk rustdesk'), []);
   assert.deepEqual(titles('   ').length, 5, 'an empty query finds all');

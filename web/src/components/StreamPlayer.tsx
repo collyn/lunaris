@@ -149,6 +149,9 @@ type CodecChoice = CodecName | 'auto';
 interface StreamPlayerProps {
   hostId: string;
   hostName: string;
+  /** Where the computer is (its IP addresses, or a source's host:port),
+   *  shown beside its name in the settings header. */
+  hostAddress?: string;
   token: string;
   serverCodecModeSupport?: number;
   onBack: () => void;
@@ -200,6 +203,7 @@ const isTextEntryElement = (el: Element | null): boolean => {
 export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   hostId,
   hostName,
+  hostAddress,
   token,
   serverCodecModeSupport,
   onBack,
@@ -1016,7 +1020,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   }, [useNativeClient]);
 
   // The browser's Keyboard Lock (Chromium), decided in one place: every key
-  // in full screen when "System shortcuts in full screen" is on, Esc alone
+  // in full screen when "System shortcuts" is "In full screen only", Esc alone
   // otherwise while in full screen or pointer lock (keyboard.ts).
   const syncKeyboardLock = () => {
     const pointerLocked = !!videoRef.current && document.pointerLockElement === videoRef.current;
@@ -1720,7 +1724,8 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
         const msg = JSON.parse(event.data);
         if (msg.data?.type === 'CapabilitiesResponse' && msg.data?.payload) {
           const payload = msg.data.payload;
-          if (payload.displays) setAvailableDisplays(payload.displays);
+          // A source's displays are its own (sent in its session), not the host's.
+          if (payload.displays && !sourceId) setAvailableDisplays(payload.displays);
           if (payload.encoders) setAvailableEncoders(payload.encoders);
           if (payload.gpu_info) setAgentGpuInfo(payload.gpu_info);
         }
@@ -1805,7 +1810,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     for (const [vk, isDown] of pressedKeysRef.current.releaseAll()) sendRawKeyEvent(vk, isDown, 0);
   };
 
-  // "System shortcuts in full screen" may have been changed in the settings.
+  // "System shortcuts" may have been changed in the settings.
   useEffect(() => {
     if (!showSettingsModal) syncKeyboardLock();
   }, [showSettingsModal]);
@@ -4139,6 +4144,8 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
         {showSettingsModal && (
           <StreamSettingsDialog
             hostName={hostName}
+            hostAddress={hostAddress}
+            sourceOnly={!!sourceId}
             values={draftSettingsValues}
             onChange={setDraftSettingValue}
             onCancel={cancelDraftSettings}
@@ -4311,6 +4318,8 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       {showSettingsModal && (
         <StreamSettingsDialog
           hostName={hostName}
+          hostAddress={hostAddress}
+          sourceOnly={!!sourceId}
           values={draftSettingsValues}
           onChange={setDraftSettingValue}
           onCancel={cancelDraftSettings}

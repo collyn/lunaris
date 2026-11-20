@@ -292,6 +292,29 @@ Item {
             var dashboard = home.dashboard;
             tryCompare(dashboard, "isAdmin", true);
             compare(dashboard.cards.length, 4);
+            // Each card says where its computer is
+            var addressOf = function (key) {
+                var grid = findChild(dashboard, "serverGrid");
+                var items = grid.contentItem.children;
+                for (var i = 0; i < items.length; i++)
+                    if (items[i].cardData && items[i].cardData.key === key) {
+                        var label = findChild(items[i], "cardAddress");
+                        return label && label.parent.visible ? label.text : "";
+                    }
+                return null;
+            };
+            compare(addressOf("host:" + bridge.hosts[0].id), "192.168.1.20");
+            compare(addressOf("host:" + bridge.hosts[1].id), "192.168.1.40, 100.64.0.40");
+            compare(addressOf("source:" + bridge.hosts[0].id + ":lab-server-9f31"), "192.168.1.30");
+            compare(addressOf("source:" + bridge.hosts[1].id + ":press-7c02"), "", "nothing when it is not known");
+            dashboard.searchText = "100.64";
+            compare(dashboard.shownCards.map(function (c) { return c.title; }), ["Lab PC"]);
+            dashboard.searchText = "";
+            // Its stream settings say it too
+            dashboard.openStreamSettings(bridge.hosts[1]);
+            compare(dashboard.settingsModal.hostAddress, "192.168.1.40, 100.64.0.40");
+            verify(findChild(dashboard.settingsModal, "hostAddress").visible);
+            dashboard.settingsModal.close();
             shot("server-list");
 
             // A source card connects as a session to the computer it is reached through
@@ -363,6 +386,49 @@ Item {
             compare(changed.values.host, "192.168.1.77");
             verify(changed.values.password === undefined);
             verify(changed.values.port === undefined);
+
+            // Edit on a server that sends the stored values (to administrators):
+            // they are filled in and sent back as they are; the password stays empty
+            // and, left so, is kept.
+            dashboard.editSource(Object.assign({}, dashboard.sourcesList[0], { values: { host: "192.168.1.30", port: "21119" } }));
+            wait(50);
+            verify(serverDialog.editValuesKnown);
+            compare(field(serverDialog, "host").text, "192.168.1.30");
+            compare(field(serverDialog, "port").text, "21119");
+            compare(field(serverDialog, "password").text, "");
+            compare(field(serverDialog, "password").placeholder, I18n.t("Leave empty to keep the password"));
+            compare(field(serverDialog, "host").placeholder, "", "a field that is shown has no \"keep it\" hint");
+            shot("server-edit-values");
+            bridge.calls = [];
+            findChild(serverDialog.contentItem, "submitButton").clicked();
+            wait(250);
+            compare(bridge.calls[0].method, "PUT");
+            var kept = JSON.parse(bridge.calls[0].body);
+            compare(kept.values.host, "192.168.1.30");
+            compare(kept.values.port, "21119");
+            verify(kept.values.password === undefined);
+            // An optional field that had a value and is emptied is sent empty (cleared).
+            dashboard.editSource(Object.assign({}, dashboard.sourcesList[0], { values: { host: "192.168.1.30", port: "21119" } }));
+            wait(50);
+            verify(findChild(serverDialog.contentItem, "passwordsNote").visible);
+            field(serverDialog, "port").text = "";
+            bridge.calls = [];
+            findChild(serverDialog.contentItem, "submitButton").clicked();
+            wait(250);
+            var cleared = JSON.parse(bridge.calls[0].body);
+            compare(cleared.values.port, "");
+            compare(cleared.values.host, "192.168.1.30");
+            verify(cleared.values.password === undefined, "an empty password is still left out");
+            // A required field that is shown may not be emptied.
+            dashboard.editSource(Object.assign({}, dashboard.sourcesList[0], { values: { host: "192.168.1.30" } }));
+            wait(50);
+            field(serverDialog, "host").text = "";
+            bridge.calls = [];
+            findChild(serverDialog.contentItem, "submitButton").clicked();
+            wait(100);
+            compare(bridge.calls.length, 0);
+            verify(serverDialog.error !== "");
+            closeAll(serverDialog);
 
             // Remove asks first
             var removeDialog = findChild(dashboard, "removeSourceDialog");
@@ -703,6 +769,19 @@ Item {
             compare(titles("kiosk vnc"), ["Kiosk"], "every word must be found");
             compare(titles("kiosk rustdesk"), []);
             compare(titles("   ").length, 5);
+            // A Lunaris computer's own addresses and a source's address are searched too
+            var addressed = Cards.buildCards(
+                [{ id: "h1", name: "Desk", status: "Online", addresses: ["192.168.7.10", "100.64.0.10"] }],
+                [{ host_id: "h1", host_name: "Desk", id: "rd", name: "Den", connector: "rustdesk", connector_name: "RustDesk", online: true, address: "192.168.7.99:21118" }]);
+            compare(Cards.filterCards(addressed, "100.64").map(function (c) { return c.title; }), ["Desk"]);
+            compare(Cards.filterCards(addressed, "7.99").map(function (c) { return c.title; }), ["Den"]);
+            // The address shown on a card for the way it connects with
+            compare(Cards.methodAddress(addressed[0].methods[0]), "192.168.7.10, 100.64.0.10");
+            compare(Cards.methodAddress(addressed[1].methods[0]), "192.168.7.99:21118");
+            compare(Cards.methodAddress(cards[0].methods[0]), "192.168.1.20", "added by address: that address, without the usual port");
+            compare(Cards.methodAddress({ host: { id: "x", addresses: [] } }), "");
+            compare(Cards.methodAddress(cards[1].methods[0]), "", "a source whose address is not known");
+            compare(Cards.methodAddress(undefined), "");
             // Types: known ones first, unknown ones kept
             compare(Cards.typesOf(cards).map(function (t) { return t.id; }), ["lunaris", "rustdesk", "sunshine", "acme-view", "vnc"]);
             compare(Cards.typesOf(cards).map(function (t) { return t.name; }), ["Lunaris", "RustDesk", "Sunshine", "Acme Viewer", "VNC"]);

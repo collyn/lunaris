@@ -108,6 +108,7 @@ QtObject {
         "Choose the Lunaris computer it is reached through": "Hãy chọn máy Lunaris dùng để kết nối tới nó",
         "Leave empty to keep the password": "Để trống để giữ mật khẩu cũ",
         "Leave empty to keep it": "Để trống để giữ nguyên",
+        "Passwords are not shown: leave one empty to keep it.": "Mật khẩu không được hiển thị: để trống để giữ mật khẩu đã lưu.",
         "Leave a field empty to keep it. The server never shows what is stored.": "Để trống ô nào thì giữ nguyên ô đó. Server không bao giờ hiển thị giá trị đã lưu.",
         "Its other fields can be changed when the Lunaris computer it is reached through is online.": "Các ô khác chỉ sửa được khi máy Lunaris dùng để kết nối tới nó đang trực tuyến.",
         "This type is not installed any more: only the name can be changed.": "Loại này không còn được cài nữa: chỉ đổi được tên.",

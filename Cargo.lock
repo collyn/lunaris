@@ -76,7 +76,7 @@ dependencies = [
 
 [[package]]
 name = "agent"
-version = "0.6.5"
+version = "0.6.6"
 dependencies = [
  "aes 0.9.4",
  "aes-gcm",
@@ -153,7 +153,7 @@ dependencies = [
 
 [[package]]
 name = "agent-app"
-version = "0.6.5"
+version = "0.6.6"
 dependencies = [
  "agent",
  "cxx",
@@ -957,7 +957,7 @@ checksum = "1c133bc6a41be0d194c306b5506d15e6feeea7b1d6604bd3f8310dfb2ca96486"
 
 [[package]]
 name = "client-desktop"
-version = "0.6.5"
+version = "0.6.6"
 dependencies = [
  "agent",
  "client-qml",
@@ -968,7 +968,7 @@ dependencies = [
 
 [[package]]
 name = "client-qml"
-version = "0.6.5"
+version = "0.6.6"
 dependencies = [
  "agent",
  "anyhow",
@@ -1066,7 +1066,7 @@ dependencies = [
 
 [[package]]
 name = "common"
-version = "0.6.5"
+version = "0.6.6"
 dependencies = [
  "base64 0.23.1",
  "serde",
@@ -6081,7 +6081,7 @@ dependencies = [
 
 [[package]]
 name = "server"
-version = "0.6.5"
+version = "0.6.6"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7327,7 +7327,7 @@ checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
 
 [[package]]
 name = "updater"
-version = "0.6.5"
+version = "0.6.6"
 dependencies = [
  "base64 0.23.1",
  "libc",

@@ -84,7 +84,7 @@ export class PressedKeys {
 export const tapsUnderMeta = (isMac: boolean, metaHeld: boolean, code: string): boolean =>
   isMac && metaHeld && code !== 'MetaLeft' && code !== 'MetaRight';
 
-/** "System shortcuts in full screen" (Settings, Input): on unless turned off. */
+/** "System shortcuts" (Settings, Input): "In full screen only" unless set to "Never". */
 export const readSystemKeys = (): boolean => localStorage.getItem('lunaris_system_keys') !== 'false';
 
 /** What to ask of the browser's Keyboard Lock (Chromium; `navigator.keyboard`):

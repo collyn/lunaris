@@ -32,6 +32,11 @@ pub struct HostInfo {
     pub ip_address: Option<String>,
     pub server_codec_mode_support: Option<u32>,
     pub agent_connected: bool,
+    /// The computer's own IPv4 addresses (LAN, VPN), as its agent last said
+    /// them; kept while it is away. Left out when not known (agents from
+    /// before this, computers added by address).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub addresses: Vec<String>,
     /// Added by address: the server connects to the computer itself
     /// ("host:port"), instead of the computer connecting to the server.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -236,6 +241,13 @@ pub struct SourceInfoMsg {
     /// while its agent is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub online: Option<bool>,
+    /// The fields of its form that are not secrets ("host", "port", "app",
+    /// ...), as stored there: shown on its card and in an edit form. A
+    /// password, and anything a set-up stored, is never among them. Left out
+    /// by agents from before this, and where they are not to be told (a
+    /// viewer's list of sources).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub values: Option<std::collections::BTreeMap<String, String>>,
 }
 
 /// The longest group of a source, in characters.
@@ -580,6 +592,10 @@ pub enum AgentMessage {
         /// computer that asks at its screen before each connection).
         #[serde(default)]
         manageable: bool,
+        /// This computer's own IPv4 addresses (LAN, VPN), to show beside
+        /// its name. Left out by agents from before this.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        addresses: Vec<String>,
     },
     /// The answer to `ServerToAgentMessage::ChangeSource`.
     SourceChanged {

@@ -874,6 +874,7 @@ async fn connect_server_once(
     let server_tx_for_sources = server_tx.clone();
     // Again when a set-up (a pairing) has added one, whoever still asks about it.
     let _announcing = crate::connector::sources::announce_changes(server_tx.clone(), manageable);
+    crate::direct::refresh_local_addresses().await;
     let _ = server_tx.send(crate::connector::sources::announcement(manageable));
     let gate = ServerGate::new(config.server_sessions.trim() == "ask", server_tx, inbound_tx.clone());
 
@@ -1807,7 +1808,7 @@ async fn run_session_logic(
                         // (Not their groups: a viewer picks one by its name.)
                         sources: crate::connector::configured_sources()
                             .into_iter()
-                            .map(|s| common::SourceInfoMsg { id: s.id, name: s.name, connector: s.target.connector, group: None, online: None })
+                            .map(|s| common::SourceInfoMsg { id: s.id, name: s.name, connector: s.target.connector, group: None, online: None, values: None })
                             .collect(),
                     },
                 );

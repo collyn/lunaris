@@ -668,6 +668,16 @@ body {
   font-family: monospace;
 }
 
+/* An address (or a few) on a card: one line, cut short with its whole text in the tool tip. */
+.host-meta-item .meta-label { flex-shrink: 0; white-space: nowrap; }
+.meta-address {
+  min-width: 0;
+  margin-left: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .host-status-badge {
   display: flex;
   align-items: center;
@@ -3627,9 +3637,17 @@ button, input, select, textarea { font-family: inherit; }
 .ssd-crumb-sep { color: var(--text-subtle); }
 .ssd-crumb-current { color: var(--text-strong); white-space: nowrap; }
 .ssd-host {
+  display: inline-flex; align-items: baseline; gap: 6px; min-width: 0;
   font-size: 0.75rem; font-weight: 500; color: var(--text-muted);
   padding: 2px 10px; border: 1px solid var(--border); border-radius: 999px;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  background: var(--surface-2, transparent);
+}
+.ssd-host-name, .ssd-host-address { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ssd-host-name { flex: 0 1 auto; }
+/* Read only: where the computer is, cut short with the whole text in the tool tip (as in the app). */
+.ssd-host-address {
+  flex: 0 1 auto; max-width: 260px;
+  font-family: monospace; font-size: 0.7rem; font-weight: 400; color: var(--text-subtle);
 }
 .ssd-close {
   display: inline-flex; align-items: center; justify-content: center;
@@ -3670,6 +3688,15 @@ button, input, select, textarea { font-family: inherit; }
 .ssd-row-title { font-size: 0.95rem; font-weight: 500; color: var(--text-strong); }
 .ssd-row-hint { margin-top: 4px; font-size: 0.82rem; line-height: 1.45; color: var(--text-muted); }
 .ssd-row-control { flex: 0 0 auto; width: min(260px, 42%); display: flex; justify-content: flex-end; }
+/* What is known about the computer: read-only rows, label and value. */
+.ssd-info { margin: 0; }
+.ssd-info-row {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 16px;
+  margin: 0 20px; padding: 12px 0;
+}
+.ssd-info-row + .ssd-info-row { border-top: 1px solid var(--border); }
+.ssd-info-row dt { flex: 0 0 auto; font-size: 0.9rem; color: var(--text-muted); }
+.ssd-info-row dd { margin: 0; min-width: 0; font-size: 0.9rem; font-weight: 500; color: var(--text-strong); text-align: right; overflow-wrap: anywhere; }
 .ssd-row-control select {
   width: 100%; height: 40px; padding: 0 12px; font-size: 0.9rem;
   color: var(--text-strong); background: var(--bg);
@@ -4030,7 +4057,11 @@ select option:disabled { color: var(--text-subtle); }
 @media (max-width: 640px) {
   .ssd-header { padding: 10px 12px 10px 16px; padding-top: max(10px, env(safe-area-inset-top)); }
   .ssd-breadcrumb { font-size: 1rem; }
-  .ssd-crumb, .ssd-crumb-sep, .ssd-host { display: none; }
+  .ssd-crumb, .ssd-crumb-sep { display: none; }
+  .ssd-breadcrumb { overflow: hidden; }
+  .ssd-crumb-current { flex-shrink: 0; }
+  .ssd-host { flex: 0 1 auto; }
+  .ssd-host-address { max-width: 120px; }
   .ssd-close { width: 40px; height: 40px; }
   .ssd-nav { gap: 6px; padding: 8px 12px; scrollbar-width: none; }
   .ssd-nav::-webkit-scrollbar { display: none; }
@@ -4600,6 +4631,7 @@ select option:disabled { color: var(--text-subtle); }
 }
 .hosts-card-list .host-meta-item { gap: 6px; font-size: 0.8rem; min-width: 0; }
 .hosts-card-list .meta-label { display: none; }
+.hosts-card-list .meta-address { margin-left: 0; }
 .hosts-card-list .meta-value { font-weight: 500; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* The status first, as on the app's rows. */
 .hosts-card-list .host-meta-item:last-child { order: -1; }

@@ -164,6 +164,13 @@ pub async fn init_db(
             .execute(&pool)
             .await?;
     }
+    // The fields of its form that are not secrets (JSON object), as its
+    // agent announced them: for its card and an edit form.
+    if !source_columns.iter().any(|c| c == "source_values") {
+        sqlx::query("ALTER TABLE host_sources ADD COLUMN source_values TEXT;")
+            .execute(&pool)
+            .await?;
+    }
 
     // Perform migrations for hosts table if columns don't exist
     let columns: Vec<String> = sqlx::query_scalar("SELECT name FROM pragma_table_info('hosts')")
@@ -206,6 +213,12 @@ pub async fn init_db(
     // its key alone, and only while it is in this table with that key.
     if !columns.iter().any(|c| c == "enrolled") {
         sqlx::query("ALTER TABLE hosts ADD COLUMN enrolled INTEGER NOT NULL DEFAULT 0;")
+            .execute(&pool)
+            .await?;
+    }
+    // The computer's own addresses (JSON array), as its agent last said them.
+    if !columns.iter().any(|c| c == "addresses") {
+        sqlx::query("ALTER TABLE hosts ADD COLUMN addresses TEXT;")
             .execute(&pool)
             .await?;
     }

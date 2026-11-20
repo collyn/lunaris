@@ -30,6 +30,9 @@ interface Host {
   link_error?: string;
   /** Added without its password: each connection is accepted there. */
   needs_approval?: boolean;
+  /** Its own IPv4 addresses (LAN, VPN) as its agent last said them, kept
+   *  while it is offline. Not there when not known (an older agent). */
+  addresses?: string[];
 }
 
 /** One field of a connector's form ("kind": text, port, secret, or choice:
@@ -90,6 +93,11 @@ interface Source {
   /** Which computer it is, when that computer is listed in other ways too
    *  (computerCards.ts). Not there when it has none. */
   group?: string;
+  /** Where it is: its host, with the port when one is set ("192.168.1.5:3389"). */
+  address?: string;
+  /** The fields of its form that are not secrets (administrators only), for
+   *  the edit form. Passwords are never sent. */
+  values?: Record<string, string>;
 }
 
 /** A computer's card and one of its ways to connect (computerCards.ts). */
@@ -122,6 +130,11 @@ const ICON_CHEVRON = cardIcon(<polyline points="6 9 12 15 18 9" />, 14);
 
 /** "host:8091" -> "host" (the default port isn't worth showing). */
 const shortAddress = (a: string) => a.replace(/:8091$/, '');
+
+/** Where a Lunaris computer is, for its card: its own IP addresses as its
+ *  agent said them, else the address it was added by; '' when not known. */
+const hostAddressText = (host: Host): string =>
+  (host.addresses || []).filter(Boolean).join(', ') || (host.address ? shortAddress(host.address) : '') || host.ip_address || '';
 
 type HostStreamSettings = {
   resolution: string;
@@ -814,6 +827,15 @@ function App() {
     setDraftHostSettings(loadHostStreamSettings());
   };
 
+  // What the settings dialog shows about its computer, as the list has it now.
+  const settingsHostNow = settingsHost ? hosts.find(h => h.id === settingsHost.id) || settingsHost : null;
+  const settingsHostInfo: { label: string; value: string }[] = settingsHostNow ? [
+    { label: t('Name'), value: settingsHostNow.name },
+    { label: t('Status'), value: t(settingsHostNow.status) },
+    ...((settingsHostNow.addresses || []).length > 0 ? [{ label: t('IP addresses'), value: (settingsHostNow.addresses || []).join(', ') }] : []),
+    ...(settingsHostNow.address ? [{ label: t('Added by address'), value: shortAddress(settingsHostNow.address) }] : []),
+  ] : [];
+
   const applyHostSettings = () => {
     saveHostStreamSettings(draftHostSettings);
     setSettingsHost(null);
@@ -1090,9 +1112,12 @@ function App() {
     setEditSameWas(same);
     setEditSource(source);
     setSourceName(source.name);
-    // The server never sends the fields back: they start empty, and an
-    // empty field keeps what is stored.
-    setSourceValues({});
+    // The fields as stored, except the secrets (the server sends no
+    // password back, and only to administrators the rest): a secret starts
+    // empty, and an empty field keeps what is stored.
+    const stored: Record<string, string> = {};
+    Object.entries(source.values || {}).forEach(([key, value]) => { if (typeof value === 'string') stored[key] = value; });
+    setSourceValues(stored);
     setAddHostOpen(true);
     fetchConnectors();
   };
@@ -1119,8 +1144,11 @@ function App() {
       const raw = sourceValues[field.key] ?? '';
       const value = field.kind === 'secret' ? raw : raw.trim();
       if (!value) {
-        // An empty field of an edit keeps what is stored.
         if (field.required && !editSource) { setAddHostError(t('%1 is required', t(field.label))); return; }
+        // An edit that showed the stored values: an optional field emptied
+        // is sent empty, which clears it. Otherwise (a secret, a required
+        // field, or nothing was shown) an empty field keeps what is stored.
+        if (editSource?.values && field.kind !== 'secret' && !field.required && (editSource.values[field.key] ?? '') !== '') values[field.key] = '';
         continue;
       }
       if (field.kind === 'port') {
@@ -1441,6 +1469,7 @@ function App() {
         key={`source:${selectedSource.host_id}:${selectedSource.id}`}
         hostId={selectedSource.host_id}
         hostName={selectedSource.name}
+        hostAddress={selectedSource.address || ''}
         sourceId={selectedSource.id}
         sourceFiles={sourceHasFiles(selectedSource)}
         token={token}
@@ -1460,6 +1489,7 @@ function App() {
       <StreamPlayer
         hostId={selectedHost.id}
         hostName={selectedHost.name}
+        hostAddress={hostAddressText(hosts.find(h => h.id === selectedHost.id) || selectedHost)}
         token={token}
         serverCodecModeSupport={selectedHost.server_codec_mode_support}
         appId={selectedAppId}
@@ -2199,10 +2229,16 @@ function App() {
                                 )}
 
                                 <div className="host-card-body">
-                                  {host && (
+                                  {host && hostAddressText(host) && (
                                     <div className="host-meta-item">
                                       <span className="meta-label">{t('IP Address')}</span>
-                                      <span className="meta-value">{host.address ? shortAddress(host.address) : (host.ip_address || t('Signaling Tunnel'))}</span>
+                                      <span className="meta-value meta-address" title={hostAddressText(host)}>{hostAddressText(host)}</span>
+                                    </div>
+                                  )}
+                                  {source?.address && (
+                                    <div className="host-meta-item">
+                                      <span className="meta-label">{t('Address')}</span>
+                                      <span className="meta-value meta-address" title={source.address}>{source.address}</span>
                                     </div>
                                   )}
                                   {host?.needs_approval && (
@@ -2525,7 +2561,11 @@ function App() {
               ) : addTo ? (
                 <p>{t('It is shown as one more way to connect to %1.', addTo.title)}</p>
               ) : editSource ? (
-                <p>{t('%1, reached through %2.', t(editSource.connector_name || editSource.connector), editSource.host_name)}</p>
+                <p>
+                  {editSource.address
+                    ? t('%1 at %2, reached through %3.', t(editSource.connector_name || editSource.connector), editSource.address, editSource.host_name)
+                    : t('%1, reached through %2.', t(editSource.connector_name || editSource.connector), editSource.host_name)}
+                </p>
               ) : null}
             </div>
             {sourceSetup && (
@@ -2656,7 +2696,7 @@ function App() {
                       {editSource && (
                         <span className="form-hint span-6">
                           {dialogConnector
-                            ? t('Leave a field empty to keep it.')
+                            ? (editSource.values ? t('Passwords are not shown: leave one empty to keep it.') : t('Leave a field empty to keep it.'))
                             : t('Only the name can be changed while %1 is offline.', editSource.host_name)}
                         </span>
                       )}
@@ -2719,6 +2759,7 @@ function App() {
                               value={sourceValues[field.key] ?? ''}
                               onChange={(e) => setSourceValues((current) => ({ ...current, [field.key]: e.target.value }))}
                               autoComplete={field.kind === 'secret' ? 'new-password' : 'off'}
+                              placeholder={editSource && field.kind === 'secret' ? t('Empty keeps the saved password') : undefined}
                             />
                           </div>
                         );
@@ -2782,6 +2823,8 @@ function App() {
       {settingsHost && (
         <StreamSettingsDialog
           hostName={settingsHost.name}
+          hostAddress={settingsHostNow ? hostAddressText(settingsHostNow) : ''}
+          hostInfo={settingsHostInfo}
           values={draftHostSettings}
           onChange={(key, value) => updateDraftHostSettings(key, value)}
           onCancel={() => setSettingsHost(null)}

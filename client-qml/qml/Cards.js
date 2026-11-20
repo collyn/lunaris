@@ -249,6 +249,21 @@ function cardWithMethod(cards, key) {
     return undefined;
 }
 
+// Where a way to connect is, to show on its card: a Lunaris computer's own
+// addresses (LAN, VPN) as its agent last said them, else the address it was
+// added by (without the usual port); a source's host (and port). "" when
+// that is not known.
+function methodAddress(method) {
+    if (!method) return "";
+    if (method.source) return typeof method.source.address === "string" ? method.source.address : "";
+    var host = method.host || {};
+    var own = host.addresses instanceof Array
+        ? host.addresses.filter(function (a) { return typeof a === "string" && a !== ""; }) : [];
+    if (own.length > 0) return own.join(", ");
+    if (typeof host.address === "string" && host.address !== "") return host.address.replace(/:8091$/, "");
+    return typeof host.ip_address === "string" ? host.ip_address : "";
+}
+
 // ---- Finding a computer: search and the type filter ----
 // (web/src/computerCards.ts has the same functions; change neither alone.)
 
@@ -281,6 +296,9 @@ function cardSearchText(card) {
         var item = m.host || m.source || {};
         parts.push(item.name, item.address, item.ip_address, item.host_name);
         if (m.host && typeof item.address === "string") parts.push(item.address.replace(/:8091$/, ""));
+        // The computer's own addresses (LAN, VPN), and where a source is.
+        if (m.host && m.host.addresses instanceof Array) for (var a = 0; a < m.host.addresses.length; a++) parts.push(m.host.addresses[a]);
+        if (m.source) parts.push(m.source.address);
     }
     return foldText(parts.filter(function (p) { return p !== undefined && p !== null && p !== ""; }).join("\n"));
 }
