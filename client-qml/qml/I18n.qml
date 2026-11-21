@@ -129,7 +129,7 @@ QtObject {
         "That computer did not say whether it worked": "Máy đó không cho biết đã làm được hay chưa",
         "That computer is offline. It can be removed when it is back.": "Máy đó đang ngoại tuyến. Có thể xoá khi nó trực tuyến trở lại.",
         "The Lunaris on that computer is too old for this. Update it first.": "Lunaris trên máy đó quá cũ để làm việc này. Hãy cập nhật trước.",
-        "That computer asks at its screen before each connection, so computers cannot be added to it from here. Add it in the Lunaris app on that computer.": "Máy đó hỏi tại màn hình trước mỗi kết nối nên không thể thêm máy cho nó từ đây. Hãy thêm trong app Lunaris trên máy đó.",
+        "That computer asks at its screen before each connection, so computers cannot be added to it from here. To manage them from the server, run `lunaris-agent set server-sessions trusted` on that computer (sessions through the server are then let in without asking), or connect it with the access password.": "Máy đó hỏi tại màn hình trước mỗi kết nối nên không thể thêm máy cho nó từ đây. Để quản lý từ server, chạy `lunaris-agent set server-sessions trusted` trên máy đó (các phiên qua server sẽ được cho vào mà không hỏi), hoặc kết nối nó bằng mật khẩu truy cập.",
         "The settings could not be saved": "Không lưu được cài đặt",
         // Why a computer of another type could not be shown, or stopped
         // (agent/src/connector, agent/src/lib.rs, own_computers.rs)
@@ -217,6 +217,11 @@ QtObject {
         "Computer: %1": "Máy tính: %1",
         "Clipboard and file transfer stay off in this session.": "Clipboard và truyền file sẽ tắt trong phiên này.",
         "Always trust this server": "Luôn tin cậy máy chủ này",
+        "Connect with another account?": "Kết nối bằng tài khoản khác?",
+        "A link wants to connect this app to %1 as the account %2, but you trust this server for the account %3. Only continue if you opened this link yourself.": "Một liên kết muốn kết nối ứng dụng này tới %1 bằng tài khoản %2, nhưng bạn tin cậy máy chủ này cho tài khoản %3. Chỉ tiếp tục nếu chính bạn đã mở liên kết này.",
+        "Always trust this server for the account %1": "Luôn tin cậy máy chủ này cho tài khoản %1",
+        "Not encrypted: this server is reached over http, so others on the network can see and change the session.": "Không mã hoá: máy chủ này được kết nối qua http, nên người khác trong mạng có thể xem và thay đổi phiên.",
+        "This server is not encrypted: someone on the network could pose as it, and its links would then connect without asking, with clipboard and file transfer.": "Máy chủ này không mã hoá: người khác trong mạng có thể giả mạo nó, và khi đó các liên kết của nó sẽ kết nối mà không hỏi, có clipboard và truyền file.",
         "Links to this server will connect without asking, with clipboard and file transfer.": "Các liên kết tới máy chủ này sẽ kết nối mà không hỏi, có clipboard và truyền file.",
         "Save": "Lưu",
         "Rename %1": "Đổi tên %1",

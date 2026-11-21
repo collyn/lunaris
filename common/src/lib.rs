@@ -513,11 +513,19 @@ pub const WAYLAND_CAPTURE_MODES: [&str; 2] = ["auto", "portal"];
 pub const FILE_ACCESS_CHOICES: [&str; 2] = ["home", "full"];
 /// Ports a setting may use (as the apps take them).
 pub const MIN_SETTINGS_PORT: u16 = 1024;
-/// An access password set by hand: 6 to 128 characters, no control
+/// The fewest characters of an access password set by hand. It is checked
+/// only when a password is set: one saved before (6 characters were enough
+/// then) keeps working.
+pub const MIN_ACCESS_PASSWORD_CHARS: usize = 12;
+pub const MAX_ACCESS_PASSWORD_CHARS: usize = 128;
+
+/// An access password set by hand: 12 to 128 characters, no control
 /// characters, no space at either end.
 pub fn valid_access_password(password: &str) -> bool {
     let count = password.chars().count();
-    (6..=128).contains(&count) && password.trim() == password && !password.chars().any(char::is_control)
+    (MIN_ACCESS_PASSWORD_CHARS..=MAX_ACCESS_PASSWORD_CHARS).contains(&count)
+        && password.trim() == password
+        && !password.chars().any(char::is_control)
 }
 
 /// Why a settings change is not valid (the same rules at the server and the
@@ -937,8 +945,10 @@ mod tests {
         }
         // RustDesk turned off: its port is not in the way.
         assert_eq!(settings_change_error(&AgentSettingsChange { rustdesk_port: Some(8091), rustdesk_enabled: Some(false), ..Default::default() }, 8091), None);
-        assert!(valid_access_password("abc-def"));
-        for bad in ["short", " padded ", "tab\there", &"x".repeat(129)] {
+        assert!(valid_access_password("abcd-efgh-jkm"));
+        assert!(valid_access_password(&"x".repeat(12)) && valid_access_password(&"x".repeat(128)));
+        // What 6 characters used to allow is too short for a new password now.
+        for bad in ["short", "abc-def", &"x".repeat(11), " padded-password ", "tab\there-and-more", &"x".repeat(129)] {
             assert!(!valid_access_password(bad), "{:?}", bad);
         }
     }

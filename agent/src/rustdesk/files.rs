@@ -489,7 +489,7 @@ impl ReadJob {
     fn open(&self, access: &Access) -> Result<std::fs::File, String> {
         let name = &self.files[self.file_num as usize].name;
         let path = files::resolve(access, &join(&self.base, name).to_string_lossy())?;
-        std::fs::File::open(path).map_err(|e| e.to_string())
+        files::open_inside(access, &path, std::fs::OpenOptions::new().read(true))
     }
 
     /// `TransferJob::set_file_skipped`.
@@ -694,8 +694,10 @@ impl WriteJob {
             if target.digest.exists() {
                 std::fs::remove_file(&target.digest).map_err(|e| e.to_string())?;
             }
-            let file = std::fs::File::create(&target.download).map_err(|e| e.to_string())?;
-            let _ = std::fs::write(&target.digest, serde_json::json!({"size": self.digest.0, "modified": self.digest.1}).to_string());
+            let file = files::open_inside(access, &target.download, std::fs::OpenOptions::new().write(true).create(true).truncate(true))?;
+            if let Ok(mut digest) = files::open_inside(access, &target.digest, std::fs::OpenOptions::new().write(true).create(true).truncate(true)) {
+                let _ = digest.write_all(serde_json::json!({"size": self.digest.0, "modified": self.digest.1}).to_string().as_bytes());
+            }
             self.stream = Some((file, target));
         }
         let data = if block.compressed {

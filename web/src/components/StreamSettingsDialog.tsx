@@ -21,7 +21,6 @@ export type StreamSettingsValues = {
   encoder: string;
   display: string;
   useCanvasRenderer: boolean;
-  useNativeClient: boolean;
 };
 
 /** Settings of the viewing device (not of the remote computer), applied right away. */
@@ -73,7 +72,6 @@ type Props = {
    *  own (`ownSettings`: it has some now). */
   onUseDefaults?: () => void;
   ownSettings?: boolean;
-  showNativeClient?: boolean;
   /** This device's display and sound in a session. Without it the dialog
    *  keeps them itself, as this browser's defaults. */
   viewer?: ViewerSettings;
@@ -171,7 +169,7 @@ const useStoredViewer = (): ViewerSettings => {
  */
 export default function StreamSettingsDialog({
   hostName, hostAddress, sourceOnly, hostInfo, values, onChange, onCancel, onSave, saveLabel, footerNote, displays, unsupportedCodecs = [],
-  codecLabels = {}, encoders = [], showNativeClient, viewer: viewerProp, onUseDefaults, ownSettings,
+  codecLabels = {}, encoders = [], viewer: viewerProp, onUseDefaults, ownSettings,
 }: Props) {
   const [category, setCategory] = useState<Category>('video');
   // Ask the remote computer to record its microphone too (sent with the
@@ -272,11 +270,6 @@ export default function StreamSettingsDialog({
                   <Row title={t('Canvas renderer')} hint={t('Draws frames on a canvas as soon as they are decoded. Can lower latency, but uses about twice the CPU. Not available in every browser.') + (canvasSupported ? '' : ' ' + t('(not supported by this browser)'))}>
                     <Switch label={t('Canvas renderer')} checked={values.useCanvasRenderer && canvasSupported} disabled={!canvasSupported} onChange={(v) => onChange('useCanvasRenderer', v)} />
                   </Row>
-                  {showNativeClient && (
-                    <Row title={t('Desktop app')} hint={t('Open sessions in the Lunaris desktop app instead of this browser.')}>
-                      <Switch label={t('Desktop app')} checked={values.useNativeClient} onChange={(v) => onChange('useNativeClient', v)} />
-                    </Row>
-                  )}
                 </div>
               </>
             )}

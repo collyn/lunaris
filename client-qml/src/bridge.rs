@@ -40,6 +40,11 @@ pub struct AppArgs {
     /// The source of the host to show (a computer it reaches through a
     /// connector); None = the host's own screen.
     pub source_id: Option<String>,
+    /// Started from a link the user confirmed without trusting its server
+    /// (or account): clipboard sync and file transfer stay off. Part of the
+    /// session's own settings so that a session never runs with another
+    /// one's flag.
+    pub untrusted: bool,
 }
 
 pub static APP_ARGS: std::sync::OnceLock<AppArgs> = std::sync::OnceLock::new();
@@ -286,6 +291,26 @@ fn get_config_path() -> std::path::PathBuf {
 /// client_config.json.
 pub(crate) fn app_config_file(name: &str) -> std::path::PathBuf {
     get_config_path().with_file_name(name)
+}
+
+/// The server's WebSocket address for `server_url`: only the scheme changes
+/// (http -> ws, https -> wss; ws/wss stay), never a host or path that
+/// happens to contain "http". No trailing slash.
+pub(crate) fn signaling_ws_base(server_url: &str) -> String {
+    let trimmed = server_url.trim();
+    let Ok(mut u) = url::Url::parse(trimmed) else {
+        return trimmed.trim_end_matches('/').to_string();
+    };
+    let scheme = match u.scheme() {
+        "http" => Some("ws"),
+        "https" => Some("wss"),
+        _ => None,
+    };
+    if let Some(scheme) = scheme {
+        // http(s) and ws(s) are all "special" schemes: the change is allowed.
+        let _ = u.set_scheme(scheme);
+    }
+    u.as_str().trim_end_matches('/').to_string()
 }
 
 /// Paths or file:// URLs, one per line.
@@ -1434,7 +1459,14 @@ impl qobject::StreamBridge {
     pub fn pending_link_info(self: Pin<&mut Self>) -> QString {
         match crate::deeplink::pending_info() {
             Some(i) => QString::from(
-                &serde_json::json!({ "server": i.server_host, "computer": i.computer }).to_string(),
+                &serde_json::json!({
+                    "server": i.server_host,
+                    "computer": i.computer,
+                    "encrypted": i.encrypted,
+                    "account": i.account.unwrap_or_default(),
+                    "knownAccount": i.known_account.unwrap_or_default(),
+                })
+                .to_string(),
             ),
             None => QString::from(""),
         }
@@ -1794,6 +1826,19 @@ fn handle_host_cursor_message(data: &[u8]) {
     });
 }
 
+/// The certificate hash WebTransport input is pinned to, or why WebTransport
+/// is not used. Never without a hash: an agent that sends none (older
+/// agents) would need an unchecked certificate, so anyone on the path could
+/// take the input; such a session keeps its input on the WebRTC data
+/// channels.
+fn webtransport_pinned_digest(cert_hash: Option<&str>, token: Option<&str>) -> Result<[u8; 32], &'static str> {
+    match (cert_hash.and_then(parse_sha256_hex), token.is_some()) {
+        (Some(digest), _) => Ok(digest),
+        (None, true) => Err("the agent sent a token but no valid certificate hash"),
+        (None, false) => Err("the agent sent no certificate hash (an older agent), its certificate cannot be checked"),
+    }
+}
+
 /// Splits the client's codec choice into the codec and chroma to request:
 /// "h264_444" -> ("h264", Some("444")), anything else -> (codec, None).
 /// Input over WebTransport (QUIC datagrams): once ICE is connected, connect to
@@ -1841,21 +1886,18 @@ async fn connect_webtransport_input(
         }
     }
 
-    let hash = cert_hash.as_deref().and_then(parse_sha256_hex);
-    let config = match (hash, token.is_some()) {
-        (Some(digest), _) => ClientConfig::builder()
-            .with_bind_default()
-            .with_server_certificate_hashes([wtransport::tls::Sha256Digest::new(digest)])
-            .build(),
-        // An agent that sends a token always sends its certificate hash:
-        // without one the token could go to anyone on the path.
-        (None, true) => {
-            eprintln!("WebTransport: the agent sent a token but no valid certificate hash, input stays on WebRTC");
+    let digest = match webtransport_pinned_digest(cert_hash.as_deref(), token.as_deref()) {
+        Ok(d) => d,
+        Err(why) => {
+            // The input keeps going over the WebRTC data channels.
+            eprintln!("WebTransport: {}, input stays on WebRTC", why);
             return;
         }
-        // Older agents send neither: accept their self-signed certificate.
-        (None, false) => ClientConfig::builder().with_bind_default().with_no_cert_validation().build(),
     };
+    let config = ClientConfig::builder()
+        .with_bind_default()
+        .with_server_certificate_hashes([wtransport::tls::Sha256Digest::new(digest)])
+        .build();
     // Newer agents accept only the session's token as the URL path.
     let path = webtransport_path(token.as_deref());
     let endpoint = match Endpoint::client(config) {
@@ -3437,14 +3479,15 @@ async fn run_webrtc_client_task(
         agent::direct::connect(address, "/ws/client", &token, &crate::session_info::client_name_query()).await?.ws
     } else {
         let encoded_token: String = url::form_urlencoded::byte_serialize(token.as_bytes()).collect();
+        let ws_base = signaling_ws_base(&server_url);
         let ws_url = format!(
             "{}/ws/client?token={}{}",
-            server_url.replace("http", "ws"),
+            ws_base,
             encoded_token,
             crate::session_info::client_name_query()
         );
         // Never log ws_url itself: it carries the session token.
-        println!("Connecting to signaling server at: {}/ws/client", server_url.replace("http", "ws"));
+        println!("Connecting to signaling server at: {}/ws/client", ws_base);
         connect_async(ws_url.as_str()).await?.0
     };
     let (mut ws_write, mut ws_read) = ws_stream.split();
@@ -4262,3 +4305,30 @@ mod host_cursor_tests {
     }
 }
 
+
+#[cfg(test)]
+mod security_fix_tests {
+    use super::*;
+
+    #[test]
+    fn signaling_address_changes_only_the_scheme() {
+        assert_eq!(signaling_ws_base("https://srv.example"), "wss://srv.example");
+        assert_eq!(signaling_ws_base("http://srv.example:8080/"), "ws://srv.example:8080");
+        // A host or path with "http" in it stays as it is.
+        assert_eq!(signaling_ws_base("wss://httpd.example"), "wss://httpd.example");
+        assert_eq!(signaling_ws_base("https://httpd.example/http-base"), "wss://httpd.example/http-base");
+        assert_eq!(signaling_ws_base("http://myhttp.example"), "ws://myhttp.example");
+        assert_eq!(signaling_ws_base("ws://[2001:db8::1]:8090"), "ws://[2001:db8::1]:8090");
+    }
+
+    #[test]
+    fn webtransport_is_used_only_with_a_pinned_certificate() {
+        let hash = "ab".repeat(32);
+        assert_eq!(webtransport_pinned_digest(Some(&hash), None), Ok([0xab; 32]));
+        assert_eq!(webtransport_pinned_digest(Some(&hash), Some("t")), Ok([0xab; 32]));
+        // Older agents (no hash): no WebTransport, input stays on WebRTC.
+        assert!(webtransport_pinned_digest(None, None).is_err());
+        assert!(webtransport_pinned_digest(Some("zz"), None).is_err());
+        assert!(webtransport_pinned_digest(None, Some("t")).is_err());
+    }
+}

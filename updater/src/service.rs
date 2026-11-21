@@ -331,7 +331,7 @@ fn run_install(release: &Release, assets: &[String]) -> Result<(), (&'static str
             return Err(("verify", e.to_string()));
         }
         set_phase(Phase::Downloading);
-        files.push(path);
+        files.push((path, digest));
     }
 
     // 3. Install.
@@ -342,8 +342,10 @@ fn run_install(release: &Release, assets: &[String]) -> Result<(), (&'static str
     };
     let result = match &c.kind {
         InstallKind::Package(m) => install::install_packages(*m, &files).map_err(map),
-        InstallKind::AppImage { path } => install::replace_appimage(&files[0], path).map_err(map),
-        InstallKind::WindowsInstaller { dir: install_dir } => windows_handover(&files[0], install_dir, &c.result_file).map_err(map),
+        InstallKind::AppImage { path } => install::replace_appimage(&files[0].0, path).map_err(map),
+        InstallKind::WindowsInstaller { dir: install_dir } => {
+            windows_handover(&files[0].0, &files[0].1, install_dir, &c.result_file).map_err(map)
+        }
         _ => Err(failed("this copy cannot be updated in place".into())),
     };
     // The Windows helper still needs the installer; the next start removes the folder.
@@ -354,13 +356,13 @@ fn run_install(release: &Release, assets: &[String]) -> Result<(), (&'static str
 }
 
 #[cfg(windows)]
-fn windows_handover(installer: &Path, install_dir: &Path, result_file: &Path) -> Result<(), InstallError> {
+fn windows_handover(installer: &Path, sha256: &[u8; 32], install_dir: &Path, result_file: &Path) -> Result<(), InstallError> {
     let args: Vec<String> = crate::restart::relaunch_args().iter().map(|a| a.to_string_lossy().into_owned()).collect();
-    install::launch_windows_installer(installer, install_dir, &crate::restart::launch_exe(), &args, result_file)
+    install::launch_windows_installer(installer, sha256, install_dir, &crate::restart::launch_exe(), &args, result_file)
 }
 
 #[cfg(not(windows))]
-fn windows_handover(_: &Path, _: &Path, _: &Path) -> Result<(), InstallError> {
+fn windows_handover(_: &Path, _: &[u8; 32], _: &Path, _: &Path) -> Result<(), InstallError> {
     Err(InstallError::Failed("the Windows installer runs on Windows only".into()))
 }
 

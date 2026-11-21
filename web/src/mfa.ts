@@ -65,3 +65,14 @@ export const recoveryCodesFileName = (account: string): string => {
   const safe = account.replace(/[^\p{L}\p{N}._-]+/gu, '-').replace(/^-+|-+$/g, '');
   return `lunaris-recovery-codes${safe ? `-${safe}` : ''}.txt`;
 };
+
+/**
+ * The (English, translatable) message of an error answer. The server names
+ * a wrong account password with the code "wrong_password", in `code` or as
+ * the `error` itself.
+ */
+export const accountErrorMessage = (data: unknown, fallback: string): string => {
+  const d = (data && typeof data === 'object' ? data : {}) as Record<string, unknown>;
+  if (d.code === 'wrong_password' || d.error === 'wrong_password') return 'Wrong password';
+  return typeof d.error === 'string' && d.error ? d.error : fallback;
+};

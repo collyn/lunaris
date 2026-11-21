@@ -132,6 +132,22 @@ pub async fn init_db(database_url: &str) -> Result<SqlitePool, sqlx::Error> {
             .execute(&pool)
             .await?;
     }
+    // The SHA-256 (hex) of the agent's TLS certificate, pinned on the first
+    // connection (links.rs); NULL until then (rows from before: pinned on
+    // their next connection). An admin's key reset clears it.
+    if !address_columns.iter().any(|c| c == "cert_sha256") {
+        sqlx::query("ALTER TABLE address_hosts ADD COLUMN cert_sha256 TEXT;")
+            .execute(&pool)
+            .await?;
+    }
+    // The newest direct-handshake version the agent spoke (2: SPAKE2),
+    // links.rs; NULL until then. Once 2, an answer with only v1 is refused
+    // like another certificate; an admin's key reset clears it too.
+    if !address_columns.iter().any(|c| c == "pake_version") {
+        sqlx::query("ALTER TABLE address_hosts ADD COLUMN pake_version INTEGER;")
+            .execute(&pool)
+            .await?;
+    }
 
     // Computers of other types that a Lunaris computer shows (sources.rs):
     // what its agent announced. Nothing of how they are reached is here.
@@ -395,6 +411,45 @@ fn make_private(path: &std::path::Path) {
 
 #[cfg(all(test, unix))]
 mod tests {
+    /// A database from the previous release (address_hosts without
+    /// cert_sha256, with a row) opens: the column is added, nothing is
+    /// lost, and opening it again changes nothing.
+    #[tokio::test]
+    async fn an_existing_database_gains_the_certificate_pin_column() {
+        let dir = std::env::temp_dir().join(format!("lunaris-db-old-{}", crate::security::random_hex(8)));
+        std::fs::create_dir_all(&dir).unwrap();
+        let url = format!("sqlite://{}", dir.join("lunaris.db").display());
+        let pool = super::init_db(&url).await.unwrap();
+        // Back to the old shape: the table as the previous release made it.
+        for sql in [
+            "DROP TABLE address_hosts",
+            "CREATE TABLE address_hosts (address TEXT PRIMARY KEY, password TEXT NOT NULL DEFAULT '', host_id TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, name TEXT NOT NULL DEFAULT '')",
+            "INSERT INTO address_hosts (address, password, host_id, name) VALUES ('pc.lan:8091', 'pw', 'h-old', 'Old PC')",
+            "INSERT INTO users (id, username, password_hash, role, is_active, token_version) VALUES ('u1', 'short', 'hash', 'admin', 1, 3)",
+        ] {
+            sqlx::query(sql).execute(&pool).await.unwrap();
+        }
+        pool.close().await;
+        for _ in 0..2 {
+            let pool = super::init_db(&url).await.unwrap();
+            let row: (String, String, Option<String>, String, Option<String>) =
+                sqlx::query_as("SELECT address, password, host_id, name, cert_sha256 FROM address_hosts")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(row, ("pc.lan:8091".into(), "pw".into(), Some("h-old".into()), "Old PC".into(), None));
+            let pake: Option<i64> = sqlx::query_scalar("SELECT pake_version FROM address_hosts").fetch_one(&pool).await.unwrap();
+            assert_eq!(pake, None);
+            let user: (String, i64) = sqlx::query_as("SELECT password_hash, token_version FROM users WHERE id = 'u1'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            assert_eq!(user, ("hash".into(), 3));
+            pool.close().await;
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[tokio::test]
     async fn database_file_is_private() {
         use std::os::unix::fs::PermissionsExt;

@@ -5187,3 +5187,5 @@ select option:disabled { color: var(--text-subtle); }
 .server-info-links a:hover { text-decoration: underline; }
 .about-card .host-confirm-icon img { display: block; }
 .about-versions { margin: 12px 0; }
+/* A warning inside a settings card (RustDesk: unencrypted). */
+.csd-warning { margin: 0 14px 12px; }

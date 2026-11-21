@@ -1404,8 +1404,15 @@ ApplicationWindow {
     // until the user says so.
     DialogFrame {
         id: linkDialog
+        objectName: "linkDialog"
         property string server: ""
         property string computer: ""
+        // http/ws: the session's sign-in and picture travel unencrypted.
+        property bool encrypted: true
+        // A trusted server's link for another account than the one trusted.
+        property string account: ""
+        property string knownAccount: ""
+        readonly property bool otherAccount: account !== "" && knownAccount !== ""
         property bool answered: false
         width: 460
         function openIfPending() {
@@ -1416,6 +1423,10 @@ ApplicationWindow {
             try { info = JSON.parse(raw); } catch (e) { bridge.answerPendingLink(false); return false; }
             server = info.server || "";
             computer = info.computer || "";
+            // Older bridges do not say: shown as encrypted, as before.
+            encrypted = info.encrypted !== false;
+            account = info.account || "";
+            knownAccount = info.knownAccount || "";
             answered = false;
             open();
             return true;
@@ -1434,7 +1445,7 @@ ApplicationWindow {
             spacing: 12
             Text {
                 Layout.fillWidth: true
-                text: I18n.t("Connect to another server?")
+                text: linkDialog.otherAccount ? I18n.t("Connect with another account?") : I18n.t("Connect to another server?")
                 color: Theme.textStrong
                 font.pixelSize: 16
                 font.weight: Font.DemiBold
@@ -1443,10 +1454,21 @@ ApplicationWindow {
             Text {
                 Layout.fillWidth: true
                 textFormat: Text.PlainText
-                text: I18n.t("A link wants to connect this app to %1. Only continue if you opened this link yourself.").arg(linkDialog.server)
+                text: linkDialog.otherAccount
+                    ? I18n.t("A link wants to connect this app to %1 as the account %2, but you trust this server for the account %3. Only continue if you opened this link yourself.").arg(linkDialog.server).arg(linkDialog.account).arg(linkDialog.knownAccount)
+                    : I18n.t("A link wants to connect this app to %1. Only continue if you opened this link yourself.").arg(linkDialog.server)
                 color: Theme.text
                 font.pixelSize: 13
                 wrapMode: Text.WrapAnywhere
+            }
+            Text {
+                objectName: "linkNotEncrypted"
+                Layout.fillWidth: true
+                visible: !linkDialog.encrypted
+                text: I18n.t("Not encrypted: this server is reached over http, so others on the network can see and change the session.")
+                color: Theme.danger
+                font.pixelSize: 12
+                wrapMode: Text.WordWrap
             }
             Text {
                 Layout.fillWidth: true
@@ -1458,8 +1480,9 @@ ApplicationWindow {
             }
             CheckRow {
                 id: trustBox
+                objectName: "linkTrustBox"
                 Layout.fillWidth: true
-                text: I18n.t("Always trust this server")
+                text: linkDialog.otherAccount ? I18n.t("Always trust this server for the account %1").arg(linkDialog.account) : I18n.t("Always trust this server")
             }
             Text {
                 Layout.fillWidth: true
@@ -1467,6 +1490,15 @@ ApplicationWindow {
                     ? I18n.t("Links to this server will connect without asking, with clipboard and file transfer.")
                     : I18n.t("Clipboard and file transfer stay off in this session.")
                 color: Theme.textMuted
+                font.pixelSize: 12
+                wrapMode: Text.WordWrap
+            }
+            Text {
+                objectName: "linkTrustNotEncrypted"
+                Layout.fillWidth: true
+                visible: trustBox.checked && !linkDialog.encrypted
+                text: I18n.t("This server is not encrypted: someone on the network could pose as it, and its links would then connect without asking, with clipboard and file transfer.")
+                color: Theme.danger
                 font.pixelSize: 12
                 wrapMode: Text.WordWrap
             }

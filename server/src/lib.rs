@@ -46,6 +46,32 @@ use crate::{
     signaling::{agent_ws_handler, client_ws_handler, SignalingState},
 };
 
+/// Where the web client is served from disk, if not the embedded copy:
+/// `LUNARIS_WEB_DIR` when set (a folder with index.html); debug builds also
+/// look for `web/dist` (working directory, the source tree, beside the
+/// program). Release builds serve only the embedded copy otherwise: a
+/// `web/dist` folder someone else could create (the build machine's path is
+/// in the binary, the working directory may be anyone's) must not replace it.
+fn web_dir() -> Option<std::path::PathBuf> {
+    if let Some(dir) = std::env::var_os("LUNARIS_WEB_DIR").filter(|d| !d.is_empty()) {
+        let dir = std::path::PathBuf::from(dir);
+        if dir.join("index.html").is_file() {
+            return Some(dir);
+        }
+        error!("LUNARIS_WEB_DIR={:?} has no index.html; serving the embedded web client", dir);
+        return None;
+    }
+    #[cfg(debug_assertions)]
+    {
+        find_dist_path("web/dist")
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        None
+    }
+}
+
+#[cfg_attr(not(debug_assertions), allow(dead_code))]
 fn find_dist_path(dir_name: &str) -> Option<std::path::PathBuf> {
     // Candidate 1: Current Working Directory
     let cwd_path = std::path::PathBuf::from(dir_name);
@@ -96,6 +122,9 @@ fn get_or_generate_agent_token() -> String {
     let token_file = token_file.as_path();
     if token_file.exists() {
         if let Ok(token) = std::fs::read_to_string(token_file) {
+            // Written by builds from before write_private: maybe 0644. The
+            // token itself stays as it is (agents use it).
+            paths::tighten_private(token_file);
             let trimmed = token.trim();
             if !trimmed.is_empty() {
                 return trimmed.to_string();
@@ -299,19 +328,17 @@ pub(crate) async fn run_server(
     gateway::start(&signaling_state).await;
     let gateway_state = signaling_state.clone();
 
-    // Configure CORS
-    let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
-        .allow_headers(Any);
+    let cors = cors_layer(cors_origins_from_env());
 
-    // Find React build directory
-    let react_path = find_dist_path("web/dist");
+    // The web client from disk (LUNARIS_WEB_DIR, development), else embedded.
+    let react_path = web_dir();
 
     // Build routes
     let mut app = Router::new()
         .route("/api/auth/login", post(login_handler))
         .route("/api/auth/me", get(admin::get_current_user))
+        // Sign out everywhere: every session of the signed-in user ends.
+        .route("/api/auth/logout-all", post(admin::logout_all))
         // First start: the first admin, made with the setup code (setup.rs).
         .route("/api/setup", get(setup::status).post(setup::complete))
         // Two-factor sign-in with an authenticator app (mfa.rs).
@@ -377,6 +404,7 @@ pub(crate) async fn run_server(
             "/api/admin/turn-servers",
             get(admin::list_turn_servers).post(admin::create_turn_server),
         )
+        .route("/api/admin/turn-servers/builtin", get(admin::builtin_turn_status))
         .route(
             "/api/admin/turn-servers/{id}",
             delete(admin::delete_turn_server),
@@ -414,6 +442,7 @@ pub(crate) async fn run_server(
 
     let app = app
         .layer(cors)
+        .layer(axum::middleware::map_response(html_security_headers))
         .layer(security_header(header::X_FRAME_OPTIONS, "DENY"))
         .layer(security_header(header::X_CONTENT_TYPE_OPTIONS, "nosniff"))
         .layer(security_header(header::REFERRER_POLICY, "no-referrer"))
@@ -455,6 +484,96 @@ fn security_header(
     )
 }
 
+/// The Content-Security-Policy of the web client's pages. `connect-src`
+/// stays open: the web client talks to whatever server address the user
+/// types at sign-in.
+pub(crate) const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; \
+img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self' data:; connect-src * ws: wss: data: blob:; \
+worker-src 'self' blob:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
+
+/// HTML responses (the web client's pages) get the CSP.
+async fn html_security_headers(mut response: axum::response::Response) -> axum::response::Response {
+    let html = response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.trim_start().to_ascii_lowercase().starts_with("text/html"));
+    if html && !response.headers().contains_key(header::CONTENT_SECURITY_POLICY) {
+        response
+            .headers_mut()
+            .insert(header::CONTENT_SECURITY_POLICY, axum::http::HeaderValue::from_static(CONTENT_SECURITY_POLICY));
+    }
+    response
+}
+
+/// Which other web origins may call the API from a browser.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CorsOrigins {
+    /// `LUNARIS_CORS_ORIGINS=*`, and debug builds (the Vite dev server).
+    Any,
+    /// The listed origins, and pages of this same server on another port
+    /// or scheme (http :8090 and https :8443).
+    Listed(Vec<String>),
+}
+
+fn parse_cors_origins(value: Option<&str>) -> CorsOrigins {
+    match value.map(str::trim) {
+        Some("*") => CorsOrigins::Any,
+        Some(list) => CorsOrigins::Listed(
+            list.split(',')
+                .map(|o| o.trim().trim_end_matches('/').to_ascii_lowercase())
+                .filter(|o| !o.is_empty())
+                .collect(),
+        ),
+        None if cfg!(debug_assertions) => CorsOrigins::Any,
+        None => CorsOrigins::Listed(Vec::new()),
+    }
+}
+
+fn cors_origins_from_env() -> CorsOrigins {
+    let origins = parse_cors_origins(std::env::var("LUNARIS_CORS_ORIGINS").ok().as_deref());
+    if let CorsOrigins::Listed(list) = &origins {
+        if !list.is_empty() {
+            info!("Cross-origin API calls allowed from {}", list.join(", "));
+        }
+    }
+    origins
+}
+
+/// The host name of "scheme://host:port" or "host:port" (brackets kept off IPv6).
+fn host_name_of(authority_or_origin: &str) -> &str {
+    let rest = authority_or_origin.split_once("://").map(|(_, r)| r).unwrap_or(authority_or_origin);
+    let rest = rest.split('/').next().unwrap_or("");
+    if let Some(v6) = rest.strip_prefix('[') {
+        return v6.split(']').next().unwrap_or("");
+    }
+    rest.rsplit_once(':').map(|(h, _)| h).unwrap_or(rest)
+}
+
+/// Whether a browser page from `origin` may read the API's answers to a
+/// request with these headers.
+fn cors_allows(origins: &CorsOrigins, origin: &str, host: Option<&str>) -> bool {
+    let origin = origin.trim().trim_end_matches('/').to_ascii_lowercase();
+    match origins {
+        CorsOrigins::Any => true,
+        CorsOrigins::Listed(list) => {
+            list.iter().any(|o| *o == origin)
+                || host.is_some_and(|h| !h.is_empty() && host_name_of(&origin).eq_ignore_ascii_case(host_name_of(h)))
+        }
+    }
+}
+
+fn cors_layer(origins: CorsOrigins) -> CorsLayer {
+    let allow = match origins {
+        CorsOrigins::Any => tower_http::cors::AllowOrigin::any(),
+        origins => tower_http::cors::AllowOrigin::predicate(move |origin, parts| {
+            let host = parts.headers.get(header::HOST).and_then(|h| h.to_str().ok());
+            origin.to_str().is_ok_and(|o| cors_allows(&origins, o, host))
+        }),
+    };
+    CorsLayer::new().allow_origin(allow).allow_methods(Any).allow_headers(Any)
+}
+
 fn too_many_attempts() -> (StatusCode, Json<serde_json::Value>) {
     (
         StatusCode::TOO_MANY_REQUESTS,
@@ -469,13 +588,30 @@ async fn login_handler(
     Json(payload): Json<LoginRequest>,
 ) -> Result<axum::response::Response, (StatusCode, Json<serde_json::Value>)> {
     let now = std::time::Instant::now();
-    let ip_key = security::client_ip(addrs.remote.ip(), &headers).to_string();
+    let ip_key = security::client_limit_key(addrs.remote.ip(), &headers);
     // Per name *and* address: guessing from one address can't lock the
     // account for everyone else.
     let user_key = format!("{}\n{}", payload.username, ip_key);
-    if state.login_ip_limit.is_blocked(&ip_key, now) || state.login_user_limit.is_blocked(&user_key, now) {
+    // Attempts are taken before anything is awaited, so requests sent at
+    // once count too (security.rs `try_begin`).
+    let Some(ip_attempt) = state.login_ip_limit.try_begin(&ip_key, now) else {
         return Err(too_many_attempts());
-    }
+    };
+    let Some(user_attempt) = state.login_user_limit.try_begin(&user_key, now) else {
+        return Err(too_many_attempts());
+    };
+    // Per name across all addresses (guessing from many addresses): a
+    // window, not for good, and never from an address the user signed in
+    // from lately, so the owner is not locked out by someone else's guesses.
+    let known_address = state.login_known.knows(&payload.username, &ip_key, now);
+    let name_attempt = if known_address {
+        None
+    } else {
+        match state.login_name_limit.try_begin(&payload.username, now) {
+            Some(a) => Some(a),
+            None => return Err(too_many_attempts()),
+        }
+    };
 
     let row: Option<(String, String, String, i64, i64)> = sqlx::query_as(
         "SELECT id, password_hash, COALESCE(role, 'user') as role, is_active, token_version FROM users WHERE username = ?",
@@ -502,14 +638,23 @@ async fn login_handler(
     let Some((user_id, _, role, _, token_version)) =
         row.filter(|(_, _, _, active, _)| found && password_ok && *active != 0)
     else {
-        state.login_ip_limit.record_failure(&ip_key, now);
-        state.login_user_limit.record_failure(&user_key, now);
+        ip_attempt.fail();
+        user_attempt.fail();
+        if let Some(a) = name_attempt {
+            a.fail();
+        }
         return Err((
             StatusCode::UNAUTHORIZED,
             Json(serde_json::json!({ "error": "Invalid username or password" })),
         ));
     };
+    ip_attempt.succeed();
+    user_attempt.succeed();
+    if let Some(a) = name_attempt {
+        a.succeed();
+    }
     state.login_user_limit.reset(&user_key);
+    state.login_known.remember(&payload.username, &ip_key, now);
 
     // Two-factor sign-in on: no session yet, only the step that asks for the code.
     match mfa::is_enabled(&state.db, &user_id).await {
@@ -973,5 +1118,141 @@ mod tests {
         assert_eq!(ports_json(8090, true)["https_self_signed"], true);
         assert_eq!(ports_json(8090, false)["https_self_signed"], false);
         assert_eq!(ports_json(8090, false)["http"], 8090);
+    }
+
+    /// Wrong passwords sent at once: no more than the limit get checked.
+    #[tokio::test]
+    async fn concurrent_logins_are_limited() {
+        let state = state_with_users().await;
+        let tries = (0..30).map(|_| {
+            let state = state.clone();
+            async move { login(&state, "10.0.0.20", "alice", "wrong").await }
+        });
+        let codes = futures_util::future::join_all(tries).await;
+        let checked = codes.iter().filter(|c| **c == StatusCode::UNAUTHORIZED).count();
+        assert!(checked <= 10, "{checked} passwords were checked");
+        assert_eq!(login(&state, "10.0.0.20", "alice", "right-pw").await, StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    /// One name guessed from many addresses waits out a window; its owner,
+    /// from an address they signed in from before, is not locked out.
+    #[tokio::test]
+    async fn a_name_guessed_from_many_addresses() {
+        let state = state_with_users().await;
+        assert_eq!(login(&state, "10.0.9.1", "alice", "right-pw").await, StatusCode::OK);
+        for i in 0..20 {
+            assert_eq!(login(&state, &format!("10.1.0.{i}"), "alice", "wrong").await, StatusCode::UNAUTHORIZED);
+        }
+        assert_eq!(login(&state, "10.2.0.1", "alice", "right-pw").await, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(login(&state, "10.9.9.9", "carol", "wrong").await, StatusCode::UNAUTHORIZED, "other names are not held back");
+        assert_eq!(login(&state, "10.0.9.1", "alice", "right-pw").await, StatusCode::OK, "the owner's own address");
+    }
+
+    /// IPv6 addresses of one /64 count as one address.
+    #[tokio::test]
+    async fn ipv6_logins_count_per_64() {
+        let state = state_with_users().await;
+        for i in 0..10 {
+            let ip = format!("[2001:db8:5:6::{:x}]", i + 1);
+            let addrs = signaling::ConnAddrs { local: None, remote: format!("{ip}:5000").parse().unwrap() };
+            let req = LoginRequest { username: "carol".into(), password: "wrong".into() };
+            let r = login_handler(State(state.clone()), ConnectInfo(addrs), Default::default(), Json(req)).await;
+            assert_eq!(r.err().unwrap().0, StatusCode::UNAUTHORIZED);
+        }
+        let addrs = signaling::ConnAddrs { local: None, remote: "[2001:db8:5:6::ffff]:5000".parse().unwrap() };
+        let req = LoginRequest { username: "alice".into(), password: "right-pw".into() };
+        let r = login_handler(State(state.clone()), ConnectInfo(addrs), Default::default(), Json(req)).await;
+        assert_eq!(r.err().unwrap().0, StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    /// Passwords from before the 10-character rule still sign in.
+    #[tokio::test]
+    async fn an_existing_short_password_still_signs_in() {
+        let state = state_with_users().await;
+        let old = bcrypt::hash("abc123", 4).unwrap();
+        sqlx::query("INSERT INTO users (id, username, password_hash, role, is_active) VALUES ('u9', 'old', ?, 'user', 1)")
+            .bind(old)
+            .execute(&state.db)
+            .await
+            .unwrap();
+        assert_eq!(login(&state, "10.0.0.1", "old", "abc123").await, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn logout_all_ends_every_session() {
+        let state = state_with_users().await;
+        let (tx, mut rx) = crate::queue::channel::<common::ServerToClientMessage>();
+        state.clients.write().unwrap().insert("c1".into(), tx);
+        state.client_connections.write().unwrap().insert("c1".into(), "u1".into());
+        let token = auth::create_jwt("u1", "alice", "user", 0).unwrap();
+        let user = AuthenticatedUser { user_id: "u1".into(), username: "alice".into(), role: "user".into() };
+        let r = admin::logout_all(user, State(state.clone())).await;
+        assert_eq!(r.ok().unwrap().into_response().status(), StatusCode::OK);
+        assert!(rx.recv().await.is_none(), "the connection is closed");
+        let mut parts = axum::http::Request::builder()
+            .header("Authorization", format!("Bearer {token}"))
+            .body(())
+            .unwrap()
+            .into_parts()
+            .0;
+        assert!(AuthenticatedUser::from_request_parts(&mut parts, &state).await.is_err());
+        assert_eq!(login(&state, "10.0.0.1", "alice", "right-pw").await, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn html_gets_the_content_security_policy() {
+        let html = axum::response::Response::builder()
+            .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let r = html_security_headers(html).await;
+        let csp = r.headers().get(header::CONTENT_SECURITY_POLICY).unwrap().to_str().unwrap();
+        assert!(csp.contains("frame-ancestors 'none'") && csp.contains("connect-src * ws: wss:") && csp.contains("script-src 'self';"));
+        let json = axum::response::Response::builder()
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        assert!(html_security_headers(json).await.headers().get(header::CONTENT_SECURITY_POLICY).is_none());
+        // The embedded index.html as served.
+        let page = web::serve("/".parse().unwrap()).await;
+        if page.status() == StatusCode::OK {
+            assert!(html_security_headers(page).await.headers().contains_key(header::CONTENT_SECURITY_POLICY));
+        }
+    }
+
+    #[test]
+    fn cors_only_for_listed_origins_and_this_server() {
+        let none = parse_cors_origins(Some(""));
+        assert_eq!(none, CorsOrigins::Listed(vec![]));
+        assert!(!cors_allows(&none, "https://evil.example", Some("lunaris.lan:8090")));
+        // The same server on another port or scheme (http :8090, https :8443).
+        assert!(cors_allows(&none, "https://lunaris.lan:8443", Some("lunaris.lan:8090")));
+        assert!(cors_allows(&none, "http://[fd00::5]:8090", Some("[fd00::5]:8443")));
+        assert!(!cors_allows(&none, "http://lunaris.lan.evil:8090", Some("lunaris.lan:8090")));
+        let listed = parse_cors_origins(Some("https://web.example/, http://other:5173"));
+        assert!(cors_allows(&listed, "https://web.example", Some("api:8090")));
+        assert!(cors_allows(&listed, "http://OTHER:5173", None));
+        assert!(!cors_allows(&listed, "https://web.example.evil", Some("api:8090")));
+        assert_eq!(parse_cors_origins(Some("*")), CorsOrigins::Any);
+        assert!(cors_allows(&CorsOrigins::Any, "https://anything", None));
+        #[cfg(not(debug_assertions))]
+        assert_eq!(parse_cors_origins(None), CorsOrigins::Listed(vec![]));
+    }
+
+    /// LUNARIS_WEB_DIR names the folder served from disk; without it a
+    /// release build serves only the embedded copy (`web_dir` = None).
+    #[test]
+    fn the_web_client_folder() {
+        let dir = std::env::temp_dir().join(format!("lunaris-web-{}", security::random_hex(6)));
+        std::fs::create_dir_all(&dir).unwrap();
+        // SAFETY: tests touching LUNARIS_WEB_DIR are only this one.
+        unsafe { std::env::set_var("LUNARIS_WEB_DIR", &dir) };
+        assert_eq!(web_dir(), None, "no index.html: the embedded copy");
+        std::fs::write(dir.join("index.html"), "<html></html>").unwrap();
+        assert_eq!(web_dir(), Some(dir.clone()));
+        unsafe { std::env::remove_var("LUNARIS_WEB_DIR") };
+        #[cfg(not(debug_assertions))]
+        assert_eq!(web_dir(), None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

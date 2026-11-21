@@ -95,6 +95,10 @@ pub(crate) async fn run(config: AgentConfig, name: String) -> Result<(), Box<dyn
         approve_mode: crate::approval::ApproveMode::Password,
         name: name.clone(),
         links: crate::direct::Links::default(),
+        // The app connects with TLS; this listener is on 127.0.0.1 only.
+        allow_legacy_plain: true,
+        // Not pinned: the server starts it with a new password each time.
+        tls_dir: None,
     };
     let listening = tokio::spawn(crate::direct::run_listener_on(listener, direct_config, hub.clone(), inbound_tx.clone()));
 

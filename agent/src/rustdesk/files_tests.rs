@@ -72,6 +72,7 @@ pub(crate) async fn start_listener(password: &str, mode: &str, file_transfer: bo
         name: "máy-thử".into(),
         file_transfer,
         file_access: access,
+        file_access_setting: None,
         file_home: home,
     };
     let asked: Arc<Mutex<Vec<(String, Kind)>>> = Arc::default();

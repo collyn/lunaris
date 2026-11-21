@@ -39,6 +39,12 @@ ring = "0.17"
 # direct.rs: the self-signed certificate of the direct-connection listener
 # (already used by wtransport and webrtc, ring backend).
 rcgen = "0.14"
+# direct/handshake.rs: the v2 password check, a balanced PAKE (SPAKE2 over
+# Ed25519, RustCrypto), so a peer answering at the dialled address learns
+# nothing it could test passwords against offline. rand_core: the OS random
+# source (ring) handed to it.
+spake2 = { version = "0.5.0-pre.0", default-features = false }
+rand_core = { version = "0.10", default-features = false }
 webrtc = "0.21.1"
 rtc = "0.21.1"
 async-trait = "0.1"
@@ -151,6 +157,8 @@ windows = { version = "0.62", features = [
     "Win32_Storage_FileSystem",
     "Win32_System_Console",
     "Win32_System_JobObjects",
+    # main.rs: SetDefaultDllDirectories.
+    "Win32_System_LibraryLoader",
     "Win32_System_Memory",
     "Win32_System_RemoteDesktop",
     "Win32_System_Services",
@@ -158,6 +166,8 @@ windows = { version = "0.62", features = [
     "Win32_System_Shutdown",
     "Win32_System_Threading",
     "Win32_UI_WindowsAndMessaging",
+    # win_service.rs: GetUserProfileDirectoryW (file transfer's home folder).
+    "Win32_UI_Shell",
 ] }
 
 

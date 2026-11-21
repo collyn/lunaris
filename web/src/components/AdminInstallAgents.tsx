@@ -101,7 +101,6 @@ function CopyButton({ text, label, className }: { text: string; label: string; c
 export function AdminInstallAgents({ token, getBackendHost, getBackendProtocol }: AdminInstallAgentsProps) {
   const origin = `${getBackendProtocol().http}//${getBackendHost()}`;
   const api = useMemo(() => installTokensApi(origin, token), [origin, token]);
-  const isHttps = origin.startsWith('https:');
 
   const [tokens, setTokens] = useState<InstallToken[]>([]);
   const [loading, setLoading] = useState(true);
@@ -191,7 +190,12 @@ export function AdminInstallAgents({ token, getBackendHost, getBackendProtocol }
     }
   };
 
-  const command = created ? installCommand(os, origin, created.token, { name: computerName, insecure: isHttps && os === 'linux' && insecure }) : '';
+  // The server's own HTTPS listener, pinned: no certificate option needed.
+  const pinned = !!created?.install?.spkiSha256;
+  const scriptOrigin = created?.install?.scriptOrigin ?? origin;
+  const overHttps = scriptOrigin.startsWith('https:');
+  const commandOptions = { name: computerName, insecure: !pinned && overHttps && os === 'linux' && insecure, fetch: created?.install ?? null };
+  const command = created ? installCommand(os, origin, created.token, commandOptions) : '';
   const localPsCommand = created
     ? `$env:LUNARIS_INSTALL_TOKEN=${psQuote(created.token)}; powershell -ExecutionPolicy Bypass -File .\\agent.ps1${computerName.trim() ? ` -Name ${psQuote(computerName.trim())}` : ''}`
     : '';
@@ -312,8 +316,8 @@ export function AdminInstallAgents({ token, getBackendHost, getBackendProtocol }
               />
               <small className="install-small">{t('For installing many computers, leave this empty: each agent uses its own hostname.')}</small>
             </div>
-            {/* Only HTTPS has a certificate to skip. */}
-            {isHttps && (
+            {/* Only HTTPS has a certificate to skip; a pinned one needs no option. */}
+            {overHttps && !pinned && (
               <label className="admin-toggle-label install-toggle">
                 <input type="checkbox" checked={insecure} onChange={(e) => setInsecure(e.target.checked)} />
                 <span>{t('Self-signed certificate')}</span>
@@ -321,13 +325,25 @@ export function AdminInstallAgents({ token, getBackendHost, getBackendProtocol }
             )}
           </div>
 
-          {isHttps && insecure && os === 'linux' && (
+          {pinned && (
+            <p className="install-note">{t('The command downloads the script over HTTPS from %1 and accepts only this server\'s certificate, even though it is self-signed.', scriptOrigin)}</p>
+          )}
+          {!overHttps && (
+            <div className="install-warning" role="note">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+                <line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" />
+              </svg>
+              <span>{t('This server has no HTTPS: the script is downloaded unprotected and runs as administrator, so anyone on the network could change it. Turn HTTPS on (LUNARIS_HTTPS_PORT) or use this only on a network you trust.')}</span>
+            </div>
+          )}
+          {!pinned && overHttps && insecure && os === 'linux' && (
             <p className="install-note">{t('Adds -k to curl so the script can be downloaded from a server whose certificate is not trusted. Use it only on a network you trust.')}</p>
           )}
-          {isHttps && insecure && os === 'windows' && (
+          {!pinned && overHttps && insecure && os === 'windows' && (
             <div className="install-note">
               <p>{t('PowerShell on Windows cannot skip the certificate check for this download. Give the server a trusted certificate (for example from Let\'s Encrypt), or add its certificate to "Trusted Root Certification Authorities" on each computer.')}</p>
-              <p>{t('Or download %1 in a browser, then run this as Administrator in the folder where it was saved:', installScriptUrl('windows', origin))}</p>
+              <p>{t('Or download %1 in a browser, then run this as Administrator in the folder where it was saved:', installScriptUrl('windows', scriptOrigin))}</p>
               <div className="install-command small">
                 <code>{localPsCommand}</code>
                 <CopyButton text={localPsCommand} label={t('Copy command')} />

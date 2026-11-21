@@ -7,9 +7,42 @@ export type InstallOs = 'linux' | 'windows';
 export interface InstallOptions {
   /** Computer name; empty or missing means the agent uses the hostname. */
   name?: string;
-  /** Skip the certificate check when downloading (self-signed server). */
+  /** Skip the certificate check when downloading (self-signed server).
+   *  Only used when the server gave no pin (`pin`). */
   insecure?: boolean;
+  /** Where and how to fetch the script, as the server said when it made
+   *  the token (POST /api/admin/install-tokens `install`). */
+  fetch?: InstallFetch | null;
 }
+
+/** The server's own HTTPS listener: the script is fetched from
+ *  `scriptOrigin`, and the connection is accepted only with this
+ *  certificate (it is often self-signed, so the usual check can't be used):
+ *  curl's `--pinnedpubkey` (SHA-256 of the public key, base64) and the
+ *  certificate's SHA-256 (hex) in PowerShell. Without pins (a reverse
+ *  proxy), the certificate is checked as usual. */
+export interface InstallFetch {
+  scriptOrigin: string | null;
+  spkiSha256: string | null;
+  certSha256: string | null;
+}
+
+const B64_SHA256 = /^[A-Za-z0-9+/]{43}=$/;
+const HEX_SHA256 = /^[0-9a-fA-F]{64}$/;
+
+/** The server's `install` answer, checked; null when it has none (an older
+ *  server, or no way to fetch the script over HTTPS). */
+export const parseInstallFetch = (raw: unknown): InstallFetch | null => {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  const origin = typeof r.script_origin === 'string' && /^https:\/\/[A-Za-z0-9.:[\]-]+$/.test(r.script_origin) ? r.script_origin : null;
+  if (!origin) return null;
+  const spki = typeof r.spki_sha256 === 'string' && B64_SHA256.test(r.spki_sha256) ? r.spki_sha256 : null;
+  const cert = typeof r.cert_sha256 === 'string' && HEX_SHA256.test(r.cert_sha256) ? r.cert_sha256.toUpperCase() : null;
+  // Both pins or none: a command for one OS must not go unpinned.
+  return spki && cert ? { scriptOrigin: origin, spkiSha256: spki, certSha256: cert } : { scriptOrigin: origin, spkiSha256: null, certSha256: null };
+};
+
 
 /** Quotes a value for bash inside single quotes ('it'\''s'). */
 export const bashQuote = (value: string): string =>
@@ -41,16 +74,27 @@ export const installCommand = (
   opts: InstallOptions = {},
 ): string => {
   const name = (opts.name ?? '').trim();
-  const url = installScriptUrl(os, origin);
+  const f = opts.fetch?.scriptOrigin ? opts.fetch : null;
+  const url = installScriptUrl(os, f?.scriptOrigin ?? origin);
+  const pinned = !!(f?.spkiSha256 && f.certSha256);
   if (os === 'linux') {
-    const curl = opts.insecure ? 'curl -fsSLk' : 'curl -fsSL';
+    // -k only skips the CA check: with --pinnedpubkey curl still refuses any
+    // other key than this server's.
+    const curl = pinned
+      ? `curl -fsSLk --pinnedpubkey ${bashQuote(`sha256//${f!.spkiSha256}`)}`
+      : opts.insecure ? 'curl -fsSLk' : 'curl -fsSL';
     let cmd = `${curl} ${urlWord(url, bashQuote)} | sudo LUNARIS_INSTALL_TOKEN=${bashQuote(token)} bash -s --`;
     if (name) cmd += ` --name ${bashQuote(name)}`;
     return cmd;
   }
-  // Windows PowerShell 5.1 has no switch to skip the certificate check for
-  // irm, so `insecure` changes nothing here; the page explains the options.
-  let cmd = `$env:LUNARIS_INSTALL_TOKEN=${psQuote(token)}; & ([scriptblock]::Create((irm ${urlWord(url, psQuote)})))`;
+  // Windows PowerShell 5.1: irm accepts the server's certificate only when
+  // its SHA-256 is this one (the script turns the check back to normal for
+  // its own downloads). Without a pin `insecure` changes nothing here (no
+  // switch to skip the check); the page explains the options.
+  const check = pinned
+    ? `[Net.ServicePointManager]::ServerCertificateValidationCallback = { param($s, $c) ([BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash($c.GetRawCertData())) -replace '-', '') -eq ${psQuote(f!.certSha256!)} }; `
+    : '';
+  let cmd = `$env:LUNARIS_INSTALL_TOKEN=${psQuote(token)}; ${check}& ([scriptblock]::Create((irm ${urlWord(url, psQuote)})))`;
   if (name) cmd += ` -Name ${psQuote(name)}`;
   return cmd;
 };

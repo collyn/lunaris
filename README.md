@@ -29,7 +29,7 @@ The entire system is written in **Rust** and **TypeScript/React**, optimized for
 - **Gaming-grade performance** — GPU-accelerated encoding via lunaris-media (NVENC, AMF, QuickSync, VAAPI).
 - **Multiple clients** — Web client (React), native Qt6/QML desktop client, and Tauri desktop wrapper.
 - **Smart host agent** — A command-line daemon (systemd user or system service, Windows service) managed from the web; an optional tray accepts connections. Configures and manages the streaming backend automatically.
-- **Secure by default** — JWT authentication, bcrypt password hashing, TLS/WSS connections.
+- **Secure by default** — JWT authentication, bcrypt password hashing, two-factor sign-in, TLS/WSS connections, SPAKE2 password checks for direct connections, signed updates and installers, a Content-Security-Policy on the web client.
 - **NAT traversal** — Automatic hole punching with STUN, fallback via TURN relay.
 - **Device management** — Web dashboard to manage multiple remote machines with access controls.
 - **Remote app launcher** — Browse and launch applications/games on the host from the dashboard.
@@ -108,10 +108,14 @@ files in `%ProgramData%\Lunaris` are moved there, the agent's stay).
 **Docker**:
 
 ```bash
-docker compose up -d          # or: docker build -t lunaris-server . && docker run -d -p 8090:8090 -v lunaris-data:/data lunaris-server
+docker compose up -d          # or: docker build -t lunaris-server . && docker run -d -p 8090:8090 -p 8443:8443 -v lunaris-data:/data lunaris-server
 docker exec lunaris-server cat /data/setup_code.txt     # one-time code for the setup page
 docker exec lunaris-server cat /data/server_token.txt   # agent token
 ```
+
+Publish the HTTPS port (8443) too: agents installed with the web page's
+command connect to it (`wss://`, pinned to the server's certificate), also
+when the page itself was opened over plain http.
 
 Then open `http://<server>:8090`: a new server shows a **setup page** that
 asks for the one-time setup code from `setup_code.txt` in its data folder
@@ -122,6 +126,11 @@ administrator. The code works once and setup closes for good as soon as an
 account exists; the server does not write the code or the token to its log.
 For unattended installs set `LUNARIS_ADMIN_PASSWORD` before the first start
 instead: the `admin` account gets that password and there is no setup page.
+New account passwords need at least 10 characters (existing ones keep
+working). Sign-in, two-factor codes, setup and link tickets are limited per
+address and per account (also against many requests at once); turning
+two-factor on asks for the password again, and **Account security → Sign out
+everywhere** ends every session of the account.
 
 **Moving from the app's built-in server.** The desktop app's "server on this
 computer" kept its data in `~/.local/share/lunaris-server` (Linux),
@@ -162,7 +171,11 @@ everything else is done on the server's web page (Computers): adding the
 computer, its settings (when the computer allows it, see below), its access
 password. The easiest way is the one-line installer the web page shows under
 **Computers → Add** (it carries a one-time install token); the manual steps
-are below.
+are below. The command fetches the script pinned to the server's certificate
+(`curl --pinnedpubkey`, or a certificate check in PowerShell), and the script
+installs only release files whose SHA-256 matches the release's signed
+`SHA256SUMS` (written into the script by the server, or checked against the
+signature with OpenSSL 3).
 
 **Linux desktop** (shares the screen of a desktop user):
 
@@ -228,7 +241,9 @@ service's config, as root / administrator):
 lunaris-agent status [--show-password]   # server, running/connected, addresses, settings
 lunaris-agent set direct on              # see `lunaris-agent set --help` for the keys
 lunaris-agent set server-settings allow  # let the server's administrators change the settings
-lunaris-agent set password random        # or `-` to read one from stdin
+lunaris-agent set password random        # or `-` to read one from stdin (12 to 128 characters)
+lunaris-agent set file-access full       # whole disk for file transfer (only here, never from the server)
+lunaris-agent set legacy-direct off      # refuse apps from before TLS (password in a plain ws:// URL)
 lunaris-agent --import-config FILE       # merge another agent_config.json
 lunaris-agent --probe-encoders           # which hardware encoders work
 ```
@@ -238,7 +253,12 @@ A change made with `set` applies when the agent starts again
 lunaris-agent-system`, `Restart-Service LunarisAgentService`). By default the
 server may only *read* a computer's settings; `set server-settings allow` (or
 `--allow-server-settings`) lets its administrators change them, and see the
-access password, from the web page, where they apply at once.
+access password, from the web page, where they apply at once. Even then the
+server can't widen what remote people reach: giving file transfer the whole
+disk (or a folder outside the user's home) and switching "ask before each
+server session" off are only possible with `lunaris-agent set` on the
+computer itself. File transfer reaches the home folder by default, also for
+the Windows service (the logged-on user's profile, not the whole disk).
 
 **Approval helper** (`lunaris-approval-helper`, optional, needs Qt): a tray
 program for the person at the computer. When someone connects without the
@@ -270,15 +290,27 @@ PipeWire bindings are updated.)
 
 ### Connect directly, without a server
 
-On a LAN, a VPN or through a forwarded port, one computer can control another
-without a server. On the computer to control, run
+On a LAN, a VPN or through a forwarded port, a computer can also be reached
+without installing it against a server. On the computer to control, run
 `lunaris-agent set direct on` (then restart the agent) or
 `lunaris-agent --cli --direct`: it prints the computer's addresses (port
 8091, `--direct-port` / `set direct-port` change it) and its access password
-(`lunaris-agent status --show-password` shows it later). In the client, type
-the address under **Control a remote computer** and enter the password. Only
-the signaling uses this connection (plain WebSocket, so keep it to trusted
-networks); video and input stay end-to-end encrypted WebRTC.
+(`lunaris-agent status --show-password` shows it later). On the server's web
+page, **Computers → Add computer** with that address and password adds it: the
+server connects out to it.
+
+The direct listener speaks TLS with a certificate the agent keeps next to its
+config (`direct_tls_cert.der`); the password is checked with SPAKE2 (bound to
+that certificate), so whoever answers at the address can't test passwords
+offline. A server pins the certificate of a computer it added by address the
+first time an agent that keeps it answers: if the computer is reinstalled,
+**reset key** on its card accepts the new one. Agents from before 0.7.1 still
+connect (older password check, certificate not pinned) until they are updated.
+
+**RustDesk clients** (`lunaris-agent set rustdesk on`, port 21128 by default;
+RustDesk itself uses 21118): an unmodified RustDesk connects by address with
+the access password — type `address:21128`. RustDesk's direct IP access is
+**unencrypted** (only the password is protected): keep it to a LAN or a VPN.
 
 ### Prerequisites (building from source)
 
@@ -328,7 +360,7 @@ cd web && npm install && npm run dev
 | Variable | Default | Description |
 |---|---|---|
 | `SERVER_PORT` | `8090` | HTTP port (web client, API, WebSocket signaling) |
-| `LUNARIS_HTTPS_PORT` | `8443` | HTTPS port for the web client (`off` disables it). Browsers only allow game controllers, the clipboard API and WebTransport on https pages (or localhost); agents keep using `ws://` on `SERVER_PORT` |
+| `LUNARIS_HTTPS_PORT` | `8443` | HTTPS port for the web client (`off` disables it). Browsers only allow game controllers, the clipboard API and WebTransport on https pages (or localhost). Agents installed with the web page's command connect here (`wss://`, certificate pinned); agents set up with a `ws://` address keep working, with a warning in `lunaris-agent status` |
 | `LUNARIS_TLS_CERT`, `LUNARIS_TLS_KEY` | *(self-signed)* | PEM certificate and key for HTTPS. Without them a self-signed certificate is made once in the data directory (the browser asks to accept it) |
 | `LUNARIS_DATA_DIR` | working directory | Database, agent token, keys and the first-start `setup_code.txt` (`/var/lib/lunaris` for the Linux service, `%ProgramData%\Lunaris\Server` for the Windows service, `/data` in Docker) |
 | `LUNARIS_TOKEN` | *(auto-generated)* | Token for agent-to-server authentication |
@@ -337,10 +369,14 @@ cd web && npm install && npm run dev
 | `RUST_LOG` | `info,server=debug` | Log level configuration |
 | `LUNARIS_GATEWAY` | *(on when `lunaris-agent` is found)* | The server gateway: `off`, `on`, or the path of the `lunaris-agent` to run. Otherwise switched on the Server tab |
 | `LUNARIS_GATEWAY_LOG` | *(agent default)* | Log level of the gateway's agent (its `RUST_LOG`) |
-| `LUNARIS_TURN` | on | Built-in TURN relay (`0` disables it). Lets WebRTC connect through the server when the two sides can't reach each other directly |
+| `LUNARIS_TURN` | on | Built-in TURN relay (`0` disables it). Lets WebRTC connect through the server when the two sides can't reach each other directly. Credentials are made per session; it never relays to the server's own addresses (other than its relay ports) or to loopback, link-local and other special ranges. Its state and the sessions relaying now are on the web page (TURN servers → Built-in → Details) |
 | `LUNARIS_TURN_PORT` | `3478` | TURN listening port (UDP) |
 | `LUNARIS_TURN_RELAY_PORTS` | `49160-49260` | UDP ports used for relayed streams (open them in the firewall together with the TURN port) |
 | `LUNARIS_TURN_PUBLIC_IP` | *(local addresses)* | Address to advertise when the server is behind 1:1 NAT, e.g. a cloud VM |
+| `LUNARIS_WEB_DIR` | *(embedded)* | Serve the web client from this folder (with `index.html`) instead of the copy built into the server |
+| `LUNARIS_CORS_ORIGINS` | *(this server only)* | Comma list of other origins (or `*`) whose pages may call the API, e.g. a web client served from another host |
+| `LUNARIS_TRUSTED_PROXIES` | *(loopback)* | Comma list of IPs/CIDRs of reverse proxies whose `X-Forwarded-For` is believed (sign-in limits count the real client) |
+| `LUNARIS_HSTS` | off | `1` sends Strict-Transport-Security on the HTTPS port (only with a real certificate: it removes the browser's "continue anyway" for a self-signed one) |
 
 ### Linux Host (X11 and Wayland)
 

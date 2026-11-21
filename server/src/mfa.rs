@@ -43,6 +43,10 @@ pub const PENDING_TTL: Duration = Duration::from_secs(300);
 /// Wrong codes one pending sign-in may take before it has to start over.
 const PENDING_MAX_FAILURES: u32 = 5;
 const PENDING_MAX_ENTRIES: usize = 10_000;
+/// Sign-ins one user may have waiting for their code at once: a new one
+/// past this replaces that user's oldest (each would allow
+/// `PENDING_MAX_FAILURES` more guesses otherwise).
+const PENDING_MAX_PER_USER: usize = 3;
 /// Crockford's base 32 (no I, L, O, U): 256 is a multiple of 32, so taking
 /// a byte modulo 32 is unbiased.
 const RECOVERY_ALPHABET: &[u8; 32] = b"0123456789abcdefghjkmnpqrstvwxyz";
@@ -69,6 +73,7 @@ fn random_key() -> [u8; 32] {
 #[cfg_attr(test, allow(dead_code))]
 fn load_key(file: &std::path::Path) -> [u8; 32] {
     if let Ok(text) = std::fs::read_to_string(file) {
+        crate::paths::tighten_private(file);
         if let Ok(bytes) = hex::decode(text.trim()) {
             if let Ok(key) = <[u8; 32]>::try_from(bytes.as_slice()) {
                 return key;
@@ -351,6 +356,19 @@ impl MfaState {
         let token = security::random_hex(32);
         let mut pending = self.pending.lock().unwrap();
         pending.retain(|_, p| p.expires > now);
+        loop {
+            let mine: Vec<(&String, &Pending)> = pending.iter().filter(|(_, p)| p.user_id == user_id).collect();
+            if mine.len() < PENDING_MAX_PER_USER {
+                break;
+            }
+            let oldest = mine.iter().min_by_key(|(_, p)| p.expires).map(|(k, _)| (*k).clone());
+            match oldest {
+                Some(k) => {
+                    pending.remove(&k);
+                }
+                None => break,
+            }
+        }
         if pending.len() >= PENDING_MAX_ENTRIES {
             if let Some(oldest) = pending.iter().min_by_key(|(_, p)| p.expires).map(|(k, _)| k.clone()) {
                 pending.remove(&oldest);
@@ -467,27 +485,31 @@ pub async fn login_mfa_handler(
     Json(req): Json<MfaLoginRequest>,
 ) -> Result<Response, ApiError> {
     let now = Instant::now();
-    let ip_key = security::client_ip(addrs.remote.ip(), &headers).to_string();
-    if state.mfa.ip_limit.is_blocked(&ip_key, now) {
+    let ip_key = security::client_limit_key(addrs.remote.ip(), &headers);
+    // Taken before anything is awaited: requests sent at once count too.
+    let Some(ip_attempt) = state.mfa.ip_limit.try_begin(&ip_key, now) else {
         return Err(too_many());
-    }
+    };
     let Some(user_id) = state.mfa.peek(&req.mfa_token, now) else {
-        state.mfa.ip_limit.record_failure(&ip_key, now);
+        ip_attempt.fail();
         return Err(err(StatusCode::UNAUTHORIZED, "This sign-in has expired. Sign in again."));
     };
-    if state.mfa.user_limit.is_blocked(&user_key(&user_id), now) {
+    // Per user, over all of that user's pending sign-ins.
+    let Some(user_attempt) = state.mfa.user_limit.try_begin(&user_key(&user_id), now) else {
         return Err(too_many());
-    }
+    };
     let ok = use_factor(&state.db, &user_id, req.code.as_deref(), req.recovery_code.as_deref())
         .await
         .map_err(db_error)?;
     if !ok {
         state.mfa.fail(&req.mfa_token);
-        state.mfa.ip_limit.record_failure(&ip_key, now);
-        state.mfa.user_limit.record_failure(&user_key(&user_id), now);
+        ip_attempt.fail();
+        user_attempt.fail();
         let msg = if req.code.as_deref().is_some_and(|c| !c.trim().is_empty()) { "Wrong code" } else { "Wrong recovery code" };
         return Err(err(StatusCode::UNAUTHORIZED, msg));
     }
+    ip_attempt.succeed();
+    user_attempt.succeed();
     if !state.mfa.take(&req.mfa_token, now) {
         return Err(err(StatusCode::UNAUTHORIZED, "This sign-in has expired. Sign in again."));
     }
@@ -521,13 +543,58 @@ pub async fn status(user: AuthenticatedUser, State(state): State<Arc<SignalingSt
     Ok(Json(serde_json::json!({ "enabled": enabled, "recovery_codes_left": left })).into_response())
 }
 
-// POST /api/auth/mfa/setup
+#[derive(Deserialize)]
+pub struct SetupRequest {
+    /// The account's password, entered again: a session left open
+    /// somewhere can't bind someone else's authenticator to the account.
+    #[serde(default)]
+    pub password: String,
+}
+
+/// The wrong account password where it is asked again: 403 with
+/// `code: "wrong_password"` (not 401, which the web client reads as a
+/// session that ended).
+fn wrong_password() -> ApiError {
+    (
+        StatusCode::FORBIDDEN,
+        Json(serde_json::json!({ "error": "Wrong password", "code": "wrong_password" })),
+    )
+}
+
+/// Checks `password` against the user's own, counted in `mfa.user_limit`.
+async fn check_own_password(state: &SignalingState, user_id: &str, password: &str) -> Result<(), ApiError> {
+    let Some(attempt) = state.mfa.user_limit.try_begin(&user_key(user_id), Instant::now()) else {
+        return Err(too_many());
+    };
+    let hash: Option<String> = sqlx::query_scalar("SELECT password_hash FROM users WHERE id = ?")
+        .bind(user_id)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(db_error)?;
+    let ok = !password.is_empty()
+        && crate::auth::verify_password_blocking(password.to_string(), hash.unwrap_or_else(|| crate::auth::DUMMY_HASH.to_string())).await;
+    if ok {
+        attempt.succeed();
+        Ok(())
+    } else {
+        attempt.fail();
+        Err(wrong_password())
+    }
+}
+
+// POST /api/auth/mfa/setup {password}
 /// A new secret to add to the app; two-factor sign-in is on only once a
 /// code from it is confirmed. Starting again replaces an unconfirmed secret.
-pub async fn setup(user: AuthenticatedUser, State(state): State<Arc<SignalingState>>) -> Result<Response, ApiError> {
+/// The account password is asked again (`wrong_password` when wrong).
+pub async fn setup(
+    user: AuthenticatedUser,
+    State(state): State<Arc<SignalingState>>,
+    Json(req): Json<SetupRequest>,
+) -> Result<Response, ApiError> {
     if is_enabled(&state.db, &user.user_id).await.map_err(db_error)? {
         return Err(err(StatusCode::CONFLICT, "Two-factor sign-in is already on"));
     }
+    check_own_password(&state, &user.user_id, &req.password).await?;
     let mut secret = [0u8; 20];
     getrandom::fill(&mut secret).expect("OS random source unavailable");
     let username: Option<String> = sqlx::query_scalar("SELECT username FROM users WHERE id = ?")
@@ -583,9 +650,9 @@ pub async fn enable(
 ) -> Result<Response, ApiError> {
     let now = Instant::now();
     let key = user_key(&user.user_id);
-    if state.mfa.user_limit.is_blocked(&key, now) {
+    let Some(attempt) = state.mfa.user_limit.try_begin(&key, now) else {
         return Err(too_many());
-    }
+    };
     let Some((stored, _)) = secret_row(&state.db, &user.user_id, false).await.map_err(db_error)? else {
         if is_enabled(&state.db, &user.user_id).await.map_err(db_error)? {
             return Err(err(StatusCode::CONFLICT, "Two-factor sign-in is already on"));
@@ -595,9 +662,10 @@ pub async fn enable(
     let step = open(&MFA_KEY, &user.user_id, &stored)
         .and_then(|secret| check_code(&secret, req.code.as_deref().unwrap_or(""), now_secs(), None));
     let Some(step) = step else {
-        state.mfa.user_limit.record_failure(&key, now);
+        attempt.fail();
         return Err(err(StatusCode::BAD_REQUEST, "Wrong code"));
     };
+    attempt.succeed();
     let done = sqlx::query(
         "UPDATE user_mfa SET enabled = 1, last_step = ?, enabled_at = datetime('now') WHERE user_id = ? AND enabled = 0 AND secret = ?",
     )
@@ -624,9 +692,9 @@ pub async fn disable(
 ) -> Result<Response, ApiError> {
     let now = Instant::now();
     let key = user_key(&user.user_id);
-    if state.mfa.user_limit.is_blocked(&key, now) {
+    let Some(attempt) = state.mfa.user_limit.try_begin(&key, now) else {
         return Err(too_many());
-    }
+    };
     if !is_enabled(&state.db, &user.user_id).await.map_err(db_error)? {
         return Err(err(StatusCode::BAD_REQUEST, "Two-factor sign-in is not on"));
     }
@@ -646,9 +714,10 @@ pub async fn disable(
             .await
             .map_err(db_error)?;
     if !factor_ok {
-        state.mfa.user_limit.record_failure(&key, now);
+        attempt.fail();
         return Err(err(StatusCode::BAD_REQUEST, "Wrong password or code"));
     }
+    attempt.succeed();
     remove(&state.db, &user.user_id).await.map_err(db_error)?;
     state.mfa.user_limit.reset(&key);
     // Every session ends (one may have been signed in by whoever had the
@@ -671,16 +740,17 @@ pub async fn regenerate_recovery_codes(
 ) -> Result<Response, ApiError> {
     let now = Instant::now();
     let key = user_key(&user.user_id);
-    if state.mfa.user_limit.is_blocked(&key, now) {
+    let Some(attempt) = state.mfa.user_limit.try_begin(&key, now) else {
         return Err(too_many());
-    }
+    };
     if !is_enabled(&state.db, &user.user_id).await.map_err(db_error)? {
         return Err(err(StatusCode::BAD_REQUEST, "Two-factor sign-in is not on"));
     }
     if !use_code(&state.db, &user.user_id, req.code.as_deref().unwrap_or("")).await.map_err(db_error)? {
-        state.mfa.user_limit.record_failure(&key, now);
+        attempt.fail();
         return Err(err(StatusCode::BAD_REQUEST, "Wrong code"));
     }
+    attempt.succeed();
     let codes = replace_recovery_codes(&state.db, &user.user_id).await.map_err(db_error)?;
     state.mfa.user_limit.reset(&key);
     info!("User {} made new recovery codes", user.username);
@@ -883,7 +953,7 @@ mod tests {
 
     /// Sets alice up with two-factor sign-in; returns her secret and recovery codes.
     async fn turn_on(state: &Arc<SignalingState>) -> (Vec<u8>, Vec<String>) {
-        let (s, v) = res(setup(alice(), State(state.clone())).await).await;
+        let (s, v) = res(setup(alice(), State(state.clone()), Json(SetupRequest { password: "right-pw".into() })).await).await;
         assert_eq!(s, StatusCode::OK);
         let secret = totp_rs::Secret::try_from_base32(v["secret"].as_str().unwrap()).unwrap().as_bytes().to_vec();
         assert_eq!(secret.len(), 20);
@@ -1159,8 +1229,8 @@ mod tests {
     #[tokio::test]
     async fn setup_again_replaces_an_unconfirmed_secret_only() {
         let state = state_with_alice().await;
-        let (_, v1) = res(setup(alice(), State(state.clone())).await).await;
-        let (_, v2) = res(setup(alice(), State(state.clone())).await).await;
+        let (_, v1) = res(setup(alice(), State(state.clone()), Json(SetupRequest { password: "right-pw".into() })).await).await;
+        let (_, v2) = res(setup(alice(), State(state.clone()), Json(SetupRequest { password: "right-pw".into() })).await).await;
         assert_ne!(v1["secret"], v2["secret"]);
         // A code from the first secret no longer turns it on.
         let first = totp_rs::Secret::try_from_base32(v1["secret"].as_str().unwrap()).unwrap().as_bytes().to_vec();
@@ -1168,7 +1238,61 @@ mod tests {
         assert_eq!(s, StatusCode::BAD_REQUEST);
         let state2 = state_with_alice().await;
         turn_on(&state2).await;
-        let (s, _) = res(setup(alice(), State(state2.clone())).await).await;
+        let (s, _) = res(setup(alice(), State(state2.clone()), Json(SetupRequest { password: "right-pw".into() })).await).await;
         assert_eq!(s, StatusCode::CONFLICT);
+    }
+
+    /// Starting two-factor set-up asks for the account password again; a
+    /// wrong one is 403 `wrong_password` (not 401: that means "signed out").
+    #[tokio::test]
+    async fn setup_needs_the_password() {
+        let state = state_with_alice().await;
+        for pw in ["", "wrong"] {
+            let (s, v) = res(setup(alice(), State(state.clone()), Json(SetupRequest { password: pw.into() })).await).await;
+            assert_eq!(s, StatusCode::FORBIDDEN);
+            assert_eq!(v["code"], "wrong_password");
+        }
+        let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM user_mfa").fetch_one(&state.db).await.unwrap();
+        assert_eq!(n, 0, "no secret made");
+        // Wrong passwords are limited like wrong codes.
+        for _ in 0..8 {
+            let _ = setup(alice(), State(state.clone()), Json(SetupRequest { password: "wrong".into() })).await;
+        }
+        let (s, _) = res(setup(alice(), State(state.clone()), Json(SetupRequest { password: "right-pw".into() })).await).await;
+        assert_eq!(s, StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    /// Codes sent at once, over several pending sign-ins of one user: at
+    /// most the per-user limit of them are checked.
+    #[tokio::test]
+    async fn codes_at_once_are_limited_per_user() {
+        let state = state_with_alice().await;
+        turn_on(&state).await;
+        let mut tokens = Vec::new();
+        for i in 0..3 {
+            let (_, v) = password_login(&state, &format!("10.0.1.{i}"), "right-pw").await;
+            tokens.push(v["mfa_token"].as_str().unwrap().to_string());
+        }
+        let tries = (0..60).map(|i| {
+            let (state, token) = (state.clone(), tokens[i % 3].clone());
+            async move { mfa_login(&state, &format!("10.0.2.{i}"), &token, Some("000000"), None).await.0 }
+        });
+        let codes = futures_util::future::join_all(tries).await;
+        let checked = codes.iter().filter(|c| **c == StatusCode::UNAUTHORIZED).count();
+        assert!(checked <= 10, "{checked} codes were checked");
+    }
+
+    #[test]
+    fn pending_sign_ins_per_user_are_capped() {
+        let state = MfaState::default();
+        let t0 = Instant::now();
+        let tokens: Vec<String> = (0..PENDING_MAX_PER_USER + 2).map(|i| state.issue("u1", t0 + Duration::from_millis(i as u64))).collect();
+        let live = tokens.iter().filter(|t| state.peek(t, t0).is_some()).count();
+        assert_eq!(live, PENDING_MAX_PER_USER);
+        // The newest are the ones kept; other users are not touched.
+        assert!(state.peek(tokens.last().unwrap(), t0).is_some());
+        assert!(state.peek(&tokens[0], t0).is_none());
+        let other = state.issue("u2", t0);
+        assert!(state.peek(&other, t0).is_some());
     }
 }

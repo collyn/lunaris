@@ -34,8 +34,6 @@ use crate::{
 /// The code's file in the data directory.
 pub const CODE_FILE: &str = "setup_code.txt";
 
-/// Shortest password accepted (as for accounts made by an admin, admin.rs).
-const MIN_PASSWORD: usize = 6;
 const MAX_USERNAME: usize = 64;
 
 async fn has_users(db: &SqlitePool) -> Result<bool, sqlx::Error> {
@@ -58,6 +56,11 @@ pub async fn prepare(db: &SqlitePool, code_file: &Path, env_password: Option<Str
         return Ok(());
     }
     if let Some(password) = env_password.filter(|p| !p.trim().is_empty()) {
+        if let Err(why) = crate::auth::check_new_password(&password) {
+            // Still used (refusing would stop a container from starting),
+            // but said: the web console asks for longer ones.
+            warn!("LUNARIS_ADMIN_PASSWORD: {}", why);
+        }
         let hashed = crate::auth::hash_password_blocking(password)
             .await
             .map_err(|e| sqlx::Error::Protocol(format!("Hash error: {e}")))?;
@@ -78,6 +81,9 @@ pub async fn prepare(db: &SqlitePool, code_file: &Path, env_password: Option<Str
         .fetch_optional(db)
         .await?;
     let on_file = std::fs::read_to_string(code_file).ok().map(|c| normalize(&c)).filter(|c| !c.is_empty());
+    if on_file.is_some() {
+        crate::paths::tighten_private(code_file);
+    }
     let still_valid = matches!((&stored, &on_file), (Some(hash), Some(code)) if security::ct_eq(hash, &security::sha256_hex(code)));
     if !still_valid {
         let code = security::random_hex(16);
@@ -142,16 +148,17 @@ pub async fn complete(
     headers: axum::http::HeaderMap,
     Json(req): Json<SetupRequest>,
 ) -> Response {
-    let ip = security::client_ip(addrs.remote.ip(), &headers).to_string();
+    let ip = security::client_limit_key(addrs.remote.ip(), &headers);
     complete_with(&state, &ip, req, &crate::paths::data_file(CODE_FILE)).await
 }
 
 async fn complete_with(state: &SignalingState, ip: &str, req: SetupRequest, code_file: &Path) -> Response {
     let now = std::time::Instant::now();
-    // Wrong codes count as failed sign-ins from this address.
-    if state.login_ip_limit.is_blocked(ip, now) {
+    // Wrong codes count as failed sign-ins from this address; the attempt
+    // is taken before anything is awaited, so requests at once count too.
+    let Some(attempt) = state.login_ip_limit.try_begin(ip, now) else {
         return error(StatusCode::TOO_MANY_REQUESTS, "Too many failed sign-in attempts. Try again in a few minutes.");
-    }
+    };
     match has_users(&state.db).await {
         Ok(true) => return error(StatusCode::CONFLICT, CLOSED),
         Ok(false) => {}
@@ -166,9 +173,10 @@ async fn complete_with(state: &SignalingState, ip: &str, req: SetupRequest, code
         Err(e) => return db_error(e),
     };
     if !matches!(&stored, Some(hash) if security::ct_eq(hash, &code_hash)) {
-        state.login_ip_limit.record_failure(ip, now);
+        attempt.fail();
         return error(StatusCode::UNAUTHORIZED, "Wrong setup code");
     }
+    attempt.succeed();
 
     let username = req.username.trim().to_string();
     if username.is_empty() {
@@ -177,8 +185,8 @@ async fn complete_with(state: &SignalingState, ip: &str, req: SetupRequest, code
     if username.chars().count() > MAX_USERNAME || username.chars().any(char::is_control) {
         return error(StatusCode::BAD_REQUEST, "Choose a shorter username without special characters");
     }
-    if req.password.len() < MIN_PASSWORD {
-        return error(StatusCode::BAD_REQUEST, "Password must be at least 6 characters");
+    if let Err(why) = crate::auth::check_new_password(&req.password) {
+        return error(StatusCode::BAD_REQUEST, why);
     }
     let hashed = match crate::auth::hash_password_blocking(req.password).await {
         Ok(h) => h,
@@ -328,7 +336,7 @@ mod tests {
         let code = env.code();
         // Typed with spaces and capitals.
         let typed = format!(" {} {} ", code[..16].to_uppercase(), &code[16..]);
-        let (status, b) = env.setup("192.0.2.1", &typed, "  boss ", "secret1").await;
+        let (status, b) = env.setup("192.0.2.1", &typed, "  boss ", "secret-one-1").await;
         assert_eq!(status, StatusCode::OK, "{b}");
         assert_eq!(b["username"], "boss");
         assert_eq!(b["role"], "admin");
@@ -341,11 +349,11 @@ mod tests {
         assert_eq!(left, 0);
         // The password works for sign-in.
         let hash: String = sqlx::query_scalar("SELECT password_hash FROM users").fetch_one(&env.state.db).await.unwrap();
-        assert!(crate::auth::verify_password("secret1", &hash));
+        assert!(crate::auth::verify_password("secret-one-1", &hash));
 
         // Closed for good.
         assert!(!env.needed().await);
-        assert_eq!(env.setup("192.0.2.1", &code, "other", "secret2").await.0, StatusCode::CONFLICT);
+        assert_eq!(env.setup("192.0.2.1", &code, "other", "secret-two-2").await.0, StatusCode::CONFLICT);
         // A restart makes no new code.
         prepare(&env.state.db, &env.code_file(), None).await.unwrap();
         assert!(!env.code_file().exists());
@@ -356,11 +364,11 @@ mod tests {
     async fn bad_input_is_refused_without_using_the_code() {
         let env = env(None).await;
         let code = env.code();
-        assert_eq!(env.setup("192.0.2.1", &code, "   ", "secret1").await.0, StatusCode::BAD_REQUEST);
+        assert_eq!(env.setup("192.0.2.1", &code, "   ", "secret-one-1").await.0, StatusCode::BAD_REQUEST);
         assert_eq!(env.setup("192.0.2.1", &code, "boss", "12345").await.0, StatusCode::BAD_REQUEST);
-        assert_eq!(env.setup("192.0.2.1", &code, &"x".repeat(65), "secret1").await.0, StatusCode::BAD_REQUEST);
+        assert_eq!(env.setup("192.0.2.1", &code, &"x".repeat(65), "secret-one-1").await.0, StatusCode::BAD_REQUEST);
         assert!(env.users().await.is_empty());
-        assert_eq!(env.setup("192.0.2.1", &code, "boss", "secret1").await.0, StatusCode::OK);
+        assert_eq!(env.setup("192.0.2.1", &code, "boss", "secret-one-1").await.0, StatusCode::OK);
     }
 
     #[tokio::test]
@@ -368,13 +376,13 @@ mod tests {
         let env = env(None).await;
         let code = env.code();
         for _ in 0..10 {
-            assert_eq!(env.setup("192.0.2.9", "00000000000000000000000000000000", "boss", "secret1").await.0, StatusCode::UNAUTHORIZED);
+            assert_eq!(env.setup("192.0.2.9", "00000000000000000000000000000000", "boss", "secret-one-1").await.0, StatusCode::UNAUTHORIZED);
         }
         // Blocked now, even with the right code.
-        assert_eq!(env.setup("192.0.2.9", &code, "boss", "secret1").await.0, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(env.setup("192.0.2.9", &code, "boss", "secret-one-1").await.0, StatusCode::TOO_MANY_REQUESTS);
         assert!(env.users().await.is_empty());
         // Another address is not.
-        assert_eq!(env.setup("192.0.2.10", &code, "boss", "secret1").await.0, StatusCode::OK);
+        assert_eq!(env.setup("192.0.2.10", &code, "boss", "secret-one-1").await.0, StatusCode::OK);
     }
 
     #[tokio::test]
@@ -382,8 +390,8 @@ mod tests {
         let env = env(None).await;
         let code = env.code();
         let (a, b) = tokio::join!(
-            env.setup("192.0.2.1", &code, "first", "secret1"),
-            env.setup("192.0.2.2", &code, "second", "secret2"),
+            env.setup("192.0.2.1", &code, "first", "secret-one-1"),
+            env.setup("192.0.2.2", &code, "second", "secret-two-2"),
         );
         let mut statuses = [a.0, b.0];
         statuses.sort();

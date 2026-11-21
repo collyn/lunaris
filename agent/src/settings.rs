@@ -48,11 +48,24 @@ pub struct Channel {
     /// That server proved the access password (always for the server this
     /// agent connects to itself).
     pub trusted: bool,
+    /// On this computer (`lunaris-agent set`), not from any server: only
+    /// this may widen what remote people reach (`remote_widening`).
+    pub local: bool,
 }
 
 impl Channel {
     pub fn server() -> Self {
-        Self { via: "the server".into(), link: false, trusted: true }
+        Self { via: "the server".into(), link: false, trusted: true, local: false }
+    }
+
+    /// A server that connected by this computer's address (direct.rs).
+    pub fn link(via: String, trusted: bool) -> Self {
+        Self { via, link: true, trusted, local: false }
+    }
+
+    /// `lunaris-agent set` on this computer.
+    pub fn local() -> Self {
+        Self { via: "this computer".into(), link: false, trusted: true, local: true }
     }
 }
 
@@ -109,10 +122,38 @@ fn invalid(text: &str) -> Refusal {
 
 const LINKED: &str = "This computer was added to the server by its address: direct access (on, port, password) cannot be changed from there, or the server could not reach it again. Change it on the computer.";
 
+const LOCAL_ONLY_FILES: &str = "File transfer can be given the whole disk only on that computer (`lunaris-agent set file-access full`)";
+const LOCAL_ONLY_SESSIONS: &str = "Sessions through the server are asked about at that computer: only the person there can change that (`lunaris-agent set server-sessions trusted`)";
+
+/// A change from a server that would give remote people more than the
+/// person here chose: the whole disk (or a folder outside the home folder)
+/// for file transfer, or sessions through the server let in without asking
+/// when the person here asked to be asked. Values that stay as they are
+/// pass (the web page sends the whole form).
+fn remote_widening(config: &AgentConfig, change: &AgentSettingsChange) -> Option<&'static str> {
+    if let Some(access) = change.file_access.as_deref().map(str::trim) {
+        let current = crate::file_access_setting(config);
+        if access != current && !crate::file_access_within_home(access) {
+            return Some(LOCAL_ONLY_FILES);
+        }
+    }
+    if let Some(mode) = change.server_sessions.as_deref().map(str::trim) {
+        if config.server_sessions.trim() == "ask" && mode != "ask" {
+            return Some(LOCAL_ONLY_SESSIONS);
+        }
+    }
+    None
+}
+
 /// Makes `change` in `config`, checked as the apps check it.
 pub fn apply_change(config: &mut AgentConfig, change: &AgentSettingsChange, channel: &Channel) -> Result<(), Refusal> {
     if let Some(error) = common::settings_change_error(change, config.direct_port) {
         return Err(invalid(&error));
+    }
+    if !channel.local {
+        if let Some(why) = remote_widening(config, change) {
+            return Err((common::SETTINGS_NOT_ALLOWED, why.to_string()));
+        }
     }
     if channel.link
         && (change.direct_enabled == Some(false) || change.direct_port.is_some_and(|port| port != config.direct_port))
@@ -169,7 +210,13 @@ pub fn apply_password(config: &mut AgentConfig, password: Option<&SecretString>,
     }
     config.direct_password = match password {
         Some(SecretString(password)) if common::valid_access_password(password) => password.clone(),
-        Some(_) => return Err(invalid("The password needs 6 to 128 characters, without spaces at either end")),
+        Some(_) => {
+            return Err(invalid(&format!(
+                "The password needs {} to {} characters, without spaces at either end",
+                common::MIN_ACCESS_PASSWORD_CHARS,
+                common::MAX_ACCESS_PASSWORD_CHARS
+            )))
+        }
         None => crate::pairing::generate_direct_password(),
     };
     Ok(())
@@ -186,6 +233,22 @@ pub fn reply(request_id: String, request: &SettingsRequest, requester: Option<&s
         };
         AgentMessage::SettingsAnswer { request_id: request_id.clone(), settings, password, error, code }
     };
+    // A server let in without the password is anyone who knows this
+    // address: it is not told this computer's settings (nor may it change
+    // them, `allowed`). Before the file is even read.
+    if channel.link && !channel.trusted {
+        info!(
+            "Settings: {:?} asked for by {} through {}: refused (that server did not prove the access password)",
+            request,
+            requester.unwrap_or("someone"),
+            channel.via
+        );
+        return answer(
+            None,
+            None,
+            Some((common::SETTINGS_NOT_ALLOWED, "This computer's settings are shown only to a server that has its access password".into())),
+        );
+    }
     // Read, change and save under the lock sources.rs writes the same file
     // with, so a source change at the same moment is not lost.
     let _writing = crate::connector::sources::CONFIG_WRITES.lock().unwrap_or_else(|e| e.into_inner());
@@ -291,7 +354,7 @@ mod tests {
             approve_mode: Some("click".into()),
             server_sessions: Some("ask".into()),
             allow_clipboard: Some(false),
-            file_access: Some("full".into()),
+            file_access: Some("home".into()),
             rustdesk_enabled: Some(true),
             rustdesk_port: Some(21120),
             wayland_capture: Some("portal".into()),
@@ -303,9 +366,9 @@ mod tests {
         assert!(settings.remote_changes && settings.direct_enabled && !settings.allow_clipboard);
         assert_eq!((settings.direct_port, settings.rustdesk_port), (9100, 21120));
         assert_eq!((settings.approve_mode.as_str(), settings.server_sessions.as_str()), ("click", "ask"));
-        assert_eq!((settings.file_access.as_str(), settings.wayland_capture.as_str()), ("full", "portal"));
+        assert_eq!((settings.file_access.as_str(), settings.wayland_capture.as_str()), ("home", "portal"));
         let saved = crate::pairing::load_config(&path).unwrap();
-        assert_eq!((saved.direct_port, saved.rustdesk_port, saved.file_access.as_str()), (9100, Some(21120), "full"));
+        assert_eq!((saved.direct_port, saved.rustdesk_port, saved.file_access.as_str()), (9100, Some(21120), "home"));
         // The switch itself stays as the person set it.
         assert!(saved.allow_server_settings);
 
@@ -315,11 +378,14 @@ mod tests {
         assert!(settings.is_some() && password.is_none());
         let random = crate::pairing::load_config(&path).unwrap().direct_password;
         assert!(random != "old-password" && random.len() == 14);
-        let set = SettingsRequest::NewPassword { password: Some(SecretString("my own pw".into())) };
+        let set = SettingsRequest::NewPassword { password: Some(SecretString("my own password".into())) };
         assert!(unpack(reply("r".into(), &set, None, &Channel::server(), &path)).2.is_none());
-        assert_eq!(crate::pairing::load_config(&path).unwrap().direct_password, "my own pw");
-        let short = SettingsRequest::NewPassword { password: Some(SecretString("abc".into())) };
-        assert_eq!(unpack(reply("r".into(), &short, None, &Channel::server(), &path)).2.as_deref(), Some(common::SETTINGS_INVALID));
+        assert_eq!(crate::pairing::load_config(&path).unwrap().direct_password, "my own password");
+        for short in ["abc", "my own pw", "elevenchars"] {
+            let short = SettingsRequest::NewPassword { password: Some(SecretString(short.into())) };
+            assert_eq!(unpack(reply("r".into(), &short, None, &Channel::server(), &path)).2.as_deref(), Some(common::SETTINGS_INVALID));
+        }
+        assert_eq!(crate::pairing::load_config(&path).unwrap().direct_password, "my own password");
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -345,7 +411,7 @@ mod tests {
     fn a_server_linked_by_address_cannot_cut_itself_off() {
         let mut c = base(true);
         c.direct_enabled = true;
-        let link = Channel { via: "link".into(), link: true, trusted: true };
+        let link = Channel::link("link".into(), true);
         for change in [
             AgentSettingsChange { direct_enabled: Some(false), ..Default::default() },
             AgentSettingsChange { direct_port: Some(9999), ..Default::default() },
@@ -356,8 +422,70 @@ mod tests {
         assert!(apply_change(&mut c, &AgentSettingsChange { allow_clipboard: Some(false), ..Default::default() }, &link).is_ok());
         assert!(c.direct_enabled && !c.allow_clipboard);
         // One let in without the password may only read.
-        let untrusted = Channel { via: "link".into(), link: true, trusted: false };
+        let untrusted = Channel::link("link".into(), false);
         assert!(!view(&c, &untrusted).remote_changes && view(&c, &link).remote_changes);
+    }
+
+    #[test]
+    fn a_saved_short_password_keeps_working() {
+        // Saved when 6 characters were enough: loaded and kept as it is.
+        let (dir, path) = temp_config("short-pw", &base(true));
+        let c = crate::pairing::load_config(&path).unwrap();
+        assert_eq!(c.direct_password, "old-password");
+        let mut short = c.clone();
+        short.direct_password = "abc123".into();
+        crate::pairing::save_config(&short, &path).unwrap();
+        // Other changes leave it alone.
+        let change = SettingsRequest::Change { change: AgentSettingsChange { allow_clipboard: Some(false), ..Default::default() } };
+        assert!(unpack(reply("r".into(), &change, None, &Channel::server(), &path)).2.is_none());
+        assert_eq!(crate::pairing::load_config(&path).unwrap().direct_password, "abc123");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_server_cannot_widen_what_remote_people_reach() {
+        let mut c = base(true);
+        let server = Channel::server();
+        let full = AgentSettingsChange { file_access: Some("full".into()), ..Default::default() };
+        let (code, _) = apply_change(&mut c, &full, &server).unwrap_err();
+        assert_eq!(code, common::SETTINGS_NOT_ALLOWED);
+        assert_eq!(c.file_access, "");
+        // Narrowing, or sending back what is set, is fine.
+        c.file_access = "full".into();
+        apply_change(&mut c, &full, &server).unwrap();
+        assert_eq!(c.file_access, "full", "an existing \"full\" stays");
+        apply_change(&mut c, &AgentSettingsChange { file_access: Some("home".into()), ..Default::default() }, &server).unwrap();
+        assert_eq!(c.file_access, "home");
+
+        // "ask" is changed back only here.
+        c.server_sessions = "ask".into();
+        let trusted = AgentSettingsChange { server_sessions: Some("trusted".into()), ..Default::default() };
+        assert_eq!(apply_change(&mut c, &trusted, &server).unwrap_err().0, common::SETTINGS_NOT_ALLOWED);
+        assert_eq!(c.server_sessions, "ask");
+        apply_change(&mut c, &AgentSettingsChange { server_sessions: Some("ask".into()), ..Default::default() }, &server).unwrap();
+        let mut t = base(true);
+        apply_change(&mut t, &AgentSettingsChange { server_sessions: Some("ask".into()), ..Default::default() }, &server).unwrap();
+        assert_eq!(t.server_sessions, "ask", "asking more is allowed from the server");
+        // A trusted link is a server too.
+        let link = Channel::link("link".into(), true);
+        assert!(apply_change(&mut c, &trusted, &link).is_err());
+        // On this computer both are possible.
+        apply_change(&mut c, &trusted, &Channel::local()).unwrap();
+        apply_change(&mut c, &full, &Channel::local()).unwrap();
+        assert_eq!((c.server_sessions.as_str(), c.file_access.as_str()), ("trusted", "full"));
+    }
+
+    #[test]
+    fn a_link_without_the_password_is_not_told_the_settings() {
+        let (dir, path) = temp_config("untrusted", &base(true));
+        let untrusted = Channel::link("link".into(), false);
+        let (settings, password, code) = unpack(reply("r".into(), &SettingsRequest::Get, None, &untrusted, &path));
+        assert!(settings.is_none() && password.is_none());
+        assert_eq!(code.as_deref(), Some(common::SETTINGS_NOT_ALLOWED));
+        // One with the password still is.
+        let (settings, _, code) = unpack(reply("r".into(), &SettingsRequest::Get, None, &Channel::link("link".into(), true), &path));
+        assert!(settings.is_some() && code.is_none());
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

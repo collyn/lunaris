@@ -54,6 +54,10 @@ urlencoding = "2.1"
 # links.rs: the password proof (HMAC-SHA256) and nonces of the direct-connection
 # handshake, same backend as tokio-rustls above.
 ring = "0.17"
+# links.rs: the v2 password check of that handshake (SPAKE2 over Ed25519, the
+# same as agent/src/direct/handshake.rs); rand_core hands it ring's OS random.
+spake2 = { version = "0.5.0-pre.0", default-features = false }
+rand_core = { version = "0.10", default-features = false }
 # Secrets (JWT key, agent token) from the OS random source; agent keys stored
 # as SHA-256; tokens and keys compared in constant time.
 getrandom = "0.4"

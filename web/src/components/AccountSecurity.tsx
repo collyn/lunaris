@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { t } from '../i18n';
 import {
+  accountErrorMessage,
   groupSecret,
   isCompleteTotp,
   isPlausibleRecoveryCode,
@@ -39,7 +40,9 @@ type View =
   | { kind: 'codes'; codes: string[]; fresh: 'enabled' | 'regenerated' }
   | { kind: 'on'; left: number }
   | { kind: 'disable'; left: number }
-  | { kind: 'regenerate'; left: number };
+  | { kind: 'regenerate'; left: number }
+  /** Asking before every session of this account is signed out. */
+  | { kind: 'logoutAll'; back: View };
 
 const ShieldIcon = () => (
   <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -59,6 +62,7 @@ export function AccountSecurity({ token, username, server, apiBase, onClose, onT
   const [copied, setCopied] = useState<string | null>(null);
   const [showUrl, setShowUrl] = useState(false);
   const codeRef = useRef<HTMLInputElement>(null);
+  const passwordRef = useRef<HTMLInputElement>(null);
 
   const call = async (method: string, path: string, body?: unknown): Promise<{ ok: boolean; data: any }> => {
     const response = await fetch(`${apiBase()}${path}`, {
@@ -99,6 +103,7 @@ export function AccountSecurity({ token, username, server, apiBase, onClose, onT
 
   useEffect(() => {
     if (view.kind === 'setup' || view.kind === 'disable' || view.kind === 'regenerate') codeRef.current?.focus();
+    if (view.kind === 'off') passwordRef.current?.focus();
   }, [view.kind, useRecovery]);
 
   useEffect(() => {
@@ -113,12 +118,31 @@ export function AccountSecurity({ token, username, server, apiBase, onClose, onT
     try { await fn(); } catch { setError(t('Connection error')); } finally { setBusy(false); }
   };
 
-  const startSetup = () => run(async () => {
-    const { ok, data } = await call('POST', '/api/auth/mfa/setup');
-    if (!ok) { setError(t(data.error || 'Could not start')); return; }
-    resetFields();
-    setShowUrl(false);
-    setView({ kind: 'setup', setup: { secret: data.secret, otpauth_url: data.otpauth_url, qr: data.qr || null } });
+  // The account password proves it is the account's owner, not someone at
+  // an unlocked browser. A server that does not ask for it ignores it.
+  const startSetup = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!password) { setError(t('Enter your password')); return; }
+    run(async () => {
+      const { ok, data } = await call('POST', '/api/auth/mfa/setup', { password });
+      if (!ok) { setError(t(accountErrorMessage(data, 'Could not start'))); setPassword(''); return; }
+      resetFields();
+      setShowUrl(false);
+      setView({ kind: 'setup', setup: { secret: data.secret, otpauth_url: data.otpauth_url, qr: data.qr || null } });
+    });
+  };
+
+  // Ends every session of this account (other browsers, the desktop app),
+  // then this one.
+  const logoutAll = () => run(async () => {
+    const response = await fetch(`${apiBase()}/api/auth/logout-all`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${token}` },
+    });
+    if (response.ok || response.status === 401) { onSessionEnded(); return; }
+    if (response.status === 404) { setError(t('This server cannot sign out every session yet')); return; }
+    const data = await response.json().catch(() => ({}));
+    setError(t(accountErrorMessage(data, 'Could not sign out everywhere')));
   });
 
   const confirmSetup = (e: React.FormEvent) => {
@@ -155,7 +179,7 @@ export function AccountSecurity({ token, username, server, apiBase, onClose, onT
         ? { password, recovery_code: normalizeRecoveryInput(recovery) }
         : { password, code };
       const { ok, data } = await call('POST', '/api/auth/mfa/disable', body);
-      if (!ok) { setError(t(data.error || 'Wrong password or code')); setCode(''); return; }
+      if (!ok) { setError(t(accountErrorMessage(data, 'Wrong password or code'))); setCode(''); return; }
       if (typeof data.token === 'string' && data.token) onToken(data.token);
       resetFields();
       setView({ kind: 'off' });
@@ -234,6 +258,12 @@ export function AccountSecurity({ token, username, server, apiBase, onClose, onT
     </div>
   );
 
+  const logoutAllButton = (from: View) => (
+    <button type="button" className="btn-secondary" onClick={() => { resetFields(); setView({ kind: 'logoutAll', back: from }); }} disabled={busy}>
+      {t('Sign out everywhere')}
+    </button>
+  );
+
   let body: React.ReactNode = null;
   switch (view.kind) {
     case 'loading':
@@ -241,19 +271,25 @@ export function AccountSecurity({ token, username, server, apiBase, onClose, onT
       break;
     case 'off':
       body = (
-        <>
+        <form onSubmit={startSetup} className="mfa-form">
           {header(t('Two-factor sign-in'), t('Off'))}
           <div className="mfa-body">
             <p>{t('Besides your password, signing in will ask for a 6-digit code from an authenticator app on your phone (Google Authenticator, Microsoft Authenticator, Aegis, 1Password…). Someone who learns your password still cannot sign in.')}</p>
+            <input type="text" name="username" autoComplete="username" value={username} readOnly hidden />
+            <div className="form-group">
+              <label htmlFor="mfaSetupPassword">{t('Your password, to turn it on')}</label>
+              <input ref={passwordRef} id="mfaSetupPassword" type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} disabled={busy} />
+            </div>
             {errorBanner}
           </div>
-          <div className="host-confirm-actions">
+          <div className="host-confirm-actions mfa-actions-wrap">
+            {logoutAllButton(view)}
             <button type="button" className="btn-secondary" onClick={onClose} disabled={busy}>{t('Close')}</button>
-            <button type="button" className="btn-primary" onClick={startSetup} disabled={busy}>
+            <button type="submit" className="btn-primary" disabled={busy || !password}>
               {busy ? <div className="inline-loader" /> : t('Turn on')}
             </button>
           </div>
-        </>
+        </form>
       );
       break;
     case 'setup': {
@@ -339,6 +375,7 @@ export function AccountSecurity({ token, username, server, apiBase, onClose, onT
             {errorBanner}
           </div>
           <div className="host-confirm-actions mfa-actions-wrap">
+            {logoutAllButton(view)}
             <button type="button" className="btn-secondary" onClick={() => { resetFields(); setView({ kind: 'regenerate', left: view.left }); }}>{t('New recovery codes')}</button>
             <button type="button" className="btn-danger" onClick={() => { resetFields(); setView({ kind: 'disable', left: view.left }); }}>{t('Turn off')}</button>
           </div>
@@ -404,6 +441,22 @@ export function AccountSecurity({ token, username, server, apiBase, onClose, onT
         </form>
       );
       break;
+    case 'logoutAll': {
+      const back = view.back;
+      body = (
+        <>
+          {header(t('Sign out everywhere?'), t('Every session of this account ends: other browsers, the desktop app and this browser. Sign in again afterwards.'))}
+          <div className="mfa-body">{errorBanner}</div>
+          <div className="host-confirm-actions">
+            <button type="button" className="btn-secondary" onClick={() => { resetFields(); setView(back); }} disabled={busy}>{t('Back')}</button>
+            <button type="button" className="btn-danger" onClick={logoutAll} disabled={busy}>
+              {busy ? <div className="inline-loader" /> : t('Sign out everywhere')}
+            </button>
+          </div>
+        </>
+      );
+      break;
+    }
   }
 
   return (

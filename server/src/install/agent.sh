@@ -7,7 +7,12 @@
 # Installs the Lunaris agent of this server's version from GitHub Releases
 # (the .deb with apt, otherwise the AppImage in /opt/lunaris-agent) and joins
 # it to the server with the install token (used once, then the agent signs in
-# with its own key). The agent has no window; it runs as a service:
+# with its own key). Every downloaded file is checked before it is installed:
+# its SHA-256 must be the one in the release's SHA256SUMS, whose Ed25519
+# signature is checked against the Lunaris release key (by the server, which
+# then writes the expected values into this script, or else here with
+# OpenSSL 3); anything else stops the installation. The agent has no window;
+# it runs as a service:
 #   - desktop: the systemd user service lunaris-agent of the desktop user
 #     (shares that user's screen), plus the lunaris-capture service (root:
 #     unattended capture on Wayland without the portal prompt) and, with apt,
@@ -33,6 +38,13 @@ set -euo pipefail
 SERVER_URL='@@SERVER_URL@@'
 VERSION='@@VERSION@@'
 CERT_SHA256='@@CERT_SHA256@@'
+# The Lunaris release signing key (Ed25519, the base64 of a PEM public key).
+RELEASE_KEY='@@RELEASE_KEY@@'
+# The SHA-256 of the release files, written in by the server after it
+# checked the release's signed SHA256SUMS (empty: checked here instead).
+PINNED_AGENT_DEB='@@SHA256_AGENT_DEB@@'
+PINNED_HELPER_DEB='@@SHA256_HELPER_DEB@@'
+PINNED_APPIMAGE='@@SHA256_APPIMAGE@@'
 RELEASE_BASE="https://github.com/collyn/lunaris/releases/download/v${VERSION}"
 INSTALL_DIR=/opt/lunaris-agent
 SYSTEM_DATA=/var/lib/lunaris-agent
@@ -58,7 +70,7 @@ while [ $# -gt 0 ]; do
         --desktop) MODE=desktop; shift ;;
         --no-helper) HELPER=0; shift ;;
         --appimage) FORCE_APPIMAGE=1; shift ;;
-        -h|--help) sed -n '2,31p' "$0" 2>/dev/null || true; exit 0 ;;
+        -h|--help) sed -n '2,35p' "$0" 2>/dev/null || true; exit 0 ;;
         *) die "unknown option: $1" ;;
     esac
 done
@@ -70,6 +82,7 @@ done
 [ "$(uname -m)" = x86_64 ] || die "only x86_64 (amd64) computers are supported, this one is $(uname -m)"
 [ "$(id -u)" -eq 0 ] || die "run as root: curl -fsSL <url>/install/agent.sh | sudo LUNARIS_INSTALL_TOKEN=<token> bash -s"
 command -v curl >/dev/null || die "curl is needed"
+command -v sha256sum >/dev/null || die "sha256sum is needed (coreutils)"
 SYSTEMD=0
 if [ -d /run/systemd/system ] && command -v systemctl >/dev/null; then SYSTEMD=1; fi
 
@@ -123,11 +136,52 @@ download() {
         || die "cannot download $RELEASE_BASE/$1 (is version $VERSION released?)"
 }
 
+# The release's SHA256SUMS, checked once: its signature with the release key
+# (OpenSSL 3 can check Ed25519; without it only the HTTPS download from
+# GitHub vouches for the list) and its first line, which names the version.
+SUMS=""
+load_sums() {
+    [ -n "$SUMS" ] && return 0
+    SUMS="$tmp/SHA256SUMS"
+    curl -fsSL --proto '=https' --tlsv1.2 --retry 3 -o "$SUMS" "$RELEASE_BASE/SHA256SUMS" \
+        || die "cannot download $RELEASE_BASE/SHA256SUMS: the files can't be checked, nothing is installed"
+    if [ -n "$RELEASE_KEY" ] && command -v openssl >/dev/null && openssl pkeyutl -help 2>&1 | grep -q -- '-rawin'; then
+        curl -fsSL --proto '=https' --tlsv1.2 --retry 3 -o "$tmp/SHA256SUMS.sig" "$RELEASE_BASE/SHA256SUMS.sig" \
+            || die "cannot download $RELEASE_BASE/SHA256SUMS.sig: the files can't be checked, nothing is installed"
+        printf -- '-----BEGIN PUBLIC KEY-----\n%s\n-----END PUBLIC KEY-----\n' "$RELEASE_KEY" > "$tmp/release-key.pem"
+        openssl pkeyutl -verify -pubin -inkey "$tmp/release-key.pem" -rawin \
+            -in "$SUMS" -sigfile "$tmp/SHA256SUMS.sig" >/dev/null 2>&1 \
+            || die "the signature of SHA256SUMS of release $VERSION is not valid: nothing is installed"
+        info "SHA256SUMS: signature checked"
+    else
+        echo "warning: OpenSSL 3 is not installed: the release's checksum list is trusted for coming from GitHub over HTTPS, its signature is not checked" >&2
+    fi
+    [ "$(head -n 1 "$SUMS")" = "# lunaris $VERSION" ] \
+        || die "SHA256SUMS is not the list of release $VERSION: nothing is installed"
+}
+
+# Refuses file $2 (release file $1) unless its SHA-256 is the expected one:
+# $3 (written in by the server), or else its line in SHA256SUMS.
+check_file() {
+    local want got
+    if [ -n "$3" ]; then
+        want="$3"
+    else
+        load_sums
+        want="$(awk -v f="$1" '($2 == f || $2 == "*" f) && $1 ~ /^[0-9a-f]+$/ && length($1) == 64 { print $1; exit }' "$SUMS")"
+    fi
+    [ -n "$want" ] || die "$1 is not in the checksum list of release $VERSION: nothing is installed"
+    got="$(sha256sum "$2" | cut -d' ' -f1)"
+    [ "$got" = "$want" ] || die "$1 does not match its checksum (expected $want, got $got): nothing is installed"
+    info "$1: checksum OK"
+}
+
 if [ "$FORCE_APPIMAGE" -eq 0 ] && command -v apt-get >/dev/null && command -v dpkg >/dev/null; then
     debs=("lunaris-agent_${VERSION}_amd64.deb")
     files=()
     for deb in "${debs[@]}"; do
         download "$deb" "$tmp/$deb"
+        check_file "$deb" "$tmp/$deb" "$PINNED_AGENT_DEB"
         chmod 644 "$tmp/$deb"
         files+=("$tmp/$deb")
     done
@@ -136,6 +190,7 @@ if [ "$FORCE_APPIMAGE" -eq 0 ] && command -v apt-get >/dev/null && command -v dp
         deb="lunaris-approval-helper_${VERSION}_amd64.deb"
         info "Downloading $deb"
         if curl -fL --proto '=https' --tlsv1.2 --retry 3 --progress-bar -o "$tmp/$deb" "$RELEASE_BASE/$deb"; then
+            check_file "$deb" "$tmp/$deb" "$PINNED_HELPER_DEB"
             chmod 644 "$tmp/$deb"
             debs+=("$deb")
             files+=("$tmp/$deb")
@@ -154,6 +209,7 @@ if [ "$FORCE_APPIMAGE" -eq 0 ] && command -v apt-get >/dev/null && command -v dp
 else
     appimage="lunaris-agent-linux-x86_64.AppImage"
     download "$appimage" "$tmp/$appimage"
+    check_file "$appimage" "$tmp/$appimage" "$PINNED_APPIMAGE"
     info "Installing $INSTALL_DIR/lunaris-agent.AppImage"
     install -d -m 755 "$INSTALL_DIR"
     install -m 755 "$tmp/$appimage" "$INSTALL_DIR/lunaris-agent.AppImage"

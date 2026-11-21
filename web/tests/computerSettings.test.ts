@@ -28,3 +28,12 @@ test('ports are 1024 to 65535', () => {
   for (const ok of [1024, 8091, 65535]) assert.equal(portProblem(ok), false, String(ok));
   for (const bad of [0, 80, 1023, 65536, NaN, 8091.5]) assert.equal(portProblem(bad), true, String(bad));
 });
+
+test('an access password set from the web is 12 to 128 characters', async () => {
+  const { accessPasswordOk } = await import('../src/computerSettings.ts');
+  assert.equal(accessPasswordOk('12345678901'), false, '11 characters');
+  assert.equal(accessPasswordOk('123456789012'), true, '12 characters');
+  assert.equal(accessPasswordOk('x'.repeat(128)), true);
+  assert.equal(accessPasswordOk('x'.repeat(129)), false);
+  assert.equal(accessPasswordOk(' 123456789012'), false, 'a space at the start');
+});

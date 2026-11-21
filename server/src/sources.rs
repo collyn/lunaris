@@ -268,8 +268,9 @@ struct SourceEntry {
     /// has none.
     #[serde(skip_serializing_if = "Option::is_none")]
     group: Option<String>,
-    /// Where it is ("host" or "host:port"), for its card. Left out when its
-    /// agent did not say (from before this) or it has no host field.
+    /// Where it is ("host" or "host:port"), for its card: administrators
+    /// only. Left out when its agent did not say (from before this) or it
+    /// has no host field.
     #[serde(skip_serializing_if = "Option::is_none")]
     address: Option<String>,
     /// The fields of its form that are not secrets, for an edit form:
@@ -334,7 +335,9 @@ pub async fn list_sources(user: crate::auth::AuthenticatedUser, State(state): St
                 name,
                 connector,
                 connector_name,
-                address: values.as_ref().and_then(address_of),
+                // The internal address of an RDP/VNC/... target is for
+                // administrators, as its other fields are.
+                address: values.as_ref().and_then(address_of).filter(|_| admin),
                 values: values.filter(|_| admin),
             }
         })
@@ -857,7 +860,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_source_shows_its_address_to_its_users_and_its_fields_to_administrators() {
+    async fn a_source_shows_its_address_and_its_fields_to_administrators_only() {
         let state = state().await;
         let _h1 = connect(&state, "h1");
         let values: BTreeMap<String, String> = [("host", "192.168.1.5"), ("port", "3390"), ("username", "huy"), ("password", "leaked-pw")]
@@ -881,11 +884,13 @@ mod tests {
         let old = list.as_array().unwrap().iter().find(|s| s["id"] == "old-2").unwrap().clone();
         assert!(old.get("address").is_none() && old.get("values").is_none());
 
-        // A user who may use the computer sees where it is, not its fields.
+        // A user who may use the computer sees neither its fields nor its
+        // internal address.
         let (_, list) = body(list_sources(user("alice"), State(state.clone())).await).await;
         let den = list.as_array().unwrap().iter().find(|s| s["id"] == "den-1").unwrap().clone();
-        assert_eq!(den["address"], "192.168.1.5:3390");
+        assert!(den.get("address").is_none());
         assert!(den.get("values").is_none());
+        assert!(!list.to_string().contains("192.168.1.5"));
 
         // The computer's own addresses (only real ones), kept with its host;
         // an agent that says none leaves them.

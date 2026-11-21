@@ -44,7 +44,7 @@ use tokio_tungstenite::WebSocketStream;
 use tracing::{debug, error, info, warn};
 
 use crate::approval::{self, ApproveMode, Decision, Kind};
-use crate::hub::{from_direct_client, target_of, Hub};
+use crate::hub::{from_direct_client, link_client_id, target_of, with_target, Hub};
 use handshake::Presented;
 
 pub use handshake::{connect, ConnectError, Connected};
@@ -52,6 +52,19 @@ pub use handshake::{connect, ConnectError, Connected};
 /// Failed logins allowed per address before it is locked out for a while.
 const MAX_FAILED_LOGINS: u32 = 5;
 const LOCKOUT: Duration = Duration::from_secs(60);
+/// What a failure costs toward MAX_FAILED_LOGINS, in half failures: a wrong
+/// password or a refusal by the person here a whole one, a question nobody
+/// answered (it timed out) half of one.
+const FULL_FAILURE: u32 = 2;
+const HALF_FAILURE: u32 = 1;
+/// Failures from all addresses together allowed per GLOBAL_WINDOW (direct
+/// connections and RustDesk logins of this process); beyond it only the
+/// addresses that logged in with the password lately (KNOWN_GOOD) may try,
+/// so guessing from many addresses at once gets no further than from one.
+const GLOBAL_MAX_FAILURES: usize = 30;
+const GLOBAL_WINDOW: Duration = Duration::from_secs(60);
+const KNOWN_GOOD: Duration = Duration::from_secs(24 * 3600);
+const MAX_KNOWN_GOOD: usize = 256;
 const PING_INTERVAL: Duration = Duration::from_secs(15);
 /// TLS, WebSocket upgrade and password proof together.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -60,12 +73,32 @@ const MAX_UNAUTH_PER_ADDR: usize = 8;
 const MAX_UNAUTH_TOTAL: usize = 64;
 /// Questions on screen at once: one per address, a few in all.
 const MAX_PROMPTS: usize = 3;
+/// After a question from an address was refused or not answered, the next
+/// one from there waits this long, doubled for each further one (up to
+/// LOCKOUT), so a few addresses cannot keep the screen full of questions.
+const PROMPT_BACKOFF: Duration = Duration::from_secs(5);
 /// Addresses remembered for lockouts and query limits.
 const MAX_TRACKED_ADDRS: usize = 4096;
 /// Capability and app-list queries before being let in: one of each per
 /// this interval, per connection and per address.
 const QUERY_INTERVAL: Duration = Duration::from_secs(2);
 const MAX_NAME_CHARS: usize = 64;
+/// The largest WebSocket message (and frame) a peer of the direct listener
+/// may send. tungstenite keeps the limit it is given at the upgrade for the
+/// life of the connection, so it must fit what comes after the password
+/// too: signaling (an SDP answer is a few KB, ICE candidates, queries) and,
+/// over `/ws/server`, settings and source changes (a form's values), all far
+/// below this. Before authentication only the small handshake messages of
+/// handshake.rs come; this bounds what 64 connections not let in can make
+/// the agent hold (tungstenite's own default is 64 MiB per message).
+const MAX_WS_MESSAGE: usize = 256 * 1024;
+
+/// The WebSocket limits of the direct listener (MAX_WS_MESSAGE).
+fn ws_config() -> tokio_tungstenite::tungstenite::protocol::WebSocketConfig {
+    tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default()
+        .max_message_size(Some(MAX_WS_MESSAGE))
+        .max_frame_size(Some(MAX_WS_MESSAGE))
+}
 
 /// The address limits are kept by: IPv4 as is, IPv6 by its /64 (one host
 /// usually owns a whole /64).
@@ -82,50 +115,118 @@ fn addr_key(ip: IpAddr) -> IpAddr {
     }
 }
 
-/// Wrong-password attempts per client address: (count, time of the last one).
+/// Failed attempts (wrong passwords, refused or unanswered questions) per
+/// client address: (cost in half failures, time of the last one); and of
+/// all addresses together (`recent`).
 #[derive(Default)]
 pub(crate) struct LoginGuard {
     failures: HashMap<IpAddr, (u32, Instant)>,
+    /// The times of the last GLOBAL_MAX_FAILURES failures, oldest first.
+    recent: std::collections::VecDeque<Instant>,
+    /// Addresses that logged in with the password, and when.
+    known_good: HashMap<IpAddr, Instant>,
 }
 
 impl LoginGuard {
-    pub(crate) fn locked_out(&mut self, ip: IpAddr) -> bool {
-        let key = addr_key(ip);
-        match self.failures.get(&key) {
-            Some((count, last)) if last.elapsed() < LOCKOUT => *count >= MAX_FAILED_LOGINS,
-            Some(_) => {
-                self.failures.remove(&key);
-                false
-            }
-            None => false,
-        }
+    /// This address is locked out by its own failures.
+    fn blocked(&self, key: &IpAddr) -> bool {
+        matches!(self.failures.get(key), Some((cost, last)) if last.elapsed() < LOCKOUT && *cost >= MAX_FAILED_LOGINS * FULL_FAILURE)
     }
 
+    /// Too many failures from everyone in the last GLOBAL_WINDOW.
+    fn global_exhausted(&self) -> bool {
+        self.recent.len() >= GLOBAL_MAX_FAILURES && self.recent.front().is_some_and(|t| t.elapsed() < GLOBAL_WINDOW)
+    }
+
+    fn known(&self, key: &IpAddr) -> bool {
+        self.known_good.get(key).is_some_and(|t| t.elapsed() < KNOWN_GOOD)
+    }
+
+    pub(crate) fn locked_out(&mut self, ip: IpAddr) -> bool {
+        let key = addr_key(ip);
+        if self.blocked(&key) {
+            return true;
+        }
+        if self.failures.get(&key).is_some_and(|(_, last)| last.elapsed() >= LOCKOUT) {
+            self.failures.remove(&key);
+        }
+        self.global_exhausted() && !self.known(&key)
+    }
+
+    /// A wrong password (or a refusal by the person here).
     pub(crate) fn failed(&mut self, ip: IpAddr) {
+        self.add_failure(ip, FULL_FAILURE);
+    }
+
+    /// A question nobody answered: half a failure.
+    pub(crate) fn timed_out(&mut self, ip: IpAddr) {
+        self.add_failure(ip, HALF_FAILURE);
+    }
+
+    fn add_failure(&mut self, ip: IpAddr, cost: u32) {
+        let now = Instant::now();
+        self.recent.push_back(now);
+        while self.recent.len() > GLOBAL_MAX_FAILURES {
+            self.recent.pop_front();
+        }
         let key = addr_key(ip);
         if !self.failures.contains_key(&key) && self.failures.len() >= MAX_TRACKED_ADDRS {
             self.failures.retain(|_, (_, last)| last.elapsed() < LOCKOUT);
             if self.failures.len() >= MAX_TRACKED_ADDRS {
-                // Still full of fresh entries: forget the oldest one.
-                if let Some(oldest) = self.failures.iter().min_by_key(|(_, (_, last))| *last).map(|(k, _)| *k) {
-                    self.failures.remove(&oldest);
+                // Still full of fresh entries: forget the oldest one that
+                // is not locked out (a lockout is never undone by others'
+                // failures). All locked out: this address is not
+                // remembered, the global budget still counts it.
+                let oldest = self
+                    .failures
+                    .iter()
+                    .filter(|(k, _)| !self.blocked(k))
+                    .min_by_key(|(_, (_, last))| *last)
+                    .map(|(k, _)| *k);
+                match oldest {
+                    Some(oldest) => {
+                        self.failures.remove(&oldest);
+                    }
+                    None => return,
                 }
             }
         }
-        let entry = self.failures.entry(key).or_insert((0, Instant::now()));
+        let entry = self.failures.entry(key).or_insert((0, now));
         if entry.1.elapsed() >= LOCKOUT {
             entry.0 = 0;
         }
-        entry.0 += 1;
-        entry.1 = Instant::now();
+        entry.0 += cost;
+        entry.1 = now;
+    }
+
+    /// Takes back one failure counted in advance (`handshake::Gate::charge`)
+    /// for `ip`, before the attempt is judged for what it was.
+    fn refund(&mut self, ip: IpAddr) {
+        self.recent.pop_back();
+        let key = addr_key(ip);
+        if let Some(entry) = self.failures.get_mut(&key) {
+            entry.0 = entry.0.saturating_sub(FULL_FAILURE);
+            if entry.0 == 0 {
+                self.failures.remove(&key);
+            }
+        }
     }
 
     pub(crate) fn succeeded(&mut self, ip: IpAddr) {
-        self.failures.remove(&addr_key(ip));
+        let key = addr_key(ip);
+        self.failures.remove(&key);
+        if !self.known_good.contains_key(&key) && self.known_good.len() >= MAX_KNOWN_GOOD {
+            if let Some(oldest) = self.known_good.iter().min_by_key(|(_, t)| **t).map(|(k, _)| *k) {
+                self.known_good.remove(&oldest);
+            }
+        }
+        self.known_good.insert(key, Instant::now());
     }
 }
 
-/// Everything the listener limits across connections.
+/// Everything the listeners limit across connections: the direct listener
+/// and the RustDesk one share it (`process_limits`), so the password gets
+/// one budget of guesses per address, not one per protocol.
 #[derive(Default)]
 pub(crate) struct Limits {
     pub(crate) logins: LoginGuard,
@@ -134,8 +235,20 @@ pub(crate) struct Limits {
     unauth_total: usize,
     /// Addresses with a question on screen.
     prompts: HashSet<IpAddr>,
+    /// Questions refused or not answered lately, per address: (how many,
+    /// when the last one ended).
+    prompt_strikes: HashMap<IpAddr, (u32, Instant)>,
     /// Last capability/app-list query per (address, query kind).
     queries: HashMap<(IpAddr, u8), Instant>,
+}
+
+/// How long an address waits for its next question after `strikes`
+/// refused or unanswered ones.
+fn prompt_backoff(strikes: u32) -> Duration {
+    if strikes == 0 {
+        return Duration::ZERO;
+    }
+    PROMPT_BACKOFF.saturating_mul(1 << (strikes - 1).min(8)).min(LOCKOUT)
 }
 
 impl Limits {
@@ -161,12 +274,50 @@ impl Limits {
         self.unauth_total = self.unauth_total.saturating_sub(1);
     }
 
+    /// One question at a time per address, MAX_PROMPTS in all, none from an
+    /// address that is locked out or waiting after refused ones.
     fn start_prompt(&mut self, ip: IpAddr) -> bool {
-        self.prompts.len() < MAX_PROMPTS && self.prompts.insert(addr_key(ip))
+        let key = addr_key(ip);
+        if self.logins.locked_out(ip) {
+            return false;
+        }
+        if let Some((strikes, last)) = self.prompt_strikes.get(&key).copied() {
+            if last.elapsed() >= LOCKOUT.max(prompt_backoff(strikes)) {
+                self.prompt_strikes.remove(&key);
+            } else if last.elapsed() < prompt_backoff(strikes) {
+                return false;
+            }
+        }
+        self.prompts.len() < MAX_PROMPTS && self.prompts.insert(key)
     }
 
     fn end_prompt(&mut self, ip: IpAddr) {
         self.prompts.remove(&addr_key(ip));
+    }
+
+    /// The person here answered a question from `ip` (or it timed out): a
+    /// refusal counts like a wrong password, no answer like half of one,
+    /// and either makes the next question from there wait.
+    pub(crate) fn prompt_answered(&mut self, ip: IpAddr, decision: Decision) {
+        let key = addr_key(ip);
+        match decision {
+            Decision::Accepted => {
+                self.prompt_strikes.remove(&key);
+                return;
+            }
+            Decision::Denied => self.logins.failed(ip),
+            Decision::Timeout => self.logins.timed_out(ip),
+            Decision::Unattended => return,
+        }
+        if !self.prompt_strikes.contains_key(&key) && self.prompt_strikes.len() >= MAX_TRACKED_ADDRS {
+            self.prompt_strikes.retain(|_, (strikes, last)| last.elapsed() < prompt_backoff(*strikes).max(LOCKOUT));
+            if self.prompt_strikes.len() >= MAX_TRACKED_ADDRS {
+                return;
+            }
+        }
+        let entry = self.prompt_strikes.entry(key).or_insert((0, Instant::now()));
+        entry.0 = entry.0.saturating_add(1);
+        entry.1 = Instant::now();
     }
 
     fn allow_query(&mut self, ip: IpAddr, kind: u8, now: Instant) -> bool {
@@ -322,7 +473,7 @@ fn query_param(query: &str, name: &str) -> Option<String> {
 
 /// A name a peer gives itself, safe to show: no control or direction
 /// characters (which could fake the rest of the question), trimmed, short.
-fn clean_name(name: &str) -> String {
+pub(crate) fn clean_name(name: &str) -> String {
     let bidi = |c: char| matches!(c, '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}');
     let cleaned: String = name.chars().filter(|&c| !c.is_control() && !bidi(c)).take(MAX_NAME_CHARS).collect();
     cleaned.trim().to_string()
@@ -377,6 +528,33 @@ fn judge(presented: Presented, mode: ApproveMode, link: bool, ip: IpAddr, guard:
             guard.failed(ip);
             Admission::Unauthorized
         }
+    }
+}
+
+/// The lockout around the TLS handshake (handshake.rs `agent_auth`).
+struct LoginGate<'a> {
+    limits: &'a Mutex<Limits>,
+    mode: ApproveMode,
+    link: bool,
+    ip: IpAddr,
+}
+
+impl handshake::Gate for LoginGate<'_> {
+    fn charge(&mut self) -> bool {
+        let logins = &mut self.limits.lock().unwrap().logins;
+        if logins.locked_out(self.ip) {
+            return false;
+        }
+        logins.failed(self.ip);
+        true
+    }
+
+    fn decide(&mut self, presented: Presented, charged: bool) -> Admission {
+        let logins = &mut self.limits.lock().unwrap().logins;
+        if charged {
+            logins.refund(self.ip);
+        }
+        judge(presented, self.mode, self.link, self.ip, logins)
     }
 }
 
@@ -506,6 +684,12 @@ pub struct DirectConfig {
     pub name: String,
     /// Where the servers that connect (`/ws/server`) are kept.
     pub links: Links,
+    /// Clients from before TLS may still log in over plain `ws://` with the
+    /// password in the URL (`allow_legacy_plain_direct` of the config).
+    pub allow_legacy_plain: bool,
+    /// Where the TLS certificate is kept across starts (servers pin it);
+    /// None: a new one per start (tests, the server gateway's local agent).
+    pub tls_dir: Option<std::path::PathBuf>,
 }
 
 /// Accepts direct clients on `port` until the task is aborted.
@@ -543,7 +727,11 @@ async fn serve_listener(
     asker: Asker,
     limits: Arc<Mutex<Limits>>,
 ) -> anyhow::Result<()> {
-    let tls = match handshake::make_tls_server() {
+    let made = match config.tls_dir.as_deref() {
+        Some(dir) => handshake::load_or_make_tls_server(dir),
+        None => handshake::make_tls_server(),
+    };
+    let tls = match made {
         Ok(tls) => Some(Arc::new(tls)),
         Err(e) => {
             error!("Direct connections: no TLS certificate ({}); only plain ws:// is offered", e);
@@ -690,7 +878,7 @@ async fn open(stream: TcpStream, ip: IpAddr, ctx: &Shared) -> anyhow::Result<Ope
             *error.status_mut() = status;
             Err(error)
         };
-        let result = tokio_tungstenite::accept_hdr_async(Box::new(tls_stream) as Box<dyn Io>, callback).await;
+        let result = tokio_tungstenite::accept_hdr_async_with_config(Box::new(tls_stream) as Box<dyn Io>, callback, Some(ws_config())).await;
         let mut ws = match result {
             Ok(ws) => ws,
             Err(e) => {
@@ -701,10 +889,15 @@ async fn open(stream: TcpStream, ip: IpAddr, ctx: &Shared) -> anyhow::Result<Ope
             }
         };
         let link = link.unwrap_or(false);
-        let admission = handshake::agent_auth(&mut ws, &config.password, &tls.cert_hash, |presented| {
-            judge(presented, config.approve_mode, link, ip, &mut ctx.limits.lock().unwrap().logins)
-        })
-        .await?;
+        let mut gate = LoginGate { limits: &ctx.limits, mode: config.approve_mode, link, ip };
+        let (admission, version) = handshake::agent_auth(&mut ws, &config.password, &tls.cert_hash, &mut gate).await?;
+        if version < handshake::VERSION_PAKE && matches!(admission, Admission::Accept { trusted: true, .. }) {
+            info!(
+                "Direct connection from {} used the old password proof (v1, an older app or server): update it, \
+                 an impostor could test the password it sends offline",
+                ip
+            );
+        }
         let Admission::Accept { trusted, link } = admission else {
             log_refusal(ip, &admission);
             let _ = ws.close(None).await;
@@ -713,7 +906,18 @@ async fn open(stream: TcpStream, ip: IpAddr, ctx: &Shared) -> anyhow::Result<Ope
         Ok(Opened { ws, trusted, link, name, tls: true })
     } else {
         let mut admission = Admission::NotFound;
+        let mut refused_legacy = false;
         let callback = |request: &Request, response: Response| -> Result<Response, ErrorResponse> {
+            if !config.allow_legacy_plain {
+                // Turned off here: nothing of the request (the password in
+                // its URL) is looked at.
+                refused_legacy = true;
+                let mut error = ErrorResponse::new(Some(
+                    "This computer accepts only encrypted connections: update the Lunaris app".to_string(),
+                ));
+                *error.status_mut() = StatusCode::UPGRADE_REQUIRED;
+                return Err(error);
+            }
             let uri = request.uri();
             let query = uri.query().unwrap_or("");
             admission = admit(uri.path(), query, &config.password, config.approve_mode, ip, &ctx.limits);
@@ -728,11 +932,14 @@ async fn open(stream: TcpStream, ip: IpAddr, ctx: &Shared) -> anyhow::Result<Ope
             *error.status_mut() = status;
             Err(error)
         };
-        let result = tokio_tungstenite::accept_hdr_async(Box::new(stream) as Box<dyn Io>, callback).await;
+        let result = tokio_tungstenite::accept_hdr_async_with_config(Box::new(stream) as Box<dyn Io>, callback, Some(ws_config())).await;
         match (result, admission) {
             (Ok(ws), Admission::Accept { trusted, link }) => Ok(Opened { ws, trusted, link, name, tls: false }),
             (Ok(_), admission) => anyhow::bail!("unexpected admission {:?}", admission),
             (Err(e), admission) => {
+                if refused_legacy {
+                    warn!("Direct connection from {} refused: plain ws:// (older client) is turned off here (legacy-direct off)", ip);
+                }
                 log_refusal(ip, &admission);
                 anyhow::bail!("WebSocket handshake: {}", e)
             }
@@ -753,7 +960,12 @@ async fn handle_connection(stream: TcpStream, peer: SocketAddr, slot: UnauthSlot
     };
     let Opened { ws, trusted, link, name, tls } = opened;
     if !tls {
-        info!("Direct connection from {} is a legacy one: plain ws://, password in the URL (older client)", ip);
+        // Its password (if any) crossed the network readable by anyone.
+        warn!(
+            "Direct connection from {} is a legacy one: plain ws://, password in the URL, unencrypted (older client). \
+             Update that app; `lunaris-agent set legacy-direct off` refuses these",
+            ip
+        );
     }
     let conn = Conn {
         ip,
@@ -794,13 +1006,13 @@ struct Conn {
 }
 
 impl Conn {
-    /// Asks the person here; a refusal counts like a wrong password, so a
-    /// stranger can't keep popping questions up.
+    /// Asks the person here; a refusal counts like a wrong password and no
+    /// answer like half of one, and the next question from this address
+    /// waits (`Limits::prompt_answered`), so a stranger can't keep popping
+    /// questions up.
     async fn ask(&self, requester: &str, kind: Kind) -> Decision {
         let decision = (self.asker)(requester.to_string(), kind).await;
-        if matches!(decision, Decision::Denied) {
-            self.limits.lock().unwrap().logins.failed(self.ip);
-        }
+        self.limits.lock().unwrap().prompt_answered(self.ip, decision);
         decision
     }
 
@@ -947,11 +1159,15 @@ async fn serve_link(ws: Ws, config: Arc<DirectConfig>, conn: Conn) {
         name: config.name.clone(),
         codec_support,
     });
-    // The other computers this one shows, and the kinds it can show.
+    // The other computers this one shows, and the kinds it can show. A
+    // server let in without the password hears only what its clients need
+    // to choose one (no addresses, ports or user names of them, nor this
+    // computer's own addresses): until the person here accepts a client,
+    // it is anyone who knows this address.
     refresh_local_addresses().await;
-    let _ = tx.send(crate::connector::sources::announcement(conn.trusted));
+    let _ = tx.send(crate::connector::sources::announcement_with(conn.trusted, conn.trusted));
     // Again when a set-up (a pairing) has added one, whoever still asks about it.
-    let _announcing = crate::connector::sources::announce_changes(tx.clone(), conn.trusted);
+    let _announcing = crate::connector::sources::announce_changes_with(tx.clone(), conn.trusted, conn.trusted);
     let conn = Arc::new(conn);
     // Client connections (on that server) the person here accepted, per kind.
     let accepted: Arc<Mutex<HashMap<String, Kinds>>> = Arc::default();
@@ -988,7 +1204,7 @@ async fn serve_link(ws: Ws, config: Arc<DirectConfig>, conn: Conn) {
                 // This computer's own settings (settings.rs): changed only by
                 // a server that proved the password, and never so that this
                 // link is cut.
-                let channel = crate::settings::Channel { via: format!("server link {}", link_id), link: true, trusted: conn.trusted };
+                let channel = crate::settings::Channel::link(format!("server link {}", link_id), conn.trusted);
                 let tx = tx.clone();
                 tokio::task::spawn_blocking(move || {
                     let _ = tx.send(crate::settings::reply(request_id, &request, requester.as_deref(), &channel, crate::pairing::config_path()));
@@ -1001,6 +1217,11 @@ async fn serve_link(ws: Ws, config: Arc<DirectConfig>, conn: Conn) {
             }
         };
         let Some(client) = target_of(&sig).map(str::to_owned) else { continue };
+        // The session logic knows this link's clients by ids of their own
+        // (`link_client_id`): a link cannot name a client of another link,
+        // of the server or a direct one and get its replies. The hub gives
+        // the link its own ids back.
+        let sig = with_target(sig, &link_client_id(&link_id, &client));
         let granted = accepted.lock().unwrap().get(&client).copied().unwrap_or_default();
         let pass = match approval_kind(&sig) {
             Some(kind) => conn.trusted || granted.has(kind),
@@ -1008,7 +1229,7 @@ async fn serve_link(ws: Ws, config: Arc<DirectConfig>, conn: Conn) {
         };
         if pass {
             // Only clients something is forwarded for are routed back here.
-            conn.hub.link_client(&client, &link_id);
+            conn.hub.link_client(&link_client_id(&link_id, &client), &client, &link_id);
             if conn.inbound_tx.send(sig).is_err() {
                 break;
             }
@@ -1042,7 +1263,7 @@ async fn serve_link(ws: Ws, config: Arc<DirectConfig>, conn: Conn) {
             if decision == Decision::Accepted {
                 accepted.lock().unwrap().entry(client.clone()).or_default().add(kind);
                 conn.let_in();
-                conn.hub.link_client(&client, &link_id);
+                conn.hub.link_client(&link_client_id(&link_id, &client), &client, &link_id);
                 let _ = conn.inbound_tx.send(sig);
             }
         });
@@ -1166,6 +1387,88 @@ mod tests {
         assert!(guard.failures.len() <= MAX_TRACKED_ADDRS);
     }
 
+    fn v4(i: u32) -> IpAddr {
+        IpAddr::V4(std::net::Ipv4Addr::from(0x0a00_0000 + i))
+    }
+
+    #[test]
+    fn locked_out_addresses_are_not_evicted_by_others() {
+        let mut guard = LoginGuard::default();
+        let attacker = v4(1_000_000);
+        for _ in 0..MAX_FAILED_LOGINS {
+            guard.failed(attacker);
+        }
+        for i in 0..(MAX_TRACKED_ADDRS as u32 + 100) {
+            guard.failed(v4(i));
+        }
+        assert!(guard.failures.len() <= MAX_TRACKED_ADDRS);
+        assert!(guard.blocked(&addr_key(attacker)), "a lockout was undone by other addresses' failures");
+    }
+
+    #[test]
+    fn too_many_failures_from_everyone_stop_new_addresses() {
+        let mut guard = LoginGuard::default();
+        let regular = v4(9_999);
+        guard.succeeded(regular);
+        for i in 0..GLOBAL_MAX_FAILURES as u32 {
+            assert!(!guard.locked_out(v4(i)));
+            guard.failed(v4(i));
+        }
+        // None of them is locked out by its own failures...
+        assert!(!guard.blocked(&addr_key(v4(0))));
+        // ...but together they are too many: a new address waits,
+        assert!(guard.locked_out(v4(5_000)));
+        // one that logged in with the password lately does not.
+        assert!(!guard.locked_out(regular));
+    }
+
+    #[test]
+    fn unanswered_questions_count_half_and_make_the_next_one_wait() {
+        let mut limits = Limits::default();
+        // Each timeout makes the next question from there wait.
+        assert!(limits.start_prompt(ip()));
+        limits.end_prompt(ip());
+        limits.prompt_answered(ip(), Decision::Timeout);
+        assert!(!limits.start_prompt(ip()), "asked again at once after a timeout");
+        // Others are still asked.
+        assert!(limits.start_prompt(v4(1)));
+        // Half a failure each: twice as many timeouts as wrong passwords lock out.
+        let mut guard = LoginGuard::default();
+        for _ in 0..(2 * MAX_FAILED_LOGINS - 1) {
+            guard.timed_out(ip());
+        }
+        assert!(!guard.locked_out(ip()));
+        guard.timed_out(ip());
+        assert!(guard.locked_out(ip()));
+        // A refusal is a whole one; an answer clears the wait.
+        let mut limits = Limits::default();
+        limits.prompt_answered(ip(), Decision::Denied);
+        assert_eq!(limits.logins.failures[&addr_key(ip())].0, FULL_FAILURE);
+        limits.prompt_answered(ip(), Decision::Accepted);
+        assert!(limits.start_prompt(ip()));
+        // Nobody to ask is nobody's fault.
+        let mut limits = Limits::default();
+        limits.prompt_answered(ip(), Decision::Unattended);
+        assert!(limits.start_prompt(ip()) && limits.logins.failures.is_empty());
+    }
+
+    #[test]
+    fn the_wait_after_refused_questions_grows_to_the_lockout() {
+        assert_eq!(prompt_backoff(0), Duration::ZERO);
+        assert_eq!(prompt_backoff(1), PROMPT_BACKOFF);
+        assert_eq!(prompt_backoff(2), PROMPT_BACKOFF * 2);
+        assert_eq!(prompt_backoff(30), LOCKOUT);
+    }
+
+    #[test]
+    fn a_locked_out_address_gets_no_question() {
+        let mut limits = Limits::default();
+        for _ in 0..MAX_FAILED_LOGINS {
+            limits.logins.failed(ip());
+        }
+        assert!(!limits.start_prompt(ip()));
+    }
+
     #[test]
     fn names_are_cleaned_and_marked_as_claims() {
         assert_eq!(clean_name("  bob@pc\n\u{7}"), "bob@pc");
@@ -1232,7 +1535,7 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap().to_string();
         let (tx, rx) = mpsc::unbounded_channel();
-        let config = DirectConfig { port: 0, password: password.into(), approve_mode: mode, name: "test".into(), links: Links::default() };
+        let config = DirectConfig { port: 0, password: password.into(), approve_mode: mode, name: "test".into(), links: Links::default(), allow_legacy_plain: true, tls_dir: None };
         tokio::spawn(serve_listener(listener, config, Hub::new("AGENT".into()), tx, asker, Arc::default()));
         (addr, rx)
     }
@@ -1329,6 +1632,7 @@ mod tests {
         let (addr, mut rx) = start_agent(PW, "abcd-efgh-ijkl", never_asked()).await;
         let mut c = connect(&addr, "/ws/client", "abcd-efgh-ijkl", "name=tester").await.unwrap();
         assert!(c.trusted);
+        assert_eq!(c.version, handshake::VERSION_PAKE);
         // Trusted: the session request goes through without asking anyone.
         send(&mut c.ws, session_request()).await;
         assert!(matches!(inbound(&mut rx).await, SignalingMessage::IncomingSession { .. }));
@@ -1346,6 +1650,92 @@ mod tests {
             Some(ConnectError::TooManyAttempts)
         );
         assert!(quiet(&mut rx).await);
+    }
+
+    /// The v2 guess is counted before the agent's reply: hanging up after
+    /// it (an attacker holding its one guess) still locks out.
+    #[tokio::test]
+    async fn v2_guesses_count_even_when_the_client_hangs_up() {
+        use handshake::{from_hex, pake_client, to_hex, v2_context, AuthMessage, OsRng};
+        let (addr, _rx) = start_agent(PW, "abcd-efgh-ijkl", never_asked()).await;
+        let text = |m: &AuthMessage| WsMessage::Text(serde_json::to_string(m).unwrap().into());
+        for _ in 0..MAX_FAILED_LOGINS {
+            let (mut ws, cert) = handshake::open_for_test(&addr, "/ws/client").await;
+            ws.send(text(&AuthMessage::Hello { version: 2 })).await.unwrap();
+            let Some(Ok(WsMessage::Text(t))) = ws.next().await else { panic!() };
+            let Ok(AuthMessage::Challenge { nonce, versions }) = serde_json::from_str(&t) else { panic!("{}", t) };
+            assert_eq!(versions, vec![handshake::VERSION_PAKE]);
+            let ctx = v2_context(&from_hex::<32>(&nonce).unwrap(), &[7; 32], &cert);
+            let (_, x) = pake_client("a-guess", &ctx, OsRng);
+            ws.send(text(&AuthMessage::Pake { client_nonce: to_hex(&[7; 32]), msg: to_hex(&x) })).await.unwrap();
+            let Some(Ok(WsMessage::Text(t))) = ws.next().await else { panic!() };
+            assert!(matches!(serde_json::from_str(&t), Ok(AuthMessage::PakeReply { .. })), "{}", t);
+            drop(ws);
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(connect(&addr, "/ws/client", "abcd-efgh-ijkl", "").await.err(), Some(ConnectError::TooManyAttempts));
+    }
+
+    /// Failures counted in advance are taken back for the right password:
+    /// right after a few wrong ones it still gets in.
+    #[tokio::test]
+    async fn the_right_password_after_wrong_ones_still_gets_in() {
+        let (addr, _rx) = start_agent(PW, "abcd-efgh-ijkl", never_asked()).await;
+        for _ in 0..MAX_FAILED_LOGINS - 1 {
+            assert_eq!(connect(&addr, "/ws/client", "wrong", "").await.err(), Some(ConnectError::WrongPassword));
+        }
+        assert!(connect(&addr, "/ws/client", "abcd-efgh-ijkl", "").await.unwrap().trusted);
+        // Success forgot the failures.
+        for _ in 0..MAX_FAILED_LOGINS - 1 {
+            assert_eq!(connect(&addr, "/ws/client", "wrong", "").await.err(), Some(ConnectError::WrongPassword));
+        }
+        assert!(connect(&addr, "/ws/client", "abcd-efgh-ijkl", "").await.unwrap().trusted);
+    }
+
+    /// An app or server from before v2 (the exact old messages): the v1
+    /// proof is still taken, wrong ones still count.
+    #[tokio::test]
+    async fn an_old_client_logs_in_to_a_new_agent() {
+        let (addr, mut rx) = start_agent(PW, "abcd-efgh-ijkl", never_asked()).await;
+        let (mut ws, cert) = handshake::open_for_test(&addr, "/ws/client").await;
+        assert_eq!(handshake::v1::client_auth(&mut ws, "abcd-efgh-ijkl", &cert).await, Ok(true));
+        send(&mut ws, session_request()).await;
+        assert!(matches!(inbound(&mut rx).await, SignalingMessage::IncomingSession { .. }));
+        for _ in 0..MAX_FAILED_LOGINS {
+            let (mut ws, cert) = handshake::open_for_test(&addr, "/ws/client").await;
+            assert_eq!(handshake::v1::client_auth(&mut ws, "wrong", &cert).await, Err(ConnectError::WrongPassword));
+        }
+        assert_eq!(connect(&addr, "/ws/client", "abcd-efgh-ijkl", "").await.err(), Some(ConnectError::TooManyAttempts));
+    }
+
+    /// An agent from before v2 behind TLS: the new client falls back to v1
+    /// (with a warning), unless v2 is required (then nothing is sent).
+    #[tokio::test]
+    async fn a_new_client_with_an_old_agent() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let proofs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let proofs2 = proofs.clone();
+        tokio::spawn(async move {
+            let tls = handshake::make_tls_server().unwrap();
+            loop {
+                let (stream, _) = listener.accept().await.unwrap();
+                let Ok(tls_stream) = tls.acceptor.accept(stream).await else { continue };
+                let Ok(mut ws) = tokio_tungstenite::accept_async(tls_stream).await else { continue };
+                if handshake::v1::agent_auth(&mut ws, "old-pw", &tls.cert_hash).await.is_some() {
+                    proofs2.fetch_add(1, Ordering::SeqCst);
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        });
+        let c = connect(&addr, "/ws/client", "old-pw", "").await.unwrap();
+        assert!(c.trusted);
+        assert_eq!(c.version, 1);
+        assert_eq!(connect(&addr, "/ws/client", "nope", "").await.err(), Some(ConnectError::WrongPassword));
+        assert_eq!(proofs.load(Ordering::SeqCst), 2);
+        assert_eq!(handshake::connect_with(&addr, "/ws/client", "old-pw", "", true).await.err(), Some(ConnectError::Downgraded));
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(proofs.load(Ordering::SeqCst), 2, "a proof went to the old agent although v2 was required");
     }
 
     #[tokio::test]
@@ -1496,5 +1886,129 @@ mod tests {
         send(&mut c.ws, caps).await;
         inbound(&mut rx).await;
         inbound(&mut rx).await;
+    }
+
+    async fn start_agent_with(config: DirectConfig, asker: Asker) -> (String, mpsc::UnboundedReceiver<SignalingMessage>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let (tx, rx) = mpsc::unbounded_channel();
+        tokio::spawn(serve_listener(listener, config, Hub::new("AGENT".into()), tx, asker, Arc::default()));
+        (addr, rx)
+    }
+
+    fn config(mode: ApproveMode, password: &str) -> DirectConfig {
+        DirectConfig { port: 0, password: password.into(), approve_mode: mode, name: "test".into(), links: Links::default(), allow_legacy_plain: true, tls_dir: None }
+    }
+
+    #[tokio::test]
+    async fn legacy_plain_logins_can_be_turned_off() {
+        let mut off = config(PW, "a-long-password");
+        off.allow_legacy_plain = false;
+        let (addr, mut rx) = start_agent_with(off, never_asked()).await;
+        match tokio_tungstenite::connect_async(format!("ws://{}/ws/client?token=a-long-password", addr)).await {
+            Err(tungstenite::Error::Http(resp)) => assert_eq!(resp.status().as_u16(), 426),
+            other => panic!("expected 426, got {:?}", other.map(|_| ())),
+        }
+        // TLS clients are not affected.
+        let mut c = connect(&addr, "/ws/client", "a-long-password", "").await.unwrap();
+        assert!(c.trusted);
+        send(&mut c.ws, session_request()).await;
+        assert!(matches!(inbound(&mut rx).await, SignalingMessage::IncomingSession { .. }));
+    }
+
+    #[tokio::test]
+    async fn big_messages_are_refused() {
+        let (addr, mut rx) = start_agent(PW, "a-long-password", never_asked()).await;
+        let mut c = connect(&addr, "/ws/client", "a-long-password", "").await.unwrap();
+        // An SDP of a realistic size passes...
+        let sdp = |len: usize| SignalingMessage::Sdp {
+            target_id: "AGENT".into(),
+            sdp: common::RtcSessionDescription { ty: common::RtcSdpType::Answer, sdp: "a".repeat(len) },
+            ice_servers: None,
+            webtransport_port: None,
+            webtransport_cert_hash: None,
+            webtransport_token: None,
+        };
+        send(&mut c.ws, sdp(32 * 1024)).await;
+        assert!(matches!(inbound(&mut rx).await, SignalingMessage::Sdp { .. }));
+        // ...one beyond the limit ends the connection, unread.
+        let _ = c.ws.send(WsMessage::Text(serde_json::to_string(&ClientMessage::Signaling(sdp(MAX_WS_MESSAGE + 1))).unwrap().into())).await;
+        // Only the end of the client's session (it is gone) follows.
+        assert!(matches!(inbound(&mut rx).await, SignalingMessage::EndSession { .. }));
+        let closed = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                match c.ws.next().await {
+                    None | Some(Err(_)) | Some(Ok(WsMessage::Close(_))) => return true,
+                    Some(Ok(_)) => continue,
+                }
+            }
+        })
+        .await
+        .unwrap_or(false);
+        assert!(closed, "the connection stayed open");
+    }
+
+    /// The next message of `kind` a link hears from the agent.
+    async fn link_message<S: AsyncRead + AsyncWrite + Unpin>(ws: &mut WebSocketStream<S>, want: impl Fn(&AgentMessage) -> bool) -> AgentMessage {
+        loop {
+            let frame = tokio::time::timeout(Duration::from_secs(10), ws.next()).await.expect("nothing from the agent").unwrap().unwrap();
+            if let WsMessage::Text(text) = frame {
+                if let Ok(msg) = serde_json::from_str::<AgentMessage>(&text) {
+                    if want(&msg) {
+                        return msg;
+                    }
+                }
+            }
+        }
+    }
+
+    async fn send_link<S: AsyncRead + AsyncWrite + Unpin>(ws: &mut WebSocketStream<S>, msg: ServerToAgentMessage) {
+        ws.send(WsMessage::Text(serde_json::to_string(&msg).unwrap().into())).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_link_without_the_password_hears_no_details() {
+        let (addr, _rx) = start_agent(BOTH, "a-long-password", never_asked()).await;
+        let mut link = connect(&addr, "/ws/server", "", "name=srv").await.unwrap();
+        assert!(!link.trusted);
+        // Registered first: the server needs that.
+        assert!(matches!(link_message(&mut link.ws, |_| true).await, AgentMessage::Register { .. }));
+        match link_message(&mut link.ws, |m| matches!(m, AgentMessage::Sources { .. })).await {
+            AgentMessage::Sources { sources, addresses, manageable, .. } => {
+                assert!(addresses.is_empty() && !manageable);
+                assert!(sources.iter().all(|s| s.values.is_none()));
+            }
+            _ => unreachable!(),
+        }
+        send_link(&mut link.ws, ServerToAgentMessage::Settings { request_id: "q".into(), request: common::SettingsRequest::Get, requester: None }).await;
+        match link_message(&mut link.ws, |m| matches!(m, AgentMessage::SettingsAnswer { .. })).await {
+            AgentMessage::SettingsAnswer { settings, code, .. } => {
+                assert!(settings.is_none());
+                assert_eq!(code.as_deref(), Some(common::SETTINGS_NOT_ALLOWED));
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_links_clients_get_ids_of_their_own_and_replies_come_back() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let hub = Hub::new("AGENT".into());
+        tokio::spawn(serve_listener(listener, config(PW, "a-long-password"), hub.clone(), tx, never_asked(), Arc::default()));
+        let mut link = connect(&addr, "/ws/server", "a-long-password", "").await.unwrap();
+        assert!(link.trusted);
+        link_message(&mut link.ws, |m| matches!(m, AgentMessage::Register { .. })).await;
+        send_link(&mut link.ws, ServerToAgentMessage::Signaling(SignalingMessage::GetCapabilities { target_id: "conn-1".into() })).await;
+        let seen = inbound(&mut rx).await;
+        let id = target_of(&seen).unwrap().to_string();
+        assert!(id.starts_with("link-") && id.ends_with("/conn-1"), "{}", id);
+        // The reply reaches the link, addressed as its server knows the client.
+        hub.route(AgentMessage::Signaling(access_status(&id, "x")));
+        match link_message(&mut link.ws, |m| matches!(m, AgentMessage::Signaling(SignalingMessage::AccessRequest { .. }))).await {
+            AgentMessage::Signaling(sig) => assert_eq!(target_of(&sig), Some("conn-1")),
+            _ => unreachable!(),
+        }
     }
 }

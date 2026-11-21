@@ -216,6 +216,34 @@ pub fn running_as_local_system() -> bool {
     }
 }
 
+/// The profile folder (`C:\\Users\\<name>`) of the user logged on at the
+/// console, for the service's agent, which runs as LocalSystem in that
+/// session: what "home" means for its file transfer (lib.rs `file_access`).
+/// `None` when nobody is logged on (the logon screen) or it can't be told.
+pub fn console_user_profile_dir() -> Option<PathBuf> {
+    use windows::Win32::System::RemoteDesktop::WTSQueryUserToken;
+    use windows::Win32::UI::Shell::GetUserProfileDirectoryW;
+    unsafe {
+        let session = WTSGetActiveConsoleSessionId();
+        if session == 0xFFFF_FFFF {
+            return None;
+        }
+        let mut token = HANDLE::default();
+        // Needs SE_TCB_NAME: LocalSystem has it. Fails while nobody is logged on.
+        WTSQueryUserToken(session, &mut token).ok()?;
+        let mut buf = vec![0u16; 1024];
+        let mut len = buf.len() as u32;
+        let ok = GetUserProfileDirectoryW(token, Some(PWSTR(buf.as_mut_ptr())), &mut len).is_ok();
+        let _ = CloseHandle(token);
+        if !ok {
+            return None;
+        }
+        let end = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+        let dir = PathBuf::from(<OsString as std::os::windows::ffi::OsStringExt>::from_wide(&buf[..end]));
+        (!dir.as_os_str().is_empty() && dir.is_dir()).then_some(dir)
+    }
+}
+
 // ---- Permissions of the data folder ----
 //
 // It holds the service's config (access password, server token, agent key)

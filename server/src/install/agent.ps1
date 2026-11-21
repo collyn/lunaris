@@ -13,6 +13,12 @@
 # token (used once, then the agent signs in with its own key) and runs it as
 # the "Lunaris Agent" Windows service (LunarisAgentService), which starts at
 # boot.
+#
+# The installer runs only when its SHA-256 is the expected one: written in by
+# the server after it checked the signature of the release's SHA256SUMS
+# (Ed25519, the Lunaris release key), or else its line in SHA256SUMS fetched
+# here from GitHub over HTTPS (Windows PowerShell has no Ed25519 to check the
+# signature itself). Anything else stops the installation.
 param(
     [string]$Token = $env:LUNARIS_INSTALL_TOKEN,
     [string]$Name = ''
@@ -28,6 +34,9 @@ $ProgressPreference = 'SilentlyContinue'
 $ServerUrl = '@@SERVER_URL@@'
 $Version = '@@VERSION@@'
 $CertSha256 = '@@CERT_SHA256@@'
+# SHA-256 of the installer, from the release's signed SHA256SUMS as the
+# server checked it (empty: from SHA256SUMS below).
+$PinnedInstaller = '@@SHA256_INSTALLER@@'
 $ReleaseBase = "https://github.com/collyn/lunaris/releases/download/v$Version"
 $AppName = 'Lunaris Agent'
 
@@ -78,6 +87,34 @@ try {
     } catch {
         Fail "cannot download the installer (is version $Version released?): $($_.Exception.Message)"
     }
+
+    $installerName = 'lunaris-agent-installer-windows.exe'
+    $expected = $PinnedInstaller
+    if ($expected) {
+        Write-Host '==> Checking the installer against the release checksum the server verified'
+    } else {
+        Write-Host "==> Checking the installer against $ReleaseBase/SHA256SUMS"
+        $sumsFile = Join-Path $tmp 'SHA256SUMS'
+        try {
+            Invoke-WebRequest -Uri "$ReleaseBase/SHA256SUMS" -OutFile $sumsFile -UseBasicParsing
+        } catch {
+            Fail "cannot download SHA256SUMS, so the installer can't be checked: nothing is installed ($($_.Exception.Message))"
+        }
+        $lines = @(Get-Content -LiteralPath $sumsFile)
+        if ($lines.Count -eq 0 -or $lines[0] -ne "# lunaris $Version") {
+            Fail "SHA256SUMS is not the list of release ${Version}: nothing is installed"
+        }
+        foreach ($line in $lines) {
+            if ($line -match '^([0-9a-fA-F]{64}) [ *](.+)$' -and $Matches[2] -eq $installerName) { $expected = $Matches[1]; break }
+        }
+        if (-not $expected) { Fail "$installerName is not in SHA256SUMS of release ${Version}: nothing is installed" }
+        Write-Host '   (the signature of SHA256SUMS is not checked here: Windows PowerShell cannot check Ed25519; the list comes from GitHub over HTTPS)'
+    }
+    $actual = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash
+    if ($actual -ne $expected) {
+        Fail "the installer does not match its checksum (expected $expected, got $actual): nothing is installed"
+    }
+    Write-Host '   checksum OK'
 
     Write-Host "==> Installing $AppName $Version"
     $p = Start-Process -FilePath $installer -ArgumentList '/S' -Wait -PassThru

@@ -97,7 +97,8 @@ function Setup-Environment {
 
     # Terminate any running workspace applications to release file locks on dependencies
     Write-Host "Stopping any running Lunaris processes to release file locks..." -ForegroundColor Yellow
-    Stop-Process -Name "agent" -Force -ErrorAction SilentlyContinue
+    # The agent (lunaris-agent) and its approval helper; "agent" was the old name.
+    Stop-Process -Name "lunaris-agent", "lunaris-approval-helper", "agent" -Force -ErrorAction SilentlyContinue
     Stop-Process -Name "client-desktop" -Force -ErrorAction SilentlyContinue
     Stop-Process -Name "server" -Force -ErrorAction SilentlyContinue
     Start-Sleep -Seconds 1

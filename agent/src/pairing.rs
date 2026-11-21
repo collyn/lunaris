@@ -67,8 +67,11 @@ pub struct AgentConfig {
     pub server_cert_host: String,
     /// What file transfer (files.rs) may reach: "home" (the home folder),
     /// "full" (the whole disk) or an absolute folder. Empty (not set) means
-    /// "home", except for the Windows service's agent, which runs as
-    /// LocalSystem and so gets "full" (lib.rs `file_access_setting`).
+    /// "home"; for the Windows service's agent (LocalSystem) the home folder
+    /// of the person logged on at the screen (lib.rs `file_access`; before
+    /// 0.7.1 it meant the whole disk there). Only `lunaris-agent set` on
+    /// this computer may widen it to "full" or a folder outside the home
+    /// folder (settings.rs).
     #[serde(default)]
     pub file_access: String,
     /// This agent's own secret for the server (64 hex characters, generated
@@ -89,8 +92,9 @@ pub struct AgentConfig {
     /// connect to this port by IP address and see and control this computer
     /// (unencrypted, as RustDesk's direct IP access is: for a LAN or a VPN),
     /// logging in with `direct_password` or accepted here, as `approve_mode`
-    /// says. Absent (the default): off. RustDesk's own port for this is
-    /// 21118.
+    /// says. Absent (the default): off. Turned on without a port: 21128
+    /// (`rustdesk::DEFAULT_PORT`; RustDesk's own 21118 is often taken by
+    /// RustDesk itself).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rustdesk_port: Option<u16>,
     /// RustDesk clients may also use their file manager on this computer
@@ -122,6 +126,13 @@ pub struct AgentConfig {
     /// server may only read them (without the password).
     #[serde(default)]
     pub allow_server_settings: bool,
+    /// Direct clients from before TLS (direct.rs) may still log in over
+    /// plain `ws://` with the password in the URL, readable by anyone on the
+    /// network. On by default so older apps keep working; turned off with
+    /// `lunaris-agent set legacy-direct off` (only on this computer). Every
+    /// such login is logged as a warning.
+    #[serde(default = "default_true")]
+    pub allow_legacy_plain_direct: bool,
 }
 
 fn default_wayland_capture() -> String {
@@ -270,13 +281,25 @@ pub fn config_path() -> &'static str {
 }
 
 /// `agent_config.json` in the working directory when one exists there (dev
-/// checkouts, older setups); otherwise the per-user config directory
-/// (`%APPDATA%\lunaris-agent`, `~/.config/lunaris-agent`, ...), since the
-/// install location (e.g. Program Files) is not writable.
+/// checkouts, older setups) and may be trusted (`working_dir_config_usable`);
+/// otherwise the per-user config directory (`%APPDATA%\lunaris-agent`,
+/// `~/.config/lunaris-agent`, ...), since the install location (e.g.
+/// Program Files) is not writable. The services always pass `--config`.
 fn default_config_path() -> String {
     const NAME: &str = "agent_config.json";
-    if std::path::Path::new(NAME).exists() {
-        return NAME.to_string();
+    let here = std::path::Path::new(NAME);
+    if here.exists() {
+        let per_user = dirs::config_dir().map(|d| d.join("lunaris-agent"));
+        match working_dir_config_usable(here, per_user.as_deref()) {
+            Ok(()) => return NAME.to_string(),
+            // Before logging starts: on standard error. The file is left alone.
+            Err(why) => eprintln!(
+                "WARN: ignoring {} in the current folder ({}); pass --config {} to use it",
+                NAME,
+                why,
+                std::env::current_dir().map(|d| d.join(NAME).display().to_string()).unwrap_or_else(|_| NAME.to_string())
+            ),
+        }
     }
     match dirs::config_dir() {
         Some(dir) => {
@@ -285,6 +308,45 @@ fn default_config_path() -> String {
             dir.join(NAME).to_string_lossy().into_owned()
         }
         None => NAME.to_string(),
+    }
+}
+
+/// Whether `agent_config.json` found in the working directory may be used
+/// without `--config`: someone else's file there would choose the server,
+/// the password and the sources of this agent. Unix: a regular file (not a
+/// link) owned by this user that nobody else may write. Windows: only in
+/// the per-user folder itself (`per_user_dir`), whose permissions are the
+/// user's; elsewhere `--config` names it.
+fn working_dir_config_usable(path: &std::path::Path, per_user_dir: Option<&std::path::Path>) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let _ = per_user_dir;
+        let meta = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
+        if !meta.file_type().is_file() {
+            return Err("not a regular file".into());
+        }
+        if meta.uid() != unsafe { libc::geteuid() } {
+            return Err("owned by another user".into());
+        }
+        if meta.mode() & 0o022 != 0 {
+            return Err("other users may write it".into());
+        }
+        Ok(())
+    }
+    #[cfg(windows)]
+    {
+        let folder = std::fs::canonicalize(path).ok().and_then(|p| p.parent().map(|d| d.to_path_buf()));
+        let per_user = per_user_dir.and_then(|d| std::fs::canonicalize(d).ok());
+        match (folder, per_user) {
+            (Some(folder), Some(per_user)) if folder == per_user => Ok(()),
+            _ => Err("not in this user's config folder".into()),
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (path, per_user_dir);
+        Ok(())
     }
 }
 
@@ -491,6 +553,47 @@ mod tests {
         assert_eq!(c.wayland_capture, "auto");
         assert_eq!(AgentConfig::default().wayland_capture, "auto");
         assert_eq!(new_config().wayland_capture, "auto");
+    }
+
+    #[test]
+    fn legacy_direct_is_on_unless_turned_off() {
+        let c: AgentConfig = serde_json::from_str(r#"{"direct_enabled":true}"#).unwrap();
+        assert!(c.allow_legacy_plain_direct);
+        let c: AgentConfig = serde_json::from_str(r#"{"allow_legacy_plain_direct":false}"#).unwrap();
+        assert!(!c.allow_legacy_plain_direct);
+        let back: AgentConfig = serde_json::from_str(&serde_json::to_string(&c).unwrap()).unwrap();
+        assert!(!back.allow_legacy_plain_direct);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_config_in_the_working_folder_is_used_only_when_it_is_ours_alone() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("lunaris-cwd-config-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("agent_config.json");
+        fs::write(&path, "{}").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(working_dir_config_usable(&path, None).is_ok());
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(working_dir_config_usable(&path, None).is_ok(), "readable by others is the user's choice");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o666)).unwrap();
+        assert!(working_dir_config_usable(&path, None).is_err());
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o620)).unwrap();
+        assert!(working_dir_config_usable(&path, None).is_err());
+        // A link is not followed, wherever it leads.
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        let link = dir.join("linked.json");
+        std::os::unix::fs::symlink(&path, &link).unwrap();
+        assert!(working_dir_config_usable(&link, None).is_err());
+        // Owned by someone else (root's file, when not running as root).
+        if unsafe { libc::geteuid() } != 0 && std::path::Path::new("/etc/hostname").exists() {
+            assert!(working_dir_config_usable(std::path::Path::new("/etc/hostname"), None).is_err());
+        }
+        // The file itself is never touched.
+        assert_eq!(fs::read_to_string(&path).unwrap(), "{}");
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

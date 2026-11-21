@@ -1781,9 +1781,13 @@ pub async fn setup_bridge_session(
     }))
 }
 
-/// Failed WebTransport handshakes (bad token, broken handshake) after which a
-/// session's endpoint accepts no more connections.
+/// Failed WebTransport handshakes (bad token, broken handshake) from one
+/// address after which a session's endpoint accepts no more connections
+/// from it. Other addresses (the session's own client) are still served.
 const WEBTRANSPORT_MAX_FAILED_HANDSHAKES: u32 = 20;
+/// Addresses whose failures a session's endpoint remembers; beyond them a
+/// new address is not counted (the 256-bit token is what keeps it out).
+const WEBTRANSPORT_MAX_TRACKED: usize = 1024;
 
 /// A random per-session secret, 32 bytes as hex, from the OS random source
 /// (through rustls' ring provider, which wtransport already uses).
@@ -1805,12 +1809,14 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 }
 
 /// Who may feed input through a session's WebTransport endpoint: a request
-/// whose path is `/<token>`, one connection at a time, and nobody once too
-/// many handshakes failed.
+/// whose path is `/<token>`, one connection at a time, and no address from
+/// which too many handshakes failed (so a stranger's failures do not lock
+/// the session's own client out).
 pub(crate) struct WebTransportGate {
     expected_path: String,
     connected: AtomicBool,
-    failures: std::sync::atomic::AtomicU32,
+    /// Failed handshakes per remote address (IP; any port).
+    failures: std::sync::Mutex<std::collections::HashMap<std::net::IpAddr, u32>>,
 }
 
 impl WebTransportGate {
@@ -1818,21 +1824,35 @@ impl WebTransportGate {
         Self {
             expected_path: format!("/{token}"),
             connected: AtomicBool::new(false),
-            failures: std::sync::atomic::AtomicU32::new(0),
+            failures: std::sync::Mutex::new(std::collections::HashMap::new()),
         }
     }
 
-    fn locked(&self) -> bool {
-        self.failures.load(Ordering::SeqCst) >= WEBTRANSPORT_MAX_FAILED_HANDSHAKES
+    fn failures_from(&self, ip: std::net::IpAddr) -> u32 {
+        self.failures.lock().unwrap().get(&ip).copied().unwrap_or(0)
+    }
+
+    fn locked(&self, from: std::net::SocketAddr) -> bool {
+        self.failures_from(from.ip()) >= WEBTRANSPORT_MAX_FAILED_HANDSHAKES
     }
 
     fn record_failure(&self, from: std::net::SocketAddr, what: &str) {
-        let failures = self.failures.fetch_add(1, Ordering::SeqCst) + 1;
-        warn!("WebTransport: {} from {} ({} failed)", what, from, failures);
+        let failures = {
+            let mut map = self.failures.lock().unwrap();
+            if !map.contains_key(&from.ip()) && map.len() >= WEBTRANSPORT_MAX_TRACKED {
+                warn!("WebTransport: {} from {} (not counted: too many addresses failed)", what, from);
+                return;
+            }
+            let count = map.entry(from.ip()).or_insert(0);
+            *count += 1;
+            *count
+        };
+        warn!("WebTransport: {} from {} ({} failed from there)", what, from, failures);
         if failures == WEBTRANSPORT_MAX_FAILED_HANDSHAKES {
             warn!(
-                "WebTransport: {} failed handshakes, refusing all further connections for this session",
-                failures
+                "WebTransport: {} failed handshakes from {}, refusing its further connections for this session",
+                failures,
+                from.ip()
             );
         }
     }
@@ -1867,7 +1887,7 @@ async fn authenticate_webtransport<'a>(
     gate: &'a WebTransportGate,
 ) -> Option<(wtransport::Connection, WebTransportSlot<'a>)> {
     let remote = incoming.remote_address();
-    if gate.locked() {
+    if gate.locked(remote) {
         incoming.refuse();
         return None;
     }
@@ -1908,7 +1928,7 @@ pub(crate) async fn serve_webtransport_input(
     loop {
         tokio::select! {
             incoming = endpoint.accept() => {
-                if gate.locked() {
+                if gate.locked(incoming.remote_address()) {
                     incoming.refuse();
                     continue;
                 }
@@ -2579,9 +2599,15 @@ mod webtransport_auth_tests {
         Server { port, cert_hash, token, gate, input_rx, _shutdown: shutdown }
     }
 
+    const LOCAL: std::net::IpAddr = std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
+
     async fn connect(server: &Server, path: &str) -> Result<wtransport::Connection, String> {
+        connect_from(server, LOCAL, path).await
+    }
+
+    async fn connect_from(server: &Server, from: std::net::IpAddr, path: &str) -> Result<wtransport::Connection, String> {
         let config = ClientConfig::builder()
-            .with_bind_address("127.0.0.1:0".parse().unwrap())
+            .with_bind_address(std::net::SocketAddr::new(from, 0))
             .with_server_certificate_hashes([server.cert_hash.clone()])
             .build();
         let client = Endpoint::client(config).unwrap();
@@ -2659,7 +2685,7 @@ mod webtransport_auth_tests {
         for path in ["", "/", wrong.as_str()] {
             assert!(connect(&server, path).await.is_err(), "path {path:?} accepted");
         }
-        assert_eq!(server.gate.failures.load(Ordering::SeqCst), 3);
+        assert_eq!(server.gate.failures_from(LOCAL), 3);
         assert!(next_input(&mut server).await.is_none());
         // The right token still works after a few failures.
         let path = format!("/{}", server.token);
@@ -2673,7 +2699,7 @@ mod webtransport_auth_tests {
         let first = connect(&server, &path).await.expect("first accepted");
         assert!(connect(&server, &path).await.is_err(), "second connection accepted");
         // Not counted as a failed handshake: it had the token.
-        assert_eq!(server.gate.failures.load(Ordering::SeqCst), 0);
+        assert_eq!(server.gate.failures_from(LOCAL), 0);
         first.close(wtransport::VarInt::from_u32(0), b"bye");
         drop(first);
         // The server notices the close, then the slot is free again.
@@ -2689,15 +2715,29 @@ mod webtransport_auth_tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn too_many_failures_lock_the_endpoint() {
+    async fn too_many_failures_lock_out_that_address_only() {
         let server = start_server().await;
+        // A stranger on another (loopback) address.
+        let stranger: std::net::IpAddr = "127.0.0.2".parse().unwrap();
         for _ in 0..WEBTRANSPORT_MAX_FAILED_HANDSHAKES {
-            assert!(connect(&server, "/nope").await.is_err());
+            assert!(connect_from(&server, stranger, "/nope").await.is_err());
         }
-        assert!(server.gate.locked());
+        assert!(server.gate.locked(std::net::SocketAddr::new(stranger, 1)));
         let path = format!("/{}", server.token);
-        assert!(connect(&server, &path).await.is_err(), "accepted after the limit");
-        assert_eq!(server.gate.failures.load(Ordering::SeqCst), WEBTRANSPORT_MAX_FAILED_HANDSHAKES);
+        assert!(connect_from(&server, stranger, &path).await.is_err(), "accepted after the limit");
+        assert_eq!(server.gate.failures_from(stranger), WEBTRANSPORT_MAX_FAILED_HANDSHAKES);
+        // The session's own client is still served.
+        assert!(!server.gate.locked(std::net::SocketAddr::new(LOCAL, 1)));
+        assert!(connect(&server, &path).await.is_ok(), "the legitimate address was locked out too");
+    }
+
+    #[test]
+    fn the_failure_map_stays_bounded() {
+        let gate = WebTransportGate::new("t".into());
+        for i in 0..(WEBTRANSPORT_MAX_TRACKED as u32 + 50) {
+            gate.record_failure(std::net::SocketAddr::new(std::net::Ipv4Addr::from(0x0a00_0000 + i).into(), 9), "test");
+        }
+        assert_eq!(gate.failures.lock().unwrap().len(), WEBTRANSPORT_MAX_TRACKED);
     }
 
     #[test]

@@ -55,6 +55,7 @@ fn choose_secret(env: Option<String>, file: &std::path::Path) -> Vec<u8> {
         }
     }
     if let Ok(saved) = std::fs::read_to_string(file) {
+        crate::paths::tighten_private(file);
         let saved = saved.trim();
         if saved.len() >= 32 && saved != OLD_DEFAULT_SECRET {
             return saved.as_bytes().to_vec();
@@ -94,8 +95,28 @@ pub struct Claims {
     pub source: Option<String>,
 }
 
+/// Shortest new password (characters). Existing, shorter passwords still
+/// sign in: only new ones are checked (`check_new_password`).
+pub const MIN_PASSWORD_CHARS: usize = 10;
+/// bcrypt reads at most 72 bytes including its closing zero byte; longer
+/// new passwords are refused rather than silently cut.
+pub const MAX_PASSWORD_BYTES: usize = 71;
+
+/// Whether `password` may be set as a new password; Err: why not, for the user.
+pub fn check_new_password(password: &str) -> Result<(), &'static str> {
+    if password.chars().count() < MIN_PASSWORD_CHARS {
+        return Err("Password must be at least 10 characters");
+    }
+    if password.len() > MAX_PASSWORD_BYTES {
+        return Err("Password must be at most 71 bytes");
+    }
+    Ok(())
+}
+
+/// A hash for a new password: bcrypt that refuses (instead of cutting)
+/// passwords over 72 bytes. Existing hashes are verified as before.
 pub fn hash_password(password: &str) -> Result<String, bcrypt::BcryptError> {
-    bcrypt::hash(password, bcrypt::DEFAULT_COST)
+    bcrypt::non_truncating_hash(password, bcrypt::DEFAULT_COST)
 }
 
 pub fn verify_password(password: &str, hash: &str) -> bool {

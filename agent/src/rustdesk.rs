@@ -15,8 +15,9 @@
 //! names the function it follows. In short, as a RustDesk host does for a
 //! direct-IP connection:
 //!
-//! 1. TCP, default port 21118 (rustdesk/src/rendezvous_mediator.rs
-//!    `direct_server`, `get_direct_port`), frames as in `frame.rs`.
+//! 1. TCP, default port 21128 here (RustDesk's own is 21118:
+//!    rustdesk/src/rendezvous_mediator.rs `direct_server`,
+//!    `get_direct_port`; see `DEFAULT_PORT`), frames as in `frame.rs`.
 //! 2. No key exchange and no encryption: `direct_server` calls
 //!    `create_tcp_connection(.., secure = false, ..)`, so
 //!    rustdesk/src/server.rs `identity_handshake` sends no `SignedId`, and the
@@ -52,18 +53,22 @@ use tracing::{debug, info, warn};
 use crate::approval::ApproveMode;
 use crate::direct::{Limits, UnauthSlot};
 
-/// This process's RustDesk login limits (as direct.rs `process_limits`, but
-/// apart from the direct listener's).
+/// This process's login limits: the direct listener's own
+/// (`direct::process_limits`). Both take the same access password, so a
+/// wrong guess over RustDesk counts toward the lockout of direct
+/// connections from that address and the other way round, and both share
+/// the process-wide failure budget and the questions on screen.
 fn process_limits() -> Arc<Mutex<Limits>> {
-    static LIMITS: std::sync::OnceLock<Arc<Mutex<Limits>>> = std::sync::OnceLock::new();
-    LIMITS.get_or_init(Arc::default).clone()
+    crate::direct::process_limits()
 }
 
-/// rustdesk/src/rendezvous_mediator.rs `get_direct_port`: RENDEZVOUS_PORT + 2
-/// (hbb_common/src/config.rs `RENDEZVOUS_PORT` = 21116). It is also the port
-/// the client adds when only an address is typed (rustdesk/src/client.rs
+/// Not RustDesk's own 21118 (rustdesk/src/rendezvous_mediator.rs
+/// `get_direct_port`: RENDEZVOUS_PORT + 2, hbb_common/src/config.rs
+/// `RENDEZVOUS_PORT` = 21116): RustDesk or its server (hbbs) on the same
+/// computer already listens there. The client then needs the port typed:
+/// with only an address it adds 21118 (rustdesk/src/client.rs
 /// `Client::_start`: `check_port(peer, RELAY_PORT + 1)`).
-pub const DEFAULT_PORT: u16 = 21118;
+pub const DEFAULT_PORT: u16 = 21128;
 
 /// Settings of the RustDesk-compatible listener.
 #[derive(Clone)]
@@ -84,6 +89,11 @@ pub struct RustdeskConfig {
     pub file_transfer: bool,
     /// The agent's `file_access`: what their file manager may reach.
     pub file_access: crate::files::Access,
+    /// The `file_access` setting itself, when given: resolved again for
+    /// each file manager (lib.rs `file_access_for`), so the Windows
+    /// service's agent offers the home folder of whoever is logged on at
+    /// the screen then. `None`: `file_access` as it is.
+    pub file_access_setting: Option<String>,
     /// The folder a file manager starts in; `None` for the one
     /// `file_access` gives (the home folder, or the allowed folder).
     pub file_home: Option<std::path::PathBuf>,
@@ -124,6 +134,22 @@ pub async fn run_listener(config: RustdeskConfig) -> anyhow::Result<()> {
     .await
 }
 
+/// Once per process (the listener starts again with every change of the
+/// settings): RustDesk's direct IP access is not encrypted.
+fn warn_unencrypted_once(local: &str) -> bool {
+    static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if WARNED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return false;
+    }
+    warn!(
+        "RustDesk compatibility listens on {} without encryption: the picture, what is typed and the \
+         clipboard cross the network in the clear (only the password is protected). Use it on a LAN or \
+         a VPN only, or turn it off with `lunaris-agent set rustdesk off`",
+        local
+    );
+    true
+}
+
 /// rustdesk/src/rendezvous_mediator.rs `direct_server`: accept, no delay on
 /// the socket, one task per connection.
 pub(crate) async fn serve_listener(
@@ -134,7 +160,11 @@ pub(crate) async fn serve_listener(
     attended: Arc<dyn Fn() -> bool + Send + Sync>,
     limits: Arc<Mutex<Limits>>,
 ) -> anyhow::Result<()> {
-    let local = listener.local_addr().map(|a| a.to_string()).unwrap_or_default();
+    let local_addr = listener.local_addr().ok();
+    let local = local_addr.map(|a| a.to_string()).unwrap_or_default();
+    if local_addr.is_some_and(|a| !a.ip().is_loopback()) {
+        warn_unencrypted_once(&local);
+    }
     info!(
         "RustDesk-compatible listener on {} (unencrypted; {:?}; clipboard {}; file transfer {})",
         local,
@@ -180,5 +210,29 @@ pub(crate) async fn serve_listener(
             // covers every port scan.
             debug!("RustDesk connection from {} closed: {}", peer, reason);
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One budget of guesses for the password, whichever way it is tried.
+    #[test]
+    fn rustdesk_and_direct_logins_share_their_limits() {
+        assert!(Arc::ptr_eq(&process_limits(), &crate::direct::process_limits()));
+        let ip: std::net::IpAddr = "192.0.2.77".parse().unwrap();
+        let limits = process_limits();
+        for _ in 0..5 {
+            limits.lock().unwrap().logins.failed(ip);
+        }
+        // Locked out on the direct listener by wrong RustDesk passwords.
+        assert!(crate::direct::process_limits().lock().unwrap().logins.locked_out(ip));
+    }
+
+    #[test]
+    fn the_unencrypted_warning_is_given_once() {
+        warn_unencrypted_once("0.0.0.0:21128");
+        assert!(!warn_unencrypted_once("0.0.0.0:21128"));
     }
 }

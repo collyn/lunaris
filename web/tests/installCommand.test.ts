@@ -8,6 +8,7 @@ import {
   bashQuote,
   installCommand,
   installScriptUrl,
+  parseInstallFetch,
   parseMaxUses,
   parseTimestamp,
   psQuote,
@@ -42,6 +43,54 @@ test('windows command with name; insecure changes nothing there', () => {
   const a = installCommand('windows', 'https://h', TOKEN, { name: "Bob's PC", insecure: true });
   assert.equal(a, "$env:LUNARIS_INSTALL_TOKEN='abc_DEF-123'; & ([scriptblock]::Create((irm https://h/install/agent.ps1))) -Name 'Bob''s PC'");
   assert.equal(a, installCommand('windows', 'https://h', TOKEN, { name: "Bob's PC" }));
+});
+
+const SPKI = 'n4bQgYhMfWWaL+qgxVrQFaO/TxsrC4Is0V1sFbDwCgg=';
+const CERT = 'ab'.repeat(32);
+const PINNED = parseInstallFetch({ script_origin: 'https://10.0.0.5:8443', spki_sha256: SPKI, cert_sha256: CERT });
+
+test('the server\'s install answer is checked', () => {
+  assert.deepEqual(PINNED, { scriptOrigin: 'https://10.0.0.5:8443', spkiSha256: SPKI, certSha256: CERT.toUpperCase() });
+  assert.equal(parseInstallFetch(undefined), null, 'an older server');
+  assert.equal(parseInstallFetch({ script_origin: null }), null, 'no HTTPS');
+  assert.equal(parseInstallFetch({ script_origin: 'http://h' }), null);
+  assert.equal(parseInstallFetch({ script_origin: "https://h'; id" }), null);
+  // A proxy: an origin, its certificate checked as usual.
+  assert.deepEqual(parseInstallFetch({ script_origin: 'https://remote.example', spki_sha256: null, cert_sha256: null }),
+    { scriptOrigin: 'https://remote.example', spkiSha256: null, certSha256: null });
+  // A bad or half pin is no pin.
+  assert.equal(parseInstallFetch({ script_origin: 'https://h', spki_sha256: "x'", cert_sha256: CERT })?.spkiSha256, null);
+  assert.equal(parseInstallFetch({ script_origin: 'https://h', spki_sha256: SPKI, cert_sha256: 'zz' })?.certSha256, null);
+});
+
+test('linux command pinned to the server\'s key, from its HTTPS port', () => {
+  // The page itself may be on plain HTTP.
+  assert.equal(
+    installCommand('linux', 'http://10.0.0.5:8090', TOKEN, { fetch: PINNED, insecure: true }),
+    `curl -fsSLk --pinnedpubkey 'sha256//${SPKI}' https://10.0.0.5:8443/install/agent.sh | sudo LUNARIS_INSTALL_TOKEN='abc_DEF-123' bash -s --`,
+  );
+});
+
+test('windows command accepts only the server\'s certificate', () => {
+  const cmd = installCommand('windows', 'http://10.0.0.5:8090', TOKEN, { fetch: PINNED, name: 'PC' });
+  assert.equal(
+    cmd,
+    "$env:LUNARIS_INSTALL_TOKEN='abc_DEF-123'; [Net.ServicePointManager]::ServerCertificateValidationCallback = { param($s, $c) ([BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash($c.GetRawCertData())) -replace '-', '') -eq '"
+      + CERT.toUpperCase() + "' }; & ([scriptblock]::Create((irm https://10.0.0.5:8443/install/agent.ps1))) -Name 'PC'",
+  );
+});
+
+test('through a proxy: its https origin, checked as usual', () => {
+  const fetch = parseInstallFetch({ script_origin: 'https://remote.example', spki_sha256: null, cert_sha256: null });
+  assert.equal(
+    installCommand('linux', 'https://remote.example', TOKEN, { fetch }),
+    "curl -fsSL https://remote.example/install/agent.sh | sudo LUNARIS_INSTALL_TOKEN='abc_DEF-123' bash -s --",
+  );
+});
+
+test('a pinned command survives a real bash parse', () => {
+  const cmd = installCommand('linux', 'http://h', TOKEN, { fetch: PINNED, name: "it's" });
+  execFileSync('bash', ['-n', '-c', cmd]);
 });
 
 test('a name of only spaces is left out', () => {

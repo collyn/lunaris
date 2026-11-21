@@ -915,14 +915,15 @@ impl Session {
         match decision {
             Some(Decision::Accepted) => {
                 info!("RustDesk client from {} accepted at this computer", self.ip);
+                self.ctx.limits.lock().unwrap().prompt_answered(self.ip, Decision::Accepted);
                 self.authorize(pending.lr).await
             }
-            Some(Decision::Denied) | Some(Decision::Timeout) => {
+            Some(d @ (Decision::Denied | Decision::Timeout)) => {
                 // As in direct.rs: a refusal counts like a wrong password,
-                // so a stranger cannot keep putting questions up.
-                if decision == Some(Decision::Denied) {
-                    self.ctx.limits.lock().unwrap().logins.failed(self.ip);
-                }
+                // no answer like half of one, and the next question from
+                // this address waits, so a stranger cannot keep putting
+                // questions up.
+                self.ctx.limits.lock().unwrap().prompt_answered(self.ip, d);
                 self.close_with(CLOSED_MANUALLY)
             }
             // Nobody could be asked after all: the password remains.
@@ -1422,7 +1423,11 @@ impl Session {
     /// place.
     async fn authorize_files(&mut self, lr: LoginRequest, dir: &str, show_hidden: bool) -> bool {
         let config = &self.ctx.config;
-        let host = match FileHost::new(config.file_access.clone(), config.file_home.clone(), &lr.version) {
+        let access = match &config.file_access_setting {
+            Some(setting) => crate::file_access_for(setting),
+            None => config.file_access.clone(),
+        };
+        let host = match FileHost::new(access, config.file_home.clone(), &lr.version) {
             Ok(host) => host,
             Err(reason) => {
                 warn!("RustDesk file transfer from {} refused: {}", self.ip, reason);
@@ -2246,6 +2251,7 @@ mod tests {
             name: "testhost".into(),
             file_transfer: false,
             file_access: crate::files::Access::Denied("not in this test".into()),
+            file_access_setting: None,
             file_home: None,
         };
         // The person here: answers from `answers`, or never.

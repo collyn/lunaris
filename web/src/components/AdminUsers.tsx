@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { t } from '../i18n';
+import { MIN_ACCOUNT_PASSWORD, newPasswordError } from '../setup';
 
 interface AdminUsersProps {
   token: string;
@@ -104,6 +105,8 @@ export function AdminUsers({ token, getBackendHost, getBackendProtocol }: AdminU
       setCreateError(t('Username and password are required'));
       return;
     }
+    const weak = newPasswordError(createPassword);
+    if (weak) { setCreateError(t(weak)); return; }
     setCreateLoading(true);
     try {
       const response = await fetch(`${apiBase()}/api/admin/users`, {
@@ -148,6 +151,8 @@ export function AdminUsers({ token, getBackendHost, getBackendProtocol }: AdminU
     e.preventDefault();
     if (!editUser) return;
     setEditError(null);
+    const weak = editPassword.trim() ? newPasswordError(editPassword) : null;
+    if (weak) { setEditError(t(weak)); return; }
     setEditLoading(true);
     try {
       const body: Record<string, unknown> = {
@@ -402,7 +407,9 @@ export function AdminUsers({ token, getBackendHost, getBackendProtocol }: AdminU
                     type="password"
                     value={createPassword}
                     onChange={e => setCreatePassword(e.target.value)}
-                    placeholder={t('Enter password (min 6 chars)')}
+                    placeholder={t('Enter password (min 10 chars)')}
+                    minLength={MIN_ACCOUNT_PASSWORD}
+                    autoComplete="new-password"
                     required
                   />
                 </div>
@@ -478,7 +485,9 @@ export function AdminUsers({ token, getBackendHost, getBackendProtocol }: AdminU
                     type="password"
                     value={editPassword}
                     onChange={e => setEditPassword(e.target.value)}
-                    placeholder={t('New password')}
+                    placeholder={t('New password (min 10 chars)')}
+                    minLength={MIN_ACCOUNT_PASSWORD}
+                    autoComplete="new-password"
                   />
                 </div>
                 {groups.length > 0 && (

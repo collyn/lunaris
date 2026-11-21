@@ -101,19 +101,22 @@ fn make_self_signed(cert: &PathBuf, key: &PathBuf) -> Result<(), String> {
     Ok(())
 }
 
-fn load_config() -> Result<rustls::ServerConfig, String> {
+/// The listener's TLS configuration and its certificate's SHA-256.
+fn load_config() -> Result<(rustls::ServerConfig, Option<String>), String> {
     let (cert_path, key_path, own) = cert_paths();
     if own && (!cert_path.exists() || !key_path.exists()) {
         make_self_signed(&cert_path, &key_path)?;
+    }
+    if own {
+        // A key from before write_private may be readable by others.
+        paths::tighten_private(&key_path);
     }
     let certs = rustls_pemfile::certs(&mut std::io::BufReader::new(
         std::fs::File::open(&cert_path).map_err(|e| format!("{}: {}", cert_path.display(), e))?,
     ))
     .collect::<Result<Vec<_>, _>>()
     .map_err(|e| format!("{}: {}", cert_path.display(), e))?;
-    if let Some(leaf) = certs.first() {
-        let _ = SERVED_CERT_SHA256.set(cert_sha256(leaf.as_ref()));
-    }
+    let fingerprint = certs.first().map(|leaf| cert_sha256(leaf.as_ref()));
     let key = rustls_pemfile::private_key(&mut std::io::BufReader::new(
         std::fs::File::open(&key_path).map_err(|e| format!("{}: {}", key_path.display(), e))?,
     ))
@@ -127,12 +130,29 @@ fn load_config() -> Result<rustls::ServerConfig, String> {
         .with_single_cert(certs, key)
         .map_err(|e| e.to_string())?;
     config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
-    Ok(config)
+    Ok((config, fingerprint))
+}
+
+/// `Strict-Transport-Security` for this listener: off unless
+/// `LUNARIS_HSTS=1`. HSTS holds for the host name on every port, so a
+/// browser would then also refuse plain http://host:8090 (the HTTP port
+/// speaks no TLS), and with a self-signed certificate it removes the
+/// "continue anyway" button: only for servers whose HTTPS is the one way
+/// in, with a trusted certificate. Short and without `preload`.
+pub fn hsts_header(env: Option<&str>) -> Option<&'static str> {
+    matches!(env.map(str::trim), Some("1" | "true" | "on" | "yes")).then_some("max-age=86400")
 }
 
 /// Serves `app` over HTTPS until the task is dropped/aborted.
 pub async fn serve(app: Router, port: u16) {
-    let config = match load_config() {
+    let app = match hsts_header(std::env::var("LUNARIS_HSTS").ok().as_deref()) {
+        Some(value) => app.layer(tower_http::set_header::SetResponseHeaderLayer::if_not_present(
+            axum::http::header::STRICT_TRANSPORT_SECURITY,
+            axum::http::HeaderValue::from_static(value),
+        )),
+        None => app,
+    };
+    let (config, fingerprint) = match load_config() {
         Ok(c) => c,
         Err(e) => {
             error!("HTTPS disabled: {}", e);
@@ -148,6 +168,11 @@ pub async fn serve(app: Router, port: u16) {
             return;
         }
     };
+    // Only now: install.rs hands out wss:// with this pin only while the
+    // HTTPS listener really listens.
+    if let Some(fingerprint) = fingerprint {
+        let _ = SERVED_CERT_SHA256.set(fingerprint);
+    }
     info!("Lunaris Server running on https://{} (web client with controllers and clipboard)", addr);
 
     loop {
@@ -183,5 +208,19 @@ pub async fn serve(app: Router, port: u16) {
                 debug!("HTTPS connection with {}: {}", remote, e);
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hsts_only_when_asked() {
+        assert_eq!(hsts_header(None), None);
+        assert_eq!(hsts_header(Some("0")), None);
+        assert_eq!(hsts_header(Some("")), None);
+        assert_eq!(hsts_header(Some("1")), Some("max-age=86400"));
+        assert!(!hsts_header(Some("on")).unwrap().contains("preload"));
     }
 }

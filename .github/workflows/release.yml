@@ -547,6 +547,12 @@ jobs:
     needs: [build-server-linux, build-server-docker, build-linux-packages, test-linux-packages, build-agent-appimage, build-windows]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
+    # Signs and publishes: runs in the "release" environment, so the signing
+    # key can be kept there as an environment secret, behind required
+    # reviewers and a tag rule (Settings > Environments > release). GitHub
+    # makes the environment, unprotected, on the first run that names it;
+    # repository secrets keep working until the key is moved there.
+    environment: release
     permissions:
       contents: write
     steps:

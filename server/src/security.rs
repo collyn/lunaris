@@ -25,26 +25,124 @@ pub fn sha256_hex(text: &str) -> String {
     hex::encode(Sha256::digest(text.as_bytes()))
 }
 
+/// An address or network in `LUNARIS_TRUSTED_PROXIES` ("10.0.0.0/8",
+/// "172.17.0.1", "fd00::/8").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Cidr {
+    net: std::net::IpAddr,
+    prefix: u8,
+}
+
+impl Cidr {
+    pub fn parse(text: &str) -> Option<Self> {
+        let text = text.trim();
+        let (ip, prefix) = match text.split_once('/') {
+            Some((ip, p)) => (ip.trim().parse::<std::net::IpAddr>().ok()?, Some(p.trim().parse::<u8>().ok()?)),
+            None => (text.parse::<std::net::IpAddr>().ok()?, None),
+        };
+        let ip = canonical_ip(ip);
+        let max = if ip.is_ipv4() { 32 } else { 128 };
+        let prefix = prefix.unwrap_or(max);
+        (prefix <= max).then_some(Cidr { net: ip, prefix })
+    }
+
+    pub fn contains(&self, ip: std::net::IpAddr) -> bool {
+        match (self.net, canonical_ip(ip)) {
+            (std::net::IpAddr::V4(net), std::net::IpAddr::V4(ip)) => {
+                let mask = if self.prefix == 0 { 0 } else { u32::MAX << (32 - self.prefix as u32) };
+                (u32::from(net) & mask) == (u32::from(ip) & mask)
+            }
+            (std::net::IpAddr::V6(net), std::net::IpAddr::V6(ip)) => {
+                let mask = if self.prefix == 0 { 0 } else { u128::MAX << (128 - self.prefix as u32) };
+                (u128::from(net) & mask) == (u128::from(ip) & mask)
+            }
+            _ => false,
+        }
+    }
+}
+
+/// IPv4-mapped IPv6 (a dual-stack socket) as plain IPv4.
+pub fn canonical_ip(ip: std::net::IpAddr) -> std::net::IpAddr {
+    match ip {
+        std::net::IpAddr::V6(v6) => v6.to_ipv4_mapped().map(std::net::IpAddr::V4).unwrap_or(ip),
+        v4 => v4,
+    }
+}
+
+/// `LUNARIS_TRUSTED_PROXIES`: comma-separated addresses or networks of
+/// reverse proxies (e.g. a Docker bridge) whose `X-Forwarded-For` is
+/// believed, besides loopback. Invalid entries are logged and skipped.
+pub fn parse_trusted_proxies(text: &str) -> Vec<Cidr> {
+    text.split(',')
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .filter_map(|t| {
+            let c = Cidr::parse(t);
+            if c.is_none() {
+                tracing::warn!("LUNARIS_TRUSTED_PROXIES: {:?} is not an address or network; ignored", t);
+            }
+            c
+        })
+        .collect()
+}
+
+static TRUSTED_PROXIES: once_cell::sync::Lazy<Vec<Cidr>> = once_cell::sync::Lazy::new(|| {
+    std::env::var("LUNARIS_TRUSTED_PROXIES").map(|v| parse_trusted_proxies(&v)).unwrap_or_default()
+});
+
+fn is_trusted_proxy(ip: std::net::IpAddr, trusted: &[Cidr]) -> bool {
+    canonical_ip(ip).is_loopback() || trusted.iter().any(|c| c.contains(ip))
+}
+
 /// The address a request comes from, for rate limits: behind a reverse proxy
-/// on this machine (TCP peer is loopback) the right-most `X-Forwarded-For`
-/// entry, which that proxy appended; otherwise the TCP peer. Left-most
-/// entries are client-supplied and not trusted.
+/// (TCP peer on loopback, or in `LUNARIS_TRUSTED_PROXIES`) the right-most
+/// `X-Forwarded-For` entry that is not itself a trusted proxy (the one the
+/// outermost trusted proxy saw); otherwise the TCP peer. Entries left of
+/// that are client-supplied and not trusted.
 pub fn client_ip(peer: std::net::IpAddr, headers: &axum::http::HeaderMap) -> std::net::IpAddr {
-    let loopback = match peer {
-        std::net::IpAddr::V4(v4) => v4.is_loopback(),
-        std::net::IpAddr::V6(v6) => v6.is_loopback() || v6.to_ipv4_mapped().is_some_and(|v4| v4.is_loopback()),
-    };
-    if !loopback {
+    client_ip_with(peer, headers, &TRUSTED_PROXIES)
+}
+
+pub fn client_ip_with(peer: std::net::IpAddr, headers: &axum::http::HeaderMap, trusted: &[Cidr]) -> std::net::IpAddr {
+    if !is_trusted_proxy(peer, trusted) {
         return peer;
     }
-    headers
+    let entries: Vec<&str> = headers
         .get_all("x-forwarded-for")
         .iter()
         .filter_map(|v| v.to_str().ok())
         .flat_map(|v| v.split(','))
-        .last()
-        .and_then(|last| last.trim().parse().ok())
-        .unwrap_or(peer)
+        .collect();
+    let mut found = None;
+    for entry in entries.iter().rev() {
+        let Ok(ip) = entry.trim().parse::<std::net::IpAddr>() else {
+            // Garbage where the proxy's entry should be: don't guess further left.
+            break;
+        };
+        found = Some(ip);
+        if !is_trusted_proxy(ip, trusted) {
+            break;
+        }
+    }
+    found.unwrap_or(peer)
+}
+
+/// The key a client address counts under in the failure limits: IPv4 as
+/// is, IPv6 by its /64 (one subscriber usually has a whole /64, so one
+/// address each would be no limit at all).
+pub fn limit_key(ip: std::net::IpAddr) -> String {
+    match canonical_ip(ip) {
+        std::net::IpAddr::V4(v4) => v4.to_string(),
+        std::net::IpAddr::V6(v6) => {
+            let s = v6.segments();
+            format!("{:x}:{:x}:{:x}:{:x}::/64", s[0], s[1], s[2], s[3])
+        }
+    }
+}
+
+/// `client_ip` as a failure-limit key (`limit_key`).
+pub fn client_limit_key(peer: std::net::IpAddr, headers: &axum::http::HeaderMap) -> String {
+    limit_key(client_ip(peer, headers))
 }
 
 /// Longest agent id / name accepted (bytes).
@@ -88,11 +186,55 @@ pub fn agent_key_decision(stored: Option<&str>, given: Option<&str>) -> AgentKey
 
 /// Counts failures per key (client address, username) in a fixed window and
 /// blocks the key once it reaches the limit, until the window has passed.
+///
+/// Checks that await (database, bcrypt) take an attempt first with
+/// `try_begin`: attempts still being checked count like failures, under the
+/// same lock, so many requests sent at once can't all pass `is_blocked`
+/// before the first failure is written down. A full table never forgets a
+/// blocked key or one with an attempt under way: the oldest other entry goes,
+/// and when there is none, new keys are refused (fail closed) until the
+/// window frees entries.
 pub struct FailureLimiter {
     max_failures: u32,
     window: Duration,
     max_entries: usize,
-    entries: Mutex<HashMap<String, (u32, Instant)>>,
+    entries: Mutex<HashMap<String, LimitEntry>>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct LimitEntry {
+    failures: u32,
+    start: Instant,
+    in_flight: u32,
+}
+
+/// An attempt taken with `FailureLimiter::try_begin`: `fail` counts it as a
+/// failure, `succeed` (or dropping it, e.g. on a database error) gives it back.
+#[must_use]
+pub struct Attempt<'a> {
+    limiter: &'a FailureLimiter,
+    key: String,
+    done: bool,
+}
+
+impl Attempt<'_> {
+    pub fn fail(mut self) {
+        self.done = true;
+        self.limiter.finish(&self.key, true, Instant::now());
+    }
+
+    pub fn succeed(mut self) {
+        self.done = true;
+        self.limiter.finish(&self.key, false, Instant::now());
+    }
+}
+
+impl Drop for Attempt<'_> {
+    fn drop(&mut self) {
+        if !self.done {
+            self.limiter.finish(&self.key, false, Instant::now());
+        }
+    }
 }
 
 impl FailureLimiter {
@@ -105,38 +247,151 @@ impl FailureLimiter {
         Self::new(10, Duration::from_secs(300), 10_000)
     }
 
+    fn fresh(&self, e: &LimitEntry, now: Instant) -> bool {
+        now.duration_since(e.start) < self.window
+    }
+
+    fn blocked(&self, e: &LimitEntry, now: Instant) -> bool {
+        self.fresh(e, now) && e.failures >= self.max_failures
+    }
+
     pub fn is_blocked(&self, key: &str, now: Instant) -> bool {
         let entries = self.entries.lock().unwrap();
-        matches!(entries.get(key), Some((count, start))
-            if *count >= self.max_failures && now.duration_since(*start) < self.window)
+        entries.get(key).is_some_and(|e| self.blocked(e, now))
+    }
+
+    /// Makes room for a new key; false when the table is full of entries
+    /// that must be kept (blocked, or with attempts under way).
+    fn make_room(&self, entries: &mut HashMap<String, LimitEntry>, now: Instant) -> bool {
+        if entries.len() < self.max_entries {
+            return true;
+        }
+        entries.retain(|_, e| self.fresh(e, now) || e.in_flight > 0);
+        if entries.len() < self.max_entries {
+            return true;
+        }
+        // Still full (many addresses at once): forget the oldest entry that
+        // neither blocks nor has an attempt under way.
+        let oldest = entries
+            .iter()
+            .filter(|(_, e)| !self.blocked(e, now) && e.in_flight == 0)
+            .min_by_key(|(_, e)| e.start)
+            .map(|(k, _)| k.clone());
+        match oldest {
+            Some(k) => {
+                entries.remove(&k);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Takes an attempt for `key`, or None when the key is blocked: its
+    /// failures and the attempts still under way reached the limit.
+    pub fn try_begin(&self, key: &str, now: Instant) -> Option<Attempt<'_>> {
+        let mut entries = self.entries.lock().unwrap();
+        if !entries.contains_key(key) && !self.make_room(&mut entries, now) {
+            tracing::warn!("Failure limit table full of blocked addresses: refusing new ones for now");
+            return None;
+        }
+        let entry = entries.entry(key.to_string()).or_insert(LimitEntry { failures: 0, start: now, in_flight: 0 });
+        if !self.fresh(entry, now) {
+            entry.failures = 0;
+            entry.start = now;
+        }
+        if entry.failures + entry.in_flight >= self.max_failures {
+            return None;
+        }
+        entry.in_flight += 1;
+        Some(Attempt { limiter: self, key: key.to_string(), done: false })
+    }
+
+    fn finish(&self, key: &str, failed: bool, now: Instant) {
+        let mut entries = self.entries.lock().unwrap();
+        let Some(entry) = entries.get_mut(key) else { return };
+        entry.in_flight = entry.in_flight.saturating_sub(1);
+        if failed {
+            if !self.fresh(entry, now) {
+                entry.failures = 0;
+                entry.start = now;
+            }
+            entry.failures += 1;
+        }
     }
 
     pub fn record_failure(&self, key: &str, now: Instant) {
         let mut entries = self.entries.lock().unwrap();
-        if entries.len() >= self.max_entries && !entries.contains_key(key) {
-            let window = self.window;
-            entries.retain(|_, (_, start)| now.duration_since(*start) < window);
-            // Still full (many addresses at once): forget the oldest.
-            if entries.len() >= self.max_entries {
-                if let Some(oldest) = entries.iter().min_by_key(|(_, (_, s))| *s).map(|(k, _)| k.clone()) {
-                    entries.remove(&oldest);
-                }
-            }
+        if !entries.contains_key(key) && !self.make_room(&mut entries, now) {
+            return;
         }
-        let entry = entries.entry(key.to_string()).or_insert((0, now));
-        if now.duration_since(entry.1) >= self.window {
-            *entry = (0, now);
+        let entry = entries.entry(key.to_string()).or_insert(LimitEntry { failures: 0, start: now, in_flight: 0 });
+        if !self.fresh(entry, now) {
+            entry.failures = 0;
+            entry.start = now;
         }
-        entry.0 += 1;
+        entry.failures += 1;
     }
 
+    /// Forgets the failures of `key` (a success); attempts under way stay counted.
     pub fn reset(&self, key: &str) {
-        self.entries.lock().unwrap().remove(key);
+        let mut entries = self.entries.lock().unwrap();
+        if let Some(e) = entries.get_mut(key) {
+            if e.in_flight == 0 {
+                entries.remove(key);
+            } else {
+                e.failures = 0;
+            }
+        }
     }
 
     #[cfg(test)]
     fn len(&self) -> usize {
         self.entries.lock().unwrap().len()
+    }
+}
+
+/// Client addresses a user recently signed in from (in memory only): the
+/// per-username sign-in limit (lib.rs `login_handler`) does not lock the
+/// user out from those, so someone guessing one account's password from
+/// many addresses can't keep its owner out.
+pub struct KnownAddresses {
+    ttl: Duration,
+    per_user: usize,
+    max_users: usize,
+    entries: Mutex<HashMap<String, Vec<(String, Instant)>>>,
+}
+
+impl KnownAddresses {
+    pub fn new(ttl: Duration, per_user: usize, max_users: usize) -> Self {
+        Self { ttl, per_user, max_users, entries: Mutex::new(HashMap::new()) }
+    }
+
+    pub fn remember(&self, user: &str, addr: &str, now: Instant) {
+        let mut entries = self.entries.lock().unwrap();
+        if !entries.contains_key(user) && entries.len() >= self.max_users {
+            let ttl = self.ttl;
+            entries.retain(|_, list| {
+                list.retain(|(_, t)| now.duration_since(*t) < ttl);
+                !list.is_empty()
+            });
+            if entries.len() >= self.max_users {
+                return;
+            }
+        }
+        let list = entries.entry(user.to_string()).or_default();
+        list.retain(|(a, t)| a != addr && now.duration_since(*t) < self.ttl);
+        list.push((addr.to_string(), now));
+        if list.len() > self.per_user {
+            list.remove(0);
+        }
+    }
+
+    pub fn knows(&self, user: &str, addr: &str, now: Instant) -> bool {
+        self.entries
+            .lock()
+            .unwrap()
+            .get(user)
+            .is_some_and(|list| list.iter().any(|(a, t)| a == addr && now.duration_since(*t) < self.ttl))
     }
 }
 
@@ -320,6 +575,118 @@ pub(crate) mod tests {
         // Old entries make room once their window passed.
         limiter.record_failure("late", t0 + Duration::from_secs(120));
         assert!(limiter.len() <= 10);
+    }
+
+    /// Attempts under way count like failures: requests sent at once can't
+    /// all get past the check before the first failure is written down.
+    #[test]
+    fn attempts_under_way_count() {
+        let limiter = FailureLimiter::new(3, Duration::from_secs(60), 100);
+        let t0 = Instant::now();
+        let a = limiter.try_begin("k", t0).unwrap();
+        let b = limiter.try_begin("k", t0).unwrap();
+        let c = limiter.try_begin("k", t0).unwrap();
+        assert!(limiter.try_begin("k", t0).is_none(), "three under way: the fourth waits");
+        assert!(limiter.try_begin("other", t0).is_some());
+        // A success (or an error: dropped) gives the attempt back.
+        a.succeed();
+        let d = limiter.try_begin("k", t0).unwrap();
+        b.fail();
+        c.fail();
+        d.fail();
+        assert!(limiter.is_blocked("k", t0));
+        assert!(limiter.try_begin("k", t0).is_none());
+        // The window passed: allowed again.
+        assert!(limiter.try_begin("k", t0 + Duration::from_secs(61)).is_some());
+    }
+
+    #[tokio::test]
+    async fn concurrent_attempts_at_most_the_limit_are_evaluated() {
+        let limiter = std::sync::Arc::new(FailureLimiter::new(10, Duration::from_secs(300), 100));
+        let evaluated = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let tasks = (0..50).map(|_| {
+            let (limiter, evaluated) = (limiter.clone(), evaluated.clone());
+            async move {
+                let Some(attempt) = limiter.try_begin("ip", Instant::now()) else { return };
+                evaluated.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                attempt.fail();
+            }
+        });
+        futures_util::future::join_all(tasks).await;
+        assert_eq!(evaluated.load(std::sync::atomic::Ordering::SeqCst), 10);
+        assert!(limiter.is_blocked("ip", Instant::now()));
+    }
+
+    /// A full table never forgets a blocked key (that would unblock it).
+    #[test]
+    fn full_table_keeps_blocked_keys() {
+        let limiter = FailureLimiter::new(2, Duration::from_secs(60), 3);
+        let t0 = Instant::now();
+        for k in ["a", "b", "c"] {
+            limiter.record_failure(k, t0);
+            limiter.record_failure(k, t0);
+        }
+        // Full of blocked keys: a new one is refused, the blocked stay blocked.
+        assert!(limiter.try_begin("d", t0).is_none());
+        limiter.record_failure("d", t0);
+        for k in ["a", "b", "c"] {
+            assert!(limiter.is_blocked(k, t0), "{k}");
+        }
+        // One of them not blocked: that one makes room.
+        limiter.reset("b");
+        limiter.record_failure("b", t0);
+        assert!(limiter.try_begin("d", t0).is_some());
+        assert!(limiter.is_blocked("a", t0) && limiter.is_blocked("c", t0));
+    }
+
+    #[test]
+    fn ipv6_counts_by_64() {
+        let a: std::net::IpAddr = "2001:db8:1:2:aaaa::1".parse().unwrap();
+        let b: std::net::IpAddr = "2001:db8:1:2:ffff::9".parse().unwrap();
+        let c: std::net::IpAddr = "2001:db8:1:3::1".parse().unwrap();
+        assert_eq!(limit_key(a), limit_key(b));
+        assert_ne!(limit_key(a), limit_key(c));
+        assert_eq!(limit_key("10.1.2.3".parse().unwrap()), "10.1.2.3");
+        assert_eq!(limit_key("::ffff:10.1.2.3".parse().unwrap()), "10.1.2.3");
+    }
+
+    #[test]
+    fn trusted_proxies() {
+        use axum::http::{HeaderMap, HeaderValue};
+        let trusted = parse_trusted_proxies("172.17.0.0/16, 10.9.9.9, bogus, fd00::/8");
+        assert_eq!(trusted.len(), 3);
+        let mut h = HeaderMap::new();
+        h.insert("x-forwarded-for", HeaderValue::from_static("6.6.6.6, 203.0.113.9"));
+        let docker: std::net::IpAddr = "172.17.0.1".parse().unwrap();
+        // A proxy on the Docker bridge is believed when listed...
+        assert_eq!(client_ip_with(docker, &h, &trusted).to_string(), "203.0.113.9");
+        // ...not otherwise.
+        assert_eq!(client_ip_with(docker, &h, &[]), docker);
+        // Proxies in a chain are skipped from the right; the spoofable
+        // left-most entry is never reached.
+        let mut chain = HeaderMap::new();
+        chain.insert("x-forwarded-for", HeaderValue::from_static("6.6.6.6, 203.0.113.9, 10.9.9.9"));
+        assert_eq!(client_ip_with("127.0.0.1".parse().unwrap(), &chain, &trusted).to_string(), "203.0.113.9");
+        assert!(Cidr::parse("10.0.0.0/33").is_none());
+        assert!(Cidr::parse("0.0.0.0/0").unwrap().contains("8.8.8.8".parse().unwrap()));
+        assert!(Cidr::parse("fd00::/8").unwrap().contains("fd12::1".parse().unwrap()));
+        assert!(!Cidr::parse("fd00::/8").unwrap().contains("fe80::1".parse().unwrap()));
+    }
+
+    #[test]
+    fn known_addresses_expire_and_are_bounded() {
+        let known = KnownAddresses::new(Duration::from_secs(100), 2, 2);
+        let t0 = Instant::now();
+        known.remember("alice", "1.1.1.1", t0);
+        known.remember("alice", "2.2.2.2", t0);
+        known.remember("alice", "3.3.3.3", t0);
+        assert!(!known.knows("alice", "1.1.1.1", t0), "only the latest two");
+        assert!(known.knows("alice", "3.3.3.3", t0));
+        assert!(!known.knows("alice", "3.3.3.3", t0 + Duration::from_secs(100)));
+        known.remember("bob", "1.1.1.1", t0);
+        known.remember("carol", "1.1.1.1", t0);
+        assert!(!known.knows("carol", "1.1.1.1", t0), "table full");
     }
 
     #[tokio::test]

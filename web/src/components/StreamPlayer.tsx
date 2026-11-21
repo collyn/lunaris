@@ -1,5 +1,5 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { BITRATES, CHROMAS, RESOLUTIONS, bitrateLabel, readDisplayMode, readVolume, objectFitFor, resolutionSize, resolutionString, type DisplayMode } from '../streamOptions';
+import { BITRATES, CHROMAS, RESOLUTIONS, bitrateLabel, readDisplayMode, readVolume, objectFitFor, resolutionSize, type DisplayMode } from '../streamOptions';
 import StreamSettingsDialog, { type StreamSettingsValues, type ViewerSettings } from './StreamSettingsDialog';
 import { t } from '../i18n';
 import { WebShare, readClipboardSync, readFileTransfer } from '../share';
@@ -39,9 +39,6 @@ const getBackendHost = () => {
   }
   if (window.location.port === '5173' || window.location.port === '3000') {
     return `${window.location.hostname}:8090`;
-  }
-  if (window.location.hostname === 'tauri.localhost' || window.location.protocol.startsWith('tauri')) {
-    return 'localhost:8090';
   }
   return window.location.host;
 };
@@ -405,23 +402,6 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   const sourceRestartsRef = useRef(0);
   const lastSourceRestartRef = useRef(0);
   const [availableDisplays, setAvailableDisplays] = useState<{id: string; name: string; width: number; height: number; refresh_rate: number; is_primary: boolean}[]>([]);
-  const [useNativeClient, setUseNativeClient] = useState<boolean>(() => {
-    if (typeof window.RTCPeerConnection === 'undefined') {
-      return true;
-    }
-    // Smart reset once to let the user experience WebRTC inline stream by default after this update
-    if (localStorage.getItem('lunaris_reset_use_native_once') !== 'true') {
-      localStorage.setItem('lunaris_reset_use_native_once', 'true');
-      localStorage.setItem('lunaris_tauri_use_native', 'false');
-      return false;
-    }
-    const val = localStorage.getItem('lunaris_tauri_use_native');
-    if (val === null) {
-      return false;
-    }
-    return val === 'true';
-  });
-  const [draftUseNativeClient, setDraftUseNativeClient] = useState<boolean>(useNativeClient);
   const [isMuted, setIsMuted] = useState<boolean>(() => {
     const val = localStorage.getItem('lunaris_stream_muted');
     return val !== null ? val === 'true' : false;
@@ -642,14 +622,13 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       setDraftBitrate(activeBitrate);
       setDraftCodec(activeCodec);
       setDraftMouseQueueLimit(mouseQueueLimit);
-      setDraftUseNativeClient(useNativeClient);
       setDraftInputProtocol(activeInputProtocol);
       setDraftUseCanvasRenderer(useCanvasRenderer);
       setDraftEncoder(activeEncoder);
       setDraftDisplay(activeDisplay);
       setDraftChroma(activeChroma);
     }
-  }, [showSettingsModal, activeResolution, activeFps, activeBitrate, activeCodec, mouseQueueLimit, useNativeClient, activeInputProtocol, useCanvasRenderer, activeEncoder, activeDisplay, activeChroma]);
+  }, [showSettingsModal, activeResolution, activeFps, activeBitrate, activeCodec, mouseQueueLimit, activeInputProtocol, useCanvasRenderer, activeEncoder, activeDisplay, activeChroma]);
   const [hideLocalCursor, setHideLocalCursor] = useState<boolean>(() => localStorage.getItem('lunaris_stream_hide_cursor') !== 'false');
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
   const [isHeaderVisible, setIsHeaderVisible] = useState<boolean>(true);
@@ -1020,8 +999,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
 
   useEffect(() => {
     addLog(`[System Diagnostics] RTCPeerConnection supported: ${typeof window.RTCPeerConnection !== 'undefined'}`);
-    addLog(`[System Diagnostics] useNativeClient is set to: ${useNativeClient}`);
-  }, [useNativeClient]);
+  }, []);
 
   // The browser's Keyboard Lock (Chromium), decided in one place: every key
   // in full screen when "System shortcuts" is "In full screen only", Esc alone
@@ -1418,40 +1396,6 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   useEffect(() => {
     if (!hostId || !token) return;
 
-    const tauri = (window as any).__TAURI__;
-    if (tauri && useNativeClient && selectedAppId !== null) {
-      const codecDecision = getCodecDecision(activeCodec);
-      const resolvedCodec = codecDecision.resolved;
-      if (codecDecision.fellBack) {
-        console.warn(`Native client codec fallback: requested=${codecDecision.requested}, resolved=${resolvedCodec}. ${codecDecision.reason}. ${codecSupportSummary()}`);
-      }
-      const resStr = resolutionString(activeResolution);
-      const backendHost = getBackendHost();
-      const serverUrl = `${window.location.protocol === 'https:' ? 'https:' : 'http:'}//${backendHost}`;
-
-      tauri.core.invoke('launch_native_client', {
-        hostId,
-        serverUrl,
-        token,
-        res: resStr,
-        fps: String(activeFps),
-        bitrate: String(activeBitrate),
-        codec: resolvedCodec,
-        appId: selectedAppId,
-        mouseQueueLimit: String(mouseQueueLimit),
-        hostName,
-        encoder: activeEncoder,
-        displayId: activeDisplay,
-        inputProtocol: activeInputProtocol
-      }).then(() => {
-        onBack();
-      }).catch((err: any) => {
-        console.error("Failed to launch native client:", err);
-        alert("Failed to launch native client: " + err);
-      });
-      return;
-    }
-
     // Resolve the requested codec once before creating SDP and RequestSession.
     const codecDecision = getCodecDecision(sessionCodec(activeCodec));
     const resolvedCodec = codecDecision.resolved;
@@ -1703,7 +1647,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       cleanup();
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hostId, activeResolution, activeCodec, token, hostName, selectedAppId, useNativeClient, activeInputProtocol, useCanvasRenderer, activeEncoder, activeDisplay, activeChroma, activeSource, sourceRestart]);
+  }, [hostId, activeResolution, activeCodec, token, hostName, selectedAppId, activeInputProtocol, useCanvasRenderer, activeEncoder, activeDisplay, activeChroma, activeSource, sourceRestart]);
 
   // Fetch display/encoder capabilities from agent when host is selected (before stream starts)
   useEffect(() => {
@@ -3048,7 +2992,6 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     encoder: draftEncoder,
     display: draftDisplay,
     useCanvasRenderer: draftUseCanvasRenderer,
-    useNativeClient: draftUseNativeClient,
   };
 
   const setDraftSettingValue = <K extends keyof StreamSettingsValues>(key: K, value: StreamSettingsValues[K]) => {
@@ -3063,7 +3006,6 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       case 'encoder': setDraftEncoder(value as string); break;
       case 'display': setDraftDisplay(value as string); break;
       case 'useCanvasRenderer': setDraftUseCanvasRenderer(value as boolean); break;
-      case 'useNativeClient': setDraftUseNativeClient(value as boolean); break;
     }
   };
 
@@ -3073,7 +3015,6 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     setDraftBitrate(activeBitrate);
     setDraftCodec(activeCodec);
     setDraftMouseQueueLimit(mouseQueueLimit);
-    setDraftUseNativeClient(useNativeClient);
     setDraftInputProtocol(activeInputProtocol);
     setDraftUseCanvasRenderer(useCanvasRenderer);
     setDraftEncoder(activeEncoder);
@@ -3094,7 +3035,6 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       display: draftDisplay,
     });
     localStorage.setItem('lunaris_mouse_queue_limit', String(draftMouseQueueLimit));
-    localStorage.setItem('lunaris_tauri_use_native', String(draftUseNativeClient));
     localStorage.setItem('lunaris_input_protocol', draftInputProtocol);
     localStorage.setItem('lunaris_canvas_renderer_v2', String(draftUseCanvasRenderer));
     
@@ -3102,7 +3042,6 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     const reconnectNeeded = 
       draftResolution !== activeResolution ||
       draftCodec !== activeCodec ||
-      draftUseNativeClient !== useNativeClient ||
       draftInputProtocol !== activeInputProtocol ||
       draftUseCanvasRenderer !== useCanvasRenderer ||
       draftEncoder !== activeEncoder ||
@@ -3119,7 +3058,6 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       // Update active values to trigger reconnect
       setActiveResolution(draftResolution);
       setActiveCodec(draftCodec);
-      setUseNativeClient(draftUseNativeClient);
       setActiveInputProtocol(draftInputProtocol);
       setUseCanvasRenderer(draftUseCanvasRenderer);
       setActiveEncoder(draftEncoder);
@@ -3177,18 +3115,6 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       setActiveDisplay(value);
       setDraftDisplay(value);
       if (value !== activeDisplay) setStatus("Connecting...");
-    }
-  };
-
-  const handleMinimize = () => {
-    const tauri = (window as any).__TAURI__;
-    if (tauri && tauri.window) {
-      try {
-        const appWindow = tauri.window.getCurrentWindow();
-        appWindow.minimize();
-      } catch (err) {
-        console.error("Failed to minimize Tauri window:", err);
-      }
     }
   };
 
@@ -4169,7 +4095,6 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
             av1: getCodecLabel('AV1', browserCodecs.av1, hostAv1Supported),
           }}
           encoders={availableEncoders}
-            showNativeClient={typeof window.RTCPeerConnection !== 'undefined' && !!(window as any).__TAURI__}
           viewer={viewerSettings}
           />
         )}
@@ -4343,7 +4268,6 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
             av1: getCodecLabel('AV1', browserCodecs.av1, hostAv1Supported),
           }}
           encoders={availableEncoders}
-          showNativeClient={typeof window.RTCPeerConnection !== 'undefined' && !!(window as any).__TAURI__}
           viewer={viewerSettings}
         />
       )}
@@ -4594,19 +4518,6 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
             <path d="M19 5H5v3l3 4h8l3-4z" />
           </svg>
         </button>
-
-        {/* Tauri Window Minimize Action */}
-        {!!(window as any).__TAURI__ && (
-          <button 
-            onClick={handleMinimize}
-            className="stream-action-btn"
-            title="Minimize Window"
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-              <line x1="5" y1="12" x2="19" y2="12" />
-            </svg>
-          </button>
-        )}
 
         {/* Mute/Unmute Action */}
         <button 
