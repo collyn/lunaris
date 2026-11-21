@@ -1203,12 +1203,13 @@ mod tests {
                 Some(AuthMessage::PakeReply { msg, confirm }) => {
                     assert_eq!(judge_pake_reply(state, &ctx, &x, &msg, &confirm), None);
                     send_auth(&mut c, &AuthMessage::Confirm { mac: None }).await.unwrap();
+                    recv_auth(&mut c).await
                 }
-                // Not a point on the curve: refused at once.
-                Some(AuthMessage::Refused { .. }) => {}
+                // Not a point on the curve: refused at once, the last word
+                // (waiting for another would wait forever).
+                refused @ Some(AuthMessage::Refused { .. }) => refused,
                 other => panic!("{:?}", other),
             }
-            recv_auth(&mut c).await
         };
         let (_, r) = tokio::join!(client, agent_auth(&mut a, "pw", &ch, &mut gate));
         assert_eq!(r.unwrap().0, Admission::Unauthorized);

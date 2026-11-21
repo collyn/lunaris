@@ -1158,6 +1158,7 @@ async fn serve_link(ws: Ws, config: Arc<DirectConfig>, conn: Conn) {
         id: conn.hub.agent_id().to_string(),
         name: config.name.clone(),
         codec_support,
+        multi_viewer: Some(true),
     });
     // The other computers this one shows, and the kinds it can show. A
     // server let in without the password hears only what its clients need

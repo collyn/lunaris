@@ -237,9 +237,9 @@ async fn connect_once(
         }
     })
     .await;
-    let (id, name, codec_support) = match first {
+    let (id, name, codec_support, multi_viewer) = match first {
         Ok(Some(text)) => match serde_json::from_str::<AgentMessage>(&text) {
-            Ok(AgentMessage::Register { id, name, codec_support }) => (id, name, codec_support),
+            Ok(AgentMessage::Register { id, name, codec_support, multi_viewer }) => (id, name, codec_support, multi_viewer),
             _ => return Err(("unexpected answer (not a Lunaris agent?)".into(), false)),
         },
         _ => return Err(("no answer from the agent".into(), false)),
@@ -255,6 +255,7 @@ async fn connect_once(
         // Also briefly while its previous connection is being closed.
         return Err(("a computer with this id is already connected to the server".into(), false));
     };
+    state.set_multi_viewer(&id, multi_viewer.unwrap_or(false));
     *error.lock().unwrap() = None;
     if what == ADDED_BY_ADDRESS && offered_v2 && !pake_seen {
         // The first answer from an agent that keeps its certificate: pin it
@@ -1262,7 +1263,7 @@ mod fake_agent {
                     let Ok(mut ws) = tokio_tungstenite::accept_async(tls).await else { return };
                     let let_in = serve(&mut ws, password, &cert_hash, v2, &p, &c).await;
                     if let (Some(true), Some(id)) = (let_in, register) {
-                        let reg = common::AgentMessage::Register { id: id.into(), name: "Fake".into(), codec_support: None };
+                        let reg = common::AgentMessage::Register { id: id.into(), name: "Fake".into(), codec_support: None, multi_viewer: None };
                         let _ = ws.send(WsMessage::Text(serde_json::to_string(&reg).unwrap().into())).await;
                         // Keep the link up a moment, then end it.
                         tokio::time::sleep(std::time::Duration::from_millis(300)).await;

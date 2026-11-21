@@ -169,6 +169,17 @@ every page of the web client and a dot on the Server tab, which says how to
 update (the server never updates itself); closing the notice hides it until
 the next release.
 
+**Several people at once.** Like RustDesk, a computer takes any number of
+connections at the same time, each accepted on its own (its `approve_mode`),
+each with its own mouse and keyboard: nobody is pushed out when someone else
+connects. Viewers of the same screen share one capture and one encoder; the
+first one's size, frame rate and codec are the stream's, and its bitrate and
+frame rate follow the slowest link. A viewer that cannot decode that codec
+gets a stream of its own. The other computers an agent shows (RustDesk,
+Sunshine, RDP, VNC) still show one viewer at a time. Both the agent and the
+server need 0.7.3 or later: with an older agent the server keeps one session
+per computer, as before.
+
 ### Install the agent (the computers to control)
 
 The **agent** (`lunaris-agent`) shares a computer with a Lunaris server. It

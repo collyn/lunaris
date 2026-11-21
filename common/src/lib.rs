@@ -766,6 +766,10 @@ pub enum AgentMessage {
         /// Sent by agents the server connects to (`/ws/server` of direct.rs).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         codec_support: Option<u32>,
+        /// The agent streams to several clients at once (each its own
+        /// session); older agents run one, which a new session replaces.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        multi_viewer: Option<bool>,
     },
     StatusUpdate { status: HostStatus },
     Signaling(SignalingMessage),

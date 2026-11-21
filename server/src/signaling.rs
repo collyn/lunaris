@@ -122,6 +122,9 @@ pub struct SignalingState {
     pub client_scopes: RwLock<HashMap<String, (String, Option<String>)>>,
     /// Unknown link tickets per client address.
     pub link_ticket_limit: FailureLimiter,
+    /// Hosts whose agent streams to several connections at once (each its
+    /// own session). Other agents run one session, which a new one replaces.
+    pub multi_viewer_agents: RwLock<std::collections::HashSet<String>>,
 }
 
 impl SignalingState {
@@ -140,6 +143,7 @@ impl SignalingState {
             file_sessions: RwLock::new(HashMap::new()),
             client_asked: RwLock::new(std::collections::HashSet::new()),
             local_sessions: RwLock::new(HashMap::new()),
+            multi_viewer_agents: RwLock::new(std::collections::HashSet::new()),
             links: crate::links::Links::default(),
             gateway: crate::gateway::Gateway::from_env(),
             sources: crate::sources::Registry::default(),
@@ -211,6 +215,30 @@ impl SignalingState {
     fn send_to_conn(&self, conn_id: &str, msg: ServerToClientMessage) {
         if let Some(tx) = self.clients.read().unwrap().get(conn_id) {
             let _ = tx.send(msg);
+        }
+    }
+
+    /// Records whether host `host_id`'s agent (as it connected now) streams
+    /// to several connections at once.
+    pub(crate) fn set_multi_viewer(&self, host_id: &str, multi: bool) {
+        let mut set = self.multi_viewer_agents.write().unwrap();
+        if multi {
+            set.insert(host_id.to_string());
+        } else {
+            set.remove(host_id);
+        }
+    }
+
+    fn multi_viewer(&self, host_id: &str) -> bool {
+        self.multi_viewer_agents.read().unwrap().contains(host_id)
+    }
+
+    /// A stream session on `host_id` ended: the host is free again unless
+    /// other connections still stream from it.
+    async fn stream_ended(&self, host_id: &str) {
+        let streaming = self.client_to_agent.read().unwrap().values().any(|h| h == host_id);
+        if !streaming {
+            self.set_host_status(host_id, HostStatus::Online).await;
         }
     }
 
@@ -348,6 +376,9 @@ pub struct AgentParams {
     pub id: String,
     pub name: String,
     pub codec_support: Option<u32>,
+    /// The agent streams to several connections at once (`multi_viewer=true`).
+    #[serde(default)]
+    pub multi_viewer: Option<bool>,
     pub token: Option<String>,
     /// The agent's own key (hex): once a host id has one, only that agent may
     /// register with the id.
@@ -868,7 +899,7 @@ pub(crate) async fn end_sessions_without_access(state: &Arc<SignalingState>) {
             let _ = agent_tx.send(ServerToAgentMessage::Signaling(SignalingMessage::EndSession { target_id: conn.clone() }));
         }
         if kind == "stream" {
-            state.set_host_status(&host, HostStatus::Online).await;
+            state.stream_ended(&host).await;
         }
         if let Some(tx) = state.clients.read().unwrap().get(&conn) {
             let _ = tx.send(ServerToClientMessage::Signaling(SignalingMessage::Error {
@@ -945,6 +976,7 @@ async fn handle_agent_socket(
         let _ = socket.send(Message::Close(None)).await;
         return;
     };
+    state.set_multi_viewer(&agent_id, params.multi_viewer.unwrap_or(false));
     if let Some(ip) = local_ip {
         state.agent_local_ips.write().unwrap().insert(agent_id.clone(), ip);
     }
@@ -1167,7 +1199,7 @@ async fn handle_client_socket(
         if let Some(session) = session {
             let _ = session.peer_connection.close().await;
         }
-        state.set_host_status(&host_id, HostStatus::Online).await;
+        state.stream_ended(&host_id).await;
     }
 
     send_task.abort();
@@ -1247,7 +1279,7 @@ async fn handle_agent_signaling(sig: SignalingMessage, agent_id: &str, state: Ar
                 }),
             );
             if stream {
-                state.set_host_status(agent_id, HostStatus::Online).await;
+                state.stream_ended(agent_id).await;
             }
         }
 
@@ -1446,9 +1478,11 @@ async fn handle_client_signaling(
         } => {
             info!("Client {} requested session for host {} with settings: w={:?}, h={:?}, fps={:?}, bitrate={:?}, codec={:?}, app_id={:?}, chroma={:?}, encoder_csc_mode={:?}", client_id, host_id, width, height, fps, bitrate, codec, app_id, chroma, encoder_csc_mode);
 
-            // The agent runs one session: another user's is not pushed aside
-            // except by an administrator.
-            if !state.other_users_streams(&host_id, client_id).is_empty() && !is_admin(&state, client_id).await {
+            // An agent that streams to several connections takes this one
+            // beside the others. An older one runs one session: another
+            // user's is not pushed aside except by an administrator.
+            let multi_viewer = state.multi_viewer(&host_id);
+            if !multi_viewer && !state.other_users_streams(&host_id, client_id).is_empty() && !is_admin(&state, client_id).await {
                 warn!("User {} refused: host {} is in use by another user", client_id, host_id);
                 state.send_to_conn(
                     conn_id,
@@ -1474,7 +1508,7 @@ async fn handle_client_signaling(
                         client_id, previous_host_id
                     );
                 }
-                state.set_host_status(&previous_host_id, HostStatus::Online).await;
+                state.stream_ended(&previous_host_id).await;
             }
             if stopped_previous_agent_session {
                 tokio::time::sleep(std::time::Duration::from_millis(1300)).await;
@@ -1518,12 +1552,15 @@ async fn handle_client_signaling(
                         requester,
                     });
                 // Client-to-host routing first, so the agent's first answer
-                // finds it. The agent runs one session: it replaces any
+                // finds it. An agent that runs one session replaces any
                 // other connection's, which then must not end it or the status.
                 let replaced: Vec<String> = {
                     let mut map = state.client_to_agent.write().unwrap();
-                    let others: Vec<String> =
-                        map.iter().filter(|(c, h)| **h == host_id && c.as_str() != conn_id).map(|(c, _)| c.clone()).collect();
+                    let others: Vec<String> = if multi_viewer {
+                        Vec::new()
+                    } else {
+                        map.iter().filter(|(c, h)| **h == host_id && c.as_str() != conn_id).map(|(c, _)| c.clone()).collect()
+                    };
                     for c in &others {
                         map.remove(c);
                     }
@@ -1716,7 +1753,7 @@ async fn handle_client_signaling(
                         target_id: conn_id.to_string(),
                     },
                 ));
-                state.set_host_status(&target_id, HostStatus::Online).await;
+                state.stream_ended(&target_id).await;
                 info!("EndSession forwarded to agent {}", target_id);
                 return;
             }
@@ -2267,6 +2304,73 @@ mod tests {
         assert_eq!(host_status(&state, "h1").await, "Online");
     }
 
+    #[tokio::test]
+    async fn an_agent_with_several_viewers_keeps_every_session() {
+        let state = state().await;
+        for user in ["u1", "u2"] {
+            sqlx::query("INSERT INTO users (id, username, password_hash, role, is_active) VALUES (?, ?, 'x', 'user', 1)")
+                .bind(user)
+                .bind(user)
+                .execute(&state.db)
+                .await
+                .unwrap();
+        }
+        sqlx::query("INSERT INTO hosts (id, name, status) VALUES ('h1', 'H1', 'Online')").execute(&state.db).await.unwrap();
+        // Both users may use h1 (a group with it).
+        sqlx::query("INSERT INTO groups (id, name) VALUES ('g', 'G')").execute(&state.db).await.unwrap();
+        sqlx::query("INSERT INTO host_groups VALUES ('h1', 'g')").execute(&state.db).await.unwrap();
+        for user in ["u1", "u2"] {
+            sqlx::query("INSERT INTO user_groups VALUES (?, 'g')").bind(user).execute(&state.db).await.unwrap();
+        }
+        let (agent_tx, mut agent_rx) = crate::queue::channel::<ServerToAgentMessage>();
+        state.agents.write().unwrap().insert("h1".into(), agent_tx);
+        state.set_multi_viewer("h1", true);
+        let mut inboxes = Vec::new();
+        for (conn, user) in [("c1", "u1"), ("c2", "u2")] {
+            let (tx, rx) = crate::queue::channel::<ServerToClientMessage>();
+            state.clients.write().unwrap().insert(conn.into(), tx);
+            state.client_connections.write().unwrap().insert(conn.into(), user.into());
+            inboxes.push(rx);
+        }
+        let request = || SignalingMessage::RequestSession {
+            host_id: "h1".into(),
+            width: None,
+            height: None,
+            fps: None,
+            bitrate: None,
+            codec: None,
+            app_id: None,
+            encoder: None,
+            display_id: None,
+            chroma: None,
+            encoder_csc_mode: None,
+            microphone: None,
+            source_id: None,
+            decode_codecs: None,
+        };
+        handle_client_signaling(request(), "u1", "c1", state.clone()).await;
+        // Another user joins: not refused, and c1 keeps its session.
+        handle_client_signaling(request(), "u2", "c2", state.clone()).await;
+        assert_eq!(state.client_to_agent.read().unwrap().get("c1").map(String::as_str), Some("h1"));
+        assert_eq!(state.client_to_agent.read().unwrap().get("c2").map(String::as_str), Some("h1"));
+        let mut incoming = 0;
+        while let Some(msg) = agent_rx.rx_try() {
+            if matches!(msg, ServerToAgentMessage::Signaling(SignalingMessage::IncomingSession { .. })) {
+                incoming += 1;
+            }
+        }
+        assert_eq!(incoming, 2);
+        assert!(!matches!(inboxes[0].rx_try(), Some(ServerToClientMessage::Signaling(SignalingMessage::Error { .. }))));
+        assert_eq!(host_status(&state, "h1").await, "Busy");
+
+        // One leaves: the other still streams.
+        handle_client_signaling(SignalingMessage::EndSession { target_id: "h1".into() }, "u1", "c1", state.clone()).await;
+        assert_eq!(host_status(&state, "h1").await, "Busy");
+        // The last one leaves.
+        handle_agent_signaling(SignalingMessage::EndSession { target_id: "c2".into() }, "h1", state.clone()).await;
+        assert_eq!(host_status(&state, "h1").await, "Online");
+    }
+
     /// A file session for one of a host's sources names it to the agent;
     /// clients and agents from before the field mean, and are told, "the
     /// host's own files" exactly as before.
@@ -2603,7 +2707,7 @@ mod tests {
     }
 
     fn params(id: &str, token: Option<&str>, key: Option<&str>) -> AgentParams {
-        AgentParams { id: id.into(), name: "PC".into(), codec_support: None, token: token.map(Into::into), key: key.map(Into::into), install_token: None }
+        AgentParams { id: id.into(), name: "PC".into(), codec_support: None, multi_viewer: None, token: token.map(Into::into), key: key.map(Into::into), install_token: None }
     }
 
     async fn admit(state: &SignalingState, p: &AgentParams, ip: &str) -> Result<bool, StatusCode> {

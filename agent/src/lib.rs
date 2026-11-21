@@ -2,7 +2,7 @@
 use clap::Parser;
 use futures_util::{SinkExt, StreamExt};
 use std::sync::Arc;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 use tracing::{debug, error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -23,6 +23,7 @@ pub mod direct;
 mod files;
 mod gamepad;
 mod hub;
+mod media_hub;
 mod input;
 pub mod pairing;
 mod rtcp_forward;
@@ -1140,7 +1141,7 @@ async fn connect_server_once(
     // Connect to Signaling Server
     let mut server_ws_url = if let Some(support) = codec_support {
         format!(
-            "{}/ws/agent?id={}&name={}&codec_support={}&token={}",
+            "{}/ws/agent?id={}&name={}&codec_support={}&multi_viewer=true&token={}",
             base_ws_url.trim_end_matches('/'),
             config.client_unique_id,
             urlencoding::encode(name),
@@ -1149,7 +1150,7 @@ async fn connect_server_once(
         )
     } else {
         format!(
-            "{}/ws/agent?id={}&name={}&token={}",
+            "{}/ws/agent?id={}&name={}&multi_viewer=true&token={}",
             base_ws_url.trim_end_matches('/'),
             config.client_unique_id,
             urlencoding::encode(name),
@@ -1816,17 +1817,37 @@ fn clamp_stream_request(
     )
 }
 
-/// The agent's session logic: one streaming session at a time, driven by
-/// signaling from server and direct clients alike (addressed with the client's
-/// connection id). Replies go to `agent_tx`, which the hub routes.
+/// Ends client `client`'s stream session, if it has one.
+async fn close_stream(sessions: &mut std::collections::HashMap<String, Arc<BridgeSession>>, client: &str) -> bool {
+    let Some(session) = sessions.remove(client) else { return false };
+    let _ = session.peer_connection.close().await;
+    if sessions.is_empty() {
+        // The encoder is let go when its last viewer leaves.
+        LAST_STREAM_STOP_TIME_MS.store(get_current_time_ms(), std::sync::atomic::Ordering::SeqCst);
+    }
+    info!("Stream session of {} ended ({} still streaming)", client, sessions.len());
+    true
+}
+
+/// The agent's session logic, driven by signaling from server and direct
+/// clients alike (addressed with the client's connection id). Replies go to
+/// `agent_tx`, which the hub routes.
+///
+/// Any number of clients stream at once, as with RustDesk: viewers of the
+/// same display share its capture and encoder (media_hub.rs), each with its
+/// own connection and input. A source shown through a connector is the one
+/// exception: what is known of it is the agent's (connector/media.rs), so
+/// its session is alone; it replaces the others, and another session
+/// replaces it.
 async fn run_session_logic(
     config: AgentConfig,
     agent_tx: mpsc::UnboundedSender<AgentMessage>,
     inbound: &mut mpsc::UnboundedReceiver<SignalingMessage>,
 ) {
-    let active_session: Arc<Mutex<Option<Arc<BridgeSession>>>> = Arc::new(Mutex::new(None));
-    // The client connection that owns `active_session`.
-    let mut active_client: Option<String> = None;
+    // Stream sessions, by client connection.
+    let mut sessions: std::collections::HashMap<String, Arc<BridgeSession>> = std::collections::HashMap::new();
+    // The client whose session shows a connector's source.
+    let mut source_client: Option<String> = None;
     // File-transfer connections (files.rs), by client connection; any number,
     // beside the stream.
     let mut file_sessions: std::collections::HashMap<String, Arc<dyn PeerConnection>> =
@@ -1970,18 +1991,26 @@ async fn run_session_logic(
                     client_id, codec, encoder, width, height, fps, bitrate, display_id, chroma, encoder_csc_mode, microphone
                 );
 
-                // Clean up previous active session
-                {
-                    let mut lock = active_session.lock().await;
-                    if let Some(old_session) = lock.take() {
-                        info!("Cleaning up previous active session before setting up new one...");
-                        let _ = old_session.peer_connection.close().await;
-                        LAST_STREAM_STOP_TIME_MS.store(
-                            get_current_time_ms(),
-                            std::sync::atomic::Ordering::SeqCst,
-                        );
+                // This client's previous session; and the sessions this one
+                // cannot run beside (a source's, see above).
+                if close_stream(&mut sessions, &client_id).await {
+                    info!("Replacing the previous session of {}", client_id);
+                }
+                let alone: Vec<String> = if source.is_some() {
+                    sessions.keys().cloned().collect()
+                } else {
+                    source_client.iter().cloned().collect()
+                };
+                for other in alone {
+                    if close_stream(&mut sessions, &other).await {
+                        info!("Session of {} replaced by {}'s (a connector's source is shown alone)", other, client_id);
+                        let _ = agent_tx.send(AgentMessage::Signaling(SignalingMessage::EndSession { target_id: other }));
                     }
                 }
+                if source_client.as_deref().is_some_and(|c| !sessions.contains_key(c)) {
+                    source_client = None;
+                }
+                let shows_source = source.is_some();
 
                 // Wait if the stream was stopped very recently (let encoder release resources)
                 let last_stop = LAST_STREAM_STOP_TIME_MS.load(std::sync::atomic::Ordering::SeqCst);
@@ -1994,8 +2023,6 @@ async fn run_session_logic(
                         tokio::time::sleep(std::time::Duration::from_millis(sleep_ms)).await;
                     }
                 }
-
-                active_client = None;
 
                 // Initialize bridge session
                 let session = match setup_bridge_session(
@@ -2079,23 +2106,22 @@ async fn run_session_logic(
                 // condition where the client's SDP answer arrives before the session
                 // is stored, causing it to be silently dropped (=> no ICE candidate
                 // pairs => connection timeout after ~7s).
-                {
-                    let mut lock = active_session.lock().await;
-                    *lock = Some(session);
+                sessions.insert(client_id.clone(), session);
+                if shows_source {
+                    source_client = Some(client_id.clone());
                 }
-                active_client = Some(client_id.clone());
+                info!("{} stream session(s) now", sessions.len());
 
                 let _ = agent_tx.send(sdp_msg);
                 warn!("[SIGNALING] SDP Offer sent to client: {}", client_id);
             }
-            SignalingMessage::Sdp { target_id, .. } if active_client.as_deref() != Some(target_id.as_str()) => {
-                // Only the client the offer went to answers it.
-                warn!("[SIGNALING] Ignoring an SDP answer from {} (not the session's client)", target_id);
+            SignalingMessage::Sdp { target_id, .. } if !sessions.contains_key(&target_id) => {
+                // Only a client an offer went to answers it.
+                warn!("[SIGNALING] Ignoring an SDP answer from {} (no session of its own)", target_id);
             }
             SignalingMessage::Sdp { target_id, sdp, .. } => {
                 warn!("[SIGNALING] Received SDP answer from client: {}", target_id);
-                let lock = active_session.lock().await;
-                if let Some(session) = lock.as_ref() {
+                if let Some(session) = sessions.get(&target_id) {
                     // Force Level 4.2 in SDP Answer to prevent browser decoder from silently rejecting Level 4.0/4.2 AMF GPU streams.
                     let forced_sdp = sdp
                         .sdp
@@ -2122,19 +2148,16 @@ async fn run_session_logic(
                             error!("[SIGNALING] Failed to parse SDP Answer: {:?}", e);
                         }
                     }
-                } else {
-                    warn!("[SIGNALING] *** BUG: Received SDP answer but active_session is None! Answer dropped.");
                 }
             }
-            SignalingMessage::IceCandidate { target_id, .. } if active_client.as_deref() != Some(target_id.as_str()) => {
-                debug!("Ignoring an ICE candidate from {} (not the session's client)", target_id);
+            SignalingMessage::IceCandidate { target_id, .. } if !sessions.contains_key(&target_id) => {
+                debug!("Ignoring an ICE candidate from {} (no session of its own)", target_id);
             }
             SignalingMessage::IceCandidate {
-                target_id: _,
+                target_id,
                 candidate,
             } => {
-                let lock = active_session.lock().await;
-                if let Some(session) = lock.as_ref() {
+                if let Some(session) = sessions.get(&target_id) {
                     let rtc_cand = RTCIceCandidateInit {
                         candidate: candidate.candidate,
                         sdp_mid: candidate.sdp_mid,
@@ -2150,19 +2173,16 @@ async fn run_session_logic(
                 }
             }
             SignalingMessage::EndSession { target_id } => {
-                // Only the client that owns the session ends it: another
-                // client (e.g. a direct connection that only asked for the
-                // display list) disconnecting must not cut the stream.
-                if active_client.as_deref() != Some(target_id.as_str()) {
-                    debug!("Ignoring EndSession from {} (not the session's client)", target_id);
+                // A client ends its own session only: another one (e.g. a
+                // direct connection that only asked for the display list)
+                // disconnecting must not cut anyone's stream.
+                if !close_stream(&mut sessions, &target_id).await {
+                    debug!("Ignoring EndSession from {} (no session of its own)", target_id);
                     continue;
                 }
                 info!("Session ended by client: {}", target_id);
-                active_client = None;
-                let mut lock = active_session.lock().await;
-                if let Some(session) = lock.take() {
-                    let _ = session.peer_connection.close().await;
-                    LAST_STREAM_STOP_TIME_MS.store(get_current_time_ms(), std::sync::atomic::Ordering::SeqCst);
+                if source_client.as_deref() == Some(target_id.as_str()) {
+                    source_client = None;
                 }
             }
             SignalingMessage::GetAppList { target_id } => {
@@ -2263,18 +2283,14 @@ async fn run_session_logic(
                     "Received StopActiveStream request from target: {}",
                     target_id
                 );
-                // Clean up active session
-                active_client = None;
-                let success = {
-                    let mut lock = active_session.lock().await;
-                    if let Some(session) = lock.take() {
-                        let _ = session.peer_connection.close().await;
-                        LAST_STREAM_STOP_TIME_MS.store(get_current_time_ms(), std::sync::atomic::Ordering::SeqCst);
-                        true
-                    } else {
-                        false
-                    }
-                };
+                // Every stream here stops; their clients are told.
+                let clients: Vec<String> = sessions.keys().cloned().collect();
+                let success = !clients.is_empty();
+                for client in clients {
+                    close_stream(&mut sessions, &client).await;
+                    let _ = agent_tx.send(AgentMessage::Signaling(SignalingMessage::EndSession { target_id: client }));
+                }
+                source_client = None;
                 let resp = AgentMessage::Signaling(
                     SignalingMessage::StopActiveStreamResponse {
                         target_id,
@@ -2288,9 +2304,8 @@ async fn run_session_logic(
         }
     }
 
-    let mut session_lock = active_session.lock().await;
-    if let Some(session) = session_lock.take() {
-        info!("Stopping active remote streaming session on agent exit...");
+    for (client, session) in sessions.drain() {
+        info!("Stopping the stream session of {} on agent exit...", client);
         let _ = session.peer_connection.close().await;
     }
 }
