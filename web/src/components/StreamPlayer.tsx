@@ -5171,8 +5171,9 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       </div>
 
       {/* Keys the phone keyboard lacks, in a row right above it. Buttons keep
-          the focus in the hidden field so the keyboard stays open. The first
-          eleven fill the width; the rest are reached by sliding the row. */}
+          the focus in the hidden field so the keyboard stays open. "Hide
+          keyboard" comes first and stays put; beside it the first ten
+          keys fill the width and the rest are reached by sliding the row. */}
       {isStreaming && isKeyboardActive && (
         <div
           className="mobile-keys-bar"
@@ -5181,6 +5182,18 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
           onTouchMove={(e) => e.stopPropagation()}
           onTouchEnd={(e) => e.stopPropagation()}
         >
+          {/* First, outside the sliding row: always in reach. */}
+          <button
+            type="button"
+            className="mobile-key mobile-key-hide"
+            aria-label={t('Hide keyboard')}
+            title={t('Hide keyboard')}
+            onClick={() => { keyboardInputRef.current?.blur(); setIsKeyboardActive(false); }}
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <polyline points="6 9 12 15 18 9" />
+            </svg>
+          </button>
           <div className="mobile-keys-row">
             {MOBILE_KEYS.map((key) => (key.mod ? (
               <button
@@ -5198,13 +5211,6 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
               <button key={key.label} type="button" className="mobile-key" aria-label={key.key} onClick={() => sendSpecialKeyRemote(key.key!)}>{key.label}</button>
             )))}
             <button type="button" className="mobile-key wide" onClick={() => pressKeyRemote(46, { ctrl: true, alt: true })}>Ctrl+Alt+Del</button>
-            <button
-              type="button"
-              className="mobile-key"
-              aria-label={t('Hide keyboard')}
-              title={t('Hide keyboard')}
-              onClick={() => { keyboardInputRef.current?.blur(); setIsKeyboardActive(false); }}
-            >⌄</button>
           </div>
         </div>
       )}

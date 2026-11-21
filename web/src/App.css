@@ -55,6 +55,7 @@
   --status-offline: #71717a;
   --shadow-glow: none;
   --shadow-card: var(--shadow);
+
 }
 
 /* Light theme: follows the OS unless the user picked dark explicitly. */
@@ -3192,11 +3193,14 @@ code, kbd, pre, .host-id, .code-block { font-family: var(--font-mono); }
   box-shadow: none;
 }
 .brand-logo {
-  width: 28px;
-  height: 28px;
+  width: auto;
+  height: 30px;
   border-radius: 0;
   background: none;
   box-shadow: none;
+  flex: 0 0 auto;
+  /* One colour: the heading colour of the theme (white on dark, black on light). */
+  color: var(--text-strong);
 }
 .brand-name {
   font-size: 15px;
@@ -3857,8 +3861,18 @@ select option:disabled { color: var(--text-subtle); }
   padding: 5px max(4px, env(safe-area-inset-right)) 5px max(4px, env(safe-area-inset-left));
   background: #1c1c1e;
   border-top: 1px solid rgba(255, 255, 255, 0.08);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+/* The divider between "Hide keyboard" and the keys. */
+.mobile-keys-bar > .mobile-key-hide + .mobile-keys-row {
+  border-left: 1px solid rgba(255, 255, 255, 0.14);
+  padding-left: 4px;
 }
 .mobile-keys-row {
+  flex: 1 1 auto;
+  min-width: 0;
   --keys-gap: 4px;
   display: flex;
   gap: var(--keys-gap);
@@ -3869,10 +3883,12 @@ select option:disabled { color: var(--text-subtle); }
 }
 .mobile-keys-row::-webkit-scrollbar { display: none; }
 .mobile-key {
-  flex: 0 0 calc((100% - 10 * var(--keys-gap)) / 11);
-  min-width: 0;
+  /* Ten keys fill the row beside "Hide keyboard"; the rest slide in. */
+  flex: 0 0 calc((100% - 9 * var(--keys-gap)) / 10);
+  /* A longer label (Home, PgUp) widens its key rather than being cut. */
+  min-width: max-content;
   height: 42px;
-  padding: 0;
+  padding: 0 5px;
   border-radius: 7px;
   border: 1px solid rgba(255, 255, 255, 0.14);
   background: #2c2c2e;
@@ -3885,6 +3901,14 @@ select option:disabled { color: var(--text-subtle); }
   -webkit-tap-highlight-color: transparent;
 }
 .mobile-key.wide { flex-basis: auto; padding: 0 10px; }
+/* "Hide keyboard": first, beside the sliding row, set apart from the keys. */
+.mobile-key.mobile-key-hide {
+  flex: 0 0 40px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: #3a3a3c;
+}
 .mobile-key:active { background: #48484a; }
 .mobile-key.active {
   background: var(--accent, #2f6fed);
@@ -5189,3 +5213,49 @@ select option:disabled { color: var(--text-subtle); }
 .about-versions { margin: 12px 0; }
 /* A warning inside a settings card (RustDesk: unencrypted). */
 .csd-warning { margin: 0 14px 12px; }
+
+/* ====== "A newer Lunaris is available" (administrators; UpdateBanner.tsx) ====== */
+.update-banner {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin: 1rem 0 1.25rem;
+  padding: 0.75rem 0.75rem 0.75rem 1rem;
+  border: 1px solid rgb(var(--accent-rgb) / 0.28);
+  border-radius: var(--radius);
+  background: rgb(var(--accent-rgb) / 0.08);
+  color: var(--text);
+  font-size: 0.9rem;
+}
+.update-banner-icon { flex: 0 0 auto; color: var(--accent-fg); }
+.update-banner-text { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.25rem 0.6rem; min-width: 0; flex: 1 1 auto; }
+.update-banner-text strong { color: var(--text-strong); font-weight: 600; }
+.update-banner-sub { color: var(--text-muted); }
+.update-banner-actions { display: flex; align-items: center; gap: 0.5rem; flex: 0 0 auto; }
+.update-banner-btn { height: 32px; padding: 0 0.85rem; font-size: 0.85rem; text-decoration: none; }
+.update-banner-close {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 32px; height: 32px; border: none; border-radius: var(--radius-sm);
+  background: none; color: var(--text-muted); cursor: pointer;
+}
+.update-banner-close:hover { color: var(--text-strong); background: rgb(var(--ink-rgb) / 0.06); }
+.update-banner-close:focus-visible, .update-banner-btn:focus-visible { outline: 2px solid var(--accent-fg); outline-offset: 2px; }
+@media (max-width: 640px) {
+  .update-banner { flex-wrap: wrap; align-items: flex-start; }
+  .update-banner-text { flex-basis: calc(100% - 3rem); }
+  .update-banner-actions { flex-basis: 100%; padding-left: calc(18px + 0.75rem); }
+  .update-banner-close { margin-left: auto; }
+  /* Touch: 40px targets. */
+  .update-banner-btn, .update-banner-close { height: 40px; }
+  .update-banner-close { width: 40px; }
+}
+
+/* The Server tab's "update available" dot. */
+.nav-tab-dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--accent-fg);
+  box-shadow: 0 0 0 2px var(--bg);
+  margin-left: -0.15rem;
+  align-self: flex-start;
+  margin-top: 0.1rem;
+}

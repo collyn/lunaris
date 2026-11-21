@@ -163,6 +163,12 @@ be added and reached through the server itself, without an agent anywhere else
 never shows the server's own screen. Its state and switch are on the web page's
 Server tab; `LUNARIS_GATEWAY=off|on|<path of lunaris-agent>` overrides.
 
+**Updates.** The server checks GitHub for a newer release once a day
+(`LUNARIS_NO_UPDATE_CHECK` turns it off). Administrators then see a notice on
+every page of the web client and a dot on the Server tab, which says how to
+update (the server never updates itself); closing the notice hides it until
+the next release.
+
 ### Install the agent (the computers to control)
 
 The **agent** (`lunaris-agent`) shares a computer with a Lunaris server. It

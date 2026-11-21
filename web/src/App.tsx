@@ -27,6 +27,8 @@ import {
   newGroup, rememberMethod, saveTypeFilter, saveView, typeShortName, typesOf, type Card, type ComputerView, type Method,
 } from './computerCards';
 import { typeLogo } from './typeLogos';
+import { UpdateBanner, useServerUpdate } from './components/UpdateBanner';
+import { BrandMark } from './components/BrandMark';
 import './App.css';
 
 interface Host {
@@ -311,6 +313,8 @@ function App() {
   // Admin State
   const [userRole, setUserRole] = useState<string | null>(localStorage.getItem('lunaris_role'));
   const [activeTab, setActiveTab] = useState<'devices' | 'users' | 'groups' | 'turn_servers' | 'install_agents' | 'server'>('devices');
+  // A newer Lunaris for administrators: a notice on every page and a dot on the Server tab.
+  const serverUpdate = useServerUpdate(token, userRole === 'admin', () => `${getBackendProtocol().http}//${getBackendHost()}`);
 
   // Dashboard State
   const [hosts, setHosts] = useState<Host[]>([]);
@@ -1599,7 +1603,7 @@ function App() {
       {/* Header bar */}
       <header className="navbar">
         <div className="nav-brand">
-          <img className="brand-logo" src="/favicon.svg" alt="" width={28} height={28} />
+          <BrandMark className="brand-logo" size={30} />
           <span className="brand-name">Lunaris</span>
         </div>
         <div className="nav-actions">
@@ -1876,6 +1880,7 @@ function App() {
                   <button
                     className={`nav-tab ${activeTab === 'server' ? 'active' : ''}`}
                     onClick={() => setActiveTab('server')}
+                    aria-label={serverUpdate.available ? `${t('Server')} (${t('update available')})` : undefined}
                   >
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                       <rect x="3" y="3" width="18" height="7" rx="1.5" />
@@ -1883,8 +1888,17 @@ function App() {
                       <path d="M7 6.5h.01M7 17.5h.01" />
                     </svg>
                     {t('Server')}
+                    {serverUpdate.available && <span className="nav-tab-dot" aria-hidden="true" title={t('update available')} />}
                   </button>
                 </div>
+              )}
+
+              {userRole === 'admin' && !viewingHost && activeTab !== 'server' && serverUpdate.notice && (
+                <UpdateBanner
+                  notice={serverUpdate.notice}
+                  onDismiss={serverUpdate.dismiss}
+                  onOpenServer={() => setActiveTab('server')}
+                />
               )}
 
               {activeTab === 'devices' && (
