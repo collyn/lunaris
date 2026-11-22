@@ -58,7 +58,7 @@ fi
 PKGS=()
 FEATURES=()
 [[ " $ONLY " == *" agent "* ]] && PKGS+=(-p agent) && FEATURES+=(agent/static-ffmpeg)
-[[ " $ONLY " == *" client-"* ]] && PKGS+=(-p client-desktop) && FEATURES+=(client-desktop/static-ffmpeg)
+[[ " $ONLY " == *" client-"* ]] && PKGS+=(-p client-qml) && FEATURES+=(client-qml/static-ffmpeg)
 CARGO_ARGS="--release ${PKGS[*]} --features $(IFS=,; echo "${FEATURES[*]}") --target-dir /target"
 if [[ -n "${LUNARIS_MEDIA_PATH:-}" ]]; then
     RUN_ARGS+=(-v "$(cd "$LUNARIS_MEDIA_PATH" && pwd):/lunaris-media:ro")

@@ -5,12 +5,6 @@ edition.workspace = true
 license.workspace = true
 description = "In-app updates of the Lunaris app and agent: release check, signature check, install, restart"
 
-[features]
-default = ["net"]
-# Downloading, installing and the check scheduler (the app and the agent).
-# Without it (the server): only the release parsing and version comparison.
-net = ["dep:reqwest"]
-
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -19,8 +13,6 @@ base64 = "0.23"
 # Ed25519 signature of SHA256SUMS and the SHA-256 of the downloads (the
 # version the workspace already uses).
 ring = "0.17"
-# Same features as the agent's reqwest, so the workspace builds one copy.
-reqwest = { version = "0.13", default-features = false, features = ["native-tls-no-alpn", "charset", "http2", "system-proxy", "json", "blocking", "stream"], optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

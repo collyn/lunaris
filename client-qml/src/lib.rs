@@ -11,7 +11,6 @@ pub mod deeplink;
 pub mod display_gpu;
 pub mod files;
 pub mod gamepad;
-pub mod legacy_autostart;
 pub mod luma_tap;
 pub mod pointer_in_picture;
 pub mod input;
@@ -341,12 +340,6 @@ fn parse_cli_args(
 }
 
 pub fn run() {
-    // Started with the computer by an entry of an earlier version (it hosted
-    // this computer or sat in the tray): the entry goes, and so does this.
-    if legacy_autostart::started_by_old_entry() {
-        legacy_autostart::remove();
-        return;
-    }
     if handle_single_instance() {
         return;
     }
@@ -395,8 +388,11 @@ pub fn run() {
             error!("Failed to set static APP_ARGS configuration OnceLock.");
             std::process::exit(1);
         }
-    } else {
-        info!("No link on the command line: showing the window that points to the web page.");
+    } else if !std::env::args().nth(1).is_some_and(|a| a.starts_with("lunaris://")) {
+        // Nothing to show: the client opens a computer from the Lunaris
+        // server's web page (Connect, "Open in the Lunaris app").
+        eprintln!("lunaris-client: open a computer from your Lunaris server's web page (\"Open in the Lunaris app\").");
+        return;
     }
 
     // ── GPU present auto-configuration ──────────────────────────────────────
@@ -525,14 +521,6 @@ pub fn run() {
     bridge::qobject::register_gpu_video_item_type();
     bridge::qobject::register_native_video_item_types();
 
-    // Updates: the automatic check (at start, then daily) and the notice
-    // and Updates panel of the window shown without a link. Not for a
-    // one-stream launch (lunaris:// link).
-    if APP_ARGS.get().is_none() {
-        // Earlier versions' start-with-the-computer entries go.
-        legacy_autostart::remove();
-        updater::service::init(updater::App::Client, &app_settings_dir());
-    }
 
     let mut engine = QQmlApplicationEngine::new();
 
@@ -548,7 +536,6 @@ pub fn run() {
     bridge::qobject::exec_widgets_application();
 
     // After an update the window quit: start the new version.
-    updater::restart::relaunch_if_requested();
 }
 
 /// `~/.lunaris` (Windows: `%USERPROFILE%\.lunaris`), where the app keeps its settings.

@@ -165,6 +165,7 @@ fn is_trusted(server: &str) -> bool {
 }
 
 /// Takes `server` off the list in `path`; false when it was not on it.
+#[cfg(test)]
 fn remove_trusted_at(path: &Path, server: &str) -> std::io::Result<bool> {
     let Some(key) = trust_key(server) else { return Ok(false) };
     let mut list = load_trusted(path);
@@ -244,71 +245,6 @@ fn check_account(list: &Path, server: &str, account: Option<&str>) -> AccountChe
             AccountCheck::Trusted
         }
     }
-}
-
-/// A server's address as the user types it: a scheme is optional
-/// (https:// when none is given); the path is dropped. None when it is
-/// not the address of a web server.
-fn typed_server(address: &str) -> Option<String> {
-    let address = address.trim();
-    if address.is_empty() || address.len() > MAX_TEXT_LEN {
-        return None;
-    }
-    let with_scheme = if address.contains("://") { address.to_string() } else { format!("https://{}", address) };
-    http_base(&with_scheme)
-}
-
-/// The address shown for a trusted server: its web page's, without the
-/// scheme's own port.
-fn web_address(key: &str) -> Option<String> {
-    let (secure, host, port) = server_key(key)?;
-    let host = if host.contains(':') && !host.starts_with('[') { format!("[{host}]") } else { host };
-    let scheme = if secure { "https" } else { "http" };
-    Some(if port == if secure { 443 } else { 80 } {
-        format!("{scheme}://{host}")
-    } else {
-        format!("{scheme}://{host}:{port}")
-    })
-}
-
-fn trusted_servers_at(path: &Path) -> Vec<(String, String)> {
-    load_trusted(path)
-        .into_iter()
-        .rev()
-        .filter_map(|key| web_address(&key).map(|web| (key, web)))
-        .collect()
-}
-
-/// The always-trusted servers, the newest first: (as kept, web page address).
-pub fn trusted_servers() -> Vec<(String, String)> {
-    trusted_servers_at(&trusted_list_path())
-}
-
-/// Adds a server the user typed to the trusted list; its web page's
-/// address, or None when it is not a server address.
-pub fn add_typed_server(address: &str) -> Option<String> {
-    let server = typed_server(address)?;
-    let list = trusted_list_path();
-    if let Err(e) = add_trusted(&list, &server) {
-        tracing::warn!("Could not save the trusted server: {}", e);
-        return None;
-    }
-    // Its next link's account is the one remembered.
-    let _ = set_account(&list, &server, None);
-    web_address(&server)
-}
-
-/// Takes a server off the trusted list: its links ask again.
-pub fn remove_trusted_server(server: &str) -> bool {
-    let list = trusted_list_path();
-    let removed = remove_trusted_at(&list, server).unwrap_or_else(|e| {
-        tracing::warn!("Could not change the trusted servers: {}", e);
-        false
-    });
-    if removed {
-        let _ = set_account(&list, server, None);
-    }
-    removed
 }
 
 /// The app used to sign in to one server (`client_config.json`: its address
@@ -925,33 +861,6 @@ mod tests {
         assert!(!same_server("http://a.example:8080", "http://a.example:8081"));
         assert!(!same_server("http://a.example", "http://b.example"));
         assert!(!same_server("nonsense", "nonsense"));
-    }
-
-    #[test]
-    fn typed_servers_and_their_web_address() {
-        assert_eq!(typed_server("lunaris.example.com").as_deref(), Some("https://lunaris.example.com:443"));
-        assert_eq!(typed_server(" http://10.0.0.2:8080/dash ").as_deref(), Some("http://10.0.0.2:8080"));
-        assert_eq!(typed_server("srv.example:9443").as_deref(), Some("https://srv.example:9443"));
-        assert_eq!(typed_server(""), None);
-        assert_eq!(typed_server("javascript:alert(1)"), None);
-        assert_eq!(typed_server("ftp://x.example"), None);
-        assert_eq!(web_address("https://a.example:443").as_deref(), Some("https://a.example"));
-        assert_eq!(web_address("http://a.example:8080").as_deref(), Some("http://a.example:8080"));
-    }
-
-    #[test]
-    fn trusted_servers_are_listed_newest_first_and_removed() {
-        let path = temp_list();
-        add_trusted(&path, "https://a.example").unwrap();
-        add_trusted(&path, "ws://b.example:8080").unwrap();
-        let listed = trusted_servers_at(&path);
-        assert_eq!(listed[0], ("http://b.example:8080".to_string(), "http://b.example:8080".to_string()));
-        assert_eq!(listed[1], ("https://a.example:443".to_string(), "https://a.example".to_string()));
-        assert!(remove_trusted_at(&path, "https://A.example/").unwrap());
-        assert!(!remove_trusted_at(&path, "https://a.example").unwrap());
-        assert!(!in_trusted_list(&path, "wss://a.example"));
-        assert!(in_trusted_list(&path, "http://b.example:8080"));
-        let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
     #[test]

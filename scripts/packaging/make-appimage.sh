@@ -32,7 +32,7 @@ case "$VARIANT" in
         COMMENT="The stream window of the computers of a Lunaris server"
         QML_DIR="$ROOT/client-qml/qml" EXEC=$VARIANT MIME="MimeType=x-scheme-handler/lunaris;" CONFIG_DIR="" QT=1
         if [[ "$VARIANT" == client-desktop ]]; then
-            ICON_SRC="$ROOT/client-desktop/icons/128x128.png" ICON_SIZE=128
+            ICON_SRC="$ROOT/client-qml/icons/128x128.png" ICON_SIZE=128
         else
             ICON_SRC="$ROOT/client-qml/qml/icon.png" ICON_SIZE=256
         fi
@@ -59,7 +59,7 @@ Comment=$COMMENT
 Exec=$EXEC $([[ $QT == 1 ]] && echo %u)
 Icon=$ICON_NAME
 Terminal=$([[ $QT == 1 ]] && echo false || echo true)
-$([[ $QT == 1 ]] || echo NoDisplay=true)
+NoDisplay=true
 Categories=Network;RemoteAccess;
 $MIME
 DESKTOP

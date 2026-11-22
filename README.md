@@ -306,8 +306,12 @@ system service has no one to ask.
 ### Install the stream window (the computers that control)
 
 Any browser works as a viewer. The **Lunaris client** (`lunaris-client`) is
-the low-latency stream window with hardware video decoding, opened from the
-server's web page (**Connect**):
+a small native stream window with hardware video decoding and the lowest
+latency (games): on the server's web page, **Open in the Lunaris app** on a
+computer opens it. It has no window of its own and no menu entry: it only
+handles those `lunaris://` links (started by itself it says so and quits),
+and closing the stream closes it. It is updated by its package or by
+running the new installer or AppImage.
 
 | System | Package |
 |---|---|
@@ -445,8 +449,7 @@ lunaris/
 │       └── components/
 │           └── StreamPlayer.tsx    # WebRTC stream viewer
 │
-├── client-qml/             # The Lunaris client: Rust + Qt6/QML stream window (hardware decoding)
-├── client-desktop/         # The client's program (lunaris-client)
+├── client-qml/             # The Lunaris client (lunaris-client): the Qt6/QML stream window, hardware decoding
 ├── approval-channel/       # Local channel between the agent (daemon) and the approval helper
 ├── approval-helper/        # lunaris-approval-helper: optional Qt tray that accepts connections
 ├── common/                 # Shared types and protocol messages

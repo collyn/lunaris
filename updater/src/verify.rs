@@ -201,8 +201,8 @@ mod tests {
         d.iter().map(|b| format!("{b:02x}")).collect()
     }
 
-    const FILE: &[u8] = b"pretend this is lunaris-client_0.6.4_amd64.deb";
-    const NAME: &str = "lunaris-client_0.6.4_amd64.deb";
+    const FILE: &[u8] = b"pretend this is lunaris-server-linux-x86_64.tar.gz";
+    const NAME: &str = "lunaris-server-linux-x86_64.tar.gz";
 
     fn sums_for(file: &[u8]) -> Vec<u8> {
         format!(

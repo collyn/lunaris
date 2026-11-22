@@ -45,8 +45,8 @@ Var ShowCode         ; 1: setup_code.txt exists (new database, no account yet)
 Var GatewayNote      ; what the finish page says about the server gateway
 
 !define MUI_ABORTWARNING
-!define MUI_ICON   "..\..\client-desktop\icons\icon.ico"
-!define MUI_UNICON "..\..\client-desktop\icons\icon.ico"
+!define MUI_ICON   "..\..\agent\icons\icon.ico"
+!define MUI_UNICON "..\..\agent\icons\icon.ico"
 
 !define MUI_FINISHPAGE_TITLE "Lunaris Server is running"
 !define MUI_FINISHPAGE_TEXT "The server runs as the $\"${APP}$\" Windows service and starts with Windows. Manage it from the web console: http://localhost:$Port (or http://<this computer>:$Port from another one).$\r$\n$\r$\nOn a new install, the web console asks for the one-time setup code in $DataDir\setup_code.txt (administrators only) and then for the first administrator's name and password.$\r$\n$\r$\nSettings: $DataDir\server.env (restart the service after editing).$GatewayNote"

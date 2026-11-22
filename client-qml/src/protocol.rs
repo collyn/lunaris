@@ -71,6 +71,7 @@ Icon=lunaris-client
 Terminal=false
 MimeType=x-scheme-handler/lunaris;
 Categories=Network;RemoteAccess;
+NoDisplay=true
 "#,
         desktop_exec_quote(exe_path)
     )
@@ -192,6 +193,8 @@ mod tests {
         assert!(entry.contains("\nIcon=lunaris-client\n"));
         assert!(entry.contains("\nExec=\"/home/a b/lunaris/client-desktop\" %u\n"));
         assert!(entry.contains("\nMimeType=x-scheme-handler/lunaris;\n"));
+        // Opened by links only: not in the menus.
+        assert!(entry.contains("\nNoDisplay=true\n"));
     }
 
     #[test]

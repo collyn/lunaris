@@ -51,9 +51,6 @@ ApplicationWindow {
     property bool useCuda: true
     property string renderBackend: "auto_gpu"
     property bool nativeVideoActive: gpuVideoItem.cudaActive || d3d11VideoItem.d3d11Active || vaapiDmabufVideoItem.dmabufActive
-    // The updater's state (bridge.updateStatus(), updater/src/service.rs);
-    // the banner and the Updates panel of the window without a link show it.
-    property var updateStatus: ({ state: "idle", current: "", latest: "", autoCheck: true })
     property int hostCursorX: streamWidth / 2
     property int hostCursorY: streamHeight / 2
     property bool hostCursorVisible: false
@@ -584,7 +581,7 @@ ApplicationWindow {
             if (linkDialog.openIfPending()) return;
 
             if (url !== "") {
-                launcherView.showMessage("");
+                messageView.showMessage("");
                 window.isStreamMode = true;
                 bridge.setVideoSink(videoOutput.videoSink);
                 bridge.startStream();
@@ -599,7 +596,7 @@ ApplicationWindow {
             window.show();
             window.raise();
             if (window.isStreamMode) window.showToast(I18n.t(message));
-            else launcherView.showMessage(I18n.t(message));
+            else messageView.showMessage(I18n.t(message));
         }
 
         onShareStatus: (message) => {
@@ -618,7 +615,7 @@ ApplicationWindow {
                 return;
             }
             window.isStreamMode = false;
-            launcherView.showMessage(I18n.tError(message));
+            messageView.showMessage(I18n.tError(message));
         }
 
         // The source being shown could not be connected, or closed: the
@@ -637,7 +634,7 @@ ApplicationWindow {
                 return;
             }
             window.isStreamMode = false;
-            launcherView.showMessage(message);
+            messageView.showMessage(message);
         }
 
     }
@@ -1121,14 +1118,10 @@ ApplicationWindow {
         }
 
         onExitTriggered: {
+            // One stream per window: leaving it closes the client.
             bridge.stopStream();
-            if (bridge.hasConnectionArgs()) {
-                window.exitRequested = true;
-                Qt.quit();
-            } else {
-                window.isStreamMode = false;
-                sessionSettings.close();
-            }
+            window.exitRequested = true;
+            Qt.quit();
         }
     }
 
@@ -1301,28 +1294,36 @@ ApplicationWindow {
     }
     }
 
-    // Update notice above the window without a link (UpdateBanner.qml),
-    // from the updater's state.
-    UpdateBanner {
-        id: updateBanner
-        status: window.updateStatus
-        visible: shown && !window.isStreamMode
-        anchors.top: parent.top
-        anchors.left: parent.left
-        anchors.right: parent.right
-        z: 9999
-    }
-
-    // Started without a link: where streams come from (the server's web
-    // page), the trusted servers, language, theme, updates, version.
-    Launcher {
-        id: launcherView
-        anchors.left: parent.left
-        anchors.right: parent.right
-        anchors.bottom: parent.bottom
-        anchors.top: updateBanner.visible ? updateBanner.bottom : parent.top
+    // Without a stream: why (a link refused, a stream that ended), and the
+    // way out. The client is opened from the server's web page; there is
+    // nothing else to do here.
+    Rectangle {
+        id: messageView
+        property string message: ""
+        function showMessage(text) { message = text; }
+        anchors.fill: parent
         visible: !window.isStreamMode
-        updateStatus: window.updateStatus
+        color: Theme.bg
+        Column {
+            anchors.centerIn: parent
+            width: Math.min(parent.width - 48, 480)
+            spacing: 18
+            Text {
+                width: parent.width
+                horizontalAlignment: Text.AlignHCenter
+                wrapMode: Text.Wrap
+                color: Theme.text
+                font.pixelSize: 15
+                text: messageView.message !== ""
+                    ? messageView.message
+                    : I18n.t("Open a computer from your Lunaris server's web page (Open in the Lunaris app).")
+            }
+            PrimaryButton {
+                anchors.horizontalCenter: parent.horizontalCenter
+                text: I18n.t("Close")
+                onClicked: { window.exitRequested = true; Qt.quit(); }
+            }
+        }
     }
     }
 
@@ -1379,25 +1380,6 @@ ApplicationWindow {
         }
     }
 
-    // The updater checks by itself (shortly after the start, then daily,
-    // unless turned off); this shows its state. Once an update is
-    // installed the app quits and starts again.
-    function pollUpdate() {
-        var s;
-        try { s = JSON.parse(bridge.updateStatus()); } catch (e) { return; }
-        window.updateStatus = s;
-        if (s.state === "restart" && bridge.updateRestart()) {
-            window.exitRequested = true;
-            Qt.quit();
-        }
-    }
-    Timer {
-        interval: 1000
-        running: true
-        repeat: true
-        triggeredOnStart: true
-        onTriggered: window.pollUpdate()
-    }
 
 
     // A lunaris:// link to a server that is not trusted: nothing connects

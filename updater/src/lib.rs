@@ -1,31 +1,15 @@
-//! In-app updates of the Lunaris app (`client-desktop`), the restart of the
-//! agent (`lunaris-agent`, no window) when its program file is replaced, and
-//! the "a new version exists" notice of the standalone server.
-//!
-//! The flow (see [`service`]): ask GitHub for the latest stable release,
-//! compare its version with this build's, work out how this copy was
-//! installed ([`kind`]) and which release file updates it. When the user
-//! presses Update: download `SHA256SUMS` and `SHA256SUMS.sig`, check the
-//! Ed25519 signature with the key built into this program ([`verify`]),
-//! download the file into a private temporary folder, check its SHA-256
-//! against its line in `SHA256SUMS`, and only then install it ([`install`])
-//! and restart ([`restart`]).
-//!
-//! Everything that decides something is a pure function with unit tests;
-//! the Qt windows only call [`service`] and show its JSON status.
+//! What the agent and the server share about Lunaris releases: the restart
+//! of the agent (`lunaris-agent`, no window) when its program file is
+//! replaced ([`restart`]), and for the server the latest release on GitHub
+//! ([`release`]), the version comparison ([`version`]) and the Ed25519
+//! check of a release's `SHA256SUMS` ([`verify`]): the "a new version
+//! exists" notice and the one-line installer's checksums. (The client is
+//! updated by its package or installer: it opens only from links.)
 
-pub mod kind;
 pub mod release;
 pub mod restart;
 pub mod verify;
 pub mod version;
-
-#[cfg(feature = "net")]
-pub mod install;
-#[cfg(feature = "net")]
-mod net;
-#[cfg(feature = "net")]
-pub mod service;
 
 /// GitHub repository the releases come from.
 pub const REPO: &str = "collyn/lunaris";
@@ -39,5 +23,3 @@ pub const DOWNLOAD_PREFIX: &str = "https://github.com/collyn/lunaris/releases/do
 pub const USER_AGENT: &str = "lunaris-updater";
 /// This build's version (the workspace version, root Cargo.toml).
 pub const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
-
-pub use kind::App;

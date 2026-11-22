@@ -9,7 +9,6 @@
     <file>LunarisMenuBar.qml</file>
     <file>LunarisComboBox.qml</file>
     <file>SessionSettings.qml</file>
-    <file>Launcher.qml</file>
     <file>ThemedCombo.qml</file>
     <file>Icon.qml</file>
     <file>IconButton.qml</file>
@@ -22,8 +21,6 @@
     <file>ThemedMenu.qml</file>
     <file>GamepadTester.qml</file>
     <file>FileManager.qml</file>
-    <file>UpdateBanner.qml</file>
-    <file>UpdatesPanel.qml</file>
     <file>icon.png</file>
     <file>cursors/arrow.png</file>
     <file>cursors/cross.png</file>

@@ -12,8 +12,8 @@ InstallDir "$PROGRAMFILES64\Lunaris Client"
 RequestExecutionLevel admin
 
 !define MUI_ABORTWARNING
-!define MUI_ICON "client-desktop\icons\icon.ico"
-!define MUI_UNICON "client-desktop\icons\icon.ico"
+!define MUI_ICON "client-qml\icons\icon.ico"
+!define MUI_UNICON "client-qml\icons\icon.ico"
 
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_DIRECTORY
@@ -214,13 +214,13 @@ Section "Install"
   Call LogDir
   FileClose $LogFile
 
-  # Create Start Menu shortcuts
+  # The client opens from lunaris:// links of the server's web page only:
+  # no shortcut to start it (the ones of earlier versions go), only the
+  # uninstaller in the Start Menu.
+  Delete "$SMPROGRAMS\Lunaris Client\Lunaris Client.lnk"
+  Delete "$DESKTOP\Lunaris Client.lnk"
   CreateDirectory "$SMPROGRAMS\Lunaris Client"
-  CreateShortcut "$SMPROGRAMS\Lunaris Client\Lunaris Client.lnk" "$INSTDIR\client-desktop.exe"
   CreateShortcut "$SMPROGRAMS\Lunaris Client\Uninstall Lunaris Client.lnk" "$INSTDIR\uninstall.exe"
-
-  # Create Desktop shortcut
-  CreateShortcut "$DESKTOP\Lunaris Client.lnk" "$INSTDIR\client-desktop.exe"
 
   # Write registry keys for Add/Remove Programs
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Lunaris Client" "DisplayName" "Lunaris Client"

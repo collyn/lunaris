@@ -121,8 +121,8 @@ mod tests {
         "tag_name": "v0.6.4", "html_url": "https://github.com/collyn/lunaris/releases/tag/v0.6.4",
         "draft": false, "prerelease": false, "body": "Fixes\r\n- one",
         "assets": [
-            {"name": "lunaris-client_0.6.4_amd64.deb", "size": 10,
-             "browser_download_url": "https://github.com/collyn/lunaris/releases/download/v0.6.4/lunaris-client_0.6.4_amd64.deb"},
+            {"name": "lunaris-agent_0.6.4_amd64.deb", "size": 10,
+             "browser_download_url": "https://github.com/collyn/lunaris/releases/download/v0.6.4/lunaris-agent_0.6.4_amd64.deb"},
             {"name": "evil.deb", "size": 1, "browser_download_url": "https://example.com/evil.deb"},
             {"name": "../x", "size": 1, "browser_download_url": "https://github.com/collyn/lunaris/releases/download/v0.6.4/x"}
         ]}"#;
@@ -133,8 +133,8 @@ mod tests {
         assert_eq!(r.tag, "v0.6.4");
         assert_eq!(r.version, "0.6.4");
         assert_eq!(r.notes, "Fixes\n- one");
-        assert_eq!(r.asset_names(), vec!["lunaris-client_0.6.4_amd64.deb"]);
-        assert_eq!(r.asset("lunaris-client_0.6.4_amd64.deb").unwrap().size, 10);
+        assert_eq!(r.asset_names(), vec!["lunaris-agent_0.6.4_amd64.deb"]);
+        assert_eq!(r.asset("lunaris-agent_0.6.4_amd64.deb").unwrap().size, 10);
     }
 
     #[test]
@@ -155,7 +155,7 @@ mod tests {
 
     #[test]
     fn file_names() {
-        assert!(safe_file_name("lunaris-client-0.6.4-1.fc44.x86_64.rpm"));
+        assert!(safe_file_name("lunaris-agent-0.6.4-1.fc44.x86_64.rpm"));
         assert!(safe_file_name("SHA256SUMS.sig"));
         assert!(!safe_file_name("../SHA256SUMS"));
         assert!(!safe_file_name("a/b"));

@@ -5,7 +5,6 @@ singleton StreamOptions 1.0 StreamOptions.qml
 LunarisMenuBar 1.0 LunarisMenuBar.qml
 LunarisComboBox 1.0 LunarisComboBox.qml
 SessionSettings 1.0 SessionSettings.qml
-Launcher 1.0 Launcher.qml
 Icon 1.0 Icon.qml
 IconButton 1.0 IconButton.qml
 PrimaryButton 1.0 PrimaryButton.qml
@@ -18,5 +17,3 @@ ThemedMenu 1.0 ThemedMenu.qml
 ThemedCombo 1.0 ThemedCombo.qml
 GamepadTester 1.0 GamepadTester.qml
 FileManager 1.0 FileManager.qml
-UpdateBanner 1.0 UpdateBanner.qml
-UpdatesPanel 1.0 UpdatesPanel.qml

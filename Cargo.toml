@@ -6,7 +6,6 @@ members = [
     "approval-helper",
     "common",
     "updater",
-    "client-desktop",
     "client-qml",
     "connectors/template",
 ]

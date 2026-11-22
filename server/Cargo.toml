@@ -9,7 +9,7 @@ common = { path = "../common" }
 # update_notice.rs: "a new version exists" in the log (release parsing and
 # version comparison only; no downloads) over tokio-rustls below, with the
 # system's CA certificates.
-updater = { path = "../updater", default-features = false }
+updater = { path = "../updater" }
 rustls-native-certs = "0.8"
 axum = { version = "0.8", features = ["ws", "macros"] }
 tokio = { version = "1.0", features = ["full"] }

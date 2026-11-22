@@ -805,21 +805,6 @@ pub mod qobject {
         #[qinvokable]
         fn answer_pending_link(self: Pin<&mut StreamBridge>, accept: bool, trust_always: bool) -> bool;
 
-        /// The servers whose links connect without asking (the window shown
-        /// without a link lists them): `[{"server", "web"}]`, `web` being the
-        /// address of its web page.
-        #[qinvokable]
-        fn trusted_servers(self: Pin<&mut StreamBridge>) -> QString;
-
-        /// Adds a server the user typed to that list; its web page's address,
-        /// or "" when it is not a server address.
-        #[qinvokable]
-        fn add_trusted_server(self: Pin<&mut StreamBridge>, address: QString) -> QString;
-
-        /// Takes a server off that list: its links ask again.
-        #[qinvokable]
-        fn remove_trusted_server(self: Pin<&mut StreamBridge>, server: QString) -> bool;
-
         #[qinvokable]
         fn poll_events(self: Pin<&mut StreamBridge>);
 
@@ -887,36 +872,10 @@ pub mod qobject {
         #[qinvokable]
         fn save_store(self: Pin<&mut StreamBridge>, name: QString, json: QString);
 
-        #[qinvokable]
-        fn app_version(self: Pin<&mut StreamBridge>) -> QString;
-
         /// Refresh rate in Hz of the screen the window is on, 0 when unknown.
         #[qinvokable]
         fn screen_refresh_rate(self: Pin<&mut StreamBridge>) -> f64;
 
-        /// "Check now" (in the background; `update_status` shows the result).
-        #[qinvokable]
-        fn check_for_updates(self: Pin<&mut StreamBridge>);
-
-        /// The updater's state as JSON (updater::service::status_json).
-        #[qinvokable]
-        fn update_status(self: Pin<&mut StreamBridge>) -> QString;
-
-        /// Update: download, verify the signature and the checksum, install.
-        #[qinvokable]
-        fn update_install(self: Pin<&mut StreamBridge>);
-
-        /// After the install: true when the app should quit now (it then
-        /// starts again).
-        #[qinvokable]
-        fn update_restart(self: Pin<&mut StreamBridge>) -> bool;
-
-        /// "Check for updates automatically".
-        #[qinvokable]
-        fn update_auto_check(self: Pin<&mut StreamBridge>) -> bool;
-
-        #[qinvokable]
-        fn set_update_auto_check(self: Pin<&mut StreamBridge>, enabled: bool);
     }
 }
 
@@ -1483,22 +1442,6 @@ impl qobject::StreamBridge {
         }
     }
 
-    pub fn trusted_servers(self: Pin<&mut Self>) -> QString {
-        let list: Vec<serde_json::Value> = crate::deeplink::trusted_servers()
-            .into_iter()
-            .map(|(server, web)| serde_json::json!({ "server": server, "web": web }))
-            .collect();
-        QString::from(&serde_json::Value::Array(list).to_string())
-    }
-
-    pub fn add_trusted_server(self: Pin<&mut Self>, address: QString) -> QString {
-        QString::from(&crate::deeplink::add_typed_server(&address.to_string()).unwrap_or_default())
-    }
-
-    pub fn remove_trusted_server(self: Pin<&mut Self>, server: QString) -> bool {
-        crate::deeplink::remove_trusted_server(&server.to_string())
-    }
-
     pub fn poll_events(mut self: Pin<&mut Self>) {
         let events = {
             let mut lock = PENDING_EVENTS.lock().unwrap();
@@ -1625,37 +1568,10 @@ impl qobject::StreamBridge {
         let _ = crate::secure_fs::write_private(&path, json);
     }
 
-    pub fn app_version(self: Pin<&mut Self>) -> QString {
-        QString::from(env!("CARGO_PKG_VERSION"))
-    }
-
     pub fn screen_refresh_rate(self: Pin<&mut Self>) -> f64 {
         qobject::window_screen_refresh_rate()
     }
 
-    pub fn check_for_updates(self: Pin<&mut Self>) {
-        updater::service::check_now();
-    }
-
-    pub fn update_status(self: Pin<&mut Self>) -> QString {
-        QString::from(&updater::service::status_json())
-    }
-
-    pub fn update_install(self: Pin<&mut Self>) {
-        updater::service::install();
-    }
-
-    pub fn update_restart(self: Pin<&mut Self>) -> bool {
-        updater::service::restart_now()
-    }
-
-    pub fn update_auto_check(self: Pin<&mut Self>) -> bool {
-        updater::service::auto_check()
-    }
-
-    pub fn set_update_auto_check(self: Pin<&mut Self>, enabled: bool) {
-        updater::service::set_auto_check(enabled);
-    }
 }
 
 // -----------------------------------------------------------------------------

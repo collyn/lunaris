@@ -90,8 +90,8 @@ build_binaries() {
     # share (agent, lunaris-media, webrtc, ...) get different features and
     # are compiled twice (7 more minutes in CI). The agent links no Qt; the
     # approval helper and the client do.
-    cargo build --release --locked -p agent -p approval-helper -p client-desktop \
-        --features agent/static-ffmpeg,client-desktop/static-ffmpeg --target-dir "$TARGET"
+    cargo build --release --locked -p agent -p approval-helper -p client-qml \
+        --features agent/static-ffmpeg,client-qml/static-ffmpeg --target-dir "$TARGET"
     for b in lunaris-agent client-desktop; do
         if ldd "$TARGET/release/$b" | grep -qE 'libav(codec|util)|libx264'; then
             echo "error: $b still links FFmpeg dynamically" >&2; exit 1
