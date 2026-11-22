@@ -15,7 +15,7 @@ for size in 16 24 32 48 64 128 256 512 1024; do
     png "$size" "$WORK/$size.png"
 done
 
-for dir in agent/icons client-qml/icons; do
+for dir in agent/icons client-desktop/icons; do
     cp "$WORK/32.png" "$ROOT/$dir/32x32.png"
     cp "$WORK/128.png" "$ROOT/$dir/128x128.png"
     cp "$WORK/256.png" "$ROOT/$dir/128x128@2x.png"

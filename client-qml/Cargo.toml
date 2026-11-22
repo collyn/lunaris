@@ -8,12 +8,6 @@ license.workspace = true
 name = "client_qml"
 path = "src/lib.rs"
 
-# The program (lunaris-client in the packages; the file keeps the name the
-# packages, installers and in-app updates know).
-[[bin]]
-name = "client-desktop"
-path = "src/main.rs"
-
 [dependencies]
 common = { path = "../common" }
 # The direct connection to an agent (agent::direct) and the key positions
@@ -60,8 +54,6 @@ libc = "0.2"
 
 [build-dependencies]
 cxx-qt-build = "0.6"
-# The icon and the manifest of the Windows program (build.rs).
-winresource = "0.1"
 
 [features]
 # Link FFmpeg statically (distro packages, see scripts/packaging/build-ffmpeg-static.sh).

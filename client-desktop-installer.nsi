@@ -12,8 +12,8 @@ InstallDir "$PROGRAMFILES64\Lunaris Client"
 RequestExecutionLevel admin
 
 !define MUI_ABORTWARNING
-!define MUI_ICON "client-qml\icons\icon.ico"
-!define MUI_UNICON "client-qml\icons\icon.ico"
+!define MUI_ICON "client-desktop\icons\icon.ico"
+!define MUI_UNICON "client-desktop\icons\icon.ico"
 
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_DIRECTORY

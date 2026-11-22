@@ -450,6 +450,7 @@ lunaris/
 │           └── StreamPlayer.tsx    # WebRTC stream viewer
 │
 ├── client-qml/             # The Lunaris client (lunaris-client): the Qt6/QML stream window, hardware decoding
+├── client-desktop/         # Its program (a separate crate: Qt's static QML plugin must link after the library)
 ├── approval-channel/       # Local channel between the agent (daemon) and the approval helper
 ├── approval-helper/        # lunaris-approval-helper: optional Qt tray that accepts connections
 ├── common/                 # Shared types and protocol messages

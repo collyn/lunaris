@@ -31,7 +31,7 @@ case "$VARIANT" in
         NAME=$VARIANT TITLE="Lunaris Client" ICON_NAME=lunaris-client
         COMMENT="The stream window of the computers of a Lunaris server"
         QML_DIR="$ROOT/client-qml/qml" EXEC=$VARIANT MIME="MimeType=x-scheme-handler/lunaris;" CONFIG_DIR="" QT=1
-        ICON_SRC="$ROOT/client-qml/icons/128x128.png" ICON_SIZE=128
+        ICON_SRC="$ROOT/client-desktop/icons/128x128.png" ICON_SIZE=128
         # The client opens only for a lunaris:// link (it quits without one):
         # a link it ignores keeps its window up for the start-up check.
         OUTFILE="$OUT/${VARIANT}-x86_64.AppImage" SMOKE_ARGS=("lunaris://connect?smoke=1")

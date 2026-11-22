@@ -1,26 +1,6 @@
 use cxx_qt_build::{CxxQtBuilder, QmlModule};
 
-/// Windows: the icon and the manifest of the program (the `client-desktop`
-/// binary only, not the library). The manifest asks for no administrator
-/// rights (`asInvoker`): the client only shows streams.
-fn windows_resources() {
-    println!("cargo:rerun-if-changed=icons/icon.ico");
-    println!("cargo:rerun-if-changed=windows/app.manifest");
-    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
-        return;
-    }
-    let mut res = winresource::WindowsResource::new();
-    res.set_icon("icons/icon.ico");
-    res.set_manifest_file("windows/app.manifest");
-    res.set("ProductName", "Lunaris Client");
-    res.set("FileDescription", "Lunaris Client");
-    if let Err(e) = res.compile_for("client-desktop") {
-        panic!("The Windows resources (icon, manifest) could not be compiled: {}", e);
-    }
-}
-
 fn main() {
-    windows_resources();
     let out_dir = std::env::var("OUT_DIR").unwrap();
     let mut moc_path = "moc".to_string();
 

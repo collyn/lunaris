@@ -139,7 +139,7 @@ fn wide_z(s: &OsStr) -> Vec<u16> {
 
 /// `["agent"]` when this process was started as `<exe> agent ...`, that is
 /// when the executable is the unified app (`client-desktop`, see
-/// client-qml/src/main.rs), `[]` for the standalone agent. Every command
+/// client-desktop/src/main.rs), `[]` for the standalone agent. Every command
 /// line below (service binPath, child, terminate helper) is built with it, so
 /// that the same code works through both executables; the service itself is
 /// started by the SCM with the arguments installed by [`install_service`],
