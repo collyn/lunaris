@@ -1,7 +1,7 @@
 # Lunaris agent installer for Windows (x64), made by the Lunaris server.
 #
 # In an elevated PowerShell ("Run as administrator"):
-#   $env:LUNARIS_INSTALL_TOKEN='TOKEN'; & ([scriptblock]::Create((irm https://SERVER/install/agent.ps1))) [-Name NAME]
+#   $env:LUNARIS_INSTALL_TOKEN='TOKEN'; [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12; & ([scriptblock]::Create((irm https://SERVER/install/agent.ps1))) [-Name NAME]
 # or saved as a file:
 #   $env:LUNARIS_INSTALL_TOKEN='TOKEN'; powershell -ExecutionPolicy Bypass -File .\agent.ps1 [-Name NAME]
 # (-Token TOKEN works too, but then the token shows in the process list.)

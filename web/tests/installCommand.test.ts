@@ -35,13 +35,13 @@ test('linux command with name and self-signed certificate', () => {
 test('windows command, no name', () => {
   assert.equal(
     installCommand('windows', 'https://lunaris.example', TOKEN),
-    "$env:LUNARIS_INSTALL_TOKEN='abc_DEF-123'; & ([scriptblock]::Create((irm https://lunaris.example/install/agent.ps1)))",
+    "$env:LUNARIS_INSTALL_TOKEN='abc_DEF-123'; [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12; & ([scriptblock]::Create((irm https://lunaris.example/install/agent.ps1)))",
   );
 });
 
 test('windows command with name; insecure changes nothing there', () => {
   const a = installCommand('windows', 'https://h', TOKEN, { name: "Bob's PC", insecure: true });
-  assert.equal(a, "$env:LUNARIS_INSTALL_TOKEN='abc_DEF-123'; & ([scriptblock]::Create((irm https://h/install/agent.ps1))) -Name 'Bob''s PC'");
+  assert.equal(a, "$env:LUNARIS_INSTALL_TOKEN='abc_DEF-123'; [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12; & ([scriptblock]::Create((irm https://h/install/agent.ps1))) -Name 'Bob''s PC'");
   assert.equal(a, installCommand('windows', 'https://h', TOKEN, { name: "Bob's PC" }));
 });
 
@@ -75,7 +75,7 @@ test('windows command accepts only the server\'s certificate', () => {
   const cmd = installCommand('windows', 'http://10.0.0.5:8090', TOKEN, { fetch: PINNED, name: 'PC' });
   assert.equal(
     cmd,
-    "$env:LUNARIS_INSTALL_TOKEN='abc_DEF-123'; [Net.ServicePointManager]::ServerCertificateValidationCallback = { param($s, $c) ([BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash($c.GetRawCertData())) -replace '-', '') -eq '"
+    "$env:LUNARIS_INSTALL_TOKEN='abc_DEF-123'; [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12; [Net.ServicePointManager]::ServerCertificateValidationCallback = { param($s, $c) ([BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash($c.GetRawCertData())) -replace '-', '') -eq '"
       + CERT.toUpperCase() + "' }; & ([scriptblock]::Create((irm https://10.0.0.5:8443/install/agent.ps1))) -Name 'PC'",
   );
 });

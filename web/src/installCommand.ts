@@ -87,14 +87,19 @@ export const installCommand = (
     if (name) cmd += ` --name ${bashQuote(name)}`;
     return cmd;
   }
-  // Windows PowerShell 5.1: irm accepts the server's certificate only when
+  // Windows PowerShell 5.1 (.NET Framework) offers only SSL 3 / TLS 1.0 unless
+  // told otherwise, and the server (like GitHub) takes TLS 1.2 or 1.3: the
+  // fetch failed with "An unexpected error occurred on a send". TLS 1.2 is
+  // added before it (the script itself does so too, for its own downloads).
+  const tls = '[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12; ';
+  // irm accepts the server's certificate only when
   // its SHA-256 is this one (the script turns the check back to normal for
   // its own downloads). Without a pin `insecure` changes nothing here (no
   // switch to skip the check); the page explains the options.
   const check = pinned
     ? `[Net.ServicePointManager]::ServerCertificateValidationCallback = { param($s, $c) ([BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash($c.GetRawCertData())) -replace '-', '') -eq ${psQuote(f!.certSha256!)} }; `
     : '';
-  let cmd = `$env:LUNARIS_INSTALL_TOKEN=${psQuote(token)}; ${check}& ([scriptblock]::Create((irm ${urlWord(url, psQuote)})))`;
+  let cmd = `$env:LUNARIS_INSTALL_TOKEN=${psQuote(token)}; ${tls}${check}& ([scriptblock]::Create((irm ${urlWord(url, psQuote)})))`;
   if (name) cmd += ` -Name ${psQuote(name)}`;
   return cmd;
 };
