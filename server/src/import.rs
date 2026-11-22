@@ -12,8 +12,10 @@
 //! (agents keep connecting with their token), `mfa_key.txt` (two-factor
 //! secrets are encrypted with it), `jwt_secret.txt` (sign-ins stay valid),
 //! `tls_cert.pem` + `tls_key.pem` (browsers keep the certificate they
-//! accepted). Not copied: logs, `server.env`, and old first-admin password
-//! or setup code files.
+//! accepted), and the computers added through the server's gateway (the
+//! `sources` of `gateway/agent_config.json`, gateway.rs), added to the
+//! service's gateway config. Not copied: logs, `server.env`, and old
+//! first-admin password or setup code files.
 
 use std::path::{Path, PathBuf};
 
@@ -52,6 +54,78 @@ pub struct Imported {
     pub kept: Vec<String>,
     pub users: i64,
     pub hosts: i64,
+    /// Computers of the gateway taken over (`gateway/agent_config.json`).
+    pub gateway_sources: usize,
+}
+
+/// The gateway's config, relative to a server data folder (gateway.rs).
+const GATEWAY_CONFIG: &str = "gateway/agent_config.json";
+
+/// Adds the computers of `source`'s gateway to `target`'s gateway config
+/// (made when there is none; the rest of it is kept, and so is the earlier
+/// file, as `agent_config.json.before-import-<stamp>`). The gateway's id
+/// comes from the imported database (gateway.rs `host_id`). Returns how
+/// many were added and the names written.
+fn import_gateway_sources(source: &Path, target: &Path, stamp: &str) -> Result<(usize, Vec<String>, Option<String>), String> {
+    let from = source.join(GATEWAY_CONFIG);
+    if !is_plain_file(&from) {
+        return Ok((0, Vec::new(), None));
+    }
+    let read = |path: &Path| -> Result<serde_json::Map<String, serde_json::Value>, String> {
+        let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        match serde_json::from_str(&text) {
+            Ok(serde_json::Value::Object(map)) => Ok(map),
+            _ => Err(format!("{} is not a gateway config", path.display())),
+        }
+    };
+    let theirs = read(&from)?;
+    let sources: Vec<serde_json::Value> = theirs.get("sources").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    if sources.is_empty() {
+        return Ok((0, Vec::new(), None));
+    }
+    let dir = target.join("gateway");
+    let mut written = Vec::new();
+    if std::fs::symlink_metadata(&dir).is_err() {
+        std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        written.push("gateway".to_string());
+    } else if !std::fs::symlink_metadata(&dir).map(|m| m.file_type().is_dir()).unwrap_or(false) {
+        // Never through a link.
+        return Err(format!("{} is not a folder", dir.display()));
+    }
+    let to = target.join(GATEWAY_CONFIG);
+    let mut ours = if std::fs::symlink_metadata(&to).is_ok() {
+        if !is_plain_file(&to) {
+            return Err(format!("{} is not a plain file", to.display()));
+        }
+        read(&to)?
+    } else {
+        serde_json::Map::new()
+    };
+    let mut list: Vec<serde_json::Value> = ours.get("sources").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    let id_of = |s: &serde_json::Value| s.get("id").and_then(|v| v.as_str()).map(str::to_owned);
+    let mut added = 0;
+    for s in sources {
+        let id = id_of(&s);
+        if id.is_some() && list.iter().any(|have| id_of(have) == id) {
+            continue;
+        }
+        list.push(s);
+        added += 1;
+    }
+    if added == 0 {
+        return Ok((0, written, None));
+    }
+    let mut kept = None;
+    if std::fs::symlink_metadata(&to).is_ok() {
+        let aside_name = format!("{GATEWAY_CONFIG}.before-import-{stamp}");
+        std::fs::rename(&to, target.join(&aside_name)).map_err(|e| format!("{}: {e}", to.display()))?;
+        kept = Some(aside_name);
+    }
+    ours.insert("sources".into(), serde_json::Value::Array(list));
+    let text = serde_json::to_string_pretty(&serde_json::Value::Object(ours)).map_err(|e| e.to_string())?;
+    crate::paths::write_private(&to, &text).map_err(|e| format!("{}: {e}", to.display()))?;
+    written.push(GATEWAY_CONFIG.to_string());
+    Ok((added, written, kept))
 }
 
 async fn open_read_only(path: &Path) -> Result<sqlx::SqliteConnection, String> {
@@ -187,9 +261,12 @@ pub async fn import_into(source: &Path, target: &Path, replace: bool) -> Result<
         crate::paths::write_private(&to, &text).map_err(|e| format!("{}: {e}", to.display()))?;
         copied.push(name.to_string());
     }
+    let (gateway_sources, written, gateway_kept) = import_gateway_sources(source, target, &stamp)?;
+    copied.extend(written);
+    kept.extend(gateway_kept);
     // The target's own setup code is void now that there are accounts.
     let _ = std::fs::remove_file(target.join(crate::setup::CODE_FILE));
-    Ok(Imported { copied, backup, kept, users, hosts })
+    Ok(Imported { copied, backup, kept, users, hosts, gateway_sources })
 }
 
 #[cfg(test)]
@@ -339,6 +416,9 @@ pub fn run(args: &[String]) -> Result<(), String> {
     );
     for name in &imported.copied {
         println!("  {name}");
+    }
+    if imported.gateway_sources > 0 {
+        println!("{} computer(s) of the gateway added to its config.", imported.gateway_sources);
     }
     if let Some(backup) = &imported.backup {
         println!("The earlier database is kept as {}.", backup.display());
@@ -522,6 +602,44 @@ mod tests {
         assert_eq!(imported.kept.len(), 1);
         app.close().await;
         for d in [&src, &dst, &outside] {
+            let _ = std::fs::remove_dir_all(d);
+        }
+    }
+
+    /// The computers added through the app server's gateway go to the
+    /// service's gateway config, beside what it has; its earlier file is kept.
+    #[tokio::test]
+    async fn the_gateways_computers_are_taken_over() {
+        let src = temp("src6");
+        let dst = temp("dst6");
+        let app = app_server(&src).await;
+        std::fs::create_dir_all(src.join("gateway")).unwrap();
+        std::fs::write(
+            src.join(GATEWAY_CONFIG),
+            r#"{"client_unique_id":"GW","server_url":"ws://127.0.0.1:8090","sources":[{"id":"home","name":"home","connector":"rdp"},{"id":"both","name":"both","connector":"vnc"}]}"#,
+        )
+        .unwrap();
+        std::fs::create_dir_all(dst.join("gateway")).unwrap();
+        std::fs::write(dst.join(GATEWAY_CONFIG), r#"{"client_unique_id":"GW","sources":[{"id":"both","name":"theirs"}]}"#).unwrap();
+
+        let imported = import_into(&src, &dst, false).await.unwrap();
+        assert_eq!(imported.gateway_sources, 1);
+        assert!(imported.copied.contains(&GATEWAY_CONFIG.to_string()));
+        let config: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(dst.join(GATEWAY_CONFIG)).unwrap()).unwrap();
+        let names: Vec<&str> = config["sources"].as_array().unwrap().iter().map(|s| s["name"].as_str().unwrap()).collect();
+        assert_eq!(names, ["theirs", "home"]);
+        // Only the computers: not the app gateway's other settings.
+        assert!(config.get("server_url").is_none());
+        let aside = imported.kept.iter().find(|k| k.starts_with("gateway/agent_config.json.before-import-")).expect("kept");
+        assert!(std::fs::read_to_string(dst.join(aside)).unwrap().contains("theirs"));
+
+        // A service without a gateway folder yet gets one.
+        let dst2 = temp("dst6b");
+        let imported = import_into(&src, &dst2, false).await.unwrap();
+        assert_eq!(imported.gateway_sources, 2);
+        assert!(imported.copied.contains(&"gateway".to_string()));
+        app.close().await;
+        for d in [&src, &dst, &dst2] {
             let _ = std::fs::remove_dir_all(d);
         }
     }

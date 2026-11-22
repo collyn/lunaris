@@ -147,7 +147,8 @@ sudo systemctl start lunaris-server
 (Windows, from an Administrator prompt: `net stop LunarisServer`,
 `lunaris-server.exe import "C:\Users\<you>\AppData\Roaming\lunaris-server"`,
 `net start LunarisServer`.) It copies a snapshot of the database and the
-agent token, sign-in, two-factor and TLS keys, makes them readable by the
+agent token, sign-in, two-factor and TLS keys, adds the computers added
+through the app server's gateway to the service's, makes them readable by the
 service only (the `lunaris` user of the package), and keeps a database the
 service already had as `lunaris.db.before-import-<time>`. Agents keep their
 token; point them at the service's address if it differs, and turn the app's
