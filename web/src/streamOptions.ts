@@ -36,6 +36,37 @@ export const CHROMAS = [
 export const MOUSE_QUEUES = [0, 64, 256, 1024, 4096, 16384];
 
 export const DEFAULT_CODEC = 'auto';
+
+/** The part of a decoded frame that is the picture. H.265 encoders round
+ *  the size up to their block size (1920x1080 is coded as 1920x1088) and
+ *  say what to crop; Chrome's D3D11 H.265 decoder on Windows (AMD) ignores
+ *  that and hands out the extra lines, which are green. With the picture's
+ *  size (the agent's EncoderStatus, else the size asked for) only that is
+ *  shown: when the frame is at most 64 lines or columns larger (one block
+ *  of padding), otherwise it is taken as it is. */
+export const shownPictureSize = (
+  decodedWidth: number,
+  decodedHeight: number,
+  picture: { width: number; height: number } | null,
+): { width: number; height: number } => {
+  const decoded = { width: decodedWidth, height: decodedHeight };
+  if (!picture || picture.width <= 0 || picture.height <= 0) return decoded;
+  const extraW = decodedWidth - picture.width;
+  const extraH = decodedHeight - picture.height;
+  if (extraW < 0 || extraH < 0 || extraW > 64 || extraH > 64) return decoded;
+  // The colour of the last line (column) is blended with the padding's (one
+  // colour sample covers two lines in 4:2:0), green too: two lines (columns)
+  // more are left out where something is cropped (measured in Chrome on
+  // Windows: line 1079 of 1080 stayed green with 8 lines cropped).
+  return {
+    width: extraW > 0 ? picture.width - PICTURE_EDGE : picture.width,
+    height: extraH > 0 ? picture.height - PICTURE_EDGE : picture.height,
+  };
+};
+
+/** Lines (columns) left out beside a cropped padding (see shownPictureSize). */
+export const PICTURE_EDGE = 2;
+
 export const DEFAULT_BITRATE = 15000;
 
 export const bitrateLabel = (kbps: number) => `${kbps / 1000} Mbps`;

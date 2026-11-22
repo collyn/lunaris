@@ -670,6 +670,8 @@ pub async fn run(source: Source, link: ViewerLink) {
         host_os: None,
         display_id: None,
         display_name: None,
+        width: None,
+        height: None,
     }));
     let mut queued: VecDeque<Event> = pending.into_iter().chain(first).collect();
     let mut last_key_request: Option<Instant> = None;
@@ -939,6 +941,8 @@ pub async fn run(source: Source, link: ViewerLink) {
                     host_os: Some(os),
                     display_id: None,
                     display_name: None,
+                    width: None,
+                    height: None,
                 }));
             }
             // The pointer is in the picture: what a Lunaris host on Windows

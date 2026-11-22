@@ -1353,7 +1353,7 @@ async fn handle_agent_signaling(sig: SignalingMessage, agent_id: &str, state: Ar
                 }));
             }
         }
-        SignalingMessage::EncoderStatus { target_id, encoder, hw_type, gpu_info, requested_encoder, host_os, display_id, display_name } => {
+        SignalingMessage::EncoderStatus { target_id, encoder, hw_type, gpu_info, requested_encoder, host_os, display_id, display_name, width, height } => {
             let clients = state.clients.read().unwrap();
             if let Some(client_tx) = clients.get(&target_id) {
                 let msg = ServerToClientMessage::Signaling(SignalingMessage::EncoderStatus {
@@ -1365,6 +1365,8 @@ async fn handle_agent_signaling(sig: SignalingMessage, agent_id: &str, state: Ar
                     host_os,
                     display_id,
                     display_name,
+                    width,
+                    height,
                 });
                 let _ = client_tx.send(msg);
             }

@@ -730,6 +730,15 @@ pub enum SignalingMessage {
         host_os: Option<String>,
         display_id: Option<String>,
         display_name: Option<String>,
+        /// The picture's size. A decoder may give a taller (or wider) frame:
+        /// H.265 encoders round it up to their block size (1080 -> 1088)
+        /// and say what to crop, which Chrome's D3D11 H.265 decoder on
+        /// Windows ignores, showing the extra lines (green). The viewer
+        /// shows only this much. None from older agents and connectors.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        width: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        height: Option<u32>,
     },
     /// Agent -> client: the connection waits for the person at the host to
     /// accept it (`status` "waiting"), or they did not ("denied", "timeout",

@@ -1,5 +1,5 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { BITRATES, CHROMAS, RESOLUTIONS, bitrateLabel, readDisplayMode, readVolume, objectFitFor, resolutionSize, type DisplayMode } from '../streamOptions';
+import { BITRATES, CHROMAS, RESOLUTIONS, bitrateLabel, readDisplayMode, readVolume, objectFitFor, resolutionSize, shownPictureSize, type DisplayMode } from '../streamOptions';
 import StreamSettingsDialog, { type StreamSettingsValues, type ViewerSettings } from './StreamSettingsDialog';
 import { t } from '../i18n';
 import { WebShare, readClipboardSync, readFileTransfer } from '../share';
@@ -381,6 +381,10 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   const [availableEncoders, setAvailableEncoders] = useState<string[]>([]);
   const [agentGpuInfo, setAgentGpuInfo] = useState<string>('');
   const [agentHostOs, setAgentHostOs] = useState<string>('unknown');
+  // The picture's size (EncoderStatus, else the size asked for) and what of
+  // the decoded frame is cropped to show only it (shownPictureSize).
+  const pictureSizeRef = useRef<{ width: number; height: number } | null>(null);
+  const [pictureCrop, setPictureCrop] = useState<{ right: number; bottom: number }>({ right: 0, bottom: 0 });
   const [activeEncoderStatus, setActiveEncoderStatus] = useState<{ encoder: string; hwType: string; gpuInfo: string; requestedEncoder: string; displayId: string; displayName: string }>({
     encoder: 'Pending',
     hwType: 'Unknown',
@@ -923,8 +927,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       : video.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0) return null;
 
-    const vidWidth = activeVideo?.videoWidth && activeVideo.videoWidth > 0 ? activeVideo.videoWidth : (video as any).width || 1920;
-    const vidHeight = activeVideo?.videoHeight && activeVideo.videoHeight > 0 ? activeVideo.videoHeight : (video as any).height || 1080;
+    const [vidWidth, vidHeight] = shownSize(activeVideo, video);
     let actualVidWidth = rect.width;
     let actualVidHeight = rect.height;
     let offsetX = 0;
@@ -961,8 +964,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     const point = latest ? getHostPointFromClient(latest.clientX, latest.clientY) : null;
     const video = videoRef.current;
     const activeVideo = getActiveVideoElement();
-    const vidWidth = activeVideo?.videoWidth && activeVideo.videoWidth > 0 ? activeVideo.videoWidth : (video as any)?.width || 1920;
-    const vidHeight = activeVideo?.videoHeight && activeVideo.videoHeight > 0 ? activeVideo.videoHeight : (video as any)?.height || 1080;
+    const [vidWidth, vidHeight] = shownSize(activeVideo, video);
     // Prefer the last confirmed host cursor position as fallback so the
     // virtual cursor starts where the remote cursor actually is, avoiding
     // a visual disconnect when the local mouse was off-video or stale.
@@ -1167,8 +1169,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
             const activeVideo = getActiveVideoElement();
             const video = videoRef.current;
             const rect = cachedVideoRectRef.current;
-            const vidWidth = activeVideo?.videoWidth && activeVideo.videoWidth > 0 ? activeVideo.videoWidth : (video as any)?.width || 1920;
-            const vidHeight = activeVideo?.videoHeight && activeVideo.videoHeight > 0 ? activeVideo.videoHeight : (video as any)?.height || 1080;
+            const [vidWidth, vidHeight] = shownSize(activeVideo, video);
             let scaledDx = dx;
             let scaledDy = dy;
             if (rect.width > 0 && rect.height > 0) {
@@ -1231,8 +1232,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
             if (rect.width > 0 && rect.height > 0) {
               const elWidth = rect.width;
               const elHeight = rect.height;
-              const vidWidth = activeVideo?.videoWidth && activeVideo.videoWidth > 0 ? activeVideo.videoWidth : (video as any).width || 1920;
-              const vidHeight = activeVideo?.videoHeight && activeVideo.videoHeight > 0 ? activeVideo.videoHeight : (video as any).height || 1080;
+              const [vidWidth, vidHeight] = shownSize(activeVideo, video);
 
 
               let actualVidWidth = elWidth;
@@ -1451,6 +1451,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
         }
 
         // Request session
+        pictureSizeRef.current = typeof width === 'number' && typeof height === 'number' ? { width, height } : null;
         ws.send(JSON.stringify({
           event: "Signaling",
           data: {
@@ -1514,6 +1515,10 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
             });
             if (payload.gpu_info) setAgentGpuInfo(payload.gpu_info);
             if (payload.host_os) setAgentHostOs(String(payload.host_os).toLowerCase());
+            if (Number(payload.width) > 0 && Number(payload.height) > 0) {
+              pictureSizeRef.current = { width: Number(payload.width), height: Number(payload.height) };
+              updatePictureCrop();
+            }
             addLog(`Agent encoder active: ${payload.encoder || 'unknown'} (${payload.hw_type || 'unknown'}) on ${payload.gpu_info || 'unknown GPU'}${payload.display_id ? ', display: ' + payload.display_id : ''}`);
             break;
 
@@ -2644,6 +2649,36 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     return useCanvasRenderer ? hiddenVideoRef.current : (videoRef.current as HTMLVideoElement | null);
   };
 
+  /** Width and height of the picture in a decoded frame (shownPictureSize:
+   *  without the lines a decoder may add, H.265 on Windows), for pointer
+   *  coordinates. */
+  const shownSize = (activeVideo: any, video: any): [number, number] => {
+    const decodedW = activeVideo?.videoWidth > 0 ? activeVideo.videoWidth : video?.width || 1920;
+    const decodedH = activeVideo?.videoHeight > 0 ? activeVideo.videoHeight : video?.height || 1080;
+    const shown = shownPictureSize(decodedW, decodedH, pictureSizeRef.current);
+    return [shown.width, shown.height];
+  };
+
+  /** Crops what the decoder added to the picture (shownPictureSize), in the
+   *  <video> (object-view-box) and in the canvas renderer's worker. */
+  const updatePictureCrop = () => {
+    const video = getActiveVideoElement();
+    const picture = pictureSizeRef.current;
+    workerRef.current?.postMessage({ type: 'picture', width: picture?.width || 0, height: picture?.height || 0 });
+    if (!video || video.videoWidth <= 0 || video.videoHeight <= 0) return;
+    const shown = shownPictureSize(video.videoWidth, video.videoHeight, picture);
+    const crop = { right: video.videoWidth - shown.width, bottom: video.videoHeight - shown.height };
+    setPictureCrop((old) => {
+      if (old.right === crop.right && old.bottom === crop.bottom) return old;
+      if (crop.right || crop.bottom) addLog(`The decoder gives ${video.videoWidth}x${video.videoHeight} for a ${shown.width}x${shown.height} picture: showing the picture only`);
+      return crop;
+    });
+  };
+  const pictureViewBox = (): React.CSSProperties =>
+    (pictureCrop.right || pictureCrop.bottom
+      ? ({ objectViewBox: `inset(0px ${pictureCrop.right}px ${pictureCrop.bottom}px 0px)` } as React.CSSProperties)
+      : {});
+
   const startCanvasRender = (track: MediaStreamTrack) => {
     if (workerRef.current) {
       try {
@@ -2671,9 +2706,36 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       let ctx = null;
       let reader = null;
       let active = false;
+      // The picture's size (shownPictureSize in streamOptions.ts): the lines
+      // and columns a decoder adds beyond it (at most 64) are not drawn.
+      let picture = null;
+      const draw = (frame) => {
+        let w = frame.displayWidth;
+        let h = frame.displayHeight;
+        if (picture && picture.width > 0 && picture.height > 0
+            && w >= picture.width && h >= picture.height
+            && w - picture.width <= 64 && h - picture.height <= 64) {
+          // And the line (column) whose colour blends with the padding's.
+          if (w > picture.width) w = picture.width - 2;
+          if (h > picture.height) h = picture.height - 2;
+        }
+        if (canvas.width !== w || canvas.height !== h) {
+          canvas.width = w;
+          canvas.height = h;
+          self.postMessage({ type: 'resize', width: w, height: h });
+        }
+        if (ctx) {
+          ctx.drawImage(frame, 0, 0, w, h, 0, 0, w, h);
+          self.postMessage({ type: 'frameDrawn' });
+        }
+      };
 
       self.onmessage = async (e) => {
         const { type } = e.data;
+        if (type === 'picture') {
+          picture = e.data.width > 0 && e.data.height > 0 ? { width: e.data.width, height: e.data.height } : null;
+          return;
+        }
         if (type === 'start') {
           active = true;
           canvas = e.data.canvas;
@@ -2692,18 +2754,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
                 if (!frame) continue;
 
                 try {
-                  if (canvas) {
-                    if (canvas.width !== frame.displayWidth || canvas.height !== frame.displayHeight) {
-                      canvas.width = frame.displayWidth;
-                      canvas.height = frame.displayHeight;
-                      self.postMessage({ type: 'resize', width: frame.displayWidth, height: frame.displayHeight });
-                    }
-
-                    if (ctx) {
-                      ctx.drawImage(frame, 0, 0, frame.displayWidth, frame.displayHeight);
-                      self.postMessage({ type: 'frameDrawn' });
-                    }
-                  }
+                  if (canvas) draw(frame);
                 } catch (err) {
                   console.error("Worker drawImage error:", err);
                 } finally {
@@ -2718,18 +2769,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
           const frame = e.data.frame;
           if (frame) {
             try {
-              if (canvas) {
-                if (canvas.width !== frame.displayWidth || canvas.height !== frame.displayHeight) {
-                  canvas.width = frame.displayWidth;
-                  canvas.height = frame.displayHeight;
-                  self.postMessage({ type: 'resize', width: frame.displayWidth, height: frame.displayHeight });
-                }
-
-                if (ctx) {
-                  ctx.drawImage(frame, 0, 0, frame.displayWidth, frame.displayHeight);
-                  self.postMessage({ type: 'frameDrawn' });
-                }
-              }
+              if (canvas) draw(frame);
             } catch (err) {
               console.error("Worker drawImage error (fallback):", err);
             } finally {
@@ -2785,6 +2825,10 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     } catch (err) {
       console.error("Failed to create MediaStreamTrackProcessor:", err);
     }
+
+    // The picture's size, for the frames the decoder makes larger.
+    const picture = pictureSizeRef.current;
+    worker.postMessage({ type: 'picture', width: picture?.width || 0, height: picture?.height || 0 });
 
     let streamTransferred = false;
     if (offscreenCanvas && readableStream) {
@@ -3207,8 +3251,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     }
 
     const activeVideo = getActiveVideoElement();
-    const vidWidth = activeVideo?.videoWidth && activeVideo.videoWidth > 0 ? activeVideo.videoWidth : (video as any).width || 1920;
-    const vidHeight = activeVideo?.videoHeight && activeVideo.videoHeight > 0 ? activeVideo.videoHeight : (video as any).height || 1080;
+    const [vidWidth, vidHeight] = shownSize(activeVideo, video);
 
     let actualVidWidth = rect.width;
     let actualVidHeight = rect.height;
@@ -3284,8 +3327,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     }
 
     const activeVideo = getActiveVideoElement();
-    const vidWidth = activeVideo?.videoWidth && activeVideo.videoWidth > 0 ? activeVideo.videoWidth : (video as any).width || 1920;
-    const vidHeight = activeVideo?.videoHeight && activeVideo.videoHeight > 0 ? activeVideo.videoHeight : (video as any).height || 1080;
+    const [vidWidth, vidHeight] = shownSize(activeVideo, video);
 
     const elWidth = rect.width;
     const elHeight = rect.height;
@@ -3348,6 +3390,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   };
 
   const handleVideoLoadedMetadata = () => {
+    updatePictureCrop();
     const video = getActiveVideoElement();
     if (video) {
       localCursorPosRef.current = {
@@ -3386,8 +3429,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
 
       const elWidth = rect.width;
       const elHeight = rect.height;
-      const vidWidth = activeVideo?.videoWidth && activeVideo.videoWidth > 0 ? activeVideo.videoWidth : (video as any).width || 1920;
-      const vidHeight = activeVideo?.videoHeight && activeVideo.videoHeight > 0 ? activeVideo.videoHeight : (video as any).height || 1080;
+      const [vidWidth, vidHeight] = shownSize(activeVideo, video);
 
       let xNorm = 0.5;
       let yNorm = 0.5;
@@ -3466,8 +3508,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     const r = renderedZoomRef.current;
     if (rect.width <= 0 || rect.height <= 0 || r.scale <= 0) return null;
     const activeVideo = getActiveVideoElement();
-    const vidW = activeVideo?.videoWidth && activeVideo.videoWidth > 0 ? activeVideo.videoWidth : (video as any).width || 1920;
-    const vidH = activeVideo?.videoHeight && activeVideo.videoHeight > 0 ? activeVideo.videoHeight : (video as any).height || 1080;
+    const [vidW, vidH] = shownSize(activeVideo, video);
     const baseW = rect.width / r.scale;
     const baseH = rect.height / r.scale;
     return {
@@ -4664,6 +4705,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
               playsInline
               muted={isMuted}
               onLoadedMetadata={handleVideoLoadedMetadata}
+              onResize={updatePictureCrop}
               style={{ display: 'none' }}
             />
           </>
@@ -4681,11 +4723,13 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
             playsInline
             muted={isMuted}
             onLoadedMetadata={handleVideoLoadedMetadata}
+            onResize={updatePictureCrop}
             style={{ 
               cursor: streamCursorStyle,
               transform: `translate(${zoomPan.x}px, ${zoomPan.y}px) scale(${zoomScale})`,
               transformOrigin: '0 0',
-              objectFit: objectFitFor(displayMode)
+              objectFit: objectFitFor(displayMode),
+              ...pictureViewBox()
             }}
           />
         )}

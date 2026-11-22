@@ -1297,6 +1297,10 @@ pub async fn setup_bridge_session(
                             host_os: Some(std::env::consts::OS.to_string()),
                             display_id: active_display_id_for_media.clone(),
                             display_name: None, // Could be resolved from display list if needed
+                            // What the encoder was given (the running
+                            // stream's size for a viewer that joined it).
+                            width: Some(resolution_width),
+                            height: Some(resolution_height),
                         },
                     ));
                 }
