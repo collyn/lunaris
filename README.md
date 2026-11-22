@@ -27,7 +27,7 @@ The entire system is written in **Rust** and **TypeScript/React**, optimized for
 
 - **Remote desktop control** — Stream and control any computer from your browser or desktop app.
 - **Gaming-grade performance** — GPU-accelerated encoding via lunaris-media (NVENC, AMF, QuickSync, VAAPI).
-- **Multiple clients** — Web client (React), native Qt6/QML desktop client, and Tauri desktop wrapper.
+- **Two viewers** — The web client (React) in any browser, and the native Lunaris client (Qt6/QML, hardware decoding, lowest latency for games), opened from the web page.
 - **Smart host agent** — A command-line daemon (systemd user or system service, Windows service) managed from the web; an optional tray accepts connections. Configures and manages the streaming backend automatically.
 - **Secure by default** — JWT authentication, bcrypt password hashing, two-factor sign-in, TLS/WSS connections, SPAKE2 password checks for direct connections, signed updates and installers, a Content-Security-Policy on the web client.
 - **NAT traversal** — Automatic hole punching with STUN, fallback via TURN relay.
@@ -41,14 +41,10 @@ The entire system is written in **Rust** and **TypeScript/React**, optimized for
 │   Web Client     │◄────── WebRTC ──────►│   Central Server     │◄── WebRTC ────────►│ Host Agent   │
 │   (React)        │   Video/Audio/Input   │   (Rust / Axum)      │    Signaling        │ + lunaris-   │
 │                  │                       │   + API              │                      │   media      │
-├──────────────────┤                       └──────────┬───────────┘                      └──────────────┘
-│  Desktop Client  │                                  │
-│  (Qt6/QML/Rust)  │                                  │ WebSocket
-│                  │                                  ▼
-├──────────────────┤                       ┌──────────────────────┐
-│  Tauri Client    │                       │   Host Agent         │
-│  (Web wrapper)   │                       │   (Rust, CLI/daemon) │
-└──────────────────┘                       └──────────────────────┘
+├──────────────────┤                       └──────────────────────┘                      └──────────────┘
+│  Desktop Client  │
+│  (Qt6/QML/Rust)  │
+└──────────────────┘
 ```
 
 | Component | Tech Stack | Role |
@@ -56,7 +52,6 @@ The entire system is written in **Rust** and **TypeScript/React**, optimized for
 | **Central Server** | Rust, Axum, SQLite, WebRTC | API server, WebSocket signaling |
 | **Web Client** | React, TypeScript, Vite | Dashboard + in-browser stream viewer |
 | **Desktop Client** | Rust, Qt6/QML, FFmpeg, cpal | Native client with hardware video decoding and raw input |
-| **Tauri Client** | Rust, Tauri 2, WebView | Desktop wrapper for the web client with system-level input capture |
 | **Host Agent** | Rust (command line / service, no GUI) | Runs on the remote host; manages streaming via lunaris-media; managed from the web |
 | **Approval helper** | Rust, Qt6/QML (optional tray) | Lets the person at the host accept connections made without the password |
 | **lunaris-media** | Rust | Screen capture, GPU encoding, and audio capture library |
@@ -364,22 +359,7 @@ the access password — type `address:21128`. RustDesk's direct IP access is
 git clone https://github.com/collyn/lunaris.git
 cd lunaris
 
-# Use the interactive control panel
-./run.sh
-
-# Or run development mode directly (server + web dev server)
-./run.sh --dev
 ```
-
-The `run.sh` script provides several options:
-
-| Flag | Description |
-|---|---|
-| `--dev` | Run backend (debug) and Vite dev server concurrently |
-| `--prod` | Build web assets, then run the server in release mode |
-| `--build` | Build the entire workspace (Rust release + web) |
-| `--build-web` | Build React frontend only |
-| `--build-rust` | Build Rust workspace only (release) |
 
 ### Manual Setup
 
@@ -439,55 +419,42 @@ On Wayland the screen is captured through the XDG desktop portal + PipeWire. The
 
 ```
 lunaris/
-├── server/                 # Rust backend — API, signaling
+├── server/                 # lunaris-server — API, signaling, TURN relay, web client (embedded)
 │   └── src/
-│       ├── main.rs             # Axum HTTP server and route definitions
+│       ├── main.rs, lib.rs     # Command line (run, install, import, ...) and HTTP routes
 │       ├── signaling.rs        # WebSocket signaling for agents and clients
-│       ├── auth.rs             # JWT authentication
-│       ├── db.rs               # SQLite database layer
-│       ├── input.rs            # Input event handling
-│       └── video/              # Video processing
+│       ├── auth.rs, mfa.rs     # Sign-in (JWT), two-factor
+│       ├── link_tickets.rs     # One-time tickets for the client's lunaris:// links
+│       ├── db.rs               # SQLite database
+│       ├── gateway.rs          # The server's own gateway agent (RustDesk, Sunshine, RDP, VNC)
+│       ├── service.rs, takeover.rs  # The system service, and taking over a server run by hand
+│       └── install/            # The one-line agent installers
 │
-├── agent/                  # Rust host agent library — capture, encode, input, sessions
+├── agent/                  # lunaris-agent — capture, encode, input, sessions (no GUI)
 │   └── src/
-│       ├── main.rs             # The lunaris-agent program (command line, no GUI)
-│       ├── lib.rs              # Agent entry (agent::run), server and session logic
+│       ├── main.rs, lib.rs     # The program, server and session logic
+│       ├── bridge.rs           # WebRTC session of one viewer
+│       ├── media_hub.rs        # One capture and encoder per screen, shared by its viewers
 │       ├── direct.rs           # Direct connections (no server)
-│       ├── bridge.rs           # WebRTC bridge session
-│       └── pairing.rs          # Configuration (server, direct password)
-│
-├── approval-channel/       # Local channel between the agent (daemon) and the approval helper
-├── approval-helper/        # lunaris-approval-helper: optional Qt tray that accepts connections
+│       ├── connector/          # Other computers shown through the agent (RustDesk, Sunshine, RDP, VNC)
+│       └── rustdesk/           # RustDesk clients connecting to this computer
 │
 ├── web/                    # React frontend — dashboard and stream viewer
-│   ├── src/
-│   │   ├── App.tsx             # Main app (auth, dashboard, host settings)
-│   │   └── components/
-│   │       └── StreamPlayer.tsx    # WebRTC stream viewer
-│   └── public/
-│       └── favicon.svg
+│   └── src/
+│       ├── App.tsx             # Dashboard (sign-in, computers, settings, admin pages)
+│       └── components/
+│           └── StreamPlayer.tsx    # WebRTC stream viewer
 │
-├── client-qml/             # Rust + Qt6/QML native desktop client
-│   ├── src/
-│   │   ├── lib.rs              # Client core logic
-│   │   ├── bridge.rs           # WebRTC protocol bridge
-│   │   ├── decoder.rs          # FFmpeg hardware video decoding
-│   │   └── audio.rs            # Opus audio decoding via cpal
-│   └── qml/
-│       ├── main.qml            # Main window
-│       ├── Home.qml            # Home: this computer, remote computers
-│       ├── AppSettings.qml     # Settings
-│       ├── Dashboard.qml       # Server sign-in and computers (Home > Server)
-│       └── Settings.qml        # Per-computer stream settings
-│
-├── lunaris-media/          # Rust streaming media library (capture, encode, audio)
-├── client-desktop/         # The Lunaris app binary: app, `agent` and `server` modes
-├── client/                 # SDL2-based native client (legacy)
-├── common/                 # Shared Rust crate — types and protocol definitions
-│
-├── Cargo.toml              # Rust workspace configuration
-├── run.sh                  # Build and run utility script
-└── project_architecture.md # Detailed architecture documentation
+├── client-qml/             # The Lunaris client: Rust + Qt6/QML stream window (hardware decoding)
+├── client-desktop/         # The client's program (lunaris-client)
+├── approval-channel/       # Local channel between the agent (daemon) and the approval helper
+├── approval-helper/        # lunaris-approval-helper: optional Qt tray that accepts connections
+├── common/                 # Shared types and protocol messages
+├── updater/                # Releases: updates of the client, the agent's restart, signature checks
+├── connectors/template/    # Template for an external connector program
+├── scripts/                # Packaging (deb, rpm, Arch, AppImage, Windows), host setup, branding
+├── docs/                   # Design notes
+└── Cargo.toml              # Rust workspace
 ```
 
 ## Data Flow
@@ -519,9 +486,10 @@ Web Client                    Central Server                  Host Agent
 - [x] lunaris-media native capture and encoding backend
 - [x] NAT traversal: STUN plus a built-in TURN relay in the server
 - [x] Direct connections to an agent without a server
-- [ ] File transfer via WebRTC Data Channel
-- [ ] Bidirectional clipboard sync
-- [ ] Multi-monitor support
+- [x] File transfer via WebRTC Data Channel
+- [x] Bidirectional clipboard sync
+- [x] Multi-monitor support (choose the screen to show)
+- [x] Several viewers of one computer at once
 
 ## Acknowledgements
 
