@@ -80,7 +80,7 @@ const CheckIcon = () => (
 );
 
 /** A copy button that shows "Copied" for a moment. */
-function CopyButton({ text, label, className }: { text: string; label: string; className?: string }) {
+export function CopyButton({ text, label, className }: { text: string; label: string; className?: string }) {
   const [state, setState] = useState<'idle' | 'copied' | 'failed'>('idle');
   const timer = useRef<number | undefined>(undefined);
   useEffect(() => () => window.clearTimeout(timer.current), []);

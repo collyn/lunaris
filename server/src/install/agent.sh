@@ -3,6 +3,11 @@
 #
 #   curl -fsSL https://SERVER/install/agent.sh | sudo LUNARIS_INSTALL_TOKEN='TOKEN' bash -s -- [--name NAME]
 #   (or: ... | sudo bash -s -- --token TOKEN [--name NAME])
+#   curl -fsSL https://SERVER/install/agent.sh | sudo bash -s -- --update
+#
+# --update: the agent installed here (package or AppImage) becomes this
+# server's version; nothing else changes (no token, the agent keeps its
+# settings and its place on the server). The same checks as an install.
 #
 # Installs the Lunaris agent of this server's version from GitHub Releases
 # (the .deb with apt, otherwise the AppImage in /opt/lunaris-agent) and joins
@@ -33,6 +38,7 @@
 #   --desktop       the desktop user's service, even without a graphical session now
 #   --no-helper     do not install the approval helper (desktop, apt)
 #   --appimage      use the AppImage even where apt is available
+#   --update        update the agent installed here (no token needed)
 set -euo pipefail
 
 SERVER_URL='@@SERVER_URL@@'
@@ -58,6 +64,7 @@ TARGET_USER="${SUDO_USER:-}"
 FORCE_APPIMAGE=0
 MODE=""
 HELPER=1
+UPDATE=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --token) [ $# -ge 2 ] || die "--token needs a value"; TOKEN="$2"; shift 2 ;;
@@ -70,13 +77,16 @@ while [ $# -gt 0 ]; do
         --desktop) MODE=desktop; shift ;;
         --no-helper) HELPER=0; shift ;;
         --appimage) FORCE_APPIMAGE=1; shift ;;
+        --update) UPDATE=1; shift ;;
         -h|--help) sed -n '2,35p' "$0" 2>/dev/null || true; exit 0 ;;
         *) die "unknown option: $1" ;;
     esac
 done
 
-[ -n "$TOKEN" ] || die "missing install token: set LUNARIS_INSTALL_TOKEN or pass --token (copy the command from the server's web page)"
-[[ "$TOKEN" =~ ^lit_[A-Za-z0-9_-]{16,128}$ ]] || die "this is not an install token (they start with lit_)"
+if [ "$UPDATE" -eq 0 ]; then
+    [ -n "$TOKEN" ] || die "missing install token: set LUNARIS_INSTALL_TOKEN or pass --token (copy the command from the server's web page)"
+    [[ "$TOKEN" =~ ^lit_[A-Za-z0-9_-]{16,128}$ ]] || die "this is not an install token (they start with lit_)"
+fi
 [ "${#NAME}" -le 128 ] || die "--name is longer than 128 characters"
 [ "$(uname -s)" = Linux ] || die "this installer is for Linux"
 [ "$(uname -m)" = x86_64 ] || die "only x86_64 (amd64) computers are supported, this one is $(uname -m)"
@@ -103,7 +113,9 @@ has_desktop() {
     return 1
 }
 
-if [ -z "$MODE" ]; then
+if [ "$UPDATE" -eq 1 ]; then
+    :  # What is installed decides (below).
+elif [ -z "$MODE" ]; then
     if [ -z "$TARGET_USER" ] || [ "$TARGET_USER" = root ]; then
         MODE=headless
     elif has_desktop; then
@@ -112,7 +124,9 @@ if [ -z "$MODE" ]; then
         MODE=headless
     fi
 fi
-if [ "$MODE" = desktop ]; then
+if [ "$UPDATE" -eq 1 ]; then
+    :
+elif [ "$MODE" = desktop ]; then
     if [ -z "$TARGET_USER" ] || [ "$TARGET_USER" = root ]; then
         die "the desktop agent runs in a desktop user's session, not as root. Run this with sudo from that user's account, add --user <name>, or use --headless."
     fi
@@ -175,6 +189,47 @@ check_file() {
     [ "$got" = "$want" ] || die "$1 does not match its checksum (expected $want, got $got): nothing is installed"
     info "$1: checksum OK"
 }
+
+# --update: the agent installed here becomes this version, as it was
+# installed (package or AppImage); settings, key and server stay. The
+# package's scripts restart the capture and system services; an agent in a
+# desktop session restarts by itself once its program file is replaced.
+installed() { dpkg-query -W -f='${Status}' "$1" 2>/dev/null | grep -q "install ok installed"; }
+if [ "$UPDATE" -eq 1 ]; then
+    if command -v dpkg-query >/dev/null && installed lunaris-agent; then
+        debs=("lunaris-agent_${VERSION}_amd64.deb")
+        pins=("$PINNED_AGENT_DEB")
+        if installed lunaris-approval-helper; then
+            debs+=("lunaris-approval-helper_${VERSION}_amd64.deb")
+            pins+=("$PINNED_HELPER_DEB")
+        fi
+        files=()
+        for i in "${!debs[@]}"; do
+            download "${debs[$i]}" "$tmp/${debs[$i]}"
+            check_file "${debs[$i]}" "$tmp/${debs[$i]}" "${pins[$i]}"
+            chmod 644 "$tmp/${debs[$i]}"
+            files+=("$tmp/${debs[$i]}")
+        done
+        info "Installing ${debs[*]}"
+        DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${files[@]}"
+    elif [ -f "$INSTALL_DIR/lunaris-agent.AppImage" ]; then
+        appimage="lunaris-agent-linux-x86_64.AppImage"
+        download "$appimage" "$tmp/$appimage"
+        check_file "$appimage" "$tmp/$appimage" "$PINNED_APPIMAGE"
+        info "Replacing $INSTALL_DIR/lunaris-agent.AppImage"
+        install -m 755 "$tmp/$appimage" "$INSTALL_DIR/lunaris-agent.AppImage.new"
+        mv -f "$INSTALL_DIR/lunaris-agent.AppImage.new" "$INSTALL_DIR/lunaris-agent.AppImage"
+        if [ "$SYSTEMD" -eq 1 ]; then
+            for unit in lunaris-capture.service lunaris-agent-system.service; do
+                systemctl try-restart "$unit" >/dev/null 2>&1 || true
+            done
+        fi
+    else
+        die "no Lunaris agent is installed here (no lunaris-agent package, no $INSTALL_DIR/lunaris-agent.AppImage): install it with the command of the server's Install agents page"
+    fi
+    info "The Lunaris agent is now version $VERSION. An agent in a desktop session restarts by itself within a minute."
+    exit 0
+fi
 
 if [ "$FORCE_APPIMAGE" -eq 0 ] && command -v apt-get >/dev/null && command -v dpkg >/dev/null; then
     debs=("lunaris-agent_${VERSION}_amd64.deb")

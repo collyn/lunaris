@@ -211,6 +211,39 @@ pub(crate) async fn addresses_announced(state: &Arc<SignalingState>, agent_id: &
     }
 }
 
+/// An agent said what it is (version, OS, how it was installed): kept with
+/// its host, to show and to say how to update it. Anything that is not one
+/// of the known values is not kept.
+pub(crate) async fn build_announced(state: &Arc<SignalingState>, agent_id: &str, build: common::AgentBuild) {
+    let Some(build) = checked_build(build) else {
+        warn!("{} said an agent version that is not one: not kept", agent_id);
+        return;
+    };
+    if let Err(e) = sqlx::query("UPDATE hosts SET agent_version = ?, agent_os = ?, agent_install = ? WHERE id = ?")
+        .bind(&build.version)
+        .bind(&build.os)
+        .bind(&build.install)
+        .bind(agent_id)
+        .execute(&state.db)
+        .await
+    {
+        warn!("The agent version of {} could not be saved: {}", agent_id, e);
+    }
+}
+
+fn checked_build(build: common::AgentBuild) -> Option<common::AgentBuild> {
+    let version_ok = !build.version.is_empty()
+        && build.version.len() <= 32
+        && build.version.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+'));
+    let os_ok = matches!(build.os.as_str(), "linux" | "windows" | "macos");
+    let install_ok = [common::INSTALL_DEB, common::INSTALL_APPIMAGE, common::INSTALL_WINDOWS, common::INSTALL_PACKAGE, common::INSTALL_MANUAL]
+        .contains(&build.install.as_str());
+    (version_ok && os_ok).then(|| common::AgentBuild {
+        install: if install_ok { build.install } else { common::INSTALL_MANUAL.to_string() },
+        ..build
+    })
+}
+
 /// An agent answered a change. Only the agent that was asked is believed.
 pub(crate) fn changed(
     state: &Arc<SignalingState>,
@@ -797,7 +830,7 @@ mod tests {
             assert_eq!(group, &None, "a form without a group says nothing about it");
             assert_eq!((name.as_str(), connector.as_str()), ("Den PC", "rustdesk"));
             assert_eq!(values.get("password").map(String::as_str), Some("s3cret-pw"));
-            crate::signaling::agent_message(&agent_state, "h1", AgentMessage::Sources { sources: vec![source("den-pc-ab12", "Den PC")], connectors: vec![rustdesk()], manageable: true, addresses: vec![] }).await;
+            crate::signaling::agent_message(&agent_state, "h1", AgentMessage::Sources { sources: vec![source("den-pc-ab12", "Den PC")], connectors: vec![rustdesk()], manageable: true, addresses: vec![], build: None }).await;
             // An answer from another agent with the same request id is not believed.
             crate::signaling::agent_message(&agent_state, "h2", AgentMessage::SourceChanged { request_id: request_id.clone(), id: None, error: Some("forged".into()), setup: None }).await;
             crate::signaling::agent_message(&agent_state, "h1", AgentMessage::SourceChanged { request_id, id: Some("den-pc-ab12".into()), error: None, setup: None }).await;
@@ -849,7 +882,7 @@ mod tests {
         let agent = tokio::spawn(async move {
             let Some(ServerToAgentMessage::ChangeSource { request_id, change, .. }) = to_agent.recv().await else { panic!("no ChangeSource") };
             assert_eq!(change, SourceChange::Remove { id: "den-pc-ab12".into() });
-            crate::signaling::agent_message(&agent_state, "h1", AgentMessage::Sources { sources: vec![], connectors: vec![rustdesk()], manageable: true, addresses: vec![] }).await;
+            crate::signaling::agent_message(&agent_state, "h1", AgentMessage::Sources { sources: vec![], connectors: vec![rustdesk()], manageable: true, addresses: vec![], build: None }).await;
             crate::signaling::agent_message(&agent_state, "h1", AgentMessage::SourceChanged { request_id, id: Some("den-pc-ab12".into()), error: None, setup: None }).await;
         });
         let (status, _) = body(remove_source(admin(), Path(("h1".into(), "den-pc-ab12".into())), State(state.clone())).await).await;
@@ -857,6 +890,37 @@ mod tests {
         agent.await.unwrap();
         let (_, list) = body(list_sources(user("admin"), State(state.clone())).await).await;
         assert!(list.as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn what_an_agent_is_is_kept_with_its_computer() {
+        let state = state().await;
+        let _h1 = connect(&state, "h1");
+        let said = |version: &str, os: &str, install: &str| AgentMessage::Sources {
+            sources: vec![],
+            connectors: vec![],
+            manageable: true,
+            addresses: vec![],
+            build: Some(common::AgentBuild { version: version.into(), os: os.into(), install: install.into() }),
+        };
+        let kept = || async {
+            sqlx::query_as::<_, (Option<String>, Option<String>, Option<String>)>("SELECT agent_version, agent_os, agent_install FROM hosts WHERE id = 'h1'")
+                .fetch_one(&state.db)
+                .await
+                .unwrap()
+        };
+        crate::signaling::agent_message(&state, "h1", said("0.7.6", "linux", "deb")).await;
+        assert_eq!(kept().await, (Some("0.7.6".into()), Some("linux".into()), Some("deb".into())));
+        // An install kind this server does not know is shown as "by hand".
+        crate::signaling::agent_message(&state, "h1", said("0.8.0-rc.1", "windows", "msix")).await;
+        assert_eq!(kept().await, (Some("0.8.0-rc.1".into()), Some("windows".into()), Some("manual".into())));
+        // Not a version, or not an OS: not kept.
+        crate::signaling::agent_message(&state, "h1", said("1.0 <script>", "linux", "deb")).await;
+        crate::signaling::agent_message(&state, "h1", said("1.0.0", "plan9", "deb")).await;
+        assert_eq!(kept().await.0.as_deref(), Some("0.8.0-rc.1"));
+        // An older agent says nothing: what was kept stays.
+        crate::signaling::agent_message(&state, "h1", AgentMessage::Sources { sources: vec![], connectors: vec![], manageable: true, addresses: vec![], build: None }).await;
+        assert_eq!(kept().await.0.as_deref(), Some("0.8.0-rc.1"));
     }
 
     #[tokio::test]
@@ -871,7 +935,7 @@ mod tests {
         crate::signaling::agent_message(
             &state,
             "h1",
-            AgentMessage::Sources { sources: vec![den, source("old-2", "Old agent's")], connectors: vec![rustdesk()], manageable: true, addresses: vec!["192.168.1.20".into(), "not an ip".into()] },
+            AgentMessage::Sources { sources: vec![den, source("old-2", "Old agent's")], connectors: vec![rustdesk()], manageable: true, addresses: vec!["192.168.1.20".into(), "not an ip".into()], build: None },
         )
         .await;
 
@@ -1183,7 +1247,7 @@ mod tests {
         assert_eq!(status(&list), [("a-off".into(), true, Some(true)), ("b-on".into(), false, Some(false)), ("c-new".into(), true, None)]);
 
         // Through the agent's connection, as the agent sends it.
-        crate::signaling::agent_message(&state, "h1", AgentMessage::Sources { sources: vec![checked("a-off", "A off", Some(false))], connectors: vec![rustdesk()], manageable: true, addresses: vec![] }).await;
+        crate::signaling::agent_message(&state, "h1", AgentMessage::Sources { sources: vec![checked("a-off", "A off", Some(false))], connectors: vec![rustdesk()], manageable: true, addresses: vec![], build: None }).await;
         let (_, list) = body(list_sources(user("alice"), State(state.clone())).await).await;
         assert_eq!(status(&list), [("a-off".into(), false, Some(false))]);
 
@@ -1315,7 +1379,7 @@ mod tests {
         let agent_state = state.clone();
         let agent = tokio::spawn(async move {
             let (request_id, _) = asked(&mut to_agent).await;
-            crate::signaling::agent_message(&agent_state, "h1", AgentMessage::Sources { sources: vec![SourceInfoMsg { id: "den-pc-ab12".into(), name: "Den PC".into(), connector: "sunshine".into(), group: None, online: None, values: None }], connectors: vec![rustdesk()], manageable: true, addresses: vec![] }).await;
+            crate::signaling::agent_message(&agent_state, "h1", AgentMessage::Sources { sources: vec![SourceInfoMsg { id: "den-pc-ab12".into(), name: "Den PC".into(), connector: "sunshine".into(), group: None, online: None, values: None }], connectors: vec![rustdesk()], manageable: true, addresses: vec![], build: None }).await;
             crate::signaling::agent_message(&agent_state, "h1", AgentMessage::SourceChanged { request_id, id: Some("den-pc-ab12".into()), error: None, setup: None }).await;
             to_agent
         });

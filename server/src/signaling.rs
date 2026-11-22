@@ -922,8 +922,11 @@ pub(crate) async fn agent_message(state: &Arc<SignalingState>, agent_id: &str, m
         AgentMessage::Signaling(sig) => {
             handle_agent_signaling(sig, agent_id, state.clone()).await;
         }
-        AgentMessage::Sources { sources, connectors, manageable, addresses } => {
+        AgentMessage::Sources { sources, connectors, manageable, addresses, build } => {
             crate::sources::addresses_announced(state, agent_id, addresses).await;
+            if let Some(build) = build {
+                crate::sources::build_announced(state, agent_id, build).await;
+            }
             crate::sources::announced(state, agent_id, sources, connectors, manageable).await;
         }
         AgentMessage::SourceChanged { request_id, id, error, setup } => {

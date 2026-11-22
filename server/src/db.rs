@@ -244,6 +244,17 @@ pub async fn init_db(database_url: &str) -> Result<SqlitePool, sqlx::Error> {
             .execute(&pool)
             .await?;
     }
+    // What its agent is (common::AgentBuild: version, OS, how it was
+    // installed), as it last said; NULL for agents from before this.
+    for (column, add) in [
+        ("agent_version", "ALTER TABLE hosts ADD COLUMN agent_version TEXT;"),
+        ("agent_os", "ALTER TABLE hosts ADD COLUMN agent_os TEXT;"),
+        ("agent_install", "ALTER TABLE hosts ADD COLUMN agent_install TEXT;"),
+    ] {
+        if !columns.iter().any(|c| c == column) {
+            sqlx::query(add).execute(&pool).await?;
+        }
+    }
     // A name an administrator gave the computer; NULL: the name its agent
     // announces (`name`) is shown.
     if !columns.iter().any(|c| c == "display_name") {

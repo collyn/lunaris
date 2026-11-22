@@ -147,6 +147,30 @@ pub async fn create_token(
     Ok((StatusCode::CREATED, Json(body)))
 }
 
+// GET /api/admin/install-fetch
+/// How a command fetches the install script, without making a token: for
+/// the update commands (`agent.sh --update`, `agent.ps1 -Update`, which need
+/// none), and the version they install (this server's).
+pub async fn fetch_info(
+    _admin: AdminUser,
+    uri: axum::http::Uri,
+    headers: HeaderMap,
+    extensions: axum::http::Extensions,
+) -> impl IntoResponse {
+    let (via_tls, peer) = request_origin(&extensions);
+    Json(serde_json::json!({
+        "version": env!("CARGO_PKG_VERSION"),
+        "install": install_fetch(
+            &headers,
+            uri.authority().map(|a| a.as_str()),
+            peer,
+            via_tls,
+            crate::tls::https_port(),
+            own_tls_pins().as_ref(),
+        ),
+    }))
+}
+
 // GET /api/admin/install-tokens
 pub async fn list_tokens(
     _admin: AdminUser,

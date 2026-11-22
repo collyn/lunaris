@@ -855,6 +855,7 @@ pub fn announcement_with(manageable: bool, detailed: bool) -> common::AgentMessa
         connectors: connector_infos(&available),
         manageable,
         addresses: if detailed { crate::direct::known_local_addresses() } else { Vec::new() },
+        build: Some(crate::build_info::current()),
     }
 }
 

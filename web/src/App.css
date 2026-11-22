@@ -5259,3 +5259,49 @@ select option:disabled { color: var(--text-subtle); }
   align-self: flex-start;
   margin-top: 0.1rem;
 }
+
+/* A computer's Lunaris agent: version and how to update it (AgentUpdateDialog). */
+.agent-update-card { width: min(560px, 100%); }
+.agent-update-card .host-confirm-content { min-width: 0; }
+.agent-update-card .host-confirm-icon {
+  color: var(--accent-text, var(--accent));
+  background: rgb(37 99 235 / 0.1);
+  border: 1px solid rgb(37 99 235 / 0.25);
+}
+.agent-update-card .host-confirm-icon.attention {
+  color: var(--warning);
+  background: rgb(245 158 11 / 0.1);
+  border-color: rgb(245 158 11 / 0.3);
+}
+.agent-update-info {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.25rem 1rem;
+  margin: 0.5rem 0 0.75rem;
+  font-size: 0.9rem;
+}
+.agent-update-info > div { display: contents; }
+.agent-update-info dt { color: var(--text-secondary); }
+.agent-update-info dd { margin: 0; color: var(--text-strong); font-variant-numeric: tabular-nums; }
+.host-confirm-content p.agent-update-status.attention { color: var(--text-strong); font-weight: 600; }
+.agent-update-card .install-hint { margin-top: 0.75rem; }
+.agent-update-card .install-command { margin-top: 0.4rem; }
+
+/* On a computer's card: its agent is older than this server (admins). */
+.agent-update-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  margin-top: 0.25rem;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  border: 1px solid rgb(245 158 11 / 0.35);
+  background: rgb(245 158 11 / 0.1);
+  color: var(--warning);
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+  width: fit-content;
+}
+.agent-update-badge:hover { background: rgb(245 158 11 / 0.18); }
+.agent-update-badge:focus-visible { outline: 2px solid var(--warning); outline-offset: 2px; }

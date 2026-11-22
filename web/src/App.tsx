@@ -29,6 +29,9 @@ import {
 import { typeLogo } from './typeLogos';
 import { UpdateBanner, useServerUpdate } from './components/UpdateBanner';
 import { BrandMark } from './components/BrandMark';
+import AgentUpdateDialog from './components/AgentUpdateDialog';
+import { agentUpdateState, installKindLabel, type AgentBuild } from './agentUpdate';
+import { parseInstallFetch, type InstallFetch } from './installCommand';
 import './App.css';
 
 interface Host {
@@ -53,6 +56,9 @@ interface Host {
    *  its own, only the computers added through it; not a card, managed on
    *  the Server page. */
   gateway?: boolean;
+  /** What its agent is (version, OS, how it was installed), as it last
+   *  said; not there for agents from before 0.7.7. */
+  agent?: AgentBuild;
 }
 
 /** One field of a connector's form ("kind": text, port, secret, or choice:
@@ -786,6 +792,10 @@ function App() {
     { label: t('Status'), value: t(settingsHostNow.status) },
     ...((settingsHostNow.addresses || []).length > 0 ? [{ label: t('IP addresses'), value: (settingsHostNow.addresses || []).join(', ') }] : []),
     ...(settingsHostNow.address ? [{ label: t('Added by address'), value: shortAddress(settingsHostNow.address) }] : []),
+    ...(settingsHostNow.agent && !settingsHostNow.gateway ? [{
+      label: t('Agent'),
+      value: `${settingsHostNow.agent.version} · ${t(installKindLabel(settingsHostNow.agent.install))}`,
+    }] : []),
   ] : [];
 
   const applyHostSettings = () => {
@@ -1389,6 +1399,25 @@ function App() {
   const [editAddressPassword, setEditAddressPassword] = useState('');
   const [editAddressName, setEditAddressName] = useState('');
   const [resetKeyHost, setResetKeyHost] = useState<Host | null>(null);
+  const [agentUpdateHost, setAgentUpdateHost] = useState<Host | null>(null);
+  const openAgentUpdate = (host: Host) => { setMenuCard(null); setAgentUpdateHost(host); };
+  // For administrators: this server's version (what an agent update
+  // installs) and how a command fetches the install script.
+  const [fetchedAgentInfo, setServerAgentInfo] = useState<{ version: string; fetch: InstallFetch | null } | null>(null);
+  const serverAgentInfo = token && userRole === 'admin' ? fetchedAgentInfo : null;
+  useEffect(() => {
+    if (!token || userRole !== 'admin') return;
+    let gone = false;
+    fetch(`${getBackendProtocol().http}//${getBackendHost()}/api/admin/install-fetch`, { headers: { Authorization: `Bearer ${token}` } })
+      .then(r => (r.ok ? r.json() : null))
+      .then(j => {
+        if (gone || !j || typeof j.version !== 'string') return;
+        setServerAgentInfo({ version: j.version, fetch: parseInstallFetch(j.install) });
+      })
+      .catch(() => {});
+    return () => { gone = true; };
+  }, [token, userRole]);
+  const agentOutdated = (host: Host) => userRole === 'admin' && !host.gateway && agentUpdateState(host.agent, serverAgentInfo?.version) === 'older';
   const [hostDialogBusy, setHostDialogBusy] = useState(false);
   const [hostDialogError, setHostDialogError] = useState('');
   const openRename = (host: Host) => {
@@ -2333,6 +2362,16 @@ function App() {
                                     {card.host && !isPlaceholderHost(card.host) && (
                                       <span className="host-id">ID: {card.host.id.slice(0, 8)}...</span>
                                     )}
+                                    {card.host && agentOutdated(card.host) && (
+                                      <button
+                                        type="button"
+                                        className="agent-update-badge"
+                                        title={t('Agent %1, this server %2', card.host.agent?.version ?? '', serverAgentInfo?.version ?? '')}
+                                        onClick={(e) => { e.stopPropagation(); openAgentUpdate(card.host!); }}
+                                      >
+                                        {t('Agent update available')}
+                                      </button>
+                                    )}
                                     {lone && (
                                       <div className="source-card-sub">
                                         <span className="source-type-badge">{t(lone.connector_name || lone.connector)}</span>
@@ -2557,6 +2596,18 @@ function App() {
                                         <span className="method-option-text">
                                           <span className="method-option-name">{t('Edit address and password')}</span>
                                           <span className="method-option-sub">{shortAddress(host.address)}</span>
+                                        </span>
+                                      </button>
+                                    )}
+                                    {!isPlaceholderHost(host) && !host.gateway && (
+                                      <button type="button" role="menuitem" className="method-option" onClick={() => openAgentUpdate(host)}>
+                                        <span className="card-menu-icon">{ICON_APP}</span>
+                                        <span className="method-option-text">
+                                          <span className="method-option-name">{t('Agent and updates')}</span>
+                                          <span className="method-option-sub">
+                                            {host.agent ? t('Version %1', host.agent.version) : t('Version not known')}
+                                            {agentOutdated(host) ? ` · ${t('update available')}` : ''}
+                                          </span>
                                         </span>
                                       </button>
                                     )}
@@ -3160,6 +3211,17 @@ function App() {
             </div>
           </div>
         </div>
+      )}
+
+      {agentUpdateHost && (
+        <AgentUpdateDialog
+          name={agentUpdateHost.name}
+          build={(hosts.find(h => h.id === agentUpdateHost.id) || agentUpdateHost).agent}
+          serverVersion={serverAgentInfo?.version ?? null}
+          origin={`${getBackendProtocol().http}//${getBackendHost()}`}
+          fetch={serverAgentInfo?.fetch ?? null}
+          onClose={() => setAgentUpdateHost(null)}
+        />
       )}
 
       {settingsOpen && (

@@ -57,6 +57,10 @@ pub struct HostInfo {
     /// never a screen of its own. Not deleted or edited like a computer.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub gateway: bool,
+    /// What its agent is (version, OS, how it was installed), as it last
+    /// said; left out when not known (agents from before this).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<AgentBuild>,
 }
 
 /// Adds a computer by address: the server connects to its agent (direct
@@ -764,6 +768,28 @@ pub enum SignalingMessage {
     },
 }
 
+/// An agent's version and how it was installed, so the server can show it
+/// and say how to update it.
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq)]
+pub struct AgentBuild {
+    pub version: String,
+    /// "linux", "windows", "macos".
+    pub os: String,
+    /// How it was installed (see the `INSTALL_*` values).
+    pub install: String,
+}
+
+/// The .deb package (apt): `agent.sh --update` updates it.
+pub const INSTALL_DEB: &str = "deb";
+/// The AppImage the Linux installer put in /opt/lunaris-agent: `agent.sh --update`.
+pub const INSTALL_APPIMAGE: &str = "appimage";
+/// The Windows installer (Program Files, the service): `agent.ps1 -Update`.
+pub const INSTALL_WINDOWS: &str = "windows";
+/// Another package manager (e.g. Arch): updated with it.
+pub const INSTALL_PACKAGE: &str = "package";
+/// Run from wherever it was put (an AppImage elsewhere, a build): updated by hand.
+pub const INSTALL_MANUAL: &str = "manual";
+
 // Message from Agent to Server via WebSocket
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "event", content = "data")]
@@ -796,6 +822,10 @@ pub enum AgentMessage {
         /// its name. Left out by agents from before this.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         addresses: Vec<String>,
+        /// What this agent is: its version and how it was installed. Left
+        /// out by agents from before this.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        build: Option<AgentBuild>,
     },
     /// The answer to `ServerToAgentMessage::ChangeSource`.
     SourceChanged {

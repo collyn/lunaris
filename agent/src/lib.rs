@@ -19,6 +19,7 @@ mod cli;
 mod bridge;
 pub mod bridge_agent;
 mod buffer;
+mod build_info;
 pub mod direct;
 mod files;
 mod gamepad;

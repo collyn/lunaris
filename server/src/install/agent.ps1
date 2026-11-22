@@ -21,7 +21,10 @@
 # signature itself). Anything else stops the installation.
 param(
     [string]$Token = $env:LUNARIS_INSTALL_TOKEN,
-    [string]$Name = ''
+    [string]$Name = '',
+    # The agent installed here becomes this server's version; settings, key
+    # and server stay (no token needed).
+    [switch]$Update
 )
 
 $ErrorActionPreference = 'Stop'
@@ -73,8 +76,10 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
     Fail 'run this in PowerShell started with "Run as administrator" (the agent runs as a service to control every window)'
 }
 if (-not [Environment]::Is64BitOperatingSystem) { Fail 'only 64-bit Windows is supported' }
-if (-not $Token) { Fail 'missing install token: set $env:LUNARIS_INSTALL_TOKEN (copy the command from the server''s web page)' }
-if ($Token -notmatch '^lit_[A-Za-z0-9_-]{16,128}$') { Fail 'this is not an install token (they start with lit_)' }
+if (-not $Update) {
+    if (-not $Token) { Fail 'missing install token: set $env:LUNARIS_INSTALL_TOKEN (copy the command from the server''s web page)' }
+    if ($Token -notmatch '^lit_[A-Za-z0-9_-]{16,128}$') { Fail 'this is not an install token (they start with lit_)' }
+}
 if ($Name.Length -gt 128) { Fail '-Name is longer than 128 characters' }
 
 $tmp = Join-Path $env:TEMP ('lunaris-agent-' + [guid]::NewGuid().ToString('N'))
@@ -129,6 +134,14 @@ try {
     if (-not $dir) { $dir = Join-Path $env:ProgramFiles $AppName }
     $exe = Join-Path $dir 'lunaris-agent.exe'
     if (-not (Test-Path $exe)) { Fail "$exe is missing after the install" }
+
+    if ($Update) {
+        # The installer replaced the program and restarted the service, with
+        # the settings it had.
+        Write-Host ''
+        Write-Host "$AppName is now version $Version."
+        return
+    }
 
     # The config the service uses (agent/src/win_service.rs): --system.
     $enroll = @('--system', '--enroll', '--server', (Quote-Arg $ServerUrl))

@@ -76,16 +76,18 @@ export const WINDOWS_PIN_CLASS =
   + 'public static void Use(string sha256) { pin = sha256.ToUpperInvariant(); '
   + "System.Net.ServicePointManager.ServerCertificateValidationCallback = Check; } }' }; ";
 
-/** The command to paste into a terminal: a root shell on Linux, PowerShell
- *  run as Administrator on Windows. */
-export const installCommand = (
+/** Fetches the install script and runs it: in a root shell on Linux (with
+ *  `bashEnv` set for it), in PowerShell run as Administrator on Windows
+ *  (after `psFirst`). The script's arguments follow. */
+const runScript = (
   os: InstallOs,
   origin: string,
-  token: string,
-  opts: InstallOptions = {},
+  fetch: InstallFetch | null | undefined,
+  insecure: boolean,
+  bashEnv: string,
+  psFirst: string,
 ): string => {
-  const name = (opts.name ?? '').trim();
-  const f = opts.fetch?.scriptOrigin ? opts.fetch : null;
+  const f = fetch?.scriptOrigin ? fetch : null;
   const url = installScriptUrl(os, f?.scriptOrigin ?? origin);
   const pinned = !!(f?.spkiSha256 && f.certSha256);
   if (os === 'linux') {
@@ -93,10 +95,8 @@ export const installCommand = (
     // other key than this server's.
     const curl = pinned
       ? `curl -fsSLk --pinnedpubkey ${bashQuote(`sha256//${f!.spkiSha256}`)}`
-      : opts.insecure ? 'curl -fsSLk' : 'curl -fsSL';
-    let cmd = `${curl} ${urlWord(url, bashQuote)} | sudo LUNARIS_INSTALL_TOKEN=${bashQuote(token)} bash -s --`;
-    if (name) cmd += ` --name ${bashQuote(name)}`;
-    return cmd;
+      : insecure ? 'curl -fsSLk' : 'curl -fsSL';
+    return `${curl} ${urlWord(url, bashQuote)} | sudo ${bashEnv}bash -s --`;
   }
   // Windows PowerShell 5.1 (.NET Framework). Older Windows offers only SSL 3 /
   // TLS 1.0 unless told otherwise, and the server (like GitHub) takes TLS 1.2
@@ -112,10 +112,31 @@ export const installCommand = (
   // pin `insecure` changes nothing here (no switch to skip the check); the
   // page explains the options.
   const check = pinned ? `${WINDOWS_PIN_CLASS}[LunarisPin]::Use(${psQuote(f!.certSha256!)}); ` : '';
-  let cmd = `$env:LUNARIS_INSTALL_TOKEN=${psQuote(token)}; ${tls}${check}& ([scriptblock]::Create((irm ${urlWord(url, psQuote)})))`;
-  if (name) cmd += ` -Name ${psQuote(name)}`;
+  return `${psFirst}${tls}${check}& ([scriptblock]::Create((irm ${urlWord(url, psQuote)})))`;
+};
+
+/** The command to paste into a terminal: a root shell on Linux, PowerShell
+ *  run as Administrator on Windows. */
+export const installCommand = (
+  os: InstallOs,
+  origin: string,
+  token: string,
+  opts: InstallOptions = {},
+): string => {
+  const name = (opts.name ?? '').trim();
+  let cmd = runScript(os, origin, opts.fetch, !!opts.insecure,
+    `LUNARIS_INSTALL_TOKEN=${bashQuote(token)} `, `$env:LUNARIS_INSTALL_TOKEN=${psQuote(token)}; `);
+  if (name) cmd += os === 'linux' ? ` --name ${bashQuote(name)}` : ` -Name ${psQuote(name)}`;
   return cmd;
 };
+
+/** The command that updates the agent installed on a computer to this
+ *  server's version (no token: the agent keeps its key, settings and place). */
+export const updateCommand = (
+  os: InstallOs,
+  origin: string,
+  opts: Pick<InstallOptions, 'fetch' | 'insecure'> = {},
+): string => runScript(os, origin, opts.fetch, !!opts.insecure, '', '') + (os === 'linux' ? ' --update' : ' -Update');
 
 // ---- Tokens ---------------------------------------------------------------
 
