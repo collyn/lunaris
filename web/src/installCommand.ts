@@ -65,6 +65,17 @@ export const normalizeOrigin = (origin: string): string => origin.trim().replace
 export const installScriptUrl = (os: InstallOs, origin: string): string =>
   `${normalizeOrigin(origin)}/install/${os === 'linux' ? 'agent.sh' : 'agent.ps1'}`;
 
+/** Windows PowerShell: the class that accepts only the certificate whose
+ *  SHA-256 (hex, as BitConverter writes it) it is given (see installCommand). */
+export const WINDOWS_PIN_CLASS =
+  "if (-not ('LunarisPin' -as [type])) { Add-Type 'public static class LunarisPin { static string pin; "
+  + 'static bool Check(object s, System.Security.Cryptography.X509Certificates.X509Certificate c, '
+  + 'System.Security.Cryptography.X509Certificates.X509Chain ch, System.Net.Security.SslPolicyErrors e) { '
+  + 'using (var h = System.Security.Cryptography.SHA256.Create()) '
+  + 'return System.BitConverter.ToString(h.ComputeHash(c.GetRawCertData())).Replace("-", "") == pin; } '
+  + 'public static void Use(string sha256) { pin = sha256.ToUpperInvariant(); '
+  + "System.Net.ServicePointManager.ServerCertificateValidationCallback = Check; } }' }; ";
+
 /** The command to paste into a terminal: a root shell on Linux, PowerShell
  *  run as Administrator on Windows. */
 export const installCommand = (
@@ -87,18 +98,20 @@ export const installCommand = (
     if (name) cmd += ` --name ${bashQuote(name)}`;
     return cmd;
   }
-  // Windows PowerShell 5.1 (.NET Framework) offers only SSL 3 / TLS 1.0 unless
-  // told otherwise, and the server (like GitHub) takes TLS 1.2 or 1.3: the
-  // fetch failed with "An unexpected error occurred on a send". TLS 1.2 is
-  // added before it (the script itself does so too, for its own downloads).
+  // Windows PowerShell 5.1 (.NET Framework). Older Windows offers only SSL 3 /
+  // TLS 1.0 unless told otherwise, and the server (like GitHub) takes TLS 1.2
+  // or 1.3: TLS 1.2 is added first (the script does so too, for its own
+  // downloads).
   const tls = '[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12; ';
-  // irm accepts the server's certificate only when
-  // its SHA-256 is this one (the script turns the check back to normal for
-  // its own downloads). Without a pin `insecure` changes nothing here (no
-  // switch to skip the check); the page explains the options.
-  const check = pinned
-    ? `[Net.ServicePointManager]::ServerCertificateValidationCallback = { param($s, $c) ([BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash($c.GetRawCertData())) -replace '-', '') -eq ${psQuote(f!.certSha256!)} }; `
-    : '';
+  // irm accepts the server's certificate only when its SHA-256 is this one
+  // (the script turns the check back to normal for its own downloads). The
+  // check is compiled C#: .NET calls it on a thread without a PowerShell
+  // runspace, where a script block fails ("There is no Runspace available")
+  // and irm only says "An unexpected error occurred on a send". Compiled once
+  // per PowerShell window (Add-Type cannot add the class twice). Without a
+  // pin `insecure` changes nothing here (no switch to skip the check); the
+  // page explains the options.
+  const check = pinned ? `${WINDOWS_PIN_CLASS}[LunarisPin]::Use(${psQuote(f!.certSha256!)}); ` : '';
   let cmd = `$env:LUNARIS_INSTALL_TOKEN=${psQuote(token)}; ${tls}${check}& ([scriptblock]::Create((irm ${urlWord(url, psQuote)})))`;
   if (name) cmd += ` -Name ${psQuote(name)}`;
   return cmd;

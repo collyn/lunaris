@@ -14,6 +14,7 @@ import {
   psQuote,
   relativeParts,
   tokenStatus,
+  WINDOWS_PIN_CLASS,
 } from '../src/installCommand.ts';
 
 const TOKEN = 'abc_DEF-123';
@@ -75,9 +76,15 @@ test('windows command accepts only the server\'s certificate', () => {
   const cmd = installCommand('windows', 'http://10.0.0.5:8090', TOKEN, { fetch: PINNED, name: 'PC' });
   assert.equal(
     cmd,
-    "$env:LUNARIS_INSTALL_TOKEN='abc_DEF-123'; [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12; [Net.ServicePointManager]::ServerCertificateValidationCallback = { param($s, $c) ([BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash($c.GetRawCertData())) -replace '-', '') -eq '"
-      + CERT.toUpperCase() + "' }; & ([scriptblock]::Create((irm https://10.0.0.5:8443/install/agent.ps1))) -Name 'PC'",
+    "$env:LUNARIS_INSTALL_TOKEN='abc_DEF-123'; [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12; "
+      + WINDOWS_PIN_CLASS + "[LunarisPin]::Use('" + CERT.toUpperCase() + "'); & ([scriptblock]::Create((irm https://10.0.0.5:8443/install/agent.ps1))) -Name 'PC'",
   );
+  // A compiled check, not a script block (no runspace on .NET's thread).
+  assert.ok(!cmd.includes('ServerCertificateValidationCallback = {'));
+  assert.ok(WINDOWS_PIN_CLASS.startsWith("if (-not ('LunarisPin' -as [type])) { Add-Type '"));
+  // Single-quoted for PowerShell: no single quote inside the C#.
+  const csharp = WINDOWS_PIN_CLASS.slice(WINDOWS_PIN_CLASS.indexOf("Add-Type '") + 10, WINDOWS_PIN_CLASS.lastIndexOf("' }"));
+  assert.ok(!csharp.includes("'"), csharp);
 });
 
 test('through a proxy: its https origin, checked as usual', () => {
