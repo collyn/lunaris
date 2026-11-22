@@ -28,7 +28,9 @@ Group=lunaris-agent
 WorkingDirectory=/var/lib/lunaris-agent
 StateDirectory=lunaris-agent
 StateDirectoryMode=0700
-Restart=on-failure
+# always: a stray kill (`pkill lunaris`) brings it back; `systemctl stop`
+# still stops it.
+Restart=always
 RestartSec=5
 
 # Settings and ports (>= 1024) need no privilege.

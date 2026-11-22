@@ -196,7 +196,7 @@ fn user_unit(exe: &str, config: &str) -> String {
          [Service]\n\
          Type=simple\n\
          ExecStart={} --cli --config {}\n\
-         Restart=on-failure\n\
+         Restart=always\n\
          RestartSec=5\n\
          \n\
          [Install]\n\

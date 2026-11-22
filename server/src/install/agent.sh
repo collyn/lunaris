@@ -267,7 +267,8 @@ Group=lunaris-agent
 WorkingDirectory=$SYSTEM_DATA
 StateDirectory=lunaris-agent
 StateDirectoryMode=0700
-Restart=on-failure
+# always: back after a stray kill; `systemctl stop` still stops it.
+Restart=always
 RestartSec=5
 CapabilityBoundingSet=
 NoNewPrivileges=yes
@@ -317,7 +318,8 @@ Type=simple
 # Unpacked to the private /tmp instead of a FUSE mount.
 Environment=APPIMAGE_EXTRACT_AND_RUN=1
 ExecStart=$AGENT_BIN --capture-service --allow-appimage $AGENT_BIN
-Restart=on-failure
+# always: back after a stray kill; `systemctl stop` still stops it.
+Restart=always
 RestartSec=2
 RuntimeDirectory=lunaris
 RuntimeDirectoryMode=0755

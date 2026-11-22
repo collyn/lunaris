@@ -120,7 +120,7 @@ mod imp {
              ProtectSystem=strict\n\
              ProtectHome=yes\n\
              PrivateTmp=yes\n\
-             Restart=on-failure\n\
+             Restart=always\n\
              RestartSec=3\n\
              \n\
              [Install]\n\
