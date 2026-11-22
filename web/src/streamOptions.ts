@@ -67,6 +67,26 @@ export const shownPictureSize = (
 /** Lines (columns) left out beside a cropped padding (see shownPictureSize). */
 export const PICTURE_EDGE = 2;
 
+/** The reference of a pointer position (the scale its x and y are on, as
+ *  the host is told it). Positions are fractions of the shown picture on a
+ *  4096 scale; where shownPictureSize cropped, the shown part is smaller
+ *  than the host's picture and the scale is that much larger, so the host
+ *  puts the pointer where it is shown. */
+export const pointerReference = (
+  decodedWidth: number,
+  decodedHeight: number,
+  picture: { width: number; height: number } | null,
+): { width: number; height: number } => {
+  const shown = shownPictureSize(decodedWidth, decodedHeight, picture);
+  const scale = (shownSide: number, decodedSide: number, pictureSide: number) =>
+    shownSide > 0 && shownSide < decodedSide ? Math.round((4096 * pictureSide) / shownSide) : 4096;
+  if (!picture) return { width: 4096, height: 4096 };
+  return {
+    width: scale(shown.width, decodedWidth, picture.width),
+    height: scale(shown.height, decodedHeight, picture.height),
+  };
+};
+
 export const DEFAULT_BITRATE = 15000;
 
 export const bitrateLabel = (kbps: number) => `${kbps / 1000} Mbps`;

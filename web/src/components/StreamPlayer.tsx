@@ -1,5 +1,5 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { BITRATES, CHROMAS, RESOLUTIONS, bitrateLabel, readDisplayMode, readVolume, objectFitFor, resolutionSize, shownPictureSize, type DisplayMode } from '../streamOptions';
+import { BITRATES, CHROMAS, RESOLUTIONS, bitrateLabel, readDisplayMode, readVolume, objectFitFor, pointerReference, resolutionSize, shownPictureSize, type DisplayMode } from '../streamOptions';
 import StreamSettingsDialog, { type StreamSettingsValues, type ViewerSettings } from './StreamSettingsDialog';
 import { t } from '../i18n';
 import { WebShare, readClipboardSync, readFileTransfer } from '../share';
@@ -917,6 +917,21 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     }
   };
 
+  /** Writes the reference of a pointer position (bytes 5..8 of a
+   *  mouse_absolute message). Positions are fractions of the shown picture
+   *  on a 4096 scale; when the lines a decoder added are cropped
+   *  (shownPictureSize, with the edge next to them) the shown part is
+   *  smaller than the host's picture, and the scale says so: otherwise the
+   *  pointer lands up to two pixels right of and below where it is shown. */
+  const writePointerReference = (view: DataView) => {
+    const activeVideo = getActiveVideoElement();
+    const ref = activeVideo && activeVideo.videoWidth > 0 && activeVideo.videoHeight > 0
+      ? pointerReference(activeVideo.videoWidth, activeVideo.videoHeight, pictureSizeRef.current)
+      : { width: 4096, height: 4096 };
+    view.setInt16(5, ref.width, false);
+    view.setInt16(7, ref.height, false);
+  };
+
   const getHostPointFromClient = (clientX: number, clientY: number) => {
     const video = videoRef.current;
     if (!video) return null;
@@ -992,8 +1007,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     view.setUint8(0, 1);
     view.setInt16(1, x16, false);
     view.setInt16(3, y16, false);
-    view.setInt16(5, 4096, false);
-    view.setInt16(7, 4096, false);
+    writePointerReference(view);
     const seq = (mouseSeqRef.current++) >>> 0;
     view.setUint32(9, seq, false);
     mouseAbsoluteChannel.send(buffer);
@@ -1201,8 +1215,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
             view.setUint8(0, 1); // Type 1: MousePosition (Absolute)
             view.setInt16(1, x16, false);
             view.setInt16(3, y16, false);
-            view.setInt16(5, 4096, false);
-            view.setInt16(7, 4096, false);
+            writePointerReference(view);
             const seq = (mouseSeqRef.current++) >>> 0;
             view.setUint32(9, seq, false);
             mouseAbsoluteChannel.send(buffer);
@@ -1281,8 +1294,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
               view.setUint8(0, 1); // Type 1: MousePosition
               view.setInt16(1, x16, false);
               view.setInt16(3, y16, false);
-              view.setInt16(5, 4096, false); // referenceWidth
-              view.setInt16(7, 4096, false); // referenceHeight
+              writePointerReference(view);
               const seq = (mouseSeqRef.current++) >>> 0;
               view.setUint32(9, seq, false);
               mouseAbsoluteChannel.send(buffer);
@@ -3469,8 +3481,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       view.setUint8(0, 1); // Type 1: MousePosition
       view.setInt16(1, x16, false);
       view.setInt16(3, y16, false);
-      view.setInt16(5, 4096, false); // referenceWidth
-      view.setInt16(7, 4096, false); // referenceHeight
+      writePointerReference(view);
       const seq = (mouseSeqRef.current++) >>> 0;
       view.setUint32(9, seq, false);
       mouseAbsoluteChannel.send(buffer);
@@ -3580,8 +3591,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     view.setUint8(0, 1); // Type 1: MousePosition
     view.setInt16(1, Math.round(Math.max(0, Math.min(1, xNorm)) * 4096), false);
     view.setInt16(3, Math.round(Math.max(0, Math.min(1, yNorm)) * 4096), false);
-    view.setInt16(5, 4096, false);
-    view.setInt16(7, 4096, false);
+    writePointerReference(view);
     view.setUint32(9, (mouseSeqRef.current++) >>> 0, false);
     channel.send(buffer);
   };
