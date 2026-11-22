@@ -98,7 +98,24 @@ sudo ./lunaris-server-linux-x86_64/lunaris-server install        # optional: --p
 systemd service (starts at boot, restarts on failure), keeps data in
 `/var/lib/lunaris` and settings in `/etc/lunaris/server.env`, then prints the
 web address, where the **setup code** is, and the agent token.
-`lunaris-server status` / `uninstall [--purge]` manage it afterwards.
+`lunaris-server status` / `uninstall [--purge]` manage it afterwards. Running
+`install` again (a new version) only replaces the binary and the unit: the
+data and settings stay.
+
+**One way on a Linux computer with systemd: the service.** The package and
+`install` both run the `lunaris-server` service with its data in
+`/var/lib/lunaris`. A server that was run by hand on the computer before
+(`./lunaris-server`, data in its folder or in `~/.local/share/lunaris-server`)
+is taken over when the service is installed or upgraded: while the service
+has no account yet, that server and its gateway are stopped and its accounts,
+computers (also those added through the gateway), agent token, keys and
+certificate are imported (what the service had is kept as
+`*.before-import-<time>`); once the service has accounts nothing is replaced
+and the command to do it is printed. On such a computer `lunaris-server`
+without a command no longer starts a server by hand: it says how to install
+the service, and `lunaris-server run` refuses while the service runs with the
+same data folder or port. Containers (Docker) and computers without systemd
+run it in the foreground, as before.
 
 **Windows** (zip): unzip `lunaris-server-windows-x86_64.zip` and run
 `lunaris-server.exe install` from an Administrator prompt (Windows service,
@@ -132,7 +149,9 @@ address and per account (also against many requests at once); turning
 two-factor on asks for the password again, and **Account security → Sign out
 everywhere** ends every session of the account.
 
-**Moving from the app's built-in server.** The desktop app's "server on this
+**Moving from the app's built-in server** (or from a server run by hand
+somewhere else; on the same Linux computer `install` does it by itself, see
+above). The desktop app's "server on this
 computer" kept its data in `~/.local/share/lunaris-server` (Linux),
 `%APPDATA%\lunaris-server` (Windows) or `~/Library/Application
 Support/lunaris-server` (macOS). To take its accounts, computers, groups and
@@ -152,8 +171,9 @@ through the app server's gateway to the service's, makes them readable by the
 service only (the `lunaris` user of the package), and keeps a database the
 service already had as `lunaris.db.before-import-<time>`. Agents keep their
 token; point them at the service's address if it differs, and turn the app's
-server off. Running `lunaris-server` without a command starts it in the
-foreground instead.
+server off. Running `lunaris-server run` starts it in the foreground instead
+(on a computer with systemd: only beside the service, with its own data
+folder and port).
 
 **Server gateway.** With `lunaris-agent` installed on the server's machine too
 (the server package recommends it; on Windows install Lunaris Agent; Docker:

@@ -21,6 +21,7 @@ mod host_admin;
 mod host_settings;
 mod server_info;
 mod import;
+mod takeover;
 mod install;
 mod link_tickets;
 mod links;
@@ -179,10 +180,17 @@ Commands:
   install [--port <port>]     Install and start as a system service
                               (systemd on Linux, Windows service on Windows)
   uninstall [--purge]         Remove the service (--purge also deletes data)
-  import <dir> [--replace]    Copy the accounts and computers of the desktop
-                              app's built-in server (its data folder <dir>)
-                              into this service's data folder; stop the
-                              service first. Run as root / Administrator.
+  import <dir> [--replace]    Copy the accounts and computers of a server run
+                              by hand (its data folder <dir>) into this
+                              service's data folder; stop the service first.
+                              Run as root / Administrator. `install` does it
+                              by itself when the service has no account yet.
+  import --auto               (Linux) Find the data of a server run by hand on
+                              this computer and take it over (the .deb runs it).
+
+On Linux with systemd the server runs as the service: without a command it
+says how to install it, and `run` refuses while the service runs with the same
+data folder or port.
   status                      Show the service status
   help, version
 
@@ -203,6 +211,13 @@ LUNARIS_GATEWAY_LOG (its log level).
 pub fn run(args: Vec<String>) -> std::process::ExitCode {
     let rest = args.get(1..).unwrap_or(&[]);
     let result: Result<(), String> = match args.first().map(String::as_str) {
+        // On a computer with systemd the server runs as the service
+        // (takeover.rs); without a command it says so.
+        #[cfg(target_os = "linux")]
+        None => takeover::refuse_without_command().and_then(|_| run_foreground()),
+        #[cfg(target_os = "linux")]
+        Some("run") => takeover::refuse_beside_service().and_then(|_| run_foreground()),
+        #[cfg(not(target_os = "linux"))]
         None | Some("run") => run_foreground(),
         Some("install") => service::install(rest),
         Some("uninstall") => service::uninstall(rest),

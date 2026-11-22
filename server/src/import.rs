@@ -22,25 +22,31 @@ use std::path::{Path, PathBuf};
 /// Files copied next to the database when present (see the module comment).
 const KEY_FILES: &[&str] = &["server_token.txt", "mfa_key.txt", "jwt_secret.txt", "tls_cert.pem", "tls_key.pem"];
 
-const USAGE: &str = "usage: lunaris-server import <data folder of the app's server> [--replace]";
+const USAGE: &str = "usage: lunaris-server import <data folder of a server run by hand> [--replace] | --auto";
 
 struct Args {
-    source: PathBuf,
+    /// None with `--auto`.
+    source: Option<PathBuf>,
     replace: bool,
 }
 
 fn parse(args: &[String]) -> Result<Args, String> {
     let mut source = None;
     let mut replace = false;
+    let mut auto = false;
     for a in args {
         match a.as_str() {
             "--replace" => replace = true,
+            "--auto" => auto = true,
             s if s.starts_with('-') => return Err(format!("unknown option: {s}\n{USAGE}")),
             s if source.is_none() => source = Some(PathBuf::from(s)),
             _ => return Err(USAGE.into()),
         }
     }
-    Ok(Args { source: source.ok_or(USAGE)?, replace })
+    if auto {
+        return if source.is_none() && !replace { Ok(Args { source: None, replace }) } else { Err(USAGE.into()) };
+    }
+    Ok(Args { source: Some(source.ok_or(USAGE)?), replace })
 }
 
 #[derive(Debug)]
@@ -139,7 +145,7 @@ async fn open_read_only(path: &Path) -> Result<sqlx::SqliteConnection, String> {
 }
 
 /// Rows in `table` of a database (0 when it has no such table).
-async fn count(path: &Path, table: &str) -> Result<i64, String> {
+pub(crate) async fn count(path: &Path, table: &str) -> Result<i64, String> {
     let mut conn = open_read_only(path).await?;
     let err = |e: sqlx::Error| format!("{}: {e}", path.display());
     let exists: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?")
@@ -312,7 +318,7 @@ fn restrict(path: &Path) -> Result<(), String> {
 /// `lunaris-server install` runs as a dynamic user that owns it). Only as
 /// root; None when not.
 #[cfg(unix)]
-fn give_to_service(target: &Path, names: &[String]) -> Result<Option<String>, String> {
+pub(crate) fn give_to_service(target: &Path, names: &[String]) -> Result<Option<String>, String> {
     use std::os::unix::fs::MetadataExt;
     if unsafe { libc::geteuid() } != 0 {
         return Ok(None);
@@ -335,7 +341,7 @@ fn give_to_service(target: &Path, names: &[String]) -> Result<Option<String>, St
 
 /// uid and gid of the `lunaris` user.
 #[cfg(unix)]
-fn service_user() -> Option<(u32, u32)> {
+pub(crate) fn service_user() -> Option<(u32, u32)> {
     let name = std::ffi::CString::new("lunaris").ok()?;
     let pw = unsafe { libc::getpwnam(name.as_ptr()) };
     if pw.is_null() {
@@ -373,6 +379,22 @@ fn refuse_if_service_runs() -> Result<(), String> {
 
 pub fn run(args: &[String]) -> Result<(), String> {
     let args = parse(args)?;
+    let Some(source) = args.source.clone() else {
+        // `--auto` (the .deb's postinst): the service's folder, whatever
+        // LUNARIS_DATA_DIR says; the service is left stopped when something
+        // was imported, for the package to start it.
+        #[cfg(target_os = "linux")]
+        {
+            if unsafe { libc::geteuid() } != 0 {
+                return Err("this command needs root: run it with sudo".into());
+            }
+            crate::takeover::take_over(Path::new(crate::takeover::DATA_DIR), &[])?;
+            return Ok(());
+        }
+        #[cfg(not(target_os = "linux"))]
+        return Err("--auto is for Linux".into());
+    };
+    let args = Args { source: Some(source.clone()), replace: args.replace };
     // LUNARIS_DATA_DIR: another server folder (a server run by hand);
     // otherwise the installed service's.
     let explicit = std::env::var_os("LUNARIS_DATA_DIR").filter(|v| !v.is_empty()).map(PathBuf::from);
@@ -398,7 +420,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
     };
 
     let rt = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
-    let imported = rt.block_on(import_into(&args.source, &target, args.replace))?;
+    let imported = rt.block_on(import_into(&source, &target, args.replace))?;
 
     #[cfg(unix)]
     let owner = give_to_service(&target, &imported.copied)?;
@@ -411,7 +433,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
         "Imported {} account(s) and {} computer(s) from {} into {}:",
         imported.users,
         imported.hosts,
-        args.source.display(),
+        source.display(),
         target.display()
     );
     for name in &imported.copied {
@@ -661,7 +683,9 @@ mod tests {
     #[test]
     fn parses_arguments() {
         let a = parse(&["/x".into(), "--replace".into()]).unwrap();
-        assert_eq!(a.source, PathBuf::from("/x"));
+        assert_eq!(a.source, Some(PathBuf::from("/x")));
+        assert!(parse(&["--auto".into()]).unwrap().source.is_none());
+        assert!(parse(&["--auto".into(), "/x".into()]).is_err());
         assert!(a.replace);
         assert!(!parse(&["/x".into()]).unwrap().replace);
         assert!(parse(&[]).is_err());
