@@ -13,8 +13,12 @@
 //!   user's own in ~/.config/systemd/user. Desktops that start no
 //!   graphical-session.target (Xfce, MATE, ...) run the login autostart
 //!   entry ~/.config/autostart/lunaris-agent.desktop instead: it carries
-//!   `X-GNOME-HiddenUnderSystemd=true`, which systemd's autostart generator
-//!   (and gnome-session) skip, so one agent runs either way. Without
+//!   `X-systemd-skip=true` (systemd's autostart generator skips it; systemd
+//!   259 does not skip it for `X-GNOME-HiddenUnderSystemd=true` alone, and
+//!   KDE Plasma then ran a second agent beside the service, the two pushing
+//!   each other off the server) and `X-GNOME-HiddenUnderSystemd=true`
+//!   (gnome-session), so one agent runs either way. Entries written before
+//!   get the line when the agent starts (`repair_login_entry`). Without
 //!   systemd only that entry is written.
 //! - A headless computer (`--enroll --system`, as root): the *system*
 //!   service `lunaris-agent-system.service`, user `lunaris-agent`, data in
@@ -226,8 +230,43 @@ fn autostart_entry(exe: &str, config: &str, hidden_under_systemd: bool) -> Strin
         "[Desktop Entry]\nType=Application\nName=Lunaris Agent\nExec={} --cli --config {}\nTerminal=false\nNoDisplay=true\nX-GNOME-Autostart-enabled=true\n{}",
         quote(exe),
         quote(config),
-        if hidden_under_systemd { "X-GNOME-HiddenUnderSystemd=true\n" } else { "" }
+        if hidden_under_systemd { "X-GNOME-HiddenUnderSystemd=true\nX-systemd-skip=true\n" } else { "" }
     )
+}
+
+/// The login entry an earlier `--enroll` wrote for a systemd desktop lacks
+/// `X-systemd-skip=true`: added (only that line), so the next login runs
+/// the service alone. Nothing else in the file is changed.
+pub fn repair_login_entry() {
+    if !systemd_runs() {
+        return;
+    }
+    let Ok(dir) = config_home() else { return };
+    let entry = dir.join("autostart").join("lunaris-agent.desktop");
+    let Ok(text) = std::fs::read_to_string(&entry) else { return };
+    if let Some(fixed) = with_systemd_skip(&text) {
+        match std::fs::write(&entry, fixed) {
+            Ok(()) => tracing::info!(
+                "{}: added X-systemd-skip=true, so only the systemd service starts the agent at login",
+                entry.display()
+            ),
+            Err(e) => tracing::warn!("{}: could not add X-systemd-skip=true: {}", entry.display(), e),
+        }
+    }
+}
+
+/// An entry hidden under systemd without `X-systemd-skip=`, with the line.
+fn with_systemd_skip(text: &str) -> Option<String> {
+    let hidden = text.lines().any(|l| l.trim() == "X-GNOME-HiddenUnderSystemd=true");
+    if !hidden || text.lines().any(|l| l.trim_start().starts_with("X-systemd-skip=")) {
+        return None;
+    }
+    let mut fixed = text.to_string();
+    if !fixed.ends_with('\n') {
+        fixed.push('\n');
+    }
+    fixed.push_str("X-systemd-skip=true\n");
+    Some(fixed)
 }
 
 /// The `lunaris-agent` user: (uid, gid).
@@ -306,7 +345,17 @@ mod tests {
         assert!(!e.contains("HiddenUnderSystemd"));
         let e = autostart_entry("/usr/bin/lunaris-agent", "/h/$x\"%", true);
         assert!(e.contains("--config \"/h/\\\\$x\\\\\"%%\""), "{e}");
-        assert!(e.ends_with("X-GNOME-HiddenUnderSystemd=true\n"));
+        assert!(e.ends_with("X-GNOME-HiddenUnderSystemd=true\nX-systemd-skip=true\n"));
+    }
+
+    #[test]
+    fn an_old_login_entry_gets_skipped_by_systemd() {
+        let old = "[Desktop Entry]\nType=Application\nExec=x\nX-GNOME-HiddenUnderSystemd=true";
+        assert_eq!(with_systemd_skip(old).unwrap(), format!("{old}\nX-systemd-skip=true\n"));
+        // Already there, or not an entry for a systemd desktop: left alone.
+        assert_eq!(with_systemd_skip(&format!("{old}\nX-systemd-skip=true\n")), None);
+        assert_eq!(with_systemd_skip("[Desktop Entry]\nExec=x\n"), None);
+        assert_eq!(with_systemd_skip(&autostart_entry("/usr/bin/lunaris-agent", "/c", true)), None);
     }
 
     #[test]

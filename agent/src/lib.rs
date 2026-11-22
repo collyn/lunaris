@@ -31,6 +31,7 @@ pub mod connector;
 pub mod rustdesk;
 pub mod settings;
 mod share;
+mod single;
 mod status;
 mod video;
 #[cfg(target_os = "windows")]
@@ -390,6 +391,13 @@ async fn main_async(args: Args) -> Result<(), Box<dyn std::error::Error + Send +
         .try_init();
     if args.approval_stdio {
         approval::attach_stdio();
+    }
+    // One agent per config (single.rs); a login entry that started a
+    // second one beside the systemd service is fixed for the next login.
+    crate::single::hold(&config_path).await;
+    #[cfg(target_os = "linux")]
+    if !args.system && !args.bridge_only {
+        autostart::repair_login_entry();
     }
 
     if args.minimized && !args.cli {
