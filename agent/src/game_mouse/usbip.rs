@@ -56,6 +56,48 @@ struct State {
     to_host: Option<mpsc::UnboundedSender<Vec<u8>>>,
     /// The host chose the configuration: its mouse driver uses the device.
     configured: bool,
+    /// What happened since the last `take_metrics`.
+    metrics: Metrics,
+    /// When the last report was handed to the host (for its next poll).
+    last_answer: Option<std::time::Instant>,
+}
+
+/// The game mouse's latency, logged each second while it is used.
+#[derive(Default, Debug, Clone)]
+pub struct Metrics {
+    /// Inputs of the viewer (moves, buttons, wheel).
+    pub inputs: u32,
+    /// Reports handed to the host.
+    pub reports: u32,
+    /// From an input to the report carrying it handed to the host.
+    pub wait_sum: std::time::Duration,
+    pub wait_max: std::time::Duration,
+    /// From a report handed to the host to its next poll.
+    pub repoll_sum: std::time::Duration,
+    pub repoll_max: std::time::Duration,
+    pub repolls: u32,
+    /// Most polls waiting at once.
+    pub polls_waiting_max: usize,
+}
+
+impl Metrics {
+    fn avg_ms(sum: std::time::Duration, n: u32) -> f64 {
+        if n == 0 { 0.0 } else { sum.as_secs_f64() * 1000.0 / n as f64 }
+    }
+
+    pub fn summary(&self) -> String {
+        format!(
+            "{} input(s) -> {} report(s); an input waited {:.2} ms (max {:.2}) to reach Windows; \
+             Windows polled again after {:.2} ms (max {:.2}); up to {} poll(s) waiting",
+            self.inputs,
+            self.reports,
+            Self::avg_ms(self.wait_sum, self.reports),
+            self.wait_max.as_secs_f64() * 1000.0,
+            Self::avg_ms(self.repoll_sum, self.repolls),
+            self.repoll_max.as_secs_f64() * 1000.0,
+            self.polls_waiting_max,
+        )
+    }
 }
 
 impl Device {
@@ -74,7 +116,13 @@ impl Device {
     pub fn update(&self, f: impl FnOnce(&mut ReportQueue)) {
         let mut state = self.state.lock().unwrap();
         f(&mut state.queue);
+        state.metrics.inputs += 1;
         state.answer_waiting();
+    }
+
+    /// What happened since the last call (and starts again).
+    pub fn take_metrics(&self) -> Metrics {
+        std::mem::take(&mut self.state.lock().unwrap().metrics)
     }
 }
 
@@ -82,8 +130,12 @@ impl State {
     fn answer_waiting(&mut self) {
         let Some(to_host) = self.to_host.clone() else { return };
         while !self.waiting.is_empty() {
-            let Some(report) = self.queue.pop() else { break };
+            let Some((report, waited)) = self.queue.pop_timed() else { break };
             let seqnum = self.waiting.pop_front().unwrap();
+            self.metrics.reports += 1;
+            self.metrics.wait_sum += waited;
+            self.metrics.wait_max = self.metrics.wait_max.max(waited);
+            self.last_answer = Some(std::time::Instant::now());
             let _ = to_host.send(ret_submit(seqnum, hid::ENDPOINT_IN as u32 & 0x0F, DIR_IN, 0, &report.bytes()));
         }
     }
@@ -304,7 +356,14 @@ async fn requests<R: AsyncRead + Unpin>(
                     };
                     let _ = to_host.send(frame);
                 } else if ep == (hid::ENDPOINT_IN & 0x0F) as u32 && direction == DIR_IN {
+                    if let Some(at) = state.last_answer.take() {
+                        let gap = at.elapsed();
+                        state.metrics.repolls += 1;
+                        state.metrics.repoll_sum += gap;
+                        state.metrics.repoll_max = state.metrics.repoll_max.max(gap);
+                    }
                     state.waiting.push_back(seqnum);
+                    state.metrics.polls_waiting_max = state.metrics.polls_waiting_max.max(state.waiting.len());
                     state.answer_waiting();
                 } else {
                     let _ = to_host.send(ret_submit(seqnum, ep, direction, STALL, &[]));
@@ -478,6 +537,13 @@ mod tests {
         c.write_all(&submit(14, 1, DIR_IN, 8, [0; 8])).await.unwrap();
         let (_, seq, _, data) = read_ret(&mut c).await;
         assert_eq!((seq, data[0]), (14, 1));
+        // What was measured: two inputs, two reports, the polls that waited,
+        // and the poll that came after an answer.
+        let m = device.take_metrics();
+        assert_eq!((m.inputs, m.reports, m.polls_waiting_max), (2, 2, 2));
+        assert!(m.repolls >= 1);
+        assert!(m.summary().starts_with("2 input(s) -> 2 report(s)"));
+        assert_eq!(device.take_metrics().reports, 0, "taken: starts again");
     }
 
     #[tokio::test]

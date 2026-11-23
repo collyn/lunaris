@@ -70,8 +70,25 @@ ApplicationWindow {
     // host-shaped one nor this computer's: the only pointer is the one in
     // the picture. The web client decides the same way (web/src/pointerShown.ts).
     property bool pointerAlwaysInPicture: false
+    // The game mouse of the computer shown (ViewPrefs.gameMouseHosts): said
+    // to its agent now and every 2 s while it is on (a reconnect, such as a
+    // codec change, starts with it off there; packets are not resent).
+    property bool gameMouseOn: false
+    function setGameMouse(on) {
+        ViewPrefs.setGameMouseFor(bridge.currentHostId(), on);
+        window.gameMouseOn = on;
+        bridge.sendGameMouse(on);
+    }
+    Timer {
+        interval: 2000
+        repeat: true
+        triggeredOnStart: true
+        running: window.isStreamMode && window.gameMouseOn
+        onTriggered: bridge.sendGameMouse(true)
+    }
     onIsStreamModeChanged: {
         if (isStreamMode) {
+            gameMouseOn = ViewPrefs.gameMouseFor(bridge.currentHostId());
             systemKeysKind = bridge.systemKeysSupport();
         } else {
             pointerAlwaysInPicture = false;
@@ -262,6 +279,8 @@ ApplicationWindow {
     // client found it there during this drag.
     function shouldHidePredictedCursor() {
         return window.pointerAlwaysInPicture
+            // The game mouse moves a game's pointer, drawn into the picture.
+            || (window.gameMouseOn && window.isPointerLocked)
             || (window.hostCursorMouseDown
                 && ((window.agentHostOs === "windows" && window.hostCursorInWindowMoveSize)
                     || window.pointerFoundInPicture));
@@ -812,6 +831,11 @@ ApplicationWindow {
 
             onPressed: (mouse) => {
                 rootContainer.forceActiveFocus();
+                // The game mouse moves only a locked pointer: a click locks it.
+                if (window.gameMouseOn && !window.isPointerLocked) {
+                    window.isPointerLocked = true;
+                    return;
+                }
                 // A click in the picture sends the system shortcuts again.
                 window.systemKeysPaused = false;
                 window.hostCursorMouseDown = true;
@@ -1180,6 +1204,8 @@ ApplicationWindow {
         showStats: window.showStats
         renderBackend: window.renderBackend
         systemKeysKind: window.systemKeysKind
+        gameMouseOn: window.gameMouseOn
+        onGameMouseToggled: (on) => window.setGameMouse(on)
         onStatsToggled: (on) => window.showStats = on
         onRenderBackendPicked: (backend) => menuBar.setRenderBackend(backend)
         onClosed: if (window.isStreamMode) rootContainer.forceActiveFocus()
@@ -1343,6 +1369,7 @@ ApplicationWindow {
         function onFileTransferChanged() { window.applySharing(); }
         function onGamepadChanged() { window.applySharing(); }
         function onSystemKeysChanged() { bridge.saveStore("view_prefs", ViewPrefs.toJson()); }
+        function onGameMouseHostsChanged() { bridge.saveStore("view_prefs", ViewPrefs.toJson()); }
     }
     function applySharing() {
         bridge.setShareOptions(ViewPrefs.clipboardSync, ViewPrefs.fileTransfer);

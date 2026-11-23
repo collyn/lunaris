@@ -717,6 +717,17 @@ pub mod qobject {
         #[qinvokable]
         fn send_mouse_click(self: Pin<&mut StreamBridge>, button: i32, is_down: bool);
 
+        /// Turns the remote computer's game mouse on or off (mouse packet
+        /// type 5, agent/src/game_mouse); main.qml says it again every 2 s
+        /// while it is on.
+        #[qinvokable]
+        fn send_game_mouse(self: Pin<&mut StreamBridge>, on: bool);
+
+        /// The id of the computer shown ("" before a stream), for what is
+        /// kept per computer (ViewPrefs.gameMouseHosts).
+        #[qinvokable]
+        fn current_host_id(self: &StreamBridge) -> QString;
+
         #[qinvokable]
         fn send_mouse_wheel(self: Pin<&mut StreamBridge>, angle_x: i32, angle_y: i32);
 
@@ -1072,6 +1083,19 @@ impl qobject::StreamBridge {
                 }
             }
         }
+    }
+
+    pub fn send_game_mouse(self: Pin<&mut Self>, on: bool) {
+        if let Ok(guard) = self.as_ref().rust().input_senders.try_lock() {
+            if let Some(ref s) = *guard {
+                super::input::send_game_mouse(on, s);
+            }
+        }
+    }
+
+    pub fn current_host_id(&self) -> cxx_qt_lib::QString {
+        let id = ACTIVE_CONFIG.lock().unwrap().as_ref().map(|c| c.host_id.clone()).unwrap_or_default();
+        cxx_qt_lib::QString::from(&id)
     }
 
     pub fn send_mouse_click(self: Pin<&mut Self>, button: i32, is_down: bool) {

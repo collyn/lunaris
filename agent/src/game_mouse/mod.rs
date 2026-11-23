@@ -141,7 +141,18 @@ mod plugging {
                         },
                     };
                     let p = listener.local_addr().map(|a| a.port()).unwrap_or(PORT);
-                    tokio::spawn(usbip::serve(listener, device));
+                    tokio::spawn(usbip::serve(listener, device.clone()));
+                    // Its latency, each second it is used.
+                    tokio::spawn(async move {
+                        let mut tick = tokio::time::interval(std::time::Duration::from_secs(1));
+                        loop {
+                            tick.tick().await;
+                            let m = device.take_metrics();
+                            if m.reports > 0 {
+                                log::info!("Game mouse: {}", m.summary());
+                            }
+                        }
+                    });
                     plug.port = Some(p);
                     p
                 }

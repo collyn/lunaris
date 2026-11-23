@@ -143,7 +143,8 @@ const MAX_MOVE: i32 = 32767;
 #[derive(Debug, Default)]
 pub struct ReportQueue {
     buttons: u8,
-    pending: std::collections::VecDeque<Report>,
+    /// With when the first input in it came (how long it waited, measured).
+    pending: std::collections::VecDeque<(Report, std::time::Instant)>,
     /// The last report waiting is a move only (one a move may be summed into:
     /// never a press or release, whose position must stay where it was).
     last_is_move: bool,
@@ -164,21 +165,26 @@ impl ReportQueue {
     }
 
     pub fn pop(&mut self) -> Option<Report> {
-        self.pending.pop_front()
+        self.pending.pop_front().map(|(r, _)| r)
+    }
+
+    /// The next report and how long since its first input came.
+    pub fn pop_timed(&mut self) -> Option<(Report, std::time::Duration)> {
+        self.pending.pop_front().map(|(r, since)| (r, since.elapsed()))
     }
 
     fn push(&mut self, report: Report, is_move: bool) {
         if self.pending.len() >= MAX_PENDING {
             self.pending.pop_front();
         }
-        self.pending.push_back(report);
+        self.pending.push_back((report, std::time::Instant::now()));
         self.last_is_move = is_move;
     }
 
     pub fn move_by(&mut self, dx: i32, dy: i32) {
         let (mut dx, mut dy) = (dx, dy);
         // Into the last report when it is a move of the same buttons.
-        if let Some(last) = self.pending.back_mut().filter(|_| self.last_is_move) {
+        if let Some((last, _)) = self.pending.back_mut().filter(|_| self.last_is_move) {
             if last.buttons == self.buttons {
                 let x = (last.dx as i32 + dx).clamp(-MAX_MOVE, MAX_MOVE);
                 let y = (last.dy as i32 + dy).clamp(-MAX_MOVE, MAX_MOVE);

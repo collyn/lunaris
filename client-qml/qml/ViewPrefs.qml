@@ -25,6 +25,17 @@ QtObject {
     // streamingpreferences.cpp 155-156); "always" is how RustDesk works, and
     // the default here, as for a remote desktop.
     property string systemKeys: "always"
+    // The computers (ids) whose game mouse is turned on: a USB mouse their
+    // agent plugs in, which games with an anti-cheat accept (off until
+    // chosen, per computer; the web client keeps the same per computer).
+    property var gameMouseHosts: []
+    function gameMouseFor(hostId) { return !!hostId && gameMouseHosts.indexOf(hostId) !== -1; }
+    function setGameMouseFor(hostId, on) {
+        if (!hostId) return;
+        var list = gameMouseHosts.filter(function (h) { return h !== hostId; });
+        if (on) list.push(hostId);
+        gameMouseHosts = list;
+    }
 
     readonly property var displayModes: [
         { value: "fit", label: "Fit window" },
@@ -36,7 +47,7 @@ QtObject {
     function toJson() {
         return JSON.stringify({ displayMode: displayMode, audioEnabled: audioEnabled, volume: volume,
                                 recordMicrophone: recordMicrophone, clipboardSync: clipboardSync, fileTransfer: fileTransfer, gamepad: gamepad,
-                                systemKeys: systemKeys });
+                                systemKeys: systemKeys, gameMouseHosts: gameMouseHosts });
     }
     function fromJson(text) {
         if (!text) return;
@@ -50,6 +61,7 @@ QtObject {
             if (typeof p.fileTransfer === "boolean") fileTransfer = p.fileTransfer;
             if (typeof p.gamepad === "boolean") gamepad = p.gamepad;
             if (["off", "fullscreen", "always"].indexOf(p.systemKeys) !== -1) systemKeys = p.systemKeys;
+            if (Array.isArray(p.gameMouseHosts)) gameMouseHosts = p.gameMouseHosts.filter(function (h) { return typeof h === "string"; }).slice(0, 200);
         } catch (e) { console.log("view_prefs: " + e); }
     }
 }

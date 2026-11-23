@@ -294,6 +294,17 @@ pub fn handle_mouse_move(
     }
 }
 
+/// Mouse packet type 5: the remote computer's game mouse on or off (the
+/// web client's src/gameMouse.ts sends the same). On the relative channel,
+/// which does not resend: main.qml says it again every 2 s while it is on.
+pub fn game_mouse_packet(on: bool) -> [u8; 2] {
+    [5, u8::from(on)]
+}
+
+pub fn send_game_mouse(on: bool, senders: &InputSenders) {
+    let _ = senders.mouse_rel.send(Bytes::copy_from_slice(&game_mouse_packet(on)));
+}
+
 pub fn handle_mouse_click(button: i32, is_down: bool, senders: &InputSenders) {
     if button > 0 {
         let mut buf = vec![0u8; 3];
@@ -339,7 +350,7 @@ pub fn handle_mouse_wheel(angle_x: i32, angle_y: i32, senders: &InputSenders) {
 
 #[cfg(test)]
 mod tests {
-    use super::{map_native_scan_to_vk, map_qt_key_to_vk, take_wheel_notches, PressedKeys};
+    use super::{game_mouse_packet, map_native_scan_to_vk, map_qt_key_to_vk, take_wheel_notches, PressedKeys};
 
     #[test]
     fn held_keys_are_let_go_when_the_keyboard_is_lost() {
@@ -394,6 +405,12 @@ mod tests {
         assert_eq!(map_native_scan_to_vk(0), 0);
         assert_eq!(map_native_scan_to_vk(8), 0);
         assert_eq!(map_native_scan_to_vk(5000), 0);
+    }
+
+    #[test]
+    fn the_game_mouse_packet_is_the_web_client_s() {
+        assert_eq!(game_mouse_packet(true), [5, 1]);
+        assert_eq!(game_mouse_packet(false), [5, 0]);
     }
 
     #[test]
