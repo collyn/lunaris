@@ -1205,6 +1205,8 @@ pub async fn setup_bridge_session(
     let no_local_input = from_connector || std::env::var_os(crate::connector::media::TEST_NO_LOCAL_INPUT_ENV).is_some();
     let local_injector = if no_local_input { None } else { lunaris_media::input::InputInjector::new() };
     if let Some(injector) = local_injector {
+        // Windows: the USB mouse for locked pointers (once per agent).
+        crate::game_mouse::start();
         let injector = std::sync::Arc::new(injector);
         let injector_clone = injector.clone();
         // The keys the viewer holds, let go when its input ends (below).
@@ -1230,6 +1232,7 @@ pub async fn setup_bridge_session(
                 }
                 // Keys may come this way too (WebTransport input).
                 release_held_keys(&injector, &held_keys);
+                crate::game_mouse::release_all();
                 info!("InputInjector: stopped mouse input processing thread");
             })
             .expect("Failed to spawn mouse input thread");
@@ -2354,6 +2357,7 @@ fn handle_inbound_packet(
             let last_ts = last_timestamp.load(std::sync::atomic::Ordering::SeqCst);
             if last_ts == 0 || (timestamp.wrapping_sub(last_ts) as i32) >= 0 {
                 last_timestamp.store(timestamp, std::sync::atomic::Ordering::SeqCst);
+                crate::game_mouse::absolute_move();
                 injector.move_mouse_absolute(
                     x as i32,
                     y as i32,
@@ -2365,23 +2369,34 @@ fn handle_inbound_packet(
         InboundPacket::MouseMove {
             delta_x, delta_y, ..
         } => {
-            injector.move_mouse_relative(delta_x as i32, delta_y as i32);
+            // A locked pointer: through the game mouse when it is plugged in
+            // (game_mouse.rs: anti-cheats drop injected moves).
+            let through_game_mouse = crate::game_mouse::relative_move(delta_x as i32, delta_y as i32);
+            if !through_game_mouse {
+                injector.move_mouse_relative(delta_x as i32, delta_y as i32);
+            }
         }
         InboundPacket::MouseButton { action, button } => {
             let is_press = match action {
                 MouseButtonAction::Press => true,
                 MouseButtonAction::Release => false,
             };
-            let x11_btn = match button {
-                MouseButton::Left => 1,
-                MouseButton::Middle => 2,
-                MouseButton::Right => 3,
-                MouseButton::X1 => 8,
-                MouseButton::X2 => 9,
+            let (x11_btn, hid_bit) = match button {
+                MouseButton::Left => (1, 0),
+                MouseButton::Middle => (2, 2),
+                MouseButton::Right => (3, 1),
+                MouseButton::X1 => (8, 3),
+                MouseButton::X2 => (9, 4),
             };
-            injector.mouse_button(x11_btn, is_press);
+            if !crate::game_mouse::button(hid_bit, is_press) {
+                injector.mouse_button(x11_btn, is_press);
+            }
         }
         InboundPacket::Scroll { delta_y, delta_x } => {
+            let (delta_y, delta_x) = (
+                if crate::game_mouse::wheel(delta_y as i32, true) { 0 } else { delta_y },
+                if crate::game_mouse::wheel(delta_x as i32, false) { 0 } else { delta_x },
+            );
             if delta_y > 0 {
                 for _ in 0..delta_y {
                     injector.mouse_button(4, true);
@@ -2416,6 +2431,8 @@ fn handle_inbound_packet(
             } else {
                 -((-delta_x + 119) / 120)
             };
+            let click_y = if crate::game_mouse::wheel(click_y as i32, true) { 0 } else { click_y };
+            let click_x = if crate::game_mouse::wheel(click_x as i32, false) { 0 } else { click_x };
 
             if click_y > 0 {
                 for _ in 0..click_y {

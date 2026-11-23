@@ -22,6 +22,7 @@ mod buffer;
 mod build_info;
 pub mod direct;
 mod files;
+mod game_mouse;
 mod gamepad;
 mod hub;
 mod media_hub;

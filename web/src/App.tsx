@@ -31,6 +31,7 @@ import { UpdateBanner, useServerUpdate } from './components/UpdateBanner';
 import { BrandMark } from './components/BrandMark';
 import AgentUpdateDialog from './components/AgentUpdateDialog';
 import { agentUpdateState, installKindLabel, type AgentBuild } from './agentUpdate';
+import { gameMouseInfo } from './gameMouse';
 import { parseInstallFetch, type InstallFetch } from './installCommand';
 import './App.css';
 
@@ -786,7 +787,8 @@ function App() {
 
   // What the settings dialog shows about its computer, as the list has it now.
   const settingsHostNow = settingsHost ? hosts.find(h => h.id === settingsHost.id) || settingsHost : null;
-  const settingsHostInfo: { label: string; value: string }[] = settingsHostNow ? [
+  const settingsGameMouse = settingsHostNow && !settingsHostNow.gateway ? gameMouseInfo(settingsHostNow.agent) : null;
+  const settingsHostInfo: { label: string; value: string; note?: string; link?: { href: string; label: string } }[] = settingsHostNow ? [
     { label: t('Name'), value: settingsHostNow.name },
     ...(settingsHostNow.agent_name ? [{ label: t('Name it reports'), value: settingsHostNow.agent_name }] : []),
     { label: t('Status'), value: t(settingsHostNow.status) },
@@ -795,6 +797,12 @@ function App() {
     ...(settingsHostNow.agent && !settingsHostNow.gateway ? [{
       label: t('Agent'),
       value: `${settingsHostNow.agent.version} · ${t(installKindLabel(settingsHostNow.agent.install))}`,
+    }] : []),
+    ...(settingsGameMouse ? [{
+      label: t('Game mouse'),
+      value: t(settingsGameMouse.value),
+      note: t(settingsGameMouse.note),
+      link: settingsGameMouse.link ? { href: settingsGameMouse.link.href, label: t(settingsGameMouse.link.label) } : undefined,
     }] : []),
   ] : [];
 

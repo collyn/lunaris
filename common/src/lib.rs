@@ -777,7 +777,17 @@ pub struct AgentBuild {
     pub os: String,
     /// How it was installed (see the `INSTALL_*` values).
     pub install: String,
+    /// Windows: whether its game mouse can be plugged in (`GAME_MOUSE_*`),
+    /// for mouse input that anti-cheats accept; absent elsewhere and from
+    /// agents before 0.7.8.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub game_mouse: Option<String>,
 }
+
+/// usbip-win2 is installed: the agent plugs its USB game mouse in.
+pub const GAME_MOUSE_USBIP: &str = "usbip";
+/// usbip-win2 is not installed: injected input only.
+pub const GAME_MOUSE_NONE: &str = "none";
 
 /// The .deb package (apt): `agent.sh --update` updates it.
 pub const INSTALL_DEB: &str = "deb";

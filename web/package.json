@@ -20,7 +20,8 @@
     "test:stream-prefs": "node --test tests/streamPrefs.test.ts",
     "test:favourites": "node --test tests/favourites.test.ts",
     "test:server-info": "node --test tests/serverInfo.test.ts",
-    "test:agent-update": "node --test tests/agentUpdate.test.ts"
+    "test:agent-update": "node --test tests/agentUpdate.test.ts",
+    "test:game-mouse": "node --test tests/gameMouse.test.ts"
   },
   "dependencies": {
     "react": "^19.2.6",

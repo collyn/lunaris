@@ -9,6 +9,8 @@ export interface AgentBuild {
   os: string;
   /** "deb", "appimage", "windows", "package", "manual". */
   install: string;
+  /** Windows: "usbip" (its game mouse can be plugged in) or "none" (src/gameMouse.ts). */
+  game_mouse?: string;
 }
 
 /** Compares two versions ("0.7.6", "0.8.0-rc.1"): negative when `a` is

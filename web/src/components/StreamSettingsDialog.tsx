@@ -52,7 +52,8 @@ type Props = {
   sourceOnly?: boolean;
   /** What is known about the computer (name, status, addresses), shown
    *  read-only first under "Remote computer". */
-  hostInfo?: { label: string; value: string }[];
+  /** Rows of "This computer"; a row may add a line under it and a link. */
+  hostInfo?: { label: string; value: string; note?: string; link?: { href: string; label: string } }[];
   values: StreamSettingsValues;
   onChange: <K extends keyof StreamSettingsValues>(key: K, value: StreamSettingsValues[K]) => void;
   onCancel: () => void;
@@ -352,7 +353,13 @@ export default function StreamSettingsDialog({
                       {hostInfo.map(item => (
                         <div className="ssd-info-row" key={item.label}>
                           <dt>{item.label}</dt>
-                          <dd>{item.value}</dd>
+                          <dd>
+                            {item.value}
+                            {item.note && <span className="ssd-info-note">{item.note}</span>}
+                            {item.link && (
+                              <a className="ssd-info-link" href={item.link.href} target="_blank" rel="noopener noreferrer">{item.link.label}</a>
+                            )}
+                          </dd>
                         </div>
                       ))}
                     </dl>

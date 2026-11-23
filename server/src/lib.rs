@@ -736,13 +736,13 @@ async fn hosts_handler(
     // the signaling WebSocket applies).
     let access = security::host_access(&state.db, &user.user_id).await.map_err(db_error)?;
     #[allow(clippy::type_complexity)]
-    let all: Vec<(String, String, String, Option<String>, Option<i64>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>)> =
-        sqlx::query_as("SELECT id, name, status, ip_address, server_codec_mode_support, addresses, display_name, agent_version, agent_os, agent_install FROM hosts")
+    let all: Vec<(String, String, String, Option<String>, Option<i64>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>)> =
+        sqlx::query_as("SELECT id, name, status, ip_address, server_codec_mode_support, addresses, display_name, agent_version, agent_os, agent_install, agent_game_mouse FROM hosts")
             .fetch_all(&state.db)
             .await
             .map_err(db_error)?;
     #[allow(clippy::type_complexity)]
-    let rows: Vec<(String, String, String, Option<String>, Option<i64>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>)> = all
+    let rows: Vec<(String, String, String, Option<String>, Option<i64>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>)> = all
             .into_iter()
             .filter(|(id, ..)| access.allows(id))
             .collect();
@@ -762,9 +762,9 @@ async fn hosts_handler(
 
     let mut futures = Vec::new();
 
-    for (id, agent_name, status_str, ip_address, server_codec_mode_support, addresses, display_name, agent_version, agent_os, agent_install) in rows {
+    for (id, agent_name, status_str, ip_address, server_codec_mode_support, addresses, display_name, agent_version, agent_os, agent_install, agent_game_mouse) in rows {
         let agent = match (agent_version, agent_os) {
-            (Some(version), Some(os)) => Some(common::AgentBuild { version, os, install: agent_install.unwrap_or_default() }),
+            (Some(version), Some(os)) => Some(common::AgentBuild { version, os, install: agent_install.unwrap_or_default(), game_mouse: agent_game_mouse }),
             _ => None,
         };
         // An administrator's name for it, else the one its agent announces.

@@ -219,10 +219,11 @@ pub(crate) async fn build_announced(state: &Arc<SignalingState>, agent_id: &str,
         warn!("{} said an agent version that is not one: not kept", agent_id);
         return;
     };
-    if let Err(e) = sqlx::query("UPDATE hosts SET agent_version = ?, agent_os = ?, agent_install = ? WHERE id = ?")
+    if let Err(e) = sqlx::query("UPDATE hosts SET agent_version = ?, agent_os = ?, agent_install = ?, agent_game_mouse = ? WHERE id = ?")
         .bind(&build.version)
         .bind(&build.os)
         .bind(&build.install)
+        .bind(&build.game_mouse)
         .bind(agent_id)
         .execute(&state.db)
         .await
@@ -238,8 +239,13 @@ fn checked_build(build: common::AgentBuild) -> Option<common::AgentBuild> {
     let os_ok = matches!(build.os.as_str(), "linux" | "windows" | "macos");
     let install_ok = [common::INSTALL_DEB, common::INSTALL_APPIMAGE, common::INSTALL_WINDOWS, common::INSTALL_PACKAGE, common::INSTALL_MANUAL]
         .contains(&build.install.as_str());
+    // Only the values this server knows (shown on the computer's page).
+    let game_mouse = build
+        .game_mouse
+        .filter(|g| [common::GAME_MOUSE_USBIP, common::GAME_MOUSE_NONE].contains(&g.as_str()));
     (version_ok && os_ok).then(|| common::AgentBuild {
         install: if install_ok { build.install } else { common::INSTALL_MANUAL.to_string() },
+        game_mouse,
         ..build
     })
 }
@@ -901,7 +907,7 @@ mod tests {
             connectors: vec![],
             manageable: true,
             addresses: vec![],
-            build: Some(common::AgentBuild { version: version.into(), os: os.into(), install: install.into() }),
+            build: Some(common::AgentBuild { version: version.into(), os: os.into(), install: install.into(), game_mouse: None }),
         };
         let kept = || async {
             sqlx::query_as::<_, (Option<String>, Option<String>, Option<String>)>("SELECT agent_version, agent_os, agent_install FROM hosts WHERE id = 'h1'")
@@ -918,9 +924,28 @@ mod tests {
         crate::signaling::agent_message(&state, "h1", said("1.0 <script>", "linux", "deb")).await;
         crate::signaling::agent_message(&state, "h1", said("1.0.0", "plan9", "deb")).await;
         assert_eq!(kept().await.0.as_deref(), Some("0.8.0-rc.1"));
+        // A Windows agent says whether its game mouse can be plugged in; a
+        // value this server does not know is not kept.
+        let with_mouse = |game_mouse: &str| AgentMessage::Sources {
+            sources: vec![],
+            connectors: vec![],
+            manageable: true,
+            addresses: vec![],
+            build: Some(common::AgentBuild { version: "0.7.8".into(), os: "windows".into(), install: "windows".into(), game_mouse: Some(game_mouse.into()) }),
+        };
+        let mouse = || async {
+            sqlx::query_scalar::<_, Option<String>>("SELECT agent_game_mouse FROM hosts WHERE id = 'h1'")
+                .fetch_one(&state.db)
+                .await
+                .unwrap()
+        };
+        crate::signaling::agent_message(&state, "h1", with_mouse("usbip")).await;
+        assert_eq!(mouse().await.as_deref(), Some("usbip"));
+        crate::signaling::agent_message(&state, "h1", with_mouse("<b>")).await;
+        assert_eq!(mouse().await, None);
         // An older agent says nothing: what was kept stays.
         crate::signaling::agent_message(&state, "h1", AgentMessage::Sources { sources: vec![], connectors: vec![], manageable: true, addresses: vec![], build: None }).await;
-        assert_eq!(kept().await.0.as_deref(), Some("0.8.0-rc.1"));
+        assert_eq!(kept().await.0.as_deref(), Some("0.7.8"));
     }
 
     #[tokio::test]

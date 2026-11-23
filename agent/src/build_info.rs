@@ -12,6 +12,7 @@ pub fn current() -> common::AgentBuild {
         version: env!("CARGO_PKG_VERSION").to_string(),
         os: std::env::consts::OS.to_string(),
         install: install_kind().to_string(),
+        game_mouse: crate::game_mouse::availability().map(str::to_string),
     }
 }
 
