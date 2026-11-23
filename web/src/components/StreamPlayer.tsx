@@ -9,6 +9,7 @@ import { TouchGestures, type GestureActions, type TouchPoint } from '../touchGes
 import { accessRefusal } from '../accessRequest';
 import { PictureReader, PointerInPictureDrag, SentPositions, buildTemplates, matchRegion, searchGroups, type Template } from '../pointerInPicture';
 import { relativeMovePacket, takeRelativeStep } from '../relativePointer';
+import { gameMousePacket, readGameMouseOn, saveGameMouseOn } from '../gameMouse';
 import { hostPointerInPicture, saysPointerAlwaysInPicture, showsHostCursor, showsOwnCursor, streamCursorCss, type PointerView } from '../pointerShown';
 import { agentRoundTripMs, decodeStatText, decoderName, encodeStatText, pingStatText, shownPingMs, sourceLatencyMs } from '../streamStats';
 import { KEY_COMBOS, PressedKeys, applyKeyboardLock, combosFor, comboStrokes, keyboardLockFor, readSystemKeys, tapsUnderMeta, vkOfCode } from '../keyboard';
@@ -160,6 +161,11 @@ interface StreamPlayerProps {
   sourceId?: string;
   /** false: that source's connector has no files, so none are offered. */
   sourceFiles?: boolean;
+  /** A Windows computer's game mouse, as its agent said ("usbip", "none");
+   *  undefined: not a Windows computer (src/gameMouse.ts). */
+  gameMouse?: string;
+  /** The computer is a Windows one (the game mouse setting is shown). */
+  windowsHost?: boolean;
 }
 
 /**
@@ -208,7 +214,9 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   onBack,
   appId,
   sourceId,
-  sourceFiles
+  sourceFiles,
+  gameMouse,
+  windowsHost,
 }) => {
   // The files of what is shown can be offered (a computer of another type
   // only when its connector has files).
@@ -301,8 +309,6 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   const lastPointerRawUpdateMsRef = useRef<number>(0);
   const accDxRef = useRef<number>(0);
   const accDyRef = useRef<number>(0);
-  // When the last relative move (locked pointer) was sent.
-  const lastRelativeMoveAtRef = useRef<number>(0);
   const touchModeRef = useRef<'direct' | 'trackpad'>('trackpad');
   const useCanvasRendererRef = useRef<boolean>(true);
   const mouseQueueLimitRef = useRef<number>(256);
@@ -1186,19 +1192,10 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
             if (step.dx !== 0 || step.dy !== 0) {
               const seq = (mouseSeqRef.current++) >>> 0;
               mouseReliableChannel.send(relativeMovePacket(step.dx, step.dy, seq));
-              lastRelativeMoveAtRef.current = performance.now();
-
-              // The cursor drawn here moves by as much until the host says
-              // where its pointer is (host_cursor).
-              const activeVideo = getActiveVideoElement();
-              const [vidWidth, vidHeight] = shownSize(activeVideo, videoRef.current);
-              localCursorPosRef.current = {
-                x: Math.max(0, Math.min(vidWidth, localCursorPosRef.current.x + step.dx)),
-                y: Math.max(0, Math.min(vidHeight, localCursorPosRef.current.y + step.dy)),
-              };
-              recordSentPointer(localCursorPosRef.current.x, localCursorPosRef.current.y);
-              lastHostCursorLocalPredictionAtRef.current = performance.now();
-              updateVirtualCursorDOMRef.current();
+              // The cursor drawn here is not moved by a guess: the host's
+              // pointer acceleration (and a game ignoring a move) make where
+              // it lands differ. It follows where the host says its pointer
+              // is (host_cursor, below).
             }
           }
         }
@@ -2973,6 +2970,22 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   // effect while fullscreen is active, so we enter fullscreen alongside
   // pointer lock.  The fullscreenchange handler (which fires shortly
   // after) calls keyboard.lock to intercept ESC.
+  // The game mouse (src/gameMouse.ts): the viewer's choice for this
+  // computer, sent to its agent when the stream starts and when it changes.
+  const [gameMouseOn, setGameMouseOnState] = useState<boolean>(() => readGameMouseOn(hostId));
+  const gameMouseActive = gameMouseOn && gameMouse === 'usbip' && !sourceId;
+  const gameMouseActiveRef = useRef(gameMouseActive);
+  useEffect(() => { gameMouseActiveRef.current = gameMouseActive; }, [gameMouseActive]);
+  const setGameMouseOn = (on: boolean) => {
+    saveGameMouseOn(hostId, on);
+    setGameMouseOnState(on);
+  };
+  useEffect(() => {
+    if (status !== "Streaming" || gameMouse !== 'usbip' || sourceId) return;
+    const channel = channelsRef.current["mouse_reliable"];
+    if (channel && channel.readyState === "open") channel.send(gameMousePacket(gameMouseActive));
+  }, [status, gameMouseActive, gameMouse, sourceId]);
+
   const togglePointerLock = () => {
     if (!videoRef.current) return;
     if (document.pointerLockElement === videoRef.current) {
@@ -3192,10 +3205,9 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       return;
     }
 
-    // A locked pointer moves by relative steps, which the host's pointer
-    // acceleration (and a game holding its pointer) scales differently: once
-    // the mouse rests, the cursor drawn here goes where the host's is.
-    if (document.pointerLockElement && visible && performance.now() - lastRelativeMoveAtRef.current > 150) {
+    // A locked pointer moves by relative steps: the cursor drawn here is
+    // where the host says its pointer is (no guess, see the send above).
+    if (document.pointerLockElement && visible) {
       localCursorPosRef.current = { x, y };
       updateVirtualCursorDOMRef.current();
     }
@@ -3956,6 +3968,12 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       }
     }
 
+    // The game mouse moves only a locked pointer: clicking the picture locks it.
+    if (isDown && gameMouseActiveRef.current && !document.pointerLockElement) {
+      togglePointerLock();
+      return;
+    }
+
     hostCursorMouseDownRef.current = isDown ? true : e.buttons !== 0;
     const leftHeld = e.button === 0 ? isDown : (e.buttons & 1) !== 0;
     if (leftHeld !== leftButtonHeldRef.current) {
@@ -4128,6 +4146,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
           }}
           encoders={availableEncoders}
           viewer={viewerSettings}
+          gameMouse={windowsHost && !sourceId ? { available: gameMouse, on: gameMouseOn, setOn: setGameMouseOn } : undefined}
           />
         )}
 
@@ -4301,6 +4320,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
           }}
           encoders={availableEncoders}
           viewer={viewerSettings}
+          gameMouse={windowsHost && !sourceId ? { available: gameMouse, on: gameMouseOn, setOn: setGameMouseOn } : undefined}
         />
       )}
 

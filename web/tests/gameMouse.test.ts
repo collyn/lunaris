@@ -2,7 +2,7 @@
 // Run: npm run test:game-mouse   (node --test, no packages needed)
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { USBIP_WIN2_RELEASES, gameMouseInfo } from '../src/gameMouse.ts';
+import { USBIP_WIN2_RELEASES, gameMouseInfo, gameMouseKey, gameMousePacket } from '../src/gameMouse.ts';
 
 const windows = (game_mouse?: string) => ({ version: '0.7.8', os: 'windows', install: 'windows', game_mouse });
 
@@ -29,4 +29,10 @@ test('without it the row says how to get it', () => {
 test('an older agent does not say: it is to be updated', () => {
   assert.equal(gameMouseInfo(windows())?.value, 'Needs agent 0.7.8 or newer');
   assert.equal(gameMouseInfo(windows('something new'))?.value, 'Needs agent 0.7.8 or newer');
+});
+
+test('the choice is kept per computer and sent as packet type 5', () => {
+  assert.equal(gameMouseKey('abc'), 'lunaris_game_mouse:abc');
+  assert.deepEqual([...new Uint8Array(gameMousePacket(true))], [5, 1]);
+  assert.deepEqual([...new Uint8Array(gameMousePacket(false))], [5, 0]);
 });

@@ -1621,6 +1621,8 @@ function App() {
         hostId={selectedHost.id}
         hostName={selectedHost.name}
         hostAddress={hostAddressText(hosts.find(h => h.id === selectedHost.id) || selectedHost)}
+        gameMouse={(hosts.find(h => h.id === selectedHost.id) || selectedHost).agent?.game_mouse}
+        windowsHost={(hosts.find(h => h.id === selectedHost.id) || selectedHost).agent?.os === 'windows'}
         token={token}
         serverCodecModeSupport={selectedHost.server_codec_mode_support}
         appId={selectedAppId}

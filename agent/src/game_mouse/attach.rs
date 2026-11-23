@@ -56,6 +56,21 @@ pub fn plug_in(exe: &PathBuf, port: u16, bus_id: &str) -> Result<String, String>
     }
 }
 
+/// Unplugs what is plugged into `hub_port` (from `plug_in`).
+pub fn unplug(exe: &PathBuf, hub_port: &str) -> Result<(), String> {
+    let output = Command::new(exe)
+        .args(["detach", "--port", hub_port.trim()])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .map_err(|e| format!("{}: {e}", exe.display()))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        let all = format!("{} {}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+        Err(format!("usbip detach: {}", all.trim()))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

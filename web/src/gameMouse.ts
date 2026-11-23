@@ -37,3 +37,25 @@ export const gameMouseInfo = (agent: AgentBuild | null | undefined): GameMouseIn
       };
   }
 };
+
+/** Whether the viewer turned the game mouse on for this computer (kept per
+ *  computer on this device; off until chosen). */
+export const gameMouseKey = (hostId: string) => `lunaris_game_mouse:${hostId}`;
+
+export const readGameMouseOn = (hostId: string): boolean => {
+  try { return localStorage.getItem(gameMouseKey(hostId)) === 'true'; } catch { return false; }
+};
+
+export const saveGameMouseOn = (hostId: string, on: boolean) => {
+  try { localStorage.setItem(gameMouseKey(hostId), String(on)); } catch { /* kept for this session only */ }
+};
+
+/** Mouse packet type 5 (agent/src/input.rs `GameMouse`): turns the agent's
+ *  USB game mouse on or off. Agents before 0.7.8 ignore it. */
+export const gameMousePacket = (on: boolean): ArrayBuffer => {
+  const buffer = new ArrayBuffer(2);
+  const view = new DataView(buffer);
+  view.setUint8(0, 5);
+  view.setUint8(1, on ? 1 : 0);
+  return buffer;
+};

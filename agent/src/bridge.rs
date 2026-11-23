@@ -1205,8 +1205,8 @@ pub async fn setup_bridge_session(
     let no_local_input = from_connector || std::env::var_os(crate::connector::media::TEST_NO_LOCAL_INPUT_ENV).is_some();
     let local_injector = if no_local_input { None } else { lunaris_media::input::InputInjector::new() };
     if let Some(injector) = local_injector {
-        // Windows: the USB mouse for locked pointers (once per agent).
-        crate::game_mouse::start();
+        // Windows: the USB mouse the viewer may turn on (game_mouse.rs).
+        crate::game_mouse::init();
         let injector = std::sync::Arc::new(injector);
         let injector_clone = injector.clone();
         // The keys the viewer holds, let go when its input ends (below).
@@ -1232,7 +1232,8 @@ pub async fn setup_bridge_session(
                 }
                 // Keys may come this way too (WebTransport input).
                 release_held_keys(&injector, &held_keys);
-                crate::game_mouse::release_all();
+                // The viewer left: its game mouse is unplugged.
+                crate::game_mouse::set_wanted(false);
                 info!("InputInjector: stopped mouse input processing thread");
             })
             .expect("Failed to spawn mouse input thread");
@@ -2392,6 +2393,7 @@ fn handle_inbound_packet(
                 injector.mouse_button(x11_btn, is_press);
             }
         }
+        InboundPacket::GameMouse { on } => crate::game_mouse::set_wanted(on),
         InboundPacket::Scroll { delta_y, delta_x } => {
             let (delta_y, delta_x) = (
                 if crate::game_mouse::wheel(delta_y as i32, true) { 0 } else { delta_y },

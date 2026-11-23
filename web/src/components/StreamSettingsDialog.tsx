@@ -52,6 +52,9 @@ type Props = {
   sourceOnly?: boolean;
   /** What is known about the computer (name, status, addresses), shown
    *  read-only first under "Remote computer". */
+  /** In a session with a Windows computer: its game mouse (src/gameMouse.ts).
+   *  `available`: what its agent said ("usbip", "none", or nothing). */
+  gameMouse?: { available?: string; on: boolean; setOn: (on: boolean) => void };
   /** Rows of "This computer"; a row may add a line under it and a link. */
   hostInfo?: { label: string; value: string; note?: string; link?: { href: string; label: string } }[];
   values: StreamSettingsValues;
@@ -169,7 +172,7 @@ const useStoredViewer = (): ViewerSettings => {
  * same layout and choices.
  */
 export default function StreamSettingsDialog({
-  hostName, hostAddress, sourceOnly, hostInfo, values, onChange, onCancel, onSave, saveLabel, footerNote, displays, unsupportedCodecs = [],
+  hostName, hostAddress, sourceOnly, hostInfo, gameMouse, values, onChange, onCancel, onSave, saveLabel, footerNote, displays, unsupportedCodecs = [],
   codecLabels = {}, encoders = [], viewer: viewerProp, onUseDefaults, ownSettings,
 }: Props) {
   const [category, setCategory] = useState<Category>('video');
@@ -416,6 +419,26 @@ export default function StreamSettingsDialog({
                       <option value="off">{t('Never')}</option>
                     </select>
                   </Row>
+                  {gameMouse && (
+                    <Row
+                      title={t('Game mouse')}
+                      hint={gameMouse.available === 'usbip'
+                        ? t('A USB mouse the remote computer plugs in, for games with an anti-cheat (League of Legends, Valorant) that ignore the remote mouse. When on, clicking the picture locks the pointer; hold Esc to let it go. Applies right away.')
+                        : gameMouse.available === 'none'
+                          ? t('Needs usbip-win2 on the remote computer: install it there and restart its agent.')
+                          : t('Needs agent 0.7.8 or newer on the remote computer.')}
+                    >
+                      <select
+                        value={gameMouse.on && gameMouse.available === 'usbip' ? 'on' : 'off'}
+                        aria-label={t('Game mouse')}
+                        disabled={gameMouse.available !== 'usbip'}
+                        onChange={(e) => gameMouse.setOn(e.target.value === 'on')}
+                      >
+                        <option value="off">{t('Off')}</option>
+                        <option value="on">{t('On')}</option>
+                      </select>
+                    </Row>
+                  )}
                 </div>
               </>
             )}
