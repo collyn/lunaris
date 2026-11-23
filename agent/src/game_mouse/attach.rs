@@ -4,6 +4,8 @@ use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 use std::process::Command;
 
+use super::cli::{install_location, port_of};
+
 /// No console window for the child (the agent may run in a user's session).
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 /// usbip-win2's uninstall key (its Inno Setup AppId), which holds where it is.
@@ -27,15 +29,6 @@ pub fn usbip_exe() -> Option<PathBuf> {
         .find(|exe| exe.is_file())
 }
 
-/// The folder in `reg query ... /v InstallLocation` output.
-fn install_location(output: &str) -> Option<PathBuf> {
-    output.lines().find_map(|line| {
-        let rest = line.trim().strip_prefix("InstallLocation")?;
-        let value = rest.trim_start().strip_prefix("REG_SZ")?.trim();
-        (!value.is_empty()).then(|| PathBuf::from(value))
-    })
-}
-
 /// Attaches the device `bus_id` of the USB/IP server on 127.0.0.1:`port`;
 /// returns the hub port it was plugged into.
 pub fn plug_in(exe: &PathBuf, port: u16, bus_id: &str) -> Result<String, String> {
@@ -56,8 +49,22 @@ pub fn plug_in(exe: &PathBuf, port: u16, bus_id: &str) -> Result<String, String>
     }
 }
 
-/// Unplugs what is plugged into `hub_port` (from `plug_in`).
-pub fn unplug(exe: &PathBuf, hub_port: &str) -> Result<(), String> {
+/// The hub port the device `bus_id` of 127.0.0.1:`port` is plugged into,
+/// when it is (usbip-win2 may have plugged it back in by itself).
+pub fn plugged_port(exe: &PathBuf, port: u16, bus_id: &str) -> Option<String> {
+    let output = Command::new(exe).arg("port").creation_flags(CREATE_NO_WINDOW).output().ok()?;
+    port_of(&String::from_utf8_lossy(&output.stdout), port, bus_id)
+}
+
+/// Unplugs what is plugged into `hub_port` (from `plug_in`). usbip-win2
+/// plugs a device back in by itself when its server is still there
+/// (measured: about a minute after a detach), so its attempts for the
+/// device are stopped first.
+pub fn unplug(exe: &PathBuf, port: u16, bus_id: &str, hub_port: &str) -> Result<(), String> {
+    let _ = Command::new(exe)
+        .args(["--tcp-port", &port.to_string(), "attach", "--remote", "127.0.0.1", "--bus-id", bus_id, "--stop"])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output();
     let output = Command::new(exe)
         .args(["detach", "--port", hub_port.trim()])
         .creation_flags(CREATE_NO_WINDOW)
@@ -68,18 +75,5 @@ pub fn unplug(exe: &PathBuf, hub_port: &str) -> Result<(), String> {
     } else {
         let all = format!("{} {}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
         Err(format!("usbip detach: {}", all.trim()))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_install_folder_is_read_from_reg_output() {
-        let out = "\r\nHKEY_LOCAL_MACHINE\\SOFTWARE\\...\\{1995}_is1\r\n    InstallLocation    REG_SZ    C:\\Program Files\\USBip\\\r\n\r\n";
-        assert_eq!(install_location(out), Some(PathBuf::from("C:\\Program Files\\USBip\\")));
-        assert_eq!(install_location("    InstallLocation    REG_SZ    \r\n"), None);
-        assert_eq!(install_location("ERROR: not found"), None);
     }
 }

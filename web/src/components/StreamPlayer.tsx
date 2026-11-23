@@ -1830,6 +1830,10 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
         if (escapeHoldTimerRef.current !== null) {
           window.clearTimeout(escapeHoldTimerRef.current);
           escapeHoldTimerRef.current = null;
+          // Let go before the hold left the lock: an Escape press for the
+          // remote computer (a game's menu), sent as a tap.
+          sendKeyEvent('Escape', e.shiftKey, e.ctrlKey, e.altKey, e.metaKey, true);
+          sendKeyEvent('Escape', e.shiftKey, e.ctrlKey, e.altKey, e.metaKey, false);
         }
         setEscapeHoldProgress(0);
         return;
@@ -2982,8 +2986,17 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   };
   useEffect(() => {
     if (status !== "Streaming" || gameMouse !== 'usbip' || sourceId) return;
-    const channel = channelsRef.current["mouse_reliable"];
-    if (channel && channel.readyState === "open") channel.send(gameMousePacket(gameMouseActive));
+    const send = () => {
+      const channel = channelsRef.current["mouse_reliable"];
+      if (channel && channel.readyState === "open") channel.send(gameMousePacket(gameMouseActive));
+    };
+    send();
+    // Said again while it is on: a new session (a codec change reconnects)
+    // starts with it off on the agent, and the end of the previous one
+    // turns it off; the agent does nothing when nothing changes.
+    if (!gameMouseActive) return;
+    const timer = window.setInterval(send, 2000);
+    return () => window.clearInterval(timer);
   }, [status, gameMouseActive, gameMouse, sourceId]);
 
   const togglePointerLock = () => {
@@ -3175,6 +3188,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     pointerLocked: isPointerLockedRef.current,
     hostCssCursor: hostCssCursorRef.current,
     hasNativeCursorImage: hasNativeCursorImageRef.current,
+    gameMouse: gameMouseActiveRef.current && isPointerLockedRef.current,
     ...over,
   });
 

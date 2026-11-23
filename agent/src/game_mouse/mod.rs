@@ -28,6 +28,8 @@ pub mod hid;
 mod usbip;
 #[cfg(target_os = "windows")]
 mod attach;
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+mod cli;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -113,6 +115,16 @@ mod plugging {
             }
             return;
         };
+        // usbip-win2 may have plugged it back in by itself.
+        if plug.hub_port.is_none() {
+            // (Also one this agent plugged in before it restarted: same port.)
+            let port = plug.port.unwrap_or(PORT);
+            let exe = exe.clone();
+            plug.hub_port = tokio::task::spawn_blocking(move || attach::plugged_port(&exe, port, usbip::BUS_ID))
+                .await
+                .ok()
+                .flatten();
+        }
         if wanted && plug.hub_port.is_none() {
             let device = DEVICE.get_or_init(usbip::Device::new).clone();
             let port = match plug.port {
@@ -144,7 +156,8 @@ mod plugging {
             }
         } else if !wanted {
             if let Some(hub_port) = plug.hub_port.take() {
-                match tokio::task::spawn_blocking(move || attach::unplug(&exe, &hub_port)).await {
+                let port = plug.port.unwrap_or(PORT);
+                match tokio::task::spawn_blocking(move || attach::unplug(&exe, port, usbip::BUS_ID, &hub_port)).await {
                     Ok(Ok(())) => log::info!("Game mouse: unplugged"),
                     Ok(Err(e)) => log::warn!("Game mouse: could not unplug it: {e}"),
                     Err(e) => log::warn!("Game mouse: {e}"),

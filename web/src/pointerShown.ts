@@ -50,6 +50,9 @@ export type PointerView = {
   hostCssCursor: string | null;
   /** The host delivered a cursor image (not only a kind). */
   hasNativeCursorImage: boolean;
+  /** The game mouse is on and the pointer locked (src/gameMouse.ts): a game
+   *  is played, which draws its own pointer into the picture. */
+  gameMouse?: boolean;
 };
 
 /** `pointer_in_picture` of a `host_cursor` message: only "always" says so. */
@@ -59,6 +62,7 @@ export const saysPointerAlwaysInPicture = (message: { pointer_in_picture?: unkno
 /** The host's pointer is part of the picture now: the page draws none. */
 export const hostPointerInPicture = (view: PointerView): boolean =>
   view.alwaysInPicture
+  || !!view.gameMouse
   || (view.buttonHeld && view.hostOs === 'windows' && (view.inWindowMoveSize || view.foundInPicture));
 
 /** The host's cursor drawn at the place the host reports. */
