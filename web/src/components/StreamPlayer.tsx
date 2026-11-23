@@ -8,6 +8,7 @@ import FileManager from './FileManager';
 import { TouchGestures, type GestureActions, type TouchPoint } from '../touchGestures';
 import { accessRefusal } from '../accessRequest';
 import { PictureReader, PointerInPictureDrag, SentPositions, buildTemplates, matchRegion, searchGroups, type Template } from '../pointerInPicture';
+import { relativeMovePacket, takeRelativeStep } from '../relativePointer';
 import { hostPointerInPicture, saysPointerAlwaysInPicture, showsHostCursor, showsOwnCursor, streamCursorCss, type PointerView } from '../pointerShown';
 import { agentRoundTripMs, decodeStatText, decoderName, encodeStatText, pingStatText, shownPingMs, sourceLatencyMs } from '../streamStats';
 import { KEY_COMBOS, PressedKeys, applyKeyboardLock, combosFor, comboStrokes, keyboardLockFor, readSystemKeys, tapsUnderMeta, vkOfCode } from '../keyboard';
@@ -300,6 +301,8 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   const lastPointerRawUpdateMsRef = useRef<number>(0);
   const accDxRef = useRef<number>(0);
   const accDyRef = useRef<number>(0);
+  // When the last relative move (locked pointer) was sent.
+  const lastRelativeMoveAtRef = useRef<number>(0);
   const touchModeRef = useRef<'direct' | 'trackpad'>('trackpad');
   const useCanvasRendererRef = useRef<boolean>(true);
   const mouseQueueLimitRef = useRef<number>(256);
@@ -1166,67 +1169,37 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     const sendTick = () => {
       const qLimit = mouseQueueLimitRef.current;
 
-      // 1. Process pointer-locked mouse moves via absolute positioning.
-      //    We send absolute positions (normalised to [0, 4095]) instead of
-      //    raw relative deltas so the agent can map them to the hostʼs
-      //    actual monitor resolution — exactly the same code path as
-      //    unlocked absolute mode.  This avoids the scaling mismatch that
-      //    occurs when vidWidth ≠ monitorWidth and keeps the two cursors
-      //    in sync regardless of host DPI / capture resolution.
-      const dx = accDxRef.current;
-      const dy = accDyRef.current;
-      if (dx !== 0 || dy !== 0) {
-        const mouseAbsoluteChannel = channelsRef.current["mouse_absolute"];
-        if (mouseAbsoluteChannel && mouseAbsoluteChannel.readyState === "open") {
-          const buffered = mouseAbsoluteChannel.bufferedAmount;
+      // 1. A locked pointer sends how far the mouse moved (packet type 0,
+      //    src/relativePointer.ts): games read the mouse themselves in a
+      //    match and take only relative moves (an absolute position sent
+      //    League of Legends' pointer to the top of the screen). On the
+      //    reliable channel: a lost move would leave the pointer behind for
+      //    good. Fractions of a pixel are kept for the next send.
+      if (accDxRef.current !== 0 || accDyRef.current !== 0) {
+        const mouseReliableChannel = channelsRef.current["mouse_reliable"];
+        if (mouseReliableChannel && mouseReliableChannel.readyState === "open") {
+          const buffered = mouseReliableChannel.bufferedAmount;
           if (buffered === undefined || buffered <= qLimit) {
-            const activeVideo = getActiveVideoElement();
-            const video = videoRef.current;
-            const rect = cachedVideoRectRef.current;
-            const [vidWidth, vidHeight] = shownSize(activeVideo, video);
-            let scaledDx = dx;
-            let scaledDy = dy;
-            if (rect.width > 0 && rect.height > 0) {
-              let actualVidWidth = rect.width;
-              let actualVidHeight = rect.height;
-              {
-                // Picture area for the display mode (fit, fill, stretch, native size).
-                const box = fitVideoBox(rect.width, rect.height, vidWidth, vidHeight);
-                actualVidWidth = box.w;
-                actualVidHeight = box.h;
-              }
-              scaledDx = (dx / Math.max(1, actualVidWidth)) * vidWidth;
-              scaledDy = (dy / Math.max(1, actualVidHeight)) * vidHeight;
+            const step = takeRelativeStep(accDxRef.current, accDyRef.current);
+            accDxRef.current = step.restX;
+            accDyRef.current = step.restY;
+            if (step.dx !== 0 || step.dy !== 0) {
+              const seq = (mouseSeqRef.current++) >>> 0;
+              mouseReliableChannel.send(relativeMovePacket(step.dx, step.dy, seq));
+              lastRelativeMoveAtRef.current = performance.now();
+
+              // The cursor drawn here moves by as much until the host says
+              // where its pointer is (host_cursor).
+              const activeVideo = getActiveVideoElement();
+              const [vidWidth, vidHeight] = shownSize(activeVideo, videoRef.current);
+              localCursorPosRef.current = {
+                x: Math.max(0, Math.min(vidWidth, localCursorPosRef.current.x + step.dx)),
+                y: Math.max(0, Math.min(vidHeight, localCursorPosRef.current.y + step.dy)),
+              };
+              recordSentPointer(localCursorPosRef.current.x, localCursorPosRef.current.y);
+              lastHostCursorLocalPredictionAtRef.current = performance.now();
+              updateVirtualCursorDOMRef.current();
             }
-
-            // Update the predicted cursor position from accumulated deltas
-            localCursorPosRef.current = {
-              x: Math.max(0, Math.min(vidWidth, localCursorPosRef.current.x + scaledDx)),
-              y: Math.max(0, Math.min(vidHeight, localCursorPosRef.current.y + scaledDy)),
-            };
-
-            // Send predicted position as absolute (normalised 0..4095) so the
-            // agent applies the same monitor-resolution mapping as unlocked mode.
-            const x16 = Math.round((localCursorPosRef.current.x / Math.max(1, vidWidth)) * 4096.0);
-            const y16 = Math.round((localCursorPosRef.current.y / Math.max(1, vidHeight)) * 4096.0);
-
-            const buffer = new ArrayBuffer(13);
-            const view = new DataView(buffer);
-            view.setUint8(0, 1); // Type 1: MousePosition (Absolute)
-            view.setInt16(1, x16, false);
-            view.setInt16(3, y16, false);
-            writePointerReference(view);
-            const seq = (mouseSeqRef.current++) >>> 0;
-            view.setUint32(9, seq, false);
-            mouseAbsoluteChannel.send(buffer);
-            recordSentPointer(localCursorPosRef.current.x, localCursorPosRef.current.y);
-
-            lastHostCursorLocalPredictionAtRef.current = performance.now();
-            updateVirtualCursorDOMRef.current();
-
-            // Clear accumulated deltas only on successful transmission
-            accDxRef.current = 0;
-            accDyRef.current = 0;
           }
         }
       }
@@ -3219,6 +3192,14 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       return;
     }
 
+    // A locked pointer moves by relative steps, which the host's pointer
+    // acceleration (and a game holding its pointer) scales differently: once
+    // the mouse rests, the cursor drawn here goes where the host's is.
+    if (document.pointerLockElement && visible && performance.now() - lastRelativeMoveAtRef.current > 150) {
+      localCursorPosRef.current = { x, y };
+      updateVirtualCursorDOMRef.current();
+    }
+
     if (!cursorEl || !video || !wrapper || !showsHostCursor(pointerView())) {
       if (cursorEl) cursorEl.style.display = 'none';
       return;
@@ -3938,7 +3919,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     }
 
     // When pointer locked, prediction cursor useEffect handles everything
-    // via pointerrawupdate → absolute mouse position. Skip React handler.
+    // via pointerrawupdate → relative moves (src/relativePointer.ts). Skip React handler.
     if (isPointerLocked) {
       return;
     }

@@ -9,7 +9,7 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "test:pointer": "node --test tests/pointerInPicture.test.ts tests/pointerShown.test.ts",
+    "test:pointer": "node --test tests/pointerInPicture.test.ts tests/pointerShown.test.ts tests/relativePointer.test.ts",
     "test:cards": "node --test tests/computerCards.test.ts",
     "test:keyboard": "node --test tests/keyboard.test.ts",
     "test:computer-settings": "node --test tests/computerSettings.test.ts",
