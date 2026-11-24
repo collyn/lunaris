@@ -50,8 +50,11 @@ export type PointerView = {
   hostCssCursor: string | null;
   /** The host delivered a cursor image (not only a kind). */
   hasNativeCursorImage: boolean;
-  /** The game mouse is on and the pointer locked (src/gameMouse.ts): a game
-   *  is played, which draws its own pointer into the picture. */
+  /** The game mouse is on and the pointer locked (src/gameMouse.ts): the
+   *  pointer is where the host says (the page does not predict it). On the
+   *  desktop the host's cursor is drawn there; a game that hides the
+   *  system's cursor draws its own into the picture, and the host says its
+   *  cursor is hidden. */
   gameMouse?: boolean;
 };
 
@@ -62,12 +65,12 @@ export const saysPointerAlwaysInPicture = (message: { pointer_in_picture?: unkno
 /** The host's pointer is part of the picture now: the page draws none. */
 export const hostPointerInPicture = (view: PointerView): boolean =>
   view.alwaysInPicture
-  || !!view.gameMouse
   || (view.buttonHeld && view.hostOs === 'windows' && (view.inWindowMoveSize || view.foundInPicture));
 
 /** The host's cursor drawn at the place the host reports. */
 export const showsHostCursor = (view: PointerView): boolean => {
   if (hostPointerInPicture(view)) return false;
+  if (view.gameMouse) return view.hostCursorVisible;
   // Touchpad on a phone: only the page's own cursor is shown.
   if (view.trackpad && !view.hardwareMouse) return false;
   // Under a real mouse the own cursor or the system's pointer stands for it.
@@ -76,7 +79,7 @@ export const showsHostCursor = (view: PointerView): boolean => {
 
 /** The page's own cursor, drawn where the person's mouse or finger is. */
 export const showsOwnCursor = (view: PointerView): boolean => {
-  if (hostPointerInPicture(view)) return false;
+  if (hostPointerInPicture(view) || view.gameMouse) return false;
   const trackpad = view.trackpad && view.streaming && !view.hardwareMouse;
   // While the system draws the host-shaped CSS cursor (pointer not locked,
   // host not Windows) the cursor drawn by the page is not needed.

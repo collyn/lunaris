@@ -68,22 +68,69 @@ export const shownPictureSize = (
 export const PICTURE_EDGE = 2;
 
 /** The reference of a pointer position (the scale its x and y are on, as
- *  the host is told it). Positions are fractions of the shown picture on a
- *  4096 scale; where shownPictureSize cropped, the shown part is smaller
- *  than the host's picture and the scale is that much larger, so the host
- *  puts the pointer where it is shown. */
+ *  the host is told it). Positions are fractions of the shown frame on a
+ *  4096 scale; where the frame is larger than the host's picture (lines a
+ *  decoder added) the scale is that much larger, so the host puts the
+ *  pointer where it is shown. `cropped`: the added lines are left out of
+ *  what is shown (shownPictureSize); without it (Safari's <video>, which
+ *  cannot crop: they are only hidden, pictureClip) the whole frame is
+ *  shown. */
 export const pointerReference = (
   decodedWidth: number,
   decodedHeight: number,
   picture: { width: number; height: number } | null,
+  cropped = true,
 ): { width: number; height: number } => {
-  const shown = shownPictureSize(decodedWidth, decodedHeight, picture);
-  const scale = (shownSide: number, decodedSide: number, pictureSide: number) =>
-    shownSide > 0 && shownSide < decodedSide ? Math.round((4096 * pictureSide) / shownSide) : 4096;
-  if (!picture) return { width: 4096, height: 4096 };
+  const shown = cropped
+    ? shownPictureSize(decodedWidth, decodedHeight, picture)
+    : padded(decodedWidth, decodedHeight, picture)
+      ? { width: decodedWidth, height: decodedHeight }
+      : { width: 0, height: 0 };
+  const scale = (shownSide: number, pictureSide: number) =>
+    shownSide > 0 && shownSide !== pictureSide ? Math.round((4096 * pictureSide) / shownSide) : 4096;
+  if (!picture || !padded(decodedWidth, decodedHeight, picture)) return { width: 4096, height: 4096 };
+  return { width: scale(shown.width, picture.width), height: scale(shown.height, picture.height) };
+};
+
+/** Whether a decoded frame is the picture with lines (columns) a decoder
+ *  added: at most 64 more, none fewer (see shownPictureSize). */
+const padded = (decodedWidth: number, decodedHeight: number, picture: { width: number; height: number } | null) => {
+  if (!picture || picture.width <= 0 || picture.height <= 0) return false;
+  const extraW = decodedWidth - picture.width;
+  const extraH = decodedHeight - picture.height;
+  return extraW >= 0 && extraH >= 0 && extraW <= 64 && extraH <= 64;
+};
+
+/** Where a <video> cannot crop (no object-view-box: Safari), the lines a
+ *  decoder added are hidden instead: how much of the element's right and
+ *  bottom to clip (clip-path inset, in its CSS pixels), for an element of
+ *  `box` showing a `decoded` frame with object-fit `fit` (centred). The
+ *  frame keeps its place, so pointers are on the whole frame
+ *  (pointerReference with `cropped` false). */
+export const pictureClip = (
+  box: { width: number; height: number },
+  decoded: { width: number; height: number },
+  picture: { width: number; height: number } | null,
+  fit: 'contain' | 'cover' | 'fill' | 'none',
+): { right: number; bottom: number } => {
+  const none = { right: 0, bottom: 0 };
+  if (box.width <= 0 || box.height <= 0 || decoded.width <= 0 || decoded.height <= 0) return none;
+  const shown = shownPictureSize(decoded.width, decoded.height, picture);
+  if (shown.width === decoded.width && shown.height === decoded.height) return none;
+  const contain = Math.min(box.width / decoded.width, box.height / decoded.height);
+  const cover = Math.max(box.width / decoded.width, box.height / decoded.height);
+  const [sx, sy] =
+    fit === 'fill' ? [box.width / decoded.width, box.height / decoded.height]
+    : fit === 'cover' ? [cover, cover]
+    : fit === 'none' ? [1, 1]
+    : [contain, contain];
+  const left = (box.width - decoded.width * sx) / 2;
+  const top = (box.height - decoded.height * sy) / 2;
+  const edge = (keep: boolean, boxSide: number, start: number, shownSide: number, s: number) =>
+    keep ? 0 : Math.max(0, Math.ceil((boxSide - (start + shownSide * s)) * 100) / 100);
   return {
-    width: scale(shown.width, decodedWidth, picture.width),
-    height: scale(shown.height, decodedHeight, picture.height),
+    right: edge(shown.width === decoded.width, box.width, left, shown.width, sx),
+    bottom: edge(shown.height === decoded.height, box.height, top, shown.height, sy),
   };
 };
 

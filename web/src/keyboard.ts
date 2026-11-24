@@ -104,6 +104,25 @@ export const keyboardLockFor = (fullscreen: boolean, pointerLocked: boolean, sys
 
 type KeyboardLockApi = { lock?: (codes?: string[]) => Promise<void>; unlock?: () => void };
 
+/** Whether Esc can be kept from the browser while the pointer is locked
+ *  (Keyboard Lock: a tap goes to the remote computer, a 3 s hold lets go).
+ *  Chromium gives it only to secure pages (https, localhost); on an http
+ *  page, in Safari and in Firefox the browser lets go of the pointer at the
+ *  first Esc. */
+export const escapeCanBeKept = (keyboard: KeyboardLockApi | undefined, secure: boolean): boolean =>
+  secure && !!keyboard && typeof keyboard.lock === 'function';
+
+/** This page over the server's https port (`/api/server/ports`), to keep
+ *  Esc; null when the server has none, or the page is https already. */
+export const secureAddress = (
+  page: { protocol: string; hostname: string; pathname: string; search: string },
+  httpsPort: number | null | undefined,
+): string | null => {
+  if (page.protocol === 'https:' || !httpsPort) return null;
+  const host = page.hostname.includes(':') ? `[${page.hostname}]` : page.hostname;
+  return `https://${host}${httpsPort === 443 ? '' : `:${httpsPort}`}${page.pathname}${page.search}`;
+};
+
 /** Applies [`keyboardLockFor`]; false when the browser has no Keyboard Lock. */
 export const applyKeyboardLock = (keyboard: KeyboardLockApi | undefined, want: 'all' | 'escape' | 'none'): boolean => {
   if (!keyboard || typeof keyboard.lock !== 'function') return false;

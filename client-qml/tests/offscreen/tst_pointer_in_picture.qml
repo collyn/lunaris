@@ -163,5 +163,33 @@ Item {
             app.isPointerLocked = false;
             app.isStreamMode = false;
         }
+
+        // The game mouse moves the host's pointer: while the pointer is
+        // locked one cursor is drawn, where the host says (the Windows
+        // desktop), and none while the host's is hidden (a game that draws
+        // its own into the picture).
+        function test_the_game_mouse_draws_the_hosts_pointer_where_it_is() {
+            bridge.hostOsUpdated("windows");
+            app.isStreamMode = true;
+            app.gameMouseOn = true;
+            app.isPointerLocked = true;
+            bridge.hostCursorUpdated(100, 50, true, "arrow", false);
+            verify(!app.shouldHidePredictedCursor());
+            verify(pointers().drawn, "the host's pointer is drawn");
+            compare(app.localCursorX, 100);
+            compare(app.localCursorY, 50);
+            // A locked move is not predicted: the host says where it went.
+            bridge.localCursorDelta(40, 40);
+            compare(app.localCursorX, 100);
+            bridge.hostCursorUpdated(300, 200, true, "arrow", false);
+            compare(app.localCursorX, 300);
+            compare(app.localCursorY, 200);
+            // In a game: hidden on the host, so none drawn.
+            bridge.hostCursorUpdated(300, 200, false, "arrow", false);
+            verify(!pointers().drawn, "the game's pointer only");
+            app.isPointerLocked = false;
+            app.gameMouseOn = false;
+            app.isStreamMode = false;
+        }
     }
 }

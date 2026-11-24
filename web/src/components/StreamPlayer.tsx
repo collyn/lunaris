@@ -1,5 +1,5 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { BITRATES, CHROMAS, RESOLUTIONS, bitrateLabel, readDisplayMode, readVolume, objectFitFor, pointerReference, resolutionSize, shownPictureSize, type DisplayMode } from '../streamOptions';
+import { BITRATES, CHROMAS, RESOLUTIONS, bitrateLabel, readDisplayMode, readVolume, objectFitFor, pictureClip, pointerReference, resolutionSize, shownPictureSize, type DisplayMode } from '../streamOptions';
 import StreamSettingsDialog, { type StreamSettingsValues, type ViewerSettings } from './StreamSettingsDialog';
 import { t } from '../i18n';
 import { WebShare, readClipboardSync, readFileTransfer } from '../share';
@@ -10,9 +10,10 @@ import { accessRefusal } from '../accessRequest';
 import { PictureReader, PointerInPictureDrag, SentPositions, buildTemplates, matchRegion, searchGroups, type Template } from '../pointerInPicture';
 import { relativeMovePacket, takeRelativeStep } from '../relativePointer';
 import { gameMousePacket, readGameMouseOn, saveGameMouseOn } from '../gameMouse';
+import { canFullscreen, exitFullscreen, exitPointerLock, requestFullscreen } from '../pageLocks';
 import { hostPointerInPicture, saysPointerAlwaysInPicture, showsHostCursor, showsOwnCursor, streamCursorCss, type PointerView } from '../pointerShown';
 import { agentRoundTripMs, decodeStatText, decoderName, encodeStatText, pingStatText, shownPingMs, sourceLatencyMs } from '../streamStats';
-import { KEY_COMBOS, PressedKeys, applyKeyboardLock, combosFor, comboStrokes, keyboardLockFor, readSystemKeys, tapsUnderMeta, vkOfCode } from '../keyboard';
+import { KEY_COMBOS, PressedKeys, applyKeyboardLock, combosFor, comboStrokes, escapeCanBeKept, keyboardLockFor, readSystemKeys, secureAddress, tapsUnderMeta, vkOfCode } from '../keyboard';
 import { hostPrefsKey, overrideOf, prefsFor, sourcePrefsKey, updateComputerPrefs, type ComputerPrefs } from '../streamPrefs';
 
 /** Windows virtual-key codes for the phone keys bar and keyboard keys. */
@@ -101,6 +102,10 @@ const HOST_CURSOR_ASSETS: Record<HostCursorKind, { src: string; hotspotX: number
   unavailable: { src: '/cursors/unavailable.svg', hotspotX: 16, hotspotY: 16 },
   unknown: { src: '/cursors/arrow.svg', hotspotX: 7, hotspotY: 2 },
 };
+
+// Whether a <video> can show part of its frame (object-view-box; not in
+// Safari, where the lines a decoder added are clipped off instead).
+const VIDEO_CAN_CROP = typeof CSS !== 'undefined' && typeof CSS.supports === 'function' && CSS.supports('object-view-box', 'inset(0px)');
 
 const normalizeHostCursorKind = (kind: unknown): HostCursorKind => {
   return typeof kind === 'string' && kind in HOST_CURSOR_ASSETS
@@ -394,6 +399,8 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   // the decoded frame is cropped to show only it (shownPictureSize).
   const pictureSizeRef = useRef<{ width: number; height: number } | null>(null);
   const [pictureCrop, setPictureCrop] = useState<{ right: number; bottom: number }>({ right: 0, bottom: 0 });
+  // Where the <video> cannot crop: what of it is clipped (pictureClip).
+  const [videoClip, setVideoClip] = useState<{ right: number; bottom: number }>({ right: 0, bottom: 0 });
   const [activeEncoderStatus, setActiveEncoderStatus] = useState<{ encoder: string; hwType: string; gpuInfo: string; requestedEncoder: string; displayId: string; displayName: string }>({
     encoder: 'Pending',
     hwType: 'Unknown',
@@ -935,7 +942,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   const writePointerReference = (view: DataView) => {
     const activeVideo = getActiveVideoElement();
     const ref = activeVideo && activeVideo.videoWidth > 0 && activeVideo.videoHeight > 0
-      ? pointerReference(activeVideo.videoWidth, activeVideo.videoHeight, pictureSizeRef.current)
+      ? pointerReference(activeVideo.videoWidth, activeVideo.videoHeight, pictureSizeRef.current, framesCropped())
       : { width: 4096, height: 4096 };
     view.setInt16(5, ref.width, false);
     view.setInt16(7, ref.height, false);
@@ -1033,6 +1040,39 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     const pointerLocked = !!videoRef.current && document.pointerLockElement === videoRef.current;
     applyKeyboardLock((navigator as any).keyboard, keyboardLockFor(!!document.fullscreenElement, pointerLocked, readSystemKeys()));
   };
+
+  // Where the browser lets go of a locked pointer at the first Esc (an http
+  // page; Safari, Firefox), Esc cannot reach the remote computer: said for a
+  // while after locking, with this page's https address when the server has
+  // one (keyboard.ts escapeCanBeKept, secureAddress).
+  const [escapeNotice, setEscapeNotice] = useState<string | null>(null);
+  const httpsAddressRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (window.isSecureContext) return;
+    let live = true;
+    fetch(`${getBackendProtocol().http}//${getBackendHost()}/api/server/ports`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((p) => {
+        if (live && p) httpsAddressRef.current = secureAddress(window.location, typeof p.https === 'number' ? p.https : null);
+      })
+      .catch(() => {});
+    return () => { live = false; };
+  }, []);
+  useEffect(() => {
+    if (!isPointerLocked || escapeCanBeKept((navigator as any).keyboard, window.isSecureContext)) {
+      setEscapeNotice(null);
+      return;
+    }
+    const address = httpsAddressRef.current;
+    const text = window.isSecureContext
+      ? t('This browser lets go of the pointer at the first Esc, so Esc does not reach the remote computer. Chrome or Edge keep it for the remote computer.')
+      : t('This page is not https, so the browser lets go of the pointer at the first Esc and Esc does not reach the remote computer.')
+        + (address ? ' ' + t('Open %1 to keep it.', address) : '');
+    setEscapeNotice(text);
+    addLog(text);
+    const timer = window.setTimeout(() => setEscapeNotice(null), 10000);
+    return () => window.clearTimeout(timer);
+  }, [isPointerLocked]);
 
   // Pointer lock change listener
   useEffect(() => {
@@ -1783,10 +1823,8 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
               // Hold complete — release pointer lock and fullscreen
               escapeHoldTimerRef.current = null;
               setEscapeHoldProgress(0);
-              document.exitPointerLock();
-              if (document.fullscreenElement) {
-                document.exitFullscreen();
-              }
+              exitPointerLock();
+              exitFullscreen().catch(() => {});
             } else {
               setEscapeHoldProgress(Math.min(0.99, elapsed / HOLD_MS));
               escapeHoldTimerRef.current = window.setTimeout(tick, 50);
@@ -2641,9 +2679,15 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   const shownSize = (activeVideo: any, video: any): [number, number] => {
     const decodedW = activeVideo?.videoWidth > 0 ? activeVideo.videoWidth : video?.width || 1920;
     const decodedH = activeVideo?.videoHeight > 0 ? activeVideo.videoHeight : video?.height || 1080;
+    if (!framesCropped()) return [decodedW, decodedH];
     const shown = shownPictureSize(decodedW, decodedH, pictureSizeRef.current);
     return [shown.width, shown.height];
   };
+
+  /** Whether the lines a decoder added are left out of what is shown (the
+   *  canvas renderer, or a <video> with object-view-box); else the whole
+   *  frame is shown, with them clipped off (videoClip). */
+  const framesCropped = () => useCanvasRendererRef.current || VIDEO_CAN_CROP;
 
   /** Crops what the decoder added to the picture (shownPictureSize), in the
    *  <video> (object-view-box) and in the canvas renderer's worker. */
@@ -2654,16 +2698,44 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     if (!video || video.videoWidth <= 0 || video.videoHeight <= 0) return;
     const shown = shownPictureSize(video.videoWidth, video.videoHeight, picture);
     const crop = { right: video.videoWidth - shown.width, bottom: video.videoHeight - shown.height };
+    if (!VIDEO_CAN_CROP) {
+      const el = videoRef.current;
+      const clip = el instanceof HTMLVideoElement
+        ? pictureClip({ width: el.clientWidth, height: el.clientHeight }, { width: video.videoWidth, height: video.videoHeight }, picture, objectFitFor(displayModeRef.current))
+        : { right: 0, bottom: 0 };
+      setVideoClip((old) => (old.right === clip.right && old.bottom === clip.bottom ? old : clip));
+    }
     setPictureCrop((old) => {
       if (old.right === crop.right && old.bottom === crop.bottom) return old;
       if (crop.right || crop.bottom) addLog(`The decoder gives ${video.videoWidth}x${video.videoHeight} for a ${shown.width}x${shown.height} picture: showing the picture only`);
       return crop;
     });
   };
-  const pictureViewBox = (): React.CSSProperties =>
-    (pictureCrop.right || pictureCrop.bottom
+  // The clip follows the element's size and the display mode.
+  const updatePictureCropRef = useRef(updatePictureCrop);
+  updatePictureCropRef.current = updatePictureCrop;
+  useEffect(() => {
+    if (VIDEO_CAN_CROP || useCanvasRenderer) return;
+    const el = videoRef.current;
+    if (!(el instanceof HTMLVideoElement) || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(() => updatePictureCropRef.current());
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [useCanvasRenderer]);
+  useEffect(() => {
+    if (!VIDEO_CAN_CROP) updatePictureCropRef.current();
+  }, [displayMode]);
+
+  const pictureViewBox = (): React.CSSProperties => {
+    if (!VIDEO_CAN_CROP) {
+      return videoClip.right || videoClip.bottom
+        ? { clipPath: `inset(0px ${videoClip.right}px ${videoClip.bottom}px 0px)` }
+        : {};
+    }
+    return pictureCrop.right || pictureCrop.bottom
       ? ({ objectViewBox: `inset(0px ${pictureCrop.right}px ${pictureCrop.bottom}px 0px)` } as React.CSSProperties)
-      : {});
+      : {};
+  };
 
   const startCanvasRender = (track: MediaStreamTrack) => {
     if (workerRef.current) {
@@ -2966,7 +3038,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     setIsWebTransportConnected(false);
     agentIpsRef.current = [];
 
-    document.exitPointerLock();
+    exitPointerLock();
   };
 
   // Request pointer lock for relative controls.
@@ -3002,12 +3074,13 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   const togglePointerLock = () => {
     if (!videoRef.current) return;
     if (document.pointerLockElement === videoRef.current) {
-      document.exitPointerLock();
+      exitPointerLock();
     } else {
       // Enter fullscreen in parallel — keyboard.lock requires it.
       if (!document.fullscreenElement && containerRef.current) {
-        containerRef.current.requestFullscreen().catch(() => {});
+        requestFullscreen(containerRef.current).catch(() => {});
       }
+      if (typeof videoRef.current.requestPointerLock !== 'function') return;
       const promise = (videoRef.current as any).requestPointerLock({
         unadjustedMovement: true,
       });
@@ -4056,13 +4129,13 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   const toggleFullscreen = () => {
     if (!containerRef.current) return;
     if (!document.fullscreenElement) {
-      containerRef.current.requestFullscreen().then(() => {
+      requestFullscreen(containerRef.current).then(() => {
         setIsFullscreen(true);
       }).catch(err => {
         console.error("Error entering fullscreen:", err);
       });
     } else {
-      document.exitFullscreen().then(() => {
+      exitFullscreen().then(() => {
         setIsFullscreen(false);
       }).catch(err => {
         console.error("Error exiting fullscreen:", err);
@@ -4074,9 +4147,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   // stream is usually full screen, and the list must not open in it.
   const leaveSession = () => {
     setShowMobileMenu(false);
-    if (document.fullscreenElement) {
-      document.exitFullscreen().catch(() => {});
-    }
+    exitFullscreen().catch(() => {});
     onBack();
   };
 
@@ -4610,7 +4681,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
         </button>
 
         {/* Fullscreen/Maximize Action */}
-        <button 
+        {canFullscreen() && <button 
           onClick={toggleFullscreen}
           className={`stream-action-btn ${isFullscreen ? 'active' : ''}`}
           title={isFullscreen ? "Exit Fullscreen" : "Fullscreen"}
@@ -4625,7 +4696,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
               <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
             </svg>
           )}
-        </button>
+        </button>}
 
         {/* Send files to the remote computer */}
         <button
@@ -4785,6 +4856,26 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
             style={{ width: '32px', height: '32px', display: 'block', maxWidth: 'none' }}
           />
         </div>
+
+        {escapeNotice && (
+          <div role="status" style={{
+            position: 'absolute',
+            top: '16px',
+            left: '50%',
+            transform: 'translateX(-50%)',
+            zIndex: 200,
+            maxWidth: 'min(560px, calc(100% - 32px))',
+            background: 'rgba(0, 0, 0, 0.8)',
+            color: '#fff',
+            borderRadius: '8px',
+            padding: '8px 14px',
+            fontSize: '13px',
+            lineHeight: 1.4,
+            textAlign: 'center',
+            pointerEvents: 'none',
+            userSelect: 'none',
+          }}>{escapeNotice}</div>
+        )}
 
         {/* ESC hold-to-exit progress bar overlay */}
         {escapeHoldProgress > 0 && (
@@ -4986,10 +5077,10 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
                       )}
                       <span>{isMuted ? t('Sound off') : t('Sound on')}</span>
                     </button>
-                    <button type="button" className={`mobile-action ${isFullscreen ? 'active' : ''}`} onClick={toggleFullscreen}>
+                    {canFullscreen() && <button type="button" className={`mobile-action ${isFullscreen ? 'active' : ''}`} onClick={toggleFullscreen}>
                       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" /></svg>
                       <span>{isFullscreen ? t('Exit full screen') : t('Full screen')}</span>
-                    </button>
+                    </button>}
                     <button
                       type="button"
                       className="mobile-action"
@@ -5130,8 +5221,8 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
                 )}
               </button>
 
-              {/* Fullscreen Button */}
-              <button
+              {/* Fullscreen Button (not on iPhones: Safari shows only videos full screen) */}
+              {canFullscreen() && <button
                 onClick={toggleFullscreen}
                 className={`mobile-footer-btn ${isFullscreen ? 'active' : ''}`}
                 title={isFullscreen ? t('Exit full screen') : t('Full screen')} aria-label={isFullscreen ? t('Exit full screen') : t('Full screen')}
@@ -5151,7 +5242,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
                     <line x1="3" y1="21" x2="10" y2="14" />
                   </svg>
                 )}
-              </button>
+              </button>}
 
               {/* Stats Overlay Toggle Button */}
               <button 

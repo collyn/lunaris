@@ -279,11 +279,18 @@ ApplicationWindow {
     // client found it there during this drag.
     function shouldHidePredictedCursor() {
         return window.pointerAlwaysInPicture
-            // The game mouse moves a game's pointer, drawn into the picture.
-            || (window.gameMouseOn && window.isPointerLocked)
             || (window.hostCursorMouseDown
                 && ((window.agentHostOs === "windows" && window.hostCursorInWindowMoveSize)
                     || window.pointerFoundInPicture));
+    }
+
+    // The game mouse moves the host's pointer (with its own acceleration):
+    // while the pointer is locked the cursor is drawn where the host says,
+    // not predicted; a game that hides the system's cursor draws its own
+    // into the picture, and the host says its cursor is hidden (as the web,
+    // src/pointerShown.ts).
+    function gameMouseLocked() {
+        return window.gameMouseOn && window.isPointerLocked;
     }
 
     // Hold ESC to unlock cursor properties
@@ -526,7 +533,7 @@ ApplicationWindow {
             window.hostCursorInWindowMoveSize = inWindowMoveSize
             if (!visible) {
                 window.localCursorVisible = false
-            } else if (!window.localCursorInitialized) {
+            } else if (window.gameMouseLocked() || !window.localCursorInitialized) {
                 window.localCursorX = x
                 window.localCursorY = y
                 window.localCursorVisualX = (x / Math.max(1, window.streamWidth)) * videoContainer.width
@@ -575,6 +582,7 @@ ApplicationWindow {
         }
 
         onLocalCursorDelta: (rx, ry) => {
+            if (window.gameMouseLocked()) return
             window.updateLocalCursorDelta(rx, ry)
         }
 

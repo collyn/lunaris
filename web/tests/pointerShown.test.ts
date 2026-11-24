@@ -129,12 +129,16 @@ test('a phone in touchpad mode draws its own cursor, unless the pointer is alway
   assert.deepEqual(shown({ ...v, alwaysInPicture: true }), { host: false, own: false, css: 'none' });
 });
 
-test('with the game mouse on and the pointer locked, only the game\'s pointer in the picture is shown', () => {
+test('with the game mouse on and the pointer locked, one pointer: where the host says', () => {
   const v = view({ hostOs: 'windows', hardwareMouse: true, pointerLocked: true, hasNativeCursorImage: true, hostCursorVisible: true, gameMouse: true });
-  assert.equal(hostPointerInPicture(v), true);
+  // On the desktop: the host's cursor, drawn where the host puts it.
+  assert.equal(hostPointerInPicture(v), false);
+  assert.equal(showsHostCursor(v), true);
   assert.equal(showsOwnCursor(v), false);
-  assert.equal(showsHostCursor(v), false);
   assert.equal(streamCursorCss(v), 'none');
-  // Without it the page still draws its cursor.
+  // In a game that hides the system's cursor: the game's, in the picture.
+  assert.equal(showsHostCursor({ ...v, hostCursorVisible: false }), false);
+  assert.equal(showsOwnCursor({ ...v, hostCursorVisible: false }), false);
+  // Without it the page draws its own cursor, as before.
   assert.equal(showsOwnCursor({ ...v, gameMouse: false }), true);
 });
