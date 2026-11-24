@@ -349,6 +349,15 @@ export class SentPositions {
 
 /** The decision over one drag: left button held while the host says the
  *  pointer may be in the picture. */
+/** Whether a drag looks for the host's pointer in the picture: when the
+ *  host says it may be there, and on every drag of a Windows host. Windows
+ *  draws its pointer into the picture while a window is dragged; the host
+ *  says so (`in_window_move_size`) only for the system's own move loop, not
+ *  for the many apps that move their windows themselves (2026-11-24: two
+ *  pointers while a window was dragged). */
+export const looksForPointerInPicture = (hostSaysMaybe: boolean, hostOs: string): boolean =>
+  hostSaysMaybe || hostOs === 'windows';
+
 export class PointerInPictureDrag {
   /** A drag is on. */
   active = false;

@@ -3784,6 +3784,7 @@ async fn run_webrtc_client_task(
                         if !host_os_lower.is_empty() {
                             *PENDING_HOST_OS.lock().unwrap() = Some(host_os_lower.clone());
                         }
+                        super::pointer_in_picture::note_host_os(&host_os_lower);
                         *PENDING_HOST_INFO.lock().unwrap() = Some(PendingHostInfo {
                             gpu_info: gpu_info.clone().unwrap_or_default(),
                             host_os: host_os_lower,

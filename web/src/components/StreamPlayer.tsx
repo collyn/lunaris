@@ -7,7 +7,7 @@ import { GamepadSender } from '../gamepad';
 import FileManager from './FileManager';
 import { TouchGestures, type GestureActions, type TouchPoint } from '../touchGestures';
 import { accessRefusal } from '../accessRequest';
-import { PictureReader, PointerInPictureDrag, SentPositions, buildTemplates, matchRegion, searchGroups, type Template } from '../pointerInPicture';
+import { PictureReader, PointerInPictureDrag, looksForPointerInPicture, SentPositions, buildTemplates, matchRegion, searchGroups, type Template } from '../pointerInPicture';
 import { relativeMovePacket, takeRelativeStep } from '../relativePointer';
 import { gameMousePacket, readGameMouseOn, saveGameMouseOn } from '../gameMouse';
 import { canFullscreen, exitFullscreen, exitPointerLock, requestFullscreen } from '../pageLocks';
@@ -395,6 +395,9 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   const [availableEncoders, setAvailableEncoders] = useState<string[]>([]);
   const [agentGpuInfo, setAgentGpuInfo] = useState<string>('');
   const [agentHostOs, setAgentHostOs] = useState<string>('unknown');
+  // For handlers made before the host said its system.
+  const agentHostOsRef = useRef<string>('unknown');
+  agentHostOsRef.current = agentHostOs;
   // The picture's size (EncoderStatus, else the size asked for) and what of
   // the decoded frame is cropped to show only it (shownPictureSize).
   const pictureSizeRef = useRef<{ width: number; height: number } | null>(null);
@@ -920,7 +923,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     const drag = pointerDragRef.current;
     const wasActive = drag.active;
     const wasInPicture = drag.inPicture;
-    const line = drag.update(leftButtonHeldRef.current, pointerMaybeInPictureRef.current);
+    const line = drag.update(leftButtonHeldRef.current, looksForPointerInPicture(pointerMaybeInPictureRef.current, agentHostOsRef.current));
     if (drag.active && !wasActive) {
       startPointerCheckLoop();
     } else if (!drag.active && wasActive) {
@@ -4070,7 +4073,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
         sentPositionsRef.current.clear();
         recordSentPointer(localCursorPosRef.current.x, localCursorPosRef.current.y);
       }
-      if (pointerMaybeInPictureRef.current || pointerDragRef.current.active) syncPointerInPictureDrag();
+      if (looksForPointerInPicture(pointerMaybeInPictureRef.current, agentHostOsRef.current) || pointerDragRef.current.active) syncPointerInPictureDrag();
     }
     const hostCursor = hostCursorPosRef.current;
     updateHostCursorDOM(hostCursor.x, hostCursor.y, hostCursor.visible, hostCursor.kind);
@@ -4846,7 +4849,9 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
             transition: 'none',
             display: 'none',
             willChange: 'transform',
-            contain: 'layout paint style',
+            // No paint containment: a host cursor is often larger than 32 px
+            // (League of Legends'), and the box would cut its corner off.
+            contain: 'layout style',
           }}
         >
           <img
@@ -4934,7 +4939,9 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
             transition: 'none',
             display: "none",
             willChange: 'transform',
-            contain: 'layout paint style',
+            // No paint containment: a host cursor is often larger than 32 px
+            // (League of Legends'), and the box would cut its corner off.
+            contain: 'layout style',
           }}
         >
           <img

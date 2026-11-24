@@ -33,6 +33,7 @@ import AgentUpdateDialog from './components/AgentUpdateDialog';
 import { agentUpdateState, installKindLabel, type AgentBuild } from './agentUpdate';
 import { gameMouseInfo } from './gameMouse';
 import { parseInstallFetch, type InstallFetch } from './installCommand';
+import { watchForNewBuild } from './freshPage';
 import './App.css';
 
 interface Host {
@@ -351,6 +352,19 @@ function App() {
   // Computers of other types (sources), each reached through a Lunaris host.
   const [sources, setSources] = useState<Source[]>([]);
   const [selectedSource, setSelectedSource] = useState<Source | null>(null);
+  // A newer build of this page on the server: reload, but not during a session.
+  const inSession = !!token && (!!selectedHost || !!selectedSource);
+  const inSessionRef = useRef(inSession);
+  const newBuildWatch = useRef<ReturnType<typeof watchForNewBuild> | null>(null);
+  useEffect(() => {
+    const watch = watchForNewBuild(() => inSessionRef.current);
+    newBuildWatch.current = watch;
+    return watch.stop;
+  }, []);
+  useEffect(() => {
+    inSessionRef.current = inSession;
+    if (!inSession) newBuildWatch.current?.whenIdle();
+  }, [inSession]);
   // One card for each computer: the way to connect used last for each card
   // (kept in this browser), the one picked on a card since the page opened
   // (it stays picked while it is offline, to edit or remove it), and the

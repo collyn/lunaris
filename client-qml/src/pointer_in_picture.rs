@@ -215,11 +215,18 @@ pub fn check(templates: &[Template], luma: &LumaView, positions: &[(i32, i32)]) 
 }
 
 /// The decision over drags: a drag is on while the left button is held and
-/// the host says the pointer may be in the picture.
+/// the host says the pointer may be in the picture, or the host is a
+/// Windows computer.
 #[derive(Default)]
 pub struct Drag {
     left_held: bool,
     maybe: bool,
+    /// The host is a Windows computer: every drag looks (web:
+    /// `looksForPointerInPicture`). Windows draws its pointer into the
+    /// picture while a window is dragged; the host says so
+    /// (`in_window_move_size`) only for the system's own move loop, not for
+    /// the many apps that move their windows themselves.
+    windows_host: bool,
     active: bool,
     checks: u32,
     run: u32,
@@ -244,8 +251,14 @@ impl Drag {
         self.update()
     }
 
+    /// The host's system, as it said it ("windows", "linux", ...).
+    pub fn set_host_os(&mut self, host_os: &str) -> Option<String> {
+        self.windows_host = host_os.eq_ignore_ascii_case("windows");
+        self.update()
+    }
+
     fn update(&mut self) -> Option<String> {
-        let on = self.left_held && self.maybe;
+        let on = self.left_held && (self.maybe || self.windows_host);
         if on == self.active {
             return None;
         }
@@ -530,8 +543,10 @@ fn log_end(line: Option<String>) {
 pub fn reset() {
     with_tracker(|t| {
         let reported = t.reported;
+        let windows_host = t.drag.windows_host;
         *t = Tracker::default();
         t.reported = reported;
+        t.drag.windows_host = windows_host;
     });
 }
 
@@ -543,6 +558,11 @@ pub fn note_cursor(cursor: CursorImage) {
 /// `pointer_maybe_in_picture` of a `host_cursor` message (absent = false).
 pub fn note_maybe(maybe: bool) {
     log_end(with_tracker(|t| t.drag_mut().set_maybe(maybe)));
+}
+
+/// The host's system, from its capabilities.
+pub fn note_host_os(host_os: &str) {
+    log_end(with_tracker(|t| t.drag_mut().set_host_os(host_os)));
 }
 
 /// The viewer's left button went down or up.
@@ -880,6 +900,22 @@ mod tests {
         assert_eq!(found(&picture, &white, &[(100, 100)]), None);
         // Nothing to find it in on a white picture either.
         assert_eq!(found(&Picture::flat(255), &white, &[(100, 100)]), None);
+    }
+
+    #[test]
+    fn every_drag_on_a_windows_host_looks() {
+        // Apps that move their own windows: Windows draws the pointer into
+        // the picture and the host cannot say so.
+        let mut drag = Drag::default();
+        drag.set_host_os("windows");
+        drag.set_left_held(true);
+        assert!(drag.wants_check());
+        drag.set_left_held(false);
+        drag.set_host_os("linux");
+        drag.set_left_held(true);
+        assert!(!drag.wants_check(), "elsewhere only when the host says maybe");
+        drag.set_maybe(true);
+        assert!(drag.wants_check());
     }
 
     // 8. the decision over a drag, and its log line
