@@ -142,3 +142,13 @@ test('with the game mouse on and the pointer locked, one pointer: where the host
   // Without it the page draws its own cursor, as before.
   assert.equal(showsOwnCursor({ ...v, gameMouse: false }), true);
 });
+
+test('a late host_cursor message is stale; a new session is not', async () => {
+  const { isStaleCursorSeq } = await import('../src/pointerShown.ts');
+  assert.equal(isStaleCursorSeq(null, 5), false);
+  assert.equal(isStaleCursorSeq(10, 11), false);
+  assert.equal(isStaleCursorSeq(10, 9), true);
+  assert.equal(isStaleCursorSeq(10, 10), true);
+  assert.equal(isStaleCursorSeq(50_000, 1), false);
+  assert.equal(isStaleCursorSeq(10, undefined), false);
+});

@@ -103,3 +103,10 @@ export const streamCursorCss = (view: PointerView): string => {
   }
   return view.hideLocalCursor || view.hostOs === 'windows' ? 'none' : 'default';
 };
+
+/** A `host_cursor` message older than one already used: positions come on an
+ *  unordered channel (agent bridge.rs `with_seq`), and a late one would pull
+ *  the cursor back. A number far below the last is a new agent session
+ *  (counting from 1 again), not a late message. */
+export const isStaleCursorSeq = (last: number | null, seq: unknown): boolean =>
+  typeof seq === 'number' && last !== null && seq <= last && last - seq < 1000;

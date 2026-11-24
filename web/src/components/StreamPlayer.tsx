@@ -11,7 +11,7 @@ import { PictureReader, PointerInPictureDrag, looksForPointerInPicture, SentPosi
 import { relativeMovePacket, takeRelativeStep } from '../relativePointer';
 import { gameMousePacket, readGameMouseOn, saveGameMouseOn } from '../gameMouse';
 import { canFullscreen, exitFullscreen, exitPointerLock, requestFullscreen } from '../pageLocks';
-import { hostPointerInPicture, saysPointerAlwaysInPicture, showsHostCursor, showsOwnCursor, streamCursorCss, type PointerView } from '../pointerShown';
+import { hostPointerInPicture, isStaleCursorSeq, saysPointerAlwaysInPicture, showsHostCursor, showsOwnCursor, streamCursorCss, type PointerView } from '../pointerShown';
 import { agentRoundTripMs, decodeStatText, decoderName, encodeStatText, pingStatText, shownPingMs, sourceLatencyMs } from '../streamStats';
 import { KEY_COMBOS, PressedKeys, applyKeyboardLock, combosFor, comboStrokes, escapeCanBeKept, keyboardLockFor, readSystemKeys, secureAddress, tapsUnderMeta, vkOfCode } from '../keyboard';
 import { hostPrefsKey, overrideOf, prefsFor, sourcePrefsKey, updateComputerPrefs, type ComputerPrefs } from '../streamPrefs';
@@ -257,6 +257,8 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   const hasNativeCursorImageRef = useRef<boolean>(false);
   const hostCursorMouseDownRef = useRef<boolean>(false);
   const lastHostCursorLocalPredictionAtRef = useRef<number>(0);
+  const cursorHideLogRef = useRef({ since: 0, count: 0 });
+  const hostCursorSeqRef = useRef<number | null>(null);
   const hostCursorPosRef = useRef<{ x: number, y: number, visible: boolean, kind: HostCursorKind, inWindowMoveSize: boolean }>({
     x: 0,
     y: 0,
@@ -2369,6 +2371,19 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       const inWindowMoveSize = Boolean(message.in_window_move_size);
       if (!Number.isFinite(x) || !Number.isFinite(y)) return;
 
+      // A late message (unordered channel): its position would pull the
+      // cursor back. Only a new picture of the cursor is taken from it.
+      if (isStaleCursorSeq(hostCursorSeqRef.current, message.seq)) {
+        if (image) {
+          hostCursorImagePayloadRef.current = image;
+          applyNativeCursorImage(localCursorImageRef.current, localCursorImageMetricsRef, kind, image);
+          const now = hostCursorPosRef.current;
+          updateHostCursorDOM(now.x, now.y, now.visible, kind, image, now.inWindowMoveSize);
+        }
+        return;
+      }
+      if (typeof message.seq === 'number') hostCursorSeqRef.current = message.seq;
+
       // A host that cannot know whether its pointer is in its picture: the
       // picture is looked at while the left button is held (pointerInPicture.ts).
       if (image) hostCursorImagePayloadRef.current = image;
@@ -3268,6 +3283,21 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     ...over,
   });
 
+  // Diagnostics (2026-11-24, a cursor blinking with the game mouse): a drawn
+  // cursor that was shown and is hidden says why in the console, a few times
+  // a second at most. `at` names the check in updateHostCursorDOM /
+  // updateVirtualCursorDOM that hid it.
+  const hideCursorFor = (el: HTMLElement, at: number) => {
+    if (el.style.display === 'none') return;
+    el.style.display = 'none';
+    const log = cursorHideLogRef.current;
+    const now = performance.now();
+    if (now - log.since > 1000) { log.since = now; log.count = 0; }
+    if (++log.count > 4) return;
+    const v = pointerView();
+    console.info(`[Lunaris] ${el.className} hidden at ${at}: gameMouse=${!!v.gameMouse} locked=${v.pointerLocked} hostVisible=${v.hostCursorVisible} hardwareMouse=${v.hardwareMouse} buttonHeld=${v.buttonHeld} inPicture=${hostPointerInPicture(v)} nativeImage=${v.hasNativeCursorImage} kind=${hostCursorPosRef.current.kind}`);
+  };
+
   const updateHostCursorDOM = (
     x: number,
     y: number,
@@ -3287,7 +3317,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     // host's) is shown, as with a mouse on a PC. When no finger is on the
     // screen it follows the host's cursor, so the two don't drift apart.
     if (touchModeRef.current === 'trackpad' && !isHardwareMouseActiveRef.current) {
-      if (cursorEl) cursorEl.style.display = 'none';
+      if (cursorEl) hideCursorFor(cursorEl, 3290);
       if (visible && performance.now() - lastTouchAtRef.current > 600) {
         localCursorPosRef.current = { x, y };
       }
@@ -3303,7 +3333,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     }
 
     if (!cursorEl || !video || !wrapper || !showsHostCursor(pointerView())) {
-      if (cursorEl) cursorEl.style.display = 'none';
+      if (cursorEl) hideCursorFor(cursorEl, 3306);
       return;
     }
 
@@ -3318,7 +3348,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     if (!cursorMetrics || !cursorMetrics.native) {
       const allowAssetFallback = !hasNativeCursorImageRef.current;
       if (!allowAssetFallback) {
-        cursorEl.style.display = 'none';
+        hideCursorFor(cursorEl, 3321);
         return;
       }
 
@@ -3341,7 +3371,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     const rect = video.getBoundingClientRect();
     const wrapperRect = wrapper.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0 || wrapperRect.width <= 0 || wrapperRect.height <= 0) {
-      cursorEl.style.display = 'none';
+      hideCursorFor(cursorEl, 3344);
       return;
     }
 
@@ -3409,7 +3439,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
 
     const hostCursor = hostCursorPosRef.current;
     if (!showsOwnCursor(pointerView())) {
-      cursorEl.style.display = 'none';
+      hideCursorFor(cursorEl, 3412);
       return;
     }
 
@@ -3417,7 +3447,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     const wrapperRect = wrapper.getBoundingClientRect();
 
     if (rect.width <= 0 || rect.height <= 0 || wrapperRect.width <= 0 || wrapperRect.height <= 0) {
-      cursorEl.style.display = 'none';
+      hideCursorFor(cursorEl, 3420);
       return;
     }
 
@@ -3451,7 +3481,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     if (!cursorMetrics || !cursorMetrics.native) {
       const allowAssetFallback = !hasNativeCursorImageRef.current;
       if (!allowAssetFallback) {
-        cursorEl.style.display = 'none';
+        hideCursorFor(cursorEl, 3454);
         return;
       }
 

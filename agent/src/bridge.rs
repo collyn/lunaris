@@ -1277,6 +1277,9 @@ pub async fn setup_bridge_session(
         let mut dropped_frames: u64 = 0;
         let mut forwarded_bytes: u64 = 0;
         let mut latest_cursor_image: Option<serde_json::Value> = None;
+        // Numbers the host_cursor messages: the cursor channel is unordered,
+        // and a viewer drops a position older than one it has (with_seq).
+        let mut cursor_seq: u64 = 0;
         while let Some(event) = media_event_rx.recv().await {
             match event {
                 lunaris_media::pipeline::MediaEvent::EncoderStarted {
@@ -1388,8 +1391,9 @@ pub async fn setup_bridge_session(
                     // (connector/media.rs).
                     let maybe_in_picture = crate::connector::media::pointer_maybe_in_picture();
                     let in_picture = crate::connector::media::pointer_in_picture();
-                    let realtime_payload = host_cursor_message(&cursor, image.as_ref(), maybe_in_picture, in_picture);
-                    let cached_payload = host_cursor_message(&cursor, latest_cursor_image.as_ref(), maybe_in_picture, in_picture);
+                    cursor_seq += 1;
+                    let realtime_payload = with_seq(host_cursor_message(&cursor, image.as_ref(), maybe_in_picture, in_picture), cursor_seq);
+                    let cached_payload = with_seq(host_cursor_message(&cursor, latest_cursor_image.as_ref(), maybe_in_picture, in_picture), cursor_seq);
                     *latest_host_cursor_for_media.lock().await = Some(cached_payload.clone());
 
                     if image.is_some()
@@ -2561,6 +2565,19 @@ mod held_keys_tests {
     }
 }
 
+/// A `host_cursor` message with its number (`seq`): positions come on an
+/// unordered channel, so a viewer keeps the newest one it has seen. Viewers
+/// from before this field ignore it.
+fn with_seq(message: String, seq: u64) -> String {
+    match serde_json::from_str::<serde_json::Value>(&message) {
+        Ok(serde_json::Value::Object(mut fields)) => {
+            fields.insert("seq".into(), seq.into());
+            serde_json::Value::Object(fields).to_string()
+        }
+        _ => message,
+    }
+}
+
 #[cfg(test)]
 mod host_cursor_message_tests {
     use super::host_cursor_message;
@@ -2602,6 +2619,13 @@ mod host_cursor_message_tests {
         assert_eq!(message["in_window_move_size"], true);
         assert_eq!(message["pointer_maybe_in_picture"], true);
         assert!(message["pointer_in_picture"].is_null());
+    }
+
+    #[test]
+    fn a_message_carries_its_number() {
+        let message = parsed(&super::with_seq(host_cursor_message(&cursor(), None, false, None), 42));
+        assert_eq!(message["seq"], 42);
+        assert_eq!(message["x"], 10);
     }
 
     #[test]
