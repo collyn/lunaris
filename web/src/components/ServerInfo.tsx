@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { t } from '../i18n';
 import { DEFAULT_LINKS, parseGateway, parseServerInfo, updateSteps, webVersion, windowsInstallerUrl, type GatewayInfo, type ServerInfo } from '../serverInfo';
 
@@ -131,6 +131,110 @@ function GatewaySection({ token, apiBase, initial }: { token: string; apiBase: (
 }
 
 /** The administrators' "Server" page: version, update, ports, data folder, links. */
+/** Backup and restore of the server's data (server/src/backup.rs). */
+const BackupSection = ({ token, apiBase }: { token: string; apiBase: () => string }) => {
+  const [busy, setBusy] = useState<'' | 'backup' | 'restore'>('');
+  const [error, setError] = useState('');
+  const [note, setNote] = useState('');
+  const [chosen, setChosen] = useState<File | null>(null);
+  const fileInput = useRef<HTMLInputElement>(null);
+  const said = async (r: Response, fallback: string) => {
+    const body = await r.json().catch(() => null);
+    return r.status === 404 || r.status === 405 ? t('This server is from before backups: update it.') : t(typeof body?.error === 'string' && body.error ? body.error : fallback);
+  };
+
+  const download = async () => {
+    setBusy('backup'); setError(''); setNote('');
+    try {
+      const r = await fetch(`${apiBase()}/api/admin/server/backup`, { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store' });
+      if (!r.ok) { setError(await said(r, 'The backup could not be made')); return; }
+      const name = /filename="([^"]+)"/.exec(r.headers.get('Content-Disposition') ?? '')?.[1] ?? 'lunaris-backup.tar.gz';
+      const url = URL.createObjectURL(await r.blob());
+      const a = document.createElement('a');
+      a.href = url; a.download = name;
+      document.body.appendChild(a); a.click(); a.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 10_000);
+      setNote(t('Saved as %1. It holds this server\'s keys and password hashes: keep it somewhere safe.', name));
+    } catch {
+      setError(t('Cannot reach the server'));
+    } finally {
+      setBusy('');
+    }
+  };
+
+  const restore = async () => {
+    if (!chosen) return;
+    setBusy('restore'); setError(''); setNote('');
+    try {
+      const r = await fetch(`${apiBase()}/api/admin/server/restore`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/gzip' },
+        body: chosen,
+      });
+      if (!r.ok) { setError(await said(r, 'The backup could not be restored')); setChosen(null); return; }
+      const body = await r.json().catch(() => ({}));
+      setChosen(null);
+      if (body.restart === 'now') {
+        setNote(t('The backup was checked and the server is restarting with it. Sign in again in a moment, with an account of the backup.'));
+        // The sign-in of this page ends with the restore.
+        window.setTimeout(() => window.location.reload(), 8000);
+      } else {
+        setNote(t('The backup was checked and is applied when the server starts next: restart the server now, then sign in with an account of the backup.'));
+      }
+    } catch {
+      setError(t('Cannot reach the server'));
+    } finally {
+      setBusy('');
+    }
+  };
+
+  return (
+    <>
+      <h3 className="ssd-section">{t('Backup and restore')}</h3>
+      <div className="ssd-card server-backup">
+        <div className="server-backup-row">
+          <div>
+            <strong>{t('Download a backup')}</strong>
+            <p className="form-hint">{t('One file with the database and the keys, as they are now. The server keeps running.')}</p>
+          </div>
+          <button type="button" className="btn-secondary" onClick={download} disabled={!!busy}>{busy === 'backup' ? t('Making it…') : t('Download backup')}</button>
+        </div>
+        <div className="server-backup-row">
+          <div>
+            <strong>{t('Restore a backup')}</strong>
+            <p className="form-hint">{t('Replaces accounts, computers and keys with those of the backup. What is here now is kept beside it in the data folder (*.before-import-*), nothing is deleted. The server restarts.')}</p>
+          </div>
+          <input ref={fileInput} type="file" accept=".gz,.tgz,application/gzip" hidden
+            onChange={(e) => { setChosen(e.target.files?.[0] ?? null); setError(''); setNote(''); e.target.value = ''; }} />
+          <button type="button" className="btn-secondary" onClick={() => fileInput.current?.click()} disabled={!!busy}>{t('Choose a backup…')}</button>
+        </div>
+        {error && <div className="add-host-error" role="alert">{error}</div>}
+        {note && <p className="server-backup-note" role="status">{note}</p>}
+      </div>
+      {chosen && (
+        <div className="host-confirm-overlay" onMouseDown={(e) => { if (e.target === e.currentTarget && !busy) setChosen(null); }}>
+          <div className="host-confirm-card" role="alertdialog" aria-modal="true" aria-labelledby="restoreTitle">
+            <div className="host-confirm-icon danger" aria-hidden="true">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M3 12a9 9 0 1 0 3-6.7L3 8" /><path d="M3 3v5h5" />
+              </svg>
+            </div>
+            <div className="host-confirm-content">
+              <h2 id="restoreTitle">{t('Restore this backup?')}</h2>
+              <p><code className="server-info-path">{chosen.name}</code></p>
+              <p>{t('Accounts, computers, groups and keys become those of the backup, and everyone is signed out. What is here now is kept in the data folder. The server restarts.')}</p>
+            </div>
+            <div className="host-confirm-actions">
+              <button className="btn-secondary" disabled={!!busy} onClick={() => setChosen(null)}>{t('Cancel')}</button>
+              <button className="btn-danger" disabled={!!busy} onClick={restore}>{busy === 'restore' ? t('Checking it…') : t('Restore')}</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+};
+
 /** "How to update": the steps for the way this server was installed. */
 const HowToUpdate = ({ info }: { info: ServerInfo }) => {
   const [copied, setCopied] = useState<number | null>(null);
@@ -234,7 +338,9 @@ export function AdminServerInfo({ token, apiBase, focusUpdate }: { token: string
           <dl className="ssd-card ssd-info">
             <Row label={t('Data folder')}><code className="server-info-path">{info.dataDir || '?'}</code></Row>
           </dl>
-          <p className="form-hint server-info-hint">{t('The database, the keys and the connection token are in this folder: keep it safe and include it in backups.')}</p>
+          <p className="form-hint server-info-hint">{t('Everything is kept in this folder: a SQLite database (accounts, computers, groups, install tokens, settings) and the server\'s keys.')}</p>
+
+          <BackupSection token={token} apiBase={apiBase} />
 
           <h3 className="ssd-section">{t('Project')}</h3>
           <Links info={info} />

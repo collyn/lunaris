@@ -1230,6 +1230,14 @@ body {
 .server-update-check { display: inline-flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
 .server-update-check .btn-secondary { padding: 0.3rem 0.75rem; font-size: 0.8rem; }
 
+.server-backup { padding: 6px 16px; }
+.server-backup-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 0; }
+.server-backup-row + .server-backup-row { border-top: 1px solid var(--border); }
+.server-backup-row .form-hint { margin: 2px 0 0; }
+.server-backup-row .btn-secondary { flex-shrink: 0; }
+.server-backup-note { margin: 4px 0 12px; color: var(--text-strong); }
+.server-backup .add-host-error { margin-bottom: 12px; }
+@media (max-width: 640px) { .server-backup-row { flex-direction: column; align-items: stretch; } }
 .server-update-howto { padding: 14px 16px; display: flex; flex-direction: column; gap: 12px; }
 .server-update-step p { margin: 0 0 8px; color: var(--text-main); line-height: 1.5; }
 .server-update-command { display: flex; align-items: flex-start; gap: 8px; }
@@ -5118,7 +5126,7 @@ select option:disabled { color: var(--text-subtle); }
 .install-table tr.inactive .install-token-label { color: var(--text-muted); }
 .install-muted { color: var(--text-subtle); font-weight: 400; font-style: italic; }
 .install-time { cursor: default; border-bottom: 1px dotted var(--border-strong); }
-.install-uses { font-family: var(--font-mono); font-size: 13px; }
+.install-uses { white-space: nowrap; font-size: 13px; }
 .install-actions { text-align: right; }
 .install-empty td { text-align: center; padding: 40px 20px; color: var(--text-muted); }
 
@@ -5210,6 +5218,8 @@ select option:disabled { color: var(--text-subtle); }
   .install-table .install-actions { grid-column: 1 / -1; text-align: left; }
   .install-table .install-actions:empty { display: none; }
   .install-revoke-btn { width: 100%; height: 36px; }
+  .install-action-row { justify-content: stretch; }
+  .install-action-row > * { flex: 1; width: auto; height: 36px; }
   .install-empty { display: block !important; }
   .install-empty td { padding: 24px 8px; }
 }
@@ -5226,6 +5236,69 @@ select option:disabled { color: var(--text-subtle); }
 .install-embedded .install-segmented button { flex: 1; padding: 0 6px; }
 .install-embedded .install-command { flex-direction: column; align-items: stretch; }
 .install-embedded .install-copy-btn { justify-content: center; }
+.install-reveal-buttons { display: flex; gap: 8px; flex-shrink: 0; align-items: center; }
+.install-command-window { width: min(760px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); overflow-y: auto; border-radius: 16px; }
+.install-command-window .install-card { margin: 0; }
+.install-computers { display: flex; flex-wrap: wrap; gap: 4px 6px; margin-top: 6px; }
+.install-computer { display: inline-flex; align-items: center; gap: 5px; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--border); font-size: 12px; color: var(--text-muted); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.install-computer-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--text-subtle); flex-shrink: 0; }
+.install-computer.online { color: var(--text); }
+.install-computer.online .install-computer-dot { background: #22c55e; }
+.install-row { cursor: pointer; }
+.install-row:hover td, .install-row:focus-visible td { background: rgb(var(--ink-rgb) / 0.04); }
+.install-row:focus-visible { outline: 2px solid var(--accent-fg); outline-offset: -2px; }
+.install-detail { width: min(620px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); overflow-y: auto; padding: 22px 24px; border-radius: 16px; background: var(--surface); border: 1px solid var(--border); box-shadow: var(--shadow-card); display: flex; flex-direction: column; gap: 14px; }
+.install-detail-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+.install-detail-head h2 { margin: 0 0 6px; font-size: 1.15rem; overflow-wrap: anywhere; }
+.install-detail-info { display: grid; gap: 8px; margin: 0; }
+.install-detail-info > div { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 12px; }
+.install-detail-info dt { color: var(--text-muted); }
+.install-detail-info dd { margin: 0; color: var(--text-strong); }
+.install-detail-sub { margin: 6px 0 0; font-size: 0.95rem; }
+.install-detail-computers { list-style: none; margin: 0; padding: 0; border: 1px solid var(--border); border-radius: 10px; }
+.install-detail-computers li { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 4px 10px; padding: 10px 14px; }
+.install-detail-computers li + li { border-top: 1px solid var(--border); }
+.install-detail-computers li.online .install-computer-dot { background: #22c55e; }
+.install-detail-name { color: var(--text-strong); font-weight: 600; overflow-wrap: anywhere; }
+.install-detail-state { color: var(--text-muted); font-size: 0.85rem; }
+.install-detail-id { grid-column: 2 / -1; font-size: 0.75rem; color: var(--text-subtle); overflow-wrap: anywhere; }
+.install-detail-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding-top: 4px; }
+.install-detail-danger { display: flex; gap: 8px; margin-left: auto; }
+/* One size for every button of the window and of the rows. */
+.install-detail-actions button, .install-detail-close {
+  height: 38px; min-width: 96px; padding: 0 16px; border-radius: 8px;
+  font-size: 14px; font-weight: 600; line-height: 1; box-sizing: border-box;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.install-detail-close { min-width: 0; }
+.install-action-row button {
+  height: 32px; min-width: 76px; padding: 0 12px; border-radius: 8px;
+  font-size: 13px; font-weight: 600; line-height: 1; box-sizing: border-box;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+@media (max-width: 640px) {
+  .install-detail-actions > button, .install-detail-danger { flex: 1 1 100%; }
+  .install-detail-danger { margin-left: 0; }
+  .install-detail-danger > button { flex: 1; }
+}
+.install-source { display: flex; width: 100%; }
+.install-source button { flex: 1; }
+.install-existing { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.install-existing select { flex: 1 1 260px; min-width: 0; height: 38px; }
+.install-existing .btn-primary { height: 38px; padding: 0 16px; display: inline-flex; align-items: center; }
+.install-delete-computers { display: flex; gap: 10px; align-items: flex-start; margin-top: 12px; padding: 12px; border: 1px solid rgb(239 68 68 / 0.35); border-radius: 10px; cursor: pointer; text-align: left; }
+.install-delete-computers input { margin-top: 3px; flex-shrink: 0; }
+.install-delete-computers > span { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.install-delete-names { color: var(--text-strong); overflow-wrap: anywhere; }
+.install-delete-computers .form-hint { margin: 0; }
+.install-orphans { margin-top: 20px; display: flex; flex-direction: column; gap: 6px; }
+.install-orphans .form-hint { margin: 0; }
+.install-action-row { display: flex; gap: 6px; justify-content: flex-end; flex-wrap: wrap; }
+.install-action-btn { height: 30px; padding: 0 12px; font-size: 13px; }
+.install-manage { margin: 0; color: var(--text-muted); font-size: 0.85rem; }
+.link-btn { background: none; border: none; padding: 0; color: var(--accent-fg); font: inherit; cursor: pointer; text-decoration: underline; }
+.install-extend-choices { display: flex; width: 100%; margin-top: 12px; }
+.install-extend-choices button { flex: 1; }
 .install-embedded .install-table-container { overflow: visible; }
 .install-embedded .install-table thead { display: none; }
 .install-embedded .install-table, .install-embedded .install-table tbody { display: block; }

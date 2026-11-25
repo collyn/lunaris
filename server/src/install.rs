@@ -112,11 +112,13 @@ pub async fn create_token(
     let id = uuid::Uuid::new_v4().to_string();
     let token = new_token();
     sqlx::query(
-        "INSERT INTO install_tokens (id, token_hash, label, created_by, created_at, expires_at, max_uses)
-         VALUES (?, ?, ?, ?, datetime('now'), datetime('now', ?), ?)",
+        "INSERT INTO install_tokens (id, token_hash, token_text, label, created_by, created_at, expires_at, max_uses)
+         VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now', ?), ?)",
     )
     .bind(&id)
     .bind(security::sha256_hex(&token))
+    // Kept so that its command can be shown again (`token_command`).
+    .bind(&token)
     .bind(&label)
     .bind(&admin.user_id)
     .bind(format!("+{} hours", req.valid_hours))
@@ -131,8 +133,10 @@ pub async fn create_token(
         .map_err(db_error)?;
     info!("Admin {} created install token {} ({})", admin.username, id, if label.is_empty() { "no label" } else { &label });
     let mut body = token_json(row);
-    // The only time the token itself is shown.
+    // (Shown again only through `token_command`.)
     body["token"] = serde_json::Value::String(token);
+    body["has_command"] = true.into();
+    body["computers"] = serde_json::json!([]);
     // Where the command fetches the script from, and how it checks it is
     // this server (the web builds the command with these).
     let (via_tls, peer) = request_origin(&extensions);
@@ -181,7 +185,109 @@ pub async fn list_tokens(
             .fetch_all(&state.db)
             .await
             .map_err(db_error)?;
-    Ok(Json(rows.into_iter().map(token_json).collect::<Vec<_>>()))
+    // Which tokens can be shown again, and the computers that joined with each.
+    let with_text: std::collections::HashSet<String> = sqlx::query_scalar("SELECT id FROM install_tokens WHERE token_text IS NOT NULL")
+        .fetch_all(&state.db)
+        .await
+        .map_err(db_error)?
+        .into_iter()
+        .collect();
+    let joined: Vec<(String, String, String, String)> = sqlx::query_as(
+        "SELECT install_token_id, id, COALESCE(NULLIF(display_name, ''), name), status FROM hosts
+         WHERE install_token_id IS NOT NULL ORDER BY 3 COLLATE NOCASE, id",
+    )
+    .fetch_all(&state.db)
+    .await
+    .map_err(db_error)?;
+    let online = state.agents.read().unwrap().keys().cloned().collect::<std::collections::HashSet<String>>();
+    let mut computers: std::collections::HashMap<String, Vec<serde_json::Value>> = std::collections::HashMap::new();
+    for (token_id, host_id, name, _status) in joined {
+        let is_online = online.contains(&host_id);
+        computers.entry(token_id).or_default().push(serde_json::json!({ "id": host_id, "name": name, "online": is_online }));
+    }
+    let tokens: Vec<serde_json::Value> = rows
+        .into_iter()
+        .map(|row| {
+            let id = row.0.clone();
+            let mut json = token_json(row);
+            json["has_command"] = with_text.contains(&id).into();
+            json["computers"] = serde_json::Value::Array(computers.remove(&id).unwrap_or_default());
+            json
+        })
+        .collect();
+    // What is left joined with a token that was deleted since.
+    let mut orphans: Vec<serde_json::Value> = computers.into_values().flatten().collect();
+    orphans.sort_by_key(|c| c["name"].as_str().unwrap_or_default().to_lowercase());
+    Ok(Json(serde_json::json!({ "tokens": tokens, "deleted_token_computers": orphans })))
+}
+
+// POST /api/admin/install-tokens/{id}/command
+/// A new secret for the token (its label, expiry, limit and uses stay) and
+/// its command: for tokens from before their command could be shown again,
+/// whose secret was kept as a hash only. The old secret stops working.
+pub async fn renew_command(
+    admin: AdminUser,
+    State(state): State<Arc<SignalingState>>,
+    Path(id): Path<String>,
+    uri: axum::http::Uri,
+    headers: HeaderMap,
+    extensions: axum::http::Extensions,
+) -> Result<axum::response::Response, (StatusCode, Json<serde_json::Value>)> {
+    let token = new_token();
+    let done = sqlx::query("UPDATE install_tokens SET token_hash = ?, token_text = ? WHERE id = ? AND revoked = 0")
+        .bind(security::sha256_hex(&token))
+        .bind(&token)
+        .bind(&id)
+        .execute(&state.db)
+        .await
+        .map_err(db_error)?;
+    if done.rows_affected() == 0 {
+        return Err((StatusCode::NOT_FOUND, Json(serde_json::json!({ "error": "Install token not found, or revoked" }))));
+    }
+    info!("Admin {} made a new command for install token {} (its old one stops working)", admin.username, id);
+    token_command(admin, State(state), Path(id), uri, headers, extensions).await
+}
+
+// GET /api/admin/install-tokens/{id}/command
+/// The token itself and how a command fetches the script, to show its
+/// install command again. Only tokens made since they are kept (0.8.4);
+/// never stored by a browser or anything on the way.
+pub async fn token_command(
+    admin: AdminUser,
+    State(state): State<Arc<SignalingState>>,
+    Path(id): Path<String>,
+    uri: axum::http::Uri,
+    headers: HeaderMap,
+    extensions: axum::http::Extensions,
+) -> Result<axum::response::Response, (StatusCode, Json<serde_json::Value>)> {
+    let found: Option<(Option<String>,)> = sqlx::query_as("SELECT token_text FROM install_tokens WHERE id = ?")
+        .bind(&id)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(db_error)?;
+    let token = match found {
+        None => return Err((StatusCode::NOT_FOUND, Json(serde_json::json!({ "error": "Install token not found" })))),
+        Some((None,)) => {
+            return Err((
+                StatusCode::GONE,
+                Json(serde_json::json!({ "error": "This install token was made before commands could be shown again: create a new one" })),
+            ));
+        }
+        Some((Some(token),)) => token,
+    };
+    let row: TokenRow = sqlx::query_as("SELECT id, label, created_at, expires_at, max_uses, uses, revoked FROM install_tokens WHERE id = ?")
+        .bind(&id)
+        .fetch_one(&state.db)
+        .await
+        .map_err(db_error)?;
+    info!("Admin {} was shown the command of install token {}", admin.username, id);
+    let mut body = token_json(row);
+    body["token"] = serde_json::Value::String(token);
+    let (via_tls, peer) = request_origin(&extensions);
+    body["install"] = install_fetch(&headers, uri.authority().map(|a| a.as_str()), peer, via_tls, crate::tls::https_port(), own_tls_pins().as_ref());
+    let mut response = Json(body).into_response();
+    response.headers_mut().insert(axum::http::header::CACHE_CONTROL, axum::http::HeaderValue::from_static("no-store"));
+    Ok(response)
 }
 
 // DELETE /api/admin/install-tokens/{id}
@@ -202,6 +308,106 @@ pub async fn revoke_token(
     }
     info!("Admin {} revoked install token {}", admin.username, id);
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+pub struct ExtendInstallToken {
+    pub valid_hours: i64,
+}
+
+// POST /api/admin/install-tokens/{id}/extend
+/// The token is valid for `valid_hours` from now (an expired one works
+/// again). Its uses and its limit stay; a revoked token stays revoked.
+pub async fn extend_token(
+    admin: AdminUser,
+    State(state): State<Arc<SignalingState>>,
+    Path(id): Path<String>,
+    Json(req): Json<ExtendInstallToken>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    if !(1..=MAX_VALID_HOURS).contains(&req.valid_hours) {
+        return Err(bad_request("valid_hours must be from 1 to 720"));
+    }
+    let revoked: Option<i64> = sqlx::query_scalar("SELECT revoked FROM install_tokens WHERE id = ?")
+        .bind(&id)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(db_error)?;
+    match revoked {
+        None => return Err((StatusCode::NOT_FOUND, Json(serde_json::json!({ "error": "Install token not found" })))),
+        Some(r) if r != 0 => {
+            return Err((StatusCode::CONFLICT, Json(serde_json::json!({ "error": "A revoked install token cannot be extended: create a new one" }))));
+        }
+        Some(_) => {}
+    }
+    sqlx::query("UPDATE install_tokens SET expires_at = datetime('now', ?) WHERE id = ? AND revoked = 0")
+        .bind(format!("+{} hours", req.valid_hours))
+        .bind(&id)
+        .execute(&state.db)
+        .await
+        .map_err(db_error)?;
+    let row: TokenRow = sqlx::query_as("SELECT id, label, created_at, expires_at, max_uses, uses, revoked FROM install_tokens WHERE id = ?")
+        .bind(&id)
+        .fetch_one(&state.db)
+        .await
+        .map_err(db_error)?;
+    info!("Admin {} extended install token {} by {} h from now", admin.username, id, req.valid_hours);
+    Ok(Json(token_json(row)))
+}
+
+#[derive(Deserialize, Default)]
+pub struct ForgetInstallToken {
+    /// "1": the computers that joined with it are removed too.
+    #[serde(default)]
+    pub with_computers: Option<String>,
+}
+
+// DELETE /api/admin/install-tokens/{id}/forget[?with_computers=1]
+/// Removes the token from the list for good: nobody joins with it any more
+/// (as after revoking). Computers that joined with it keep their keys and
+/// stay, unless `with_computers=1`: then they are removed as well (their
+/// agents can no longer sign in). Answers how many were removed.
+pub async fn forget_token(
+    admin: AdminUser,
+    State(state): State<Arc<SignalingState>>,
+    Path(id): Path<String>,
+    axum::extract::Query(query): axum::extract::Query<ForgetInstallToken>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let with_computers = query.with_computers.as_deref() == Some("1");
+    let exists: Option<String> = sqlx::query_scalar("SELECT id FROM install_tokens WHERE id = ?")
+        .bind(&id)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(db_error)?;
+    if exists.is_none() {
+        return Err((StatusCode::NOT_FOUND, Json(serde_json::json!({ "error": "Install token not found" }))));
+    }
+    let mut removed = 0usize;
+    if with_computers {
+        let hosts: Vec<String> = sqlx::query_scalar("SELECT id FROM hosts WHERE install_token_id = ?")
+            .bind(&id)
+            .fetch_all(&state.db)
+            .await
+            .map_err(db_error)?;
+        for host in &hosts {
+            // Never the server's own gateway (it did not join with a token anyway).
+            if state.gateway.is_gateway(host) {
+                continue;
+            }
+            crate::remove_host(&state, host).await.map_err(db_error)?;
+            removed += 1;
+        }
+        info!("Admin {} removed {} computer(s) that joined with install token {}", admin.username, removed, id);
+    }
+    let done = sqlx::query("DELETE FROM install_tokens WHERE id = ?")
+        .bind(&id)
+        .execute(&state.db)
+        .await
+        .map_err(db_error)?;
+    if done.rows_affected() == 0 && !with_computers {
+        return Err((StatusCode::NOT_FOUND, Json(serde_json::json!({ "error": "Install token not found" }))));
+    }
+    info!("Admin {} deleted install token {}", admin.username, id);
+    Ok(Json(serde_json::json!({ "removed_computers": removed })))
 }
 
 // ---- Agent sign-in without the server's agent token ---------------------------
@@ -248,6 +454,31 @@ pub async fn authorize(
             return Ok(Outcome::Rejected("another key is registered for this host id"));
         }
         if *enrolled != 0 {
+            // A computer that joined before and runs the join command again
+            // with another token (its agent sends one only then): it is
+            // listed with that token from now on, and that is one of the
+            // token's uses (within its limit; a token used up, expired or
+            // revoked changes nothing). It signs in by its key either way.
+            if let Some(token) = install_token {
+                if let Some(token_id) = usable_token(db, token).await? {
+                    let mut tx = db.begin().await?;
+                    let spent = sqlx::query(
+                        "UPDATE install_tokens SET uses = uses + 1
+                         WHERE id = ? AND (max_uses IS NULL OR uses < max_uses)
+                           AND NOT EXISTS (SELECT 1 FROM hosts WHERE id = ? AND install_token_id = ?)",
+                    )
+                    .bind(&token_id)
+                    .bind(host_id)
+                    .bind(&token_id)
+                    .execute(&mut *tx)
+                    .await?;
+                    if spent.rows_affected() == 1 {
+                        sqlx::query("UPDATE hosts SET install_token_id = ? WHERE id = ?").bind(&token_id).bind(host_id).execute(&mut *tx).await?;
+                        tx.commit().await?;
+                        return Ok(Outcome::Enrolled { counted: true });
+                    }
+                }
+            }
             return Ok(Outcome::Accepted);
         }
         let Some(token) = install_token else {
@@ -747,12 +978,31 @@ mod tests {
         // The installer run again on the same computer: no second use.
         assert_eq!(auth(&db, "pc-1", KEY, Some(&token)).await, Outcome::Accepted);
         assert_eq!(uses(&db, &token).await, 1);
+        // Run again with another token: listed with that one now, one use of it.
+        let other = add_token(&db, "+1 hours", Some(1), false).await;
+        assert_eq!(auth(&db, "pc-1", KEY, Some(&other)).await, Outcome::Enrolled { counted: true });
+        assert_eq!(uses(&db, &other).await, 1);
+        let linked: String = sqlx::query_scalar("SELECT t.token_hash FROM hosts h JOIN install_tokens t ON t.id = h.install_token_id WHERE h.id = 'pc-1'").fetch_one(&db).await.unwrap();
+        assert_eq!(linked, security::sha256_hex(&other));
+        assert_eq!(auth(&db, "pc-1", KEY, Some(&other)).await, Outcome::Accepted, "again: nothing more");
+        assert_eq!(uses(&db, &other).await, 1);
+        // A used-up, expired or revoked token changes nothing; the key still signs in.
+        let full = add_token(&db, "+1 hours", Some(1), false).await;
+        assert_eq!(auth(&db, "pc-x", KEY, Some(&full)).await, Outcome::Enrolled { counted: true });
+        for t in [full, add_token(&db, "-1 hours", None, false).await, add_token(&db, "+1 hours", None, true).await] {
+            assert_eq!(auth(&db, "pc-1", KEY, Some(&t)).await, Outcome::Accepted);
+        }
+        let still: String = sqlx::query_scalar("SELECT t.token_hash FROM hosts h JOIN install_tokens t ON t.id = h.install_token_id WHERE h.id = 'pc-1'").fetch_one(&db).await.unwrap();
+        assert_eq!(still, security::sha256_hex(&other));
+        // Back to the first token (it has a use left): listed there again.
+        assert_eq!(auth(&db, "pc-1", KEY, Some(&token)).await, Outcome::Enrolled { counted: true });
+        assert_eq!(uses(&db, &token).await, 2);
         // Afterwards the key alone signs in.
         assert_eq!(auth(&db, "pc-1", KEY, None).await, Outcome::Accepted);
         // The same id with another key: no take-over, with or without a token.
         assert!(matches!(auth(&db, "pc-1", OTHER_KEY, Some(&token)).await, Outcome::Rejected(_)));
         assert!(matches!(auth(&db, "pc-1", OTHER_KEY, None).await, Outcome::Rejected(_)));
-        assert_eq!(uses(&db, &token).await, 1);
+        assert_eq!(uses(&db, &token).await, 2);
     }
 
     #[tokio::test]
@@ -892,13 +1142,52 @@ mod tests {
         let created = body["created_at"].as_str().unwrap();
         assert_eq!(created.len(), 19);
         assert!(body["expires_at"].as_str().unwrap() > created);
-        // Stored as a hash only.
         let stored: String = sqlx::query_scalar("SELECT token_hash FROM install_tokens").fetch_one(&db).await.unwrap();
         assert_eq!(stored, security::sha256_hex(&token));
+
+        // Its command can be shown again; a computer that joins is listed with it.
+        let id0 = body["id"].as_str().unwrap().to_string();
+        let r = token_command(admin(), State(state.clone()), Path(id0.clone()), uri(), host_only("srv.lan:8090"), Default::default()).await.ok().unwrap();
+        assert_eq!(r.headers().get(axum::http::header::CACHE_CONTROL).unwrap(), "no-store");
+        let again: serde_json::Value = serde_json::from_slice(&axum::body::to_bytes(r.into_body(), 1 << 16).await.unwrap()).unwrap();
+        assert_eq!(again["token"].as_str(), Some(token.as_str()));
+        assert!(again.get("install").is_some());
+        assert_eq!(token_command(admin(), State(state.clone()), Path("nope".into()), uri(), host_only("x"), Default::default()).await.err().unwrap().0, StatusCode::NOT_FOUND);
+        // A token from before they were kept: gone, until it gets a new secret.
+        let old = add_token(&db, "+1 hours", Some(3), false).await;
+        let old_id: String = sqlx::query_scalar("SELECT id FROM install_tokens WHERE token_hash = ?").bind(security::sha256_hex(&old)).fetch_one(&db).await.unwrap();
+        assert_eq!(token_command(admin(), State(state.clone()), Path(old_id.clone()), uri(), host_only("x"), Default::default()).await.err().unwrap().0, StatusCode::GONE);
+        let r = renew_command(admin(), State(state.clone()), Path(old_id.clone()), uri(), host_only("x"), Default::default()).await.ok().unwrap();
+        let renewed: serde_json::Value = serde_json::from_slice(&axum::body::to_bytes(r.into_body(), 1 << 16).await.unwrap()).unwrap();
+        let fresh = renewed["token"].as_str().unwrap().to_string();
+        assert!(fresh != old && plausible_token(&fresh));
+        assert_eq!(renewed["max_uses"], 3, "the limit stays");
+        assert!(matches!(auth(&db, "pc-old", KEY, Some(&old)).await, Outcome::Rejected(_)), "the old secret stops working");
+        assert_eq!(auth(&db, "pc-old", KEY, Some(&fresh)).await, Outcome::Enrolled { counted: true });
+        // The computer stays when its token is deleted, listed apart.
+        forget_token(admin(), State(state.clone()), Path(old_id.clone()), axum::extract::Query(Default::default())).await.ok().unwrap();
+        let r = list_tokens(admin(), State(state.clone())).await.ok().unwrap().into_response();
+        let all: serde_json::Value = serde_json::from_slice(&axum::body::to_bytes(r.into_body(), 1 << 16).await.unwrap()).unwrap();
+        assert_eq!(all["deleted_token_computers"], serde_json::json!([{ "id": "pc-old", "name": "PC", "online": false }]));
+        sqlx::query("DELETE FROM hosts WHERE id = 'pc-old'").execute(&db).await.unwrap();
+        assert_eq!(renew_command(admin(), State(state.clone()), Path(old_id), uri(), host_only("x"), Default::default()).await.err().unwrap().0, StatusCode::NOT_FOUND);
+        assert_eq!(auth(&db, "pc-lab-1", KEY, Some(&token)).await, Outcome::Enrolled { counted: true });
+        sqlx::query("UPDATE hosts SET name = 'Lab 1' WHERE id = 'pc-lab-1'").execute(&db).await.unwrap();
+        let r = list_tokens(admin(), State(state.clone())).await.ok().unwrap().into_response();
+        let all: serde_json::Value = serde_json::from_slice(&axum::body::to_bytes(r.into_body(), 1 << 16).await.unwrap()).unwrap();
+        let list = all["tokens"].clone();
+        assert_eq!(all["deleted_token_computers"], serde_json::json!([]));
+        assert_eq!(list[0]["has_command"], true);
+        assert_eq!(list[0]["computers"], serde_json::json!([{ "id": "pc-lab-1", "name": "Lab 1", "online": false }]));
+        assert_eq!(list[0]["uses"], 1);
+        assert!(list[0].get("token").is_none() && list[0].get("token_text").is_none());
+        sqlx::query("DELETE FROM hosts WHERE id = 'pc-lab-1'").execute(&db).await.unwrap();
+        sqlx::query("UPDATE install_tokens SET uses = 0").execute(&db).await.unwrap();
 
         let r = list_tokens(admin(), State(state.clone())).await.ok().unwrap().into_response();
         let list: serde_json::Value =
             serde_json::from_slice(&axum::body::to_bytes(r.into_body(), 1 << 16).await.unwrap()).unwrap();
+        let list = list["tokens"].clone();
         assert_eq!(list.as_array().unwrap().len(), 1);
         assert!(list[0].get("token").is_none());
 
@@ -908,11 +1197,81 @@ mod tests {
         assert!(matches!(auth(&db, "pc", KEY, Some(&token)).await, Outcome::Rejected(_)));
         assert!(revoke_token(admin(), State(state.clone()), Path("nope".into())).await.is_err());
 
+        // A revoked token is not extended; an unknown one is not found.
+        let id = body["id"].as_str().unwrap().to_string();
+        let r = extend_token(admin(), State(state.clone()), Path(id.clone()), Json(ExtendInstallToken { valid_hours: 24 })).await;
+        assert_eq!(r.err().unwrap().0, StatusCode::CONFLICT);
+        let r = extend_token(admin(), State(state.clone()), Path("nope".into()), Json(ExtendInstallToken { valid_hours: 24 })).await;
+        assert_eq!(r.err().unwrap().0, StatusCode::NOT_FOUND);
+        // Deleted: gone from the list; again: not found.
+        let r = forget_token(admin(), State(state.clone()), Path(id.clone()), axum::extract::Query(Default::default())).await.ok().unwrap().into_response();
+        assert_eq!(r.status(), StatusCode::OK);
+        let left: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM install_tokens").fetch_one(&db).await.unwrap();
+        assert_eq!(left, 0);
+        assert_eq!(forget_token(admin(), State(state.clone()), Path(id), axum::extract::Query(Default::default())).await.err().unwrap().0, StatusCode::NOT_FOUND);
+
         for (label, hours, max) in [("x".repeat(65), 1, None), ("ok".into(), 0, None), ("ok".into(), 721, None), ("ok".into(), 1, Some(0))] {
             let req = CreateInstallToken { label, valid_hours: hours, max_uses: max };
             let r = create_token(admin(), State(state.clone()), uri(), host_only("srv.lan:8090"), Default::default(), Json(req)).await;
             assert_eq!(r.err().unwrap().0, StatusCode::BAD_REQUEST);
         }
+    }
+
+    #[tokio::test]
+    async fn an_expired_token_works_again_once_extended_and_a_deleted_one_never() {
+        let db = test_db().await;
+        let state = Arc::new(SignalingState::new(db.clone(), "t".into(), None));
+        let admin = || AdminUser { user_id: "a1".into(), username: "admin".into() };
+        let token = add_token(&db, "-1 hours", Some(5), false).await;
+        let id: String = sqlx::query_scalar("SELECT id FROM install_tokens").fetch_one(&db).await.unwrap();
+        assert!(matches!(auth(&db, "pc1", KEY, Some(&token)).await, Outcome::Rejected(_)), "expired");
+
+        for hours in [0, 721, -5] {
+            let r = extend_token(admin(), State(state.clone()), Path(id.clone()), Json(ExtendInstallToken { valid_hours: hours })).await;
+            assert_eq!(r.err().unwrap().0, StatusCode::BAD_REQUEST, "{hours}");
+        }
+        let r = extend_token(admin(), State(state.clone()), Path(id.clone()), Json(ExtendInstallToken { valid_hours: 48 })).await.ok().unwrap().into_response();
+        let body: serde_json::Value = serde_json::from_slice(&axum::body::to_bytes(r.into_body(), 1 << 16).await.unwrap()).unwrap();
+        assert_eq!((body["max_uses"].as_i64(), body["uses"].as_i64(), body["revoked"].as_bool()), (Some(5), Some(0), Some(false)));
+        assert!(body.get("token").is_none(), "the token itself is never shown again");
+        let in_two_days: bool = sqlx::query_scalar("SELECT expires_at > datetime('now', '+47 hours') AND expires_at <= datetime('now', '+48 hours') FROM install_tokens")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert!(in_two_days);
+        assert_eq!(auth(&db, "pc1", KEY, Some(&token)).await, Outcome::Enrolled { counted: true });
+
+        // Deleted: nobody new joins with it; the computer that joined stays, by its key.
+        forget_token(admin(), State(state.clone()), Path(id), axum::extract::Query(Default::default())).await.ok().unwrap();
+        assert!(matches!(auth(&db, "pc2", KEY, Some(&token)).await, Outcome::Rejected(_)));
+        assert_eq!(auth(&db, "pc1", KEY, None).await, Outcome::Accepted);
+    }
+
+    #[tokio::test]
+    async fn deleting_a_token_with_its_computers_shuts_only_them_out() {
+        let db = test_db().await;
+        let state = Arc::new(SignalingState::new(db.clone(), "t".into(), None));
+        let admin = || AdminUser { user_id: "a1".into(), username: "admin".into() };
+        let lab = add_token(&db, "+1 hours", None, false).await;
+        let office = add_token(&db, "+1 hours", None, false).await;
+        for pc in ["lab-1", "lab-2"] {
+            assert_eq!(auth(&db, pc, KEY, Some(&lab)).await, Outcome::Enrolled { counted: true });
+        }
+        assert_eq!(auth(&db, "office-1", KEY, Some(&office)).await, Outcome::Enrolled { counted: true });
+        sqlx::query("INSERT INTO groups (id, name) VALUES ('g', 'G')").execute(&db).await.ok();
+        sqlx::query("INSERT INTO host_groups (host_id, group_id) VALUES ('lab-1', 'g')").execute(&db).await.ok();
+        let lab_id: String = sqlx::query_scalar("SELECT id FROM install_tokens WHERE token_hash = ?").bind(security::sha256_hex(&lab)).fetch_one(&db).await.unwrap();
+        let with = axum::extract::Query(ForgetInstallToken { with_computers: Some("1".into()) });
+        let r = forget_token(admin(), State(state.clone()), Path(lab_id), with).await.ok().unwrap().into_response();
+        let body: serde_json::Value = serde_json::from_slice(&axum::body::to_bytes(r.into_body(), 1 << 16).await.unwrap()).unwrap();
+        assert_eq!(body["removed_computers"], 2);
+        let left: Vec<String> = sqlx::query_scalar("SELECT id FROM hosts ORDER BY id").fetch_all(&db).await.unwrap();
+        assert_eq!(left, ["office-1"], "only the token's computers go");
+        let memberships: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM host_groups WHERE host_id = 'lab-1'").fetch_one(&db).await.unwrap();
+        assert_eq!(memberships, 0);
+        // Their agents can no longer sign in by their key; the other one can.
+        assert!(matches!(auth(&db, "lab-1", KEY, None).await, Outcome::Rejected(_)));
+        assert_eq!(auth(&db, "office-1", KEY, None).await, Outcome::Accepted);
     }
 
     fn uri() -> axum::http::Uri {

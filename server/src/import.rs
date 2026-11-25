@@ -20,7 +20,7 @@
 use std::path::{Path, PathBuf};
 
 /// Files copied next to the database when present (see the module comment).
-const KEY_FILES: &[&str] = &["server_token.txt", "mfa_key.txt", "jwt_secret.txt", "tls_cert.pem", "tls_key.pem"];
+pub(crate) const KEY_FILES: &[&str] = &["server_token.txt", "mfa_key.txt", "jwt_secret.txt", "tls_cert.pem", "tls_key.pem"];
 
 const USAGE: &str = "usage: lunaris-server import <data folder of a server run by hand> [--replace] | --auto";
 
@@ -134,7 +134,7 @@ fn import_gateway_sources(source: &Path, target: &Path, stamp: &str) -> Result<(
     Ok((added, written, kept))
 }
 
-async fn open_read_only(path: &Path) -> Result<sqlx::SqliteConnection, String> {
+pub(crate) async fn open_read_only(path: &Path) -> Result<sqlx::SqliteConnection, String> {
     use sqlx::ConnectOptions;
     sqlx::sqlite::SqliteConnectOptions::new()
         .filename(path)
@@ -290,7 +290,7 @@ fn put_back(moved: &[(PathBuf, PathBuf)]) {
     }
 }
 
-fn is_plain_file(path: &Path) -> bool {
+pub(crate) fn is_plain_file(path: &Path) -> bool {
     std::fs::symlink_metadata(path).map(|m| m.file_type().is_file()).unwrap_or(false)
 }
 
@@ -351,7 +351,7 @@ pub(crate) fn service_user() -> Option<(u32, u32)> {
 }
 
 /// The installed service must be stopped: it has the database open.
-fn refuse_if_service_runs() -> Result<(), String> {
+pub(crate) fn refuse_if_service_runs() -> Result<(), String> {
     #[cfg(target_os = "linux")]
     {
         let active = std::process::Command::new("systemctl")
