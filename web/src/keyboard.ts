@@ -102,10 +102,16 @@ export const keyboardLockFor = (fullscreen: boolean, pointerLocked: boolean, sys
   return 'none';
 };
 
+/** How long Esc is held to let the pointer go. Shorter than the browser's
+ *  own hold under Keyboard Lock (2 s, after which it leaves full screen by
+ *  itself, WICG Keyboard Lock): a 3 s hold was cut by the browser
+ *  (2026-11-24). The desktop client, without that limit, keeps 3 s. */
+export const ESCAPE_HOLD_MS = 1500;
+
 type KeyboardLockApi = { lock?: (codes?: string[]) => Promise<void>; unlock?: () => void };
 
 /** Whether Esc can be kept from the browser while the pointer is locked
- *  (Keyboard Lock: a tap goes to the remote computer, a 3 s hold lets go).
+ *  (Keyboard Lock: a tap goes to the remote computer, a hold lets go).
  *  Chromium gives it only to secure pages (https, localhost); on an http
  *  page, in Safari and in Firefox the browser lets go of the pointer at the
  *  first Esc. */

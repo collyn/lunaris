@@ -273,7 +273,7 @@ export function AdminUsers({ token, getBackendHost, getBackendProtocol }: AdminU
       </div>
 
       <div className="admin-table-container">
-        <table className="admin-table">
+        <table className="admin-table stacked">
           <thead>
             <tr>
               <th>{t('Username')}</th>
@@ -287,10 +287,10 @@ export function AdminUsers({ token, getBackendHost, getBackendProtocol }: AdminU
           <tbody>
             {users.map(user => (
               <tr key={user.id}>
-                <td>
+                <td className="cell-title">
                   <span style={{ fontWeight: 600, color: 'var(--text-main)' }}>{user.username}</span>
                 </td>
-                <td>
+                <td data-label={t('Role')}>
                   <div className="user-badges">
                     <span className={`role-badge ${user.role}`}>{user.role === 'admin' ? t('Admin') : t('User')}</span>
                     {user.mfa_enabled && (
@@ -298,13 +298,13 @@ export function AdminUsers({ token, getBackendHost, getBackendProtocol }: AdminU
                     )}
                   </div>
                 </td>
-                <td>
+                <td data-label={t('Status')}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                     <span className={`status-dot ${user.is_active ? 'active' : 'inactive'}`}></span>
                     <span style={{ fontSize: '0.85rem' }}>{user.is_active ? t('Active') : t('Disabled')}</span>
                   </div>
                 </td>
-                <td>
+                <td data-label={t('Groups')}>
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.35rem' }}>
                     {user.groups && user.groups.length > 0 ? (
                       user.groups.map(g => (
@@ -315,12 +315,12 @@ export function AdminUsers({ token, getBackendHost, getBackendProtocol }: AdminU
                     )}
                   </div>
                 </td>
-                <td>
+                <td data-label={t('Created')}>
                   <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontFamily: 'monospace' }}>
                     {user.created_at ? new Date(user.created_at).toLocaleDateString() : '—'}
                   </span>
                 </td>
-                <td>
+                <td className="cell-actions">
                   <div style={{ display: 'flex', gap: '0.5rem' }}>
                     <button
                       onClick={() => openEditModal(user)}

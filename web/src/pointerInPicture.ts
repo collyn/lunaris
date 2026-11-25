@@ -33,6 +33,14 @@ export const POSITION_WINDOW_MS = 600;
 export const MAX_POSITIONS = 16;
 /** At most one check per this many milliseconds. */
 export const CHECK_INTERVAL_MS = 30;
+/** After this many misses in a row the checks slow down: each one copies a
+ *  frame back from the GPU (about 12 ms) and makes the stream skip frames,
+ *  so a drag that is not a window's (selecting an area, 2026-11-25) must not
+ *  pay for it all along. A window dragged with the pointer in the picture is
+ *  found within the first ones. */
+export const FAST_MISSES = 10;
+/** The slower pace: at most one check per this many milliseconds. */
+export const SLOW_CHECK_INTERVAL_MS = 300;
 
 export const LOG_PREFIX = 'pointer looked for in the picture: ';
 
@@ -354,9 +362,13 @@ export class SentPositions {
  *  draws its pointer into the picture while a window is dragged; the host
  *  says so (`in_window_move_size`) only for the system's own move loop, not
  *  for the many apps that move their windows themselves (2026-11-24: two
- *  pointers while a window was dragged). */
-export const looksForPointerInPicture = (hostSaysMaybe: boolean, hostOs: string): boolean =>
-  hostSaysMaybe || hostOs === 'windows';
+ *  pointers while a window was dragged). An agent that watches those drags
+ *  itself (`window_drag_watched` in `host_cursor`, agent window_drag.rs)
+ *  says them in `in_window_move_size`: then nothing is looked for, as each
+ *  look copies a frame back from the GPU (2026-11-25: selecting an area made
+ *  the picture skip frames). */
+export const looksForPointerInPicture = (hostSaysMaybe: boolean, hostOs: string, hostWatchesWindowDrags = false): boolean =>
+  hostSaysMaybe || (hostOs === 'windows' && !hostWatchesWindowDrags);
 
 export class PointerInPictureDrag {
   /** A drag is on. */
@@ -367,6 +379,8 @@ export class PointerInPictureDrag {
   checks = 0;
   /** Checks in a row that found the pointer. */
   run = 0;
+  /** Checks in a row that did not. */
+  misses = 0;
   /** The scale that matched in this drag (0: none yet). */
   scale = 0;
   /** Counts the drags, to tell a check begun in an earlier one. */
@@ -384,6 +398,7 @@ export class PointerInPictureDrag {
       this.inPicture = false;
       this.checks = 0;
       this.run = 0;
+      this.misses = 0;
       this.scale = 0;
       this.lastCheckAt = -Infinity;
       return null;
@@ -398,7 +413,8 @@ export class PointerInPictureDrag {
 
   /** Whether a check is due at `now` (ms). */
   wantsCheck(now: number): boolean {
-    return this.active && !this.inPicture && now - this.lastCheckAt >= CHECK_INTERVAL_MS;
+    const interval = this.misses >= FAST_MISSES ? SLOW_CHECK_INTERVAL_MS : CHECK_INTERVAL_MS;
+    return this.active && !this.inPicture && now - this.lastCheckAt >= interval;
   }
 
   /** The templates to try in the next check: all, or only the scale that
@@ -417,12 +433,14 @@ export class PointerInPictureDrag {
     if (matchedScale > 0) {
       this.scale = matchedScale;
       this.run += 1;
+      this.misses = 0;
       if (this.run >= CHECKS_NEEDED) {
         this.inPicture = true;
         return true;
       }
     } else {
       this.run = 0;
+      this.misses += 1;
     }
     return false;
   }

@@ -2139,7 +2139,7 @@ function App() {
                           <h1 className="section-title">{t('Device Directory')}</h1>
                           <p className="section-subtitle">{t('Manage and connect to active remote agent streams')}</p>
                         </div>
-                        <div style={{ display: 'flex', gap: '0.75rem' }}>
+                        <div className="section-actions">
                           {userRole === 'admin' && (
                             <button onClick={openAddHost} className="btn-primary refresh-btn" title={t('Add a computer by its address')}>
                               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">

@@ -1154,6 +1154,70 @@ body {
   background-color: rgb(var(--accent-rgb) / 0.15);
 }
 
+/* A stream bar button that opens a small menu below it. */
+.stream-menu-wrap { position: relative; display: flex; flex-shrink: 0; }
+.stream-action-btn.stream-menu-trigger { width: auto; gap: 2px; padding: 0.35rem 0.3rem 0.35rem 0.4rem; }
+.stream-menu-caret { opacity: 0.6; transition: transform 0.15s ease; }
+.stream-menu-trigger.open .stream-menu-caret { transform: rotate(180deg); }
+.stream-submenu {
+  position: absolute;
+  top: calc(100% + 10px);
+  left: 50%;
+  transform: translateX(-50%);
+  min-width: 220px;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  background: rgb(var(--surface-rgb) / 0.98);
+  border: 1px solid rgb(var(--ink-rgb) / 0.1);
+  border-radius: 12px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+  z-index: 110;
+}
+.stream-submenu-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 8px;
+  background: none;
+  color: var(--text-strong);
+  font: inherit;
+  font-size: 0.85rem;
+  text-align: left;
+  cursor: pointer;
+}
+.stream-submenu-item:hover:not(:disabled) { background: rgb(var(--ink-rgb) / 0.06); }
+.stream-submenu-item:disabled { cursor: not-allowed; opacity: 0.55; }
+.stream-submenu-label { display: flex; flex-direction: column; gap: 2px; }
+.stream-submenu-label small { font-size: 0.72rem; color: var(--text-muted); }
+.stream-submenu-switch {
+  position: relative;
+  flex-shrink: 0;
+  width: 30px;
+  height: 18px;
+  border-radius: 9px;
+  background: rgb(var(--ink-rgb) / 0.2);
+  transition: background 0.15s ease;
+}
+.stream-submenu-switch::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform 0.15s ease;
+}
+.stream-submenu-switch.on { background: var(--accent-cyan); }
+.stream-submenu-switch.on::after { transform: translateX(12px); }
+
 .btn-tech {
   background-color: var(--bg-tertiary);
   border: 1px solid var(--border-color);
@@ -2422,7 +2486,10 @@ body {
   width: 520px;
   max-width: 90vw;
   max-height: 85vh;
-  overflow-y: auto;
+  /* One scrollbar: the body scrolls, the header and footer stay. */
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   background: var(--bg-secondary);
   border: 1px solid var(--border-color);
   border-radius: 16px;
@@ -2431,6 +2498,7 @@ body {
 }
 
 .admin-modal-header {
+  flex-shrink: 0;
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -2452,9 +2520,32 @@ body {
   display: flex;
   flex-direction: column;
   gap: 1.25rem;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+/* A modal whose body and footer sit in a form: the form takes the room. */
+.admin-modal > form {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* A table wider than a modal scrolls by itself. */
+.admin-modal-body .admin-table-scroll {
+  overflow-x: auto;
+  flex-shrink: 0;
+}
+.admin-modal-body .admin-table th,
+.admin-modal-body .admin-table td {
+  padding: 0.6rem 0.75rem;
 }
 
 .admin-modal-footer {
+  flex-shrink: 0;
   display: flex;
   gap: 0.75rem;
   padding: 1rem 1.75rem 1.5rem;
@@ -3461,16 +3552,99 @@ code, kbd, pre, .host-id, .code-block { font-family: var(--font-mono); }
 }
 .stream-action-btn.active { background: rgb(var(--accent-rgb) / 0.16); color: var(--accent-fg); }
 
+.section-actions { display: flex; gap: 0.75rem; }
+
 /* ---- Mobile -------------------------------------------------------------- */
 @media (max-width: 640px) {
-  .navbar { padding: 0 16px; }
+  /* The bar fits a phone: no horizontal scroll, every button reachable. */
+  .navbar { padding: 0 12px; gap: 8px; }
+  .nav-brand { gap: 8px; min-width: 0; }
+  .nav-actions, .nav-user-panel { gap: 6px; }
   .nav-user-text { display: none; }
+  .lang-select { max-width: 104px; padding-left: 8px; padding-right: 22px; }
   .main-viewport { padding: 16px; }
   .section-title { font-size: 20px; }
-  .section-header { align-items: flex-start; }
+  .section-header { align-items: stretch; flex-direction: column; }
   .hosts-card-grid, .apps-card-grid { grid-template-columns: 1fr; }
-  .icon-btn, .btn-logout { width: 40px; height: 40px; }
-  .nav-tab { padding-left: 12px; padding-right: 12px; }
+  .icon-btn, .btn-logout { width: 38px; height: 38px; flex: 0 0 auto; }
+
+  /* Tabs: all of them in one row, the icon over a short label. */
+  .admin-nav-tabs { gap: 0; overflow-x: visible; }
+  .nav-tab {
+    flex: 1 1 0;
+    min-width: 0;
+    flex-direction: column;
+    gap: 4px;
+    padding: 8px 2px;
+    font-size: 11px;
+    line-height: 1.2;
+    white-space: normal;
+    text-align: center;
+  }
+
+  /* The page's buttons share the row equally, the icon over the label. */
+  .section-actions { width: 100%; gap: 8px; }
+  .section-actions > button {
+    flex: 1 1 0;
+    min-width: 0;
+    flex-direction: column;
+    gap: 4px;
+    padding: 10px 6px;
+    font-size: 12px;
+    line-height: 1.25;
+    white-space: normal;
+    text-align: center;
+  }
+}
+@media (max-width: 400px) {
+  .brand-name { display: none; }
+}
+
+/* A table marked "stacked" becomes one card per row on a phone: the first
+   cell (.cell-title) is the card's title, each other cell a "label: value"
+   line (data-label), the buttons (.cell-actions) at the bottom. */
+@media (max-width: 640px) {
+  .admin-table.stacked thead { display: none; }
+  .admin-table.stacked,
+  .admin-table.stacked tbody { display: block; width: 100%; }
+  .admin-table.stacked tr {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 14px 16px;
+    border-bottom: 1px solid var(--border);
+  }
+  .admin-table.stacked tr:last-child { border-bottom: none; }
+  .admin-table.stacked td {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 0;
+    border: none;
+    min-width: 0;
+    text-align: right;
+  }
+  .admin-table.stacked td[data-label]::before {
+    content: attr(data-label);
+    flex: 0 0 auto;
+    font-size: 12px;
+    color: var(--text-muted);
+    text-align: left;
+  }
+  .admin-table.stacked td > * { min-width: 0; }
+  .admin-table.stacked td.cell-title { font-size: 15px; text-align: left; flex-direction: column; align-items: flex-start; justify-content: flex-start; gap: 4px; }
+  .admin-table.stacked td.cell-actions { justify-content: flex-end; padding-top: 6px; }
+  .admin-table.stacked td[colspan] { justify-content: center; text-align: center; }
+
+  /* A path (program, data folder) under its label, the full width. */
+  .ssd-info-row:has(.server-info-path) { flex-direction: column; align-items: stretch; gap: 4px; }
+  .ssd-info-row:has(.server-info-path) dd { text-align: left; }
+  .ssd-info-row { margin: 0 16px; }
+
+  /* A group's name over its save button. */
+  .group-detail-header { flex-wrap: wrap; gap: 12px; }
+  .group-detail-header > div:first-child { flex: 1 1 100%; min-width: 0; overflow-wrap: anywhere; }
 }
 
 @media (prefers-reduced-motion: reduce) {

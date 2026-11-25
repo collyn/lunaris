@@ -1749,6 +1749,9 @@ fn handle_host_cursor_message(data: &[u8]) {
         super::pointer_in_picture::note_cursor(cursor);
     }
     super::pointer_in_picture::note_maybe(pointer_maybe_in_picture);
+    super::pointer_in_picture::note_window_drag_watched(
+        value.get("window_drag_watched").and_then(|v| v.as_bool()).unwrap_or(false),
+    );
 
     *PENDING_HOST_CURSOR.lock().unwrap() = Some(PendingHostCursor {
         x: x.round() as i32,

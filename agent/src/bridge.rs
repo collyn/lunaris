@@ -1280,6 +1280,9 @@ pub async fn setup_bridge_session(
         // Numbers the host_cursor messages: the cursor channel is unordered,
         // and a viewer drops a position older than one it has (with_seq).
         let mut cursor_seq: u64 = 0;
+        // A window dragged by an app itself (window_drag.rs).
+        #[cfg(target_os = "windows")]
+        let mut window_drag = crate::window_drag::Watch::default();
         while let Some(event) = media_event_rx.recv().await {
             match event {
                 lunaris_media::pipeline::MediaEvent::EncoderStarted {
@@ -1363,6 +1366,12 @@ pub async fn setup_bridge_session(
                     let _ = audio_tx_clone.try_send(sample);
                 }
                 lunaris_media::pipeline::MediaEvent::CursorUpdate(cursor) => {
+                    #[cfg(target_os = "windows")]
+                    let cursor = {
+                        let mut cursor = cursor;
+                        cursor.in_window_move_size |= window_drag.poll();
+                        cursor
+                    };
                     let cursor_kind = cursor.kind.as_str();
                     let image = cursor.image.as_ref().map(|image| {
                         serde_json::json!({
@@ -1392,8 +1401,9 @@ pub async fn setup_bridge_session(
                     let maybe_in_picture = crate::connector::media::pointer_maybe_in_picture();
                     let in_picture = crate::connector::media::pointer_in_picture();
                     cursor_seq += 1;
-                    let realtime_payload = with_seq(host_cursor_message(&cursor, image.as_ref(), maybe_in_picture, in_picture), cursor_seq);
-                    let cached_payload = with_seq(host_cursor_message(&cursor, latest_cursor_image.as_ref(), maybe_in_picture, in_picture), cursor_seq);
+                    let watched = cfg!(target_os = "windows");
+                    let realtime_payload = with_seq(host_cursor_message(&cursor, image.as_ref(), maybe_in_picture, in_picture), cursor_seq, watched);
+                    let cached_payload = with_seq(host_cursor_message(&cursor, latest_cursor_image.as_ref(), maybe_in_picture, in_picture), cursor_seq, watched);
                     *latest_host_cursor_for_media.lock().await = Some(cached_payload.clone());
 
                     if image.is_some()
@@ -2568,10 +2578,16 @@ mod held_keys_tests {
 /// A `host_cursor` message with its number (`seq`): positions come on an
 /// unordered channel, so a viewer keeps the newest one it has seen. Viewers
 /// from before this field ignore it.
-fn with_seq(message: String, seq: u64) -> String {
+/// `window_drag_watched`: this host says in `in_window_move_size` also when
+/// an app drags its own window (window_drag.rs); viewers then do not look for
+/// the pointer in the picture on every drag.
+fn with_seq(message: String, seq: u64, window_drag_watched: bool) -> String {
     match serde_json::from_str::<serde_json::Value>(&message) {
         Ok(serde_json::Value::Object(mut fields)) => {
             fields.insert("seq".into(), seq.into());
+            if window_drag_watched {
+                fields.insert("window_drag_watched".into(), true.into());
+            }
             serde_json::Value::Object(fields).to_string()
         }
         _ => message,
@@ -2623,9 +2639,16 @@ mod host_cursor_message_tests {
 
     #[test]
     fn a_message_carries_its_number() {
-        let message = parsed(&super::with_seq(host_cursor_message(&cursor(), None, false, None), 42));
+        let message = parsed(&super::with_seq(host_cursor_message(&cursor(), None, false, None), 42, false));
         assert_eq!(message["seq"], 42);
         assert_eq!(message["x"], 10);
+        assert!(message.get("window_drag_watched").is_none(), "not said where not watched");
+    }
+
+    #[test]
+    fn a_windows_host_says_it_watches_window_drags() {
+        let message = parsed(&super::with_seq(host_cursor_message(&cursor(), None, false, None), 1, true));
+        assert_eq!(message["window_drag_watched"], true);
     }
 
     #[test]

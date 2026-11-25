@@ -13,7 +13,7 @@ import { gameMousePacket, readGameMouseOn, saveGameMouseOn } from '../gameMouse'
 import { canFullscreen, exitFullscreen, exitPointerLock, requestFullscreen } from '../pageLocks';
 import { hostPointerInPicture, isStaleCursorSeq, saysPointerAlwaysInPicture, showsHostCursor, showsOwnCursor, streamCursorCss, type PointerView } from '../pointerShown';
 import { agentRoundTripMs, decodeStatText, decoderName, encodeStatText, pingStatText, shownPingMs, sourceLatencyMs } from '../streamStats';
-import { KEY_COMBOS, PressedKeys, applyKeyboardLock, combosFor, comboStrokes, escapeCanBeKept, keyboardLockFor, readSystemKeys, secureAddress, tapsUnderMeta, vkOfCode } from '../keyboard';
+import { ESCAPE_HOLD_MS, KEY_COMBOS, PressedKeys, applyKeyboardLock, combosFor, comboStrokes, escapeCanBeKept, keyboardLockFor, readSystemKeys, secureAddress, tapsUnderMeta, vkOfCode } from '../keyboard';
 import { hostPrefsKey, overrideOf, prefsFor, sourcePrefsKey, updateComputerPrefs, type ComputerPrefs } from '../streamPrefs';
 
 /** Windows virtual-key codes for the phone keys bar and keyboard keys. */
@@ -272,11 +272,13 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   // the pointers for `inWindowMoveSize` hide for `pointerDragRef.current.inPicture` too.
   const leftButtonHeldRef = useRef<boolean>(false);
   const pointerMaybeInPictureRef = useRef<boolean>(false);
+  /** The host says app-dragged windows in `in_window_move_size` (agent window_drag.rs). */
+  const hostWatchesWindowDragsRef = useRef(false);
   // The host's pointer is part of its picture for the whole session
   // (`pointer_in_picture: "always"`, pointerShown.ts): no pointer is shown
   // over the picture. The ref for the handlers, the state for the CSS cursor.
   const pointerAlwaysInPictureRef = useRef<boolean>(false);
-  const [pointerAlwaysInPicture, setPointerAlwaysInPicture] = useState<boolean>(false);
+  const [, setPointerAlwaysInPicture] = useState<boolean>(false);
   const notePointerAlwaysInPicture = (always: boolean): boolean => {
     if (always === pointerAlwaysInPictureRef.current) return false;
     pointerAlwaysInPictureRef.current = always;
@@ -332,7 +334,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   const [isPointerLocked, setIsPointerLocked] = useState<boolean>(false);
   // Host-shaped CSS cursor (see hostCursorImageToCss). When set, the OS draws
   // the pointer instead of the JavaScript-driven DOM cursor.
-  const [hostCssCursor, setHostCssCursor] = useState<string | null>(null);
+  const [, setHostCssCursor] = useState<string | null>(null);
   const hostCssCursorRef = useRef<string | null>(null);
   const hostCssCursorNativeRef = useRef<boolean>(false);
   const [appList, setAppList] = useState<{ id: number; title: string; icon_base64?: string | null }[] | null>(null);
@@ -925,7 +927,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     const drag = pointerDragRef.current;
     const wasActive = drag.active;
     const wasInPicture = drag.inPicture;
-    const line = drag.update(leftButtonHeldRef.current, looksForPointerInPicture(pointerMaybeInPictureRef.current, agentHostOsRef.current));
+    const line = drag.update(leftButtonHeldRef.current, looksForPointerInPicture(pointerMaybeInPictureRef.current, agentHostOsRef.current, hostWatchesWindowDragsRef.current));
     if (drag.active && !wasActive) {
       startPointerCheckLoop();
     } else if (!drag.active && wasActive) {
@@ -1091,7 +1093,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       // When unlocked on desktop: keep host cursor visible (browser cursor overlaps it).
 
       // Lock the Escape key so the browser does not exit pointer lock
-      // immediately (our key handlers require a 3‑second hold instead),
+      // immediately (our key handlers require a hold instead, ESCAPE_HOLD_MS),
       // without taking back the keys locked for full screen.
       syncKeyboardLock();
       // Prediction cursor: show on lock, hide on unlock
@@ -1813,11 +1815,12 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
 
       // ESC hold-to-exit for pointer lock (requires keyboard.lock to be active).
       // When the browser has granted keyboard lock, pressing ESC does not
-      // immediately exit pointer lock — instead we require a 3‑second hold.
+      // immediately exit pointer lock — instead we require a hold (ESCAPE_HOLD_MS).
       if (e.code === 'Escape' && isPointerLockedRef.current) {
         e.preventDefault();
         if (escapeHoldTimerRef.current === null) {
-          const HOLD_MS = 3000;
+          // Shorter than the browser's own 2 s hold (keyboard.ts).
+          const HOLD_MS = ESCAPE_HOLD_MS;
           escapeHoldStartRef.current = performance.now();
           escapeHoldLastTickRef.current = escapeHoldStartRef.current;
           setEscapeHoldProgress(0.001); // > 0 so UI knows we started
@@ -1832,10 +1835,10 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
               exitFullscreen().catch(() => {});
             } else {
               setEscapeHoldProgress(Math.min(0.99, elapsed / HOLD_MS));
-              escapeHoldTimerRef.current = window.setTimeout(tick, 50);
+              escapeHoldTimerRef.current = window.setTimeout(tick, 20);
             }
           };
-          escapeHoldTimerRef.current = window.setTimeout(tick, 50);
+          escapeHoldTimerRef.current = window.setTimeout(tick, 20);
         }
         return;
       }
@@ -2389,8 +2392,10 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       if (image) hostCursorImagePayloadRef.current = image;
       const alwaysChanged = notePointerAlwaysInPicture(saysPointerAlwaysInPicture(message));
       const maybeInPicture = message.pointer_maybe_in_picture === true;
-      if (maybeInPicture !== pointerMaybeInPictureRef.current) {
+      const watchesWindowDrags = message.window_drag_watched === true;
+      if (maybeInPicture !== pointerMaybeInPictureRef.current || watchesWindowDrags !== hostWatchesWindowDragsRef.current) {
         pointerMaybeInPictureRef.current = maybeInPicture;
+        hostWatchesWindowDragsRef.current = watchesWindowDrags;
         syncPointerInPictureDrag();
       }
 
@@ -2511,6 +2516,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
           hostCursorImagePayloadRef.current = null;
           pointerTemplatesRef.current = null;
           notePointerAlwaysInPicture(false);
+          hostWatchesWindowDragsRef.current = false;
           if (pointerMaybeInPictureRef.current) {
             pointerMaybeInPictureRef.current = false;
             syncPointerInPictureDrag();
@@ -3031,6 +3037,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     if (hiddenVideoRef.current) {
       hiddenVideoRef.current.srcObject = null;
     }
+    hostWatchesWindowDragsRef.current = false;
     if (pointerMaybeInPictureRef.current) {
       pointerMaybeInPictureRef.current = false;
       syncPointerInPictureDrag();
@@ -3060,7 +3067,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   };
 
   // Request pointer lock for relative controls.
-  // navigator.keyboard.lock (required for the 3 s ESC hold) only takes
+  // navigator.keyboard.lock (required for the ESC hold) only takes
   // effect while fullscreen is active, so we enter fullscreen alongside
   // pointer lock.  The fullscreenchange handler (which fires shortly
   // after) calls keyboard.lock to intercept ESC.
@@ -3088,6 +3095,24 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     const timer = window.setInterval(send, 2000);
     return () => window.clearInterval(timer);
   }, [status, gameMouseActive, gameMouse, sourceId]);
+
+  // The pointer menu in the stream bar closes on a click elsewhere or Esc.
+  const [pointerMenuOpen, setPointerMenuOpen] = useState(false);
+  const pointerMenuRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!pointerMenuOpen) return;
+    const onDown = (e: PointerEvent) => {
+      if (!pointerMenuRef.current?.contains(e.target as Node)) setPointerMenuOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setPointerMenuOpen(false); };
+    document.addEventListener('pointerdown', onDown, true);
+    document.addEventListener('keydown', onKey, true);
+    return () => {
+      document.removeEventListener('pointerdown', onDown, true);
+      document.removeEventListener('keydown', onKey, true);
+    };
+  }, [pointerMenuOpen]);
+  useEffect(() => { if (!isHeaderVisible) setPointerMenuOpen(false); }, [isHeaderVisible]);
 
   const togglePointerLock = () => {
     if (!videoRef.current) return;
@@ -3430,7 +3455,25 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     updateHostCursorDOM(hostCursor.x, hostCursor.y, hostCursor.visible, hostCursor.kind);
   };
 
+  // The picture's CSS cursor also changes between renders (a button held
+  // while the host's pointer is in the picture): set it here, on every update.
+  const pictureCursorRef = useRef<{ el: HTMLElement | null; css: string }>({ el: null, css: '' });
+  const syncPictureCursor = () => {
+    const el = videoRef.current as HTMLElement | null;
+    if (!el) return;
+    const css = streamCursorCss(pointerView());
+    const last = pictureCursorRef.current;
+    if (last.el === el && last.css === css) return;
+    el.style.cursor = css;
+    pictureCursorRef.current = { el, css };
+  };
+
+  // The picture's cursor follows the state after every render too (the
+  // picture element may be new; a setting changed).
+  useEffect(() => { syncPictureCursor(); });
+
   const updateVirtualCursorDOM = () => {
+    syncPictureCursor();
     const cursorEl = localCursorRef.current;
     const imageEl = localCursorImageRef.current;
     const video = videoRef.current;
@@ -4103,7 +4146,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
         sentPositionsRef.current.clear();
         recordSentPointer(localCursorPosRef.current.x, localCursorPosRef.current.y);
       }
-      if (looksForPointerInPicture(pointerMaybeInPictureRef.current, agentHostOsRef.current) || pointerDragRef.current.active) syncPointerInPictureDrag();
+      if (looksForPointerInPicture(pointerMaybeInPictureRef.current, agentHostOsRef.current, hostWatchesWindowDragsRef.current) || pointerDragRef.current.active) syncPointerInPictureDrag();
     }
     const hostCursor = hostCursorPosRef.current;
     updateHostCursorDOM(hostCursor.x, hostCursor.y, hostCursor.visible, hostCursor.kind);
@@ -4203,15 +4246,6 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   };
 
   const isStreaming = status === "Streaming";
-  // Hardware-drawn host cursor when possible (smooth as a native pointer);
-  // otherwise hide the OS cursor and draw the DOM cursor as before.
-  // A host whose pointer is always part of its picture: no pointer at all.
-  const streamCursorStyle = streamCursorCss(pointerView({
-    streaming: isStreaming,
-    alwaysInPicture: pointerAlwaysInPicture,
-    pointerLocked: isPointerLocked,
-    hostCssCursor,
-  }));
 
   if (selectedAppId === null) {
     return (
@@ -4615,7 +4649,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
         <button 
           onClick={togglePointerLock}
           className={`stream-action-btn ${isPointerLocked ? 'active' : ''}`}
-          title={isPointerLocked ? "Release Pointer Lock (Hold ESC 3s)" : "Lock Pointer"}
+          title={isPointerLocked ? t('Release the pointer (hold Esc)') : "Lock Pointer"}
         >
           {isPointerLocked ? (
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
@@ -4630,30 +4664,73 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
           )}
         </button>
 
-        {/* Local Cursor Action */}
-        <button 
-          onClick={() => {
-            const newValue = !hideLocalCursor;
-            setHideLocalCursor(newValue);
-            localStorage.setItem('lunaris_stream_hide_cursor', String(newValue));
-
-          }}
-          className={`stream-action-btn ${!hideLocalCursor ? 'active' : ''}`}
-          title={hideLocalCursor ? "Show Local Cursor" : "Hide Local Cursor"}
-        >
-          {hideLocalCursor ? (
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" opacity="0.4">
-              <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
-              <circle cx="12" cy="12" r="3" />
-              <line x1="1" y1="1" x2="23" y2="23" />
+        {/* Pointer menu: the local cursor and, with a Windows computer, the game mouse */}
+        <div className="stream-menu-wrap" ref={pointerMenuRef}>
+          <button
+            onClick={() => setPointerMenuOpen((o) => !o)}
+            className={`stream-action-btn stream-menu-trigger ${!hideLocalCursor || gameMouseActive ? 'active' : ''} ${pointerMenuOpen ? 'open' : ''}`}
+            title={t('Pointer')}
+            aria-label={t('Pointer')}
+            aria-haspopup="menu"
+            aria-expanded={pointerMenuOpen}
+          >
+            {gameMouseActive ? (
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                <rect x="6" y="2" width="12" height="20" rx="6" />
+                <line x1="12" y1="6" x2="12" y2="10" />
+              </svg>
+            ) : hideLocalCursor ? (
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" opacity="0.4">
+                <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                <circle cx="12" cy="12" r="3" />
+                <line x1="1" y1="1" x2="23" y2="23" />
+              </svg>
+            ) : (
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                <circle cx="12" cy="12" r="3" />
+              </svg>
+            )}
+            <svg className="stream-menu-caret" width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="4">
+              <polyline points="6 9 12 15 18 9" />
             </svg>
-          ) : (
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-              <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
-              <circle cx="12" cy="12" r="3" />
-            </svg>
+          </button>
+          {pointerMenuOpen && (
+            <div className="stream-submenu" role="menu">
+              <button
+                role="menuitemcheckbox"
+                aria-checked={!hideLocalCursor}
+                className="stream-submenu-item"
+                onClick={() => {
+                  const newValue = !hideLocalCursor;
+                  setHideLocalCursor(newValue);
+                  localStorage.setItem('lunaris_stream_hide_cursor', String(newValue));
+                }}
+              >
+                <span className="stream-submenu-label">{t('Local cursor')}</span>
+                <span className={`stream-submenu-switch ${!hideLocalCursor ? 'on' : ''}`} />
+              </button>
+              {windowsHost && !sourceId && (
+                <button
+                  role="menuitemcheckbox"
+                  aria-checked={gameMouseActive}
+                  className="stream-submenu-item"
+                  disabled={gameMouse !== 'usbip'}
+                  title={gameMouse === 'usbip' ? undefined : gameMouse === 'none'
+                    ? t('Needs usbip-win2 on the remote computer: install it there and restart its agent.')
+                    : t('Needs agent 0.7.8 or newer on the remote computer.')}
+                  onClick={() => setGameMouseOn(!gameMouseOn)}
+                >
+                  <span className="stream-submenu-label">
+                    {t('Game mouse')}
+                    {gameMouse !== 'usbip' && <small>{gameMouse === 'none' ? t('Needs usbip-win2') : t('Needs a newer agent')}</small>}
+                  </span>
+                  <span className={`stream-submenu-switch ${gameMouseActive ? 'on' : ''}`} />
+                </button>
+              )}
+            </div>
           )}
-        </button>
+        </div>
 
         {/* Stats Action */}
         <button 
@@ -4822,7 +4899,6 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
               onWheel={handleWheel}
               className={`stream-video-view ${isStreaming ? 'visible' : 'hidden'}`}
               style={{ 
-                cursor: streamCursorStyle,
                 transform: `translate(${zoomPan.x}px, ${zoomPan.y}px) scale(${zoomScale})`,
                 transformOrigin: '0 0',
                 objectFit: objectFitFor(displayMode)
@@ -4854,7 +4930,6 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
             onLoadedMetadata={handleVideoLoadedMetadata}
             onResize={updatePictureCrop}
             style={{ 
-              cursor: streamCursorStyle,
               transform: `translate(${zoomPan.x}px, ${zoomPan.y}px) scale(${zoomScale})`,
               transformOrigin: '0 0',
               objectFit: objectFitFor(displayMode),
@@ -4912,44 +4987,42 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
           }}>{escapeNotice}</div>
         )}
 
-        {/* ESC hold-to-exit progress bar overlay */}
+        {/* ESC hold-to-exit: a ring filling up around the key's name. */}
         {escapeHoldProgress > 0 && (
-          <div style={{
+          <div role="status" style={{
             position: 'absolute',
-            bottom: '12px',
+            top: '50%',
             left: '50%',
-            transform: 'translateX(-50%)',
+            transform: 'translate(-50%, -50%)',
             zIndex: 200,
-            background: 'rgba(0, 0, 0, 0.75)',
-            borderRadius: '6px',
-            padding: '6px 14px',
+            background: 'rgba(0, 0, 0, 0.7)',
+            borderRadius: '16px',
+            padding: '16px 20px 12px',
             display: 'flex',
+            flexDirection: 'column',
             alignItems: 'center',
             gap: '8px',
             pointerEvents: 'none',
             userSelect: 'none',
           }}>
-            <span style={{
-              color: 'var(--text-muted)',
-              fontSize: '12px',
-              fontFamily: 'system-ui, sans-serif',
-              whiteSpace: 'nowrap',
-            }}>Hold ESC to exit</span>
-            <div style={{
-              width: '80px',
-              height: '4px',
-              background: 'rgb(var(--ink-rgb) / 0.2)',
-              borderRadius: '2px',
-              overflow: 'hidden',
-            }}>
-              <div style={{
-                width: `${Math.round(escapeHoldProgress * 100)}%`,
-                height: '100%',
-                background: '#f44',
-                borderRadius: '2px',
-                transition: 'width 50ms linear',
-              }} />
+            <div style={{ position: 'relative', width: '56px', height: '56px' }}>
+              <svg width="56" height="56" viewBox="0 0 56 56" style={{ transform: 'rotate(-90deg)' }} aria-hidden="true">
+                <circle cx="28" cy="28" r="24" fill="none" stroke="rgba(255, 255, 255, 0.2)" strokeWidth="5" />
+                <circle
+                  cx="28" cy="28" r="24" fill="none" stroke="#f44" strokeWidth="5" strokeLinecap="round"
+                  strokeDasharray={2 * Math.PI * 24}
+                  strokeDashoffset={2 * Math.PI * 24 * (1 - escapeHoldProgress)}
+                  style={{ transition: 'stroke-dashoffset 20ms linear' }}
+                />
+              </svg>
+              <span style={{
+                position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                color: '#fff', fontSize: '12px', fontWeight: 600, fontFamily: 'system-ui, sans-serif',
+              }}>Esc</span>
             </div>
+            <span style={{ color: 'rgba(255, 255, 255, 0.85)', fontSize: '12px', fontFamily: 'system-ui, sans-serif', whiteSpace: 'nowrap' }}>
+              {t('Keep holding Esc to let the pointer go')}
+            </span>
           </div>
         )}
 

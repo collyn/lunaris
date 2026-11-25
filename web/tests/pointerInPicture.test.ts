@@ -4,6 +4,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   CHECK_INTERVAL_MS,
+  FAST_MISSES,
+  SLOW_CHECK_INTERVAL_MS,
   PointerInPictureDrag,
   looksForPointerInPicture,
   SentPositions,
@@ -378,4 +380,28 @@ test('every drag on a Windows host looks; elsewhere only when the host says mayb
   assert.equal(looksForPointerInPicture(false, 'linux'), false);
   assert.equal(looksForPointerInPicture(false, 'unknown'), false);
   assert.equal(looksForPointerInPicture(true, 'unknown'), true);
+  // A Windows agent that watches window drags itself: nothing is looked for.
+  assert.equal(looksForPointerInPicture(false, 'windows', true), false);
+  assert.equal(looksForPointerInPicture(true, 'windows', true), true, 'a host that says maybe still is looked at');
+});
+
+test('a drag that never finds the pointer checks less often (each check costs a frame read)', () => {
+  const drag = new PointerInPictureDrag();
+  drag.update(true, true);
+  let now = 1000;
+  for (let i = 0; i < FAST_MISSES; i++) {
+    assert.equal(drag.wantsCheck(now), true, `fast check ${i + 1}`);
+    drag.noteCheck(now, 0);
+    now += CHECK_INTERVAL_MS;
+  }
+  assert.equal(drag.wantsCheck(now), false, 'slowed down after the misses');
+  assert.equal(drag.wantsCheck(now - CHECK_INTERVAL_MS + SLOW_CHECK_INTERVAL_MS), true);
+  // One find: fast again, so the next two that decide come soon.
+  now = now - CHECK_INTERVAL_MS + SLOW_CHECK_INTERVAL_MS;
+  drag.noteCheck(now, 1);
+  assert.equal(drag.wantsCheck(now + CHECK_INTERVAL_MS), true);
+  // A new drag starts fast.
+  drag.update(false, true);
+  drag.update(true, true);
+  assert.equal(drag.misses, 0);
 });

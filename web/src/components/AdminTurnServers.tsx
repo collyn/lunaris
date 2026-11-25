@@ -222,7 +222,7 @@ export function AdminTurnServers({ token, getBackendHost, getBackendProtocol }: 
       </div>
 
       <div className="admin-table-container">
-        <table className="admin-table">
+        <table className="admin-table stacked">
           <thead>
             <tr>
               <th>{t('Server URL')}</th>
@@ -235,7 +235,7 @@ export function AdminTurnServers({ token, getBackendHost, getBackendProtocol }: 
           <tbody>
             {builtin && (
               <tr>
-                <td>
+                <td className="cell-title">
                   <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
                     <span className="badge-tech">{t('Built-in')}</span>
                     {builtin.enabled
@@ -253,18 +253,18 @@ export function AdminTurnServers({ token, getBackendHost, getBackendProtocol }: 
                       : t('Off')}
                   </div>
                 </td>
-                <td>
+                <td data-label={t('Username')}>
                   <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>{t('Automatic')}</span>
                 </td>
-                <td>
+                <td data-label={t('Credential / Secret')}>
                   <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>{t('Temporary, per session')}</span>
                 </td>
-                <td>
+                <td data-label={t('Added On')}>
                   <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontFamily: 'monospace' }}>
                     {builtin.started_at ? new Date(builtin.started_at * 1000).toLocaleString() : '—'}
                   </span>
                 </td>
-                <td>
+                <td className="cell-actions">
                   <button onClick={() => { setShowBuiltin(true); fetchBuiltin(); }} className="btn-secondary" style={{ padding: '0.35rem 0.8rem', fontSize: '0.8rem', whiteSpace: 'nowrap' }}>
                     {t('Details')}
                   </button>
@@ -273,23 +273,23 @@ export function AdminTurnServers({ token, getBackendHost, getBackendProtocol }: 
             )}
             {servers.map(server => (
               <tr key={server.id}>
-                <td>
+                <td className="cell-title">
                   <span style={{ fontWeight: 600, color: 'var(--text-main)' }}>{server.urls}</span>
                 </td>
-                <td>
+                <td data-label={t('Username')}>
                   <span style={{ fontSize: '0.9rem' }}>{server.username || <span style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>—</span>}</span>
                 </td>
-                <td>
+                <td data-label={t('Credential / Secret')}>
                   <span style={{ fontSize: '0.9rem', fontFamily: 'monospace' }}>
                     {server.credential ? '••••••••' : <span style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>—</span>}
                   </span>
                 </td>
-                <td>
+                <td data-label={t('Added On')}>
                   <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontFamily: 'monospace' }}>
                     {server.created_at ? new Date(server.created_at).toLocaleString() : '—'}
                   </span>
                 </td>
-                <td>
+                <td className="cell-actions">
                   <div style={{ display: 'flex', gap: '0.5rem' }}>
                     <button
                       onClick={() => setDeleteServer(server)}
@@ -329,7 +329,7 @@ export function AdminTurnServers({ token, getBackendHost, getBackendProtocol }: 
                 </svg>
               </button>
             </div>
-            <div className="admin-modal-body" style={{ display: 'flex', flexDirection: 'column', gap: '1rem', maxHeight: 'calc(100vh - 220px)', overflowY: 'auto' }}>
+            <div className="admin-modal-body" style={{ gap: '1rem' }}>
               <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem', lineHeight: 1.6, margin: 0 }}>
                 {t('The server relays the stream itself when the two computers cannot reach each other directly. Each session gets temporary credentials; nothing needs to be set up here.')}
               </p>
@@ -365,6 +365,7 @@ export function AdminTurnServers({ token, getBackendHost, getBackendProtocol }: 
                         {t('Nobody is relaying: current connections go directly.')}
                       </div>
                     ) : (
+                      <div className="admin-table-scroll">
                       <table className="admin-table" style={{ fontSize: '0.85rem' }}>
                         <thead>
                           <tr>
@@ -385,6 +386,7 @@ export function AdminTurnServers({ token, getBackendHost, getBackendProtocol }: 
                           ))}
                         </tbody>
                       </table>
+                      </div>
                     )}
                   </div>
                   <p style={{ color: 'var(--text-muted)', fontSize: '0.8rem', lineHeight: 1.6, margin: 0 }}>

@@ -43,6 +43,12 @@ pub const MAX_SCORE: u32 = 26;
 pub const CHECKS_NEEDED: u32 = 3;
 /// At most one check in this time.
 pub const CHECK_INTERVAL: Duration = Duration::from_millis(30);
+/// After this many misses in a row the checks slow down to
+/// `SLOW_CHECK_INTERVAL`: a drag that is not a window's (selecting an area)
+/// must not read the picture all along (web/src/pointerInPicture.ts: there
+/// each check copies a frame back from the GPU and the stream skips frames).
+pub const FAST_MISSES: u32 = 10;
+pub const SLOW_CHECK_INTERVAL: Duration = Duration::from_millis(300);
 /// Positions sent longer ago are not looked at (the newest one always is).
 pub const POSITION_WINDOW: Duration = Duration::from_millis(600);
 pub const MAX_POSITIONS: usize = 16;
@@ -227,9 +233,15 @@ pub struct Drag {
     /// (`in_window_move_size`) only for the system's own move loop, not for
     /// the many apps that move their windows themselves.
     windows_host: bool,
+    /// The host says app-dragged windows in `in_window_move_size` itself
+    /// (`window_drag_watched`, agent window_drag.rs): its drags are not
+    /// looked at.
+    window_drag_watched: bool,
     active: bool,
     checks: u32,
     run: u32,
+    /// Checks in a row that did not find it.
+    misses: u32,
     found_after: Option<u32>,
     scale: Option<f32>,
     /// Changes whenever a drag starts or ends: a check started in one drag
@@ -257,8 +269,14 @@ impl Drag {
         self.update()
     }
 
+    /// The host's `window_drag_watched`.
+    pub fn set_window_drag_watched(&mut self, watched: bool) -> Option<String> {
+        self.window_drag_watched = watched;
+        self.update()
+    }
+
     fn update(&mut self) -> Option<String> {
-        let on = self.left_held && (self.maybe || self.windows_host);
+        let on = self.left_held && (self.maybe || (self.windows_host && !self.window_drag_watched));
         if on == self.active {
             return None;
         }
@@ -274,6 +292,7 @@ impl Drag {
         };
         self.checks = 0;
         self.run = 0;
+        self.misses = 0;
         self.found_after = None;
         self.scale = None;
         line
@@ -297,6 +316,11 @@ impl Drag {
         self.active && self.found_after.is_none()
     }
 
+    /// The least time between two checks now: longer after many misses.
+    pub fn check_interval(&self) -> Duration {
+        if self.misses >= FAST_MISSES { SLOW_CHECK_INTERVAL } else { CHECK_INTERVAL }
+    }
+
     /// The scale that matched in this drag: the only one still tried.
     pub fn scale(&self) -> Option<f32> {
         self.scale
@@ -312,11 +336,15 @@ impl Drag {
             Some(scale) => {
                 self.scale.get_or_insert(scale);
                 self.run += 1;
+                self.misses = 0;
                 if self.run >= CHECKS_NEEDED {
                     self.found_after = Some(self.checks);
                 }
             }
-            None => self.run = 0,
+            None => {
+                self.run = 0;
+                self.misses += 1;
+            }
         }
     }
 }
@@ -450,7 +478,8 @@ impl Tracker {
         if !self.wanted() || picture_width <= 0 || picture_height <= 0 {
             return None;
         }
-        if self.last_check.is_some_and(|t| now.duration_since(t) < CHECK_INTERVAL) {
+        let interval = self.drag.check_interval();
+        if self.last_check.is_some_and(|t| now.duration_since(t) < interval) {
             return None;
         }
         self.last_check = Some(now);
@@ -561,6 +590,10 @@ pub fn note_maybe(maybe: bool) {
 }
 
 /// The host's system, from its capabilities.
+pub fn note_window_drag_watched(watched: bool) {
+    log_end(with_tracker(|t| t.drag_mut().set_window_drag_watched(watched)));
+}
+
 pub fn note_host_os(host_os: &str) {
     log_end(with_tracker(|t| t.drag_mut().set_host_os(host_os)));
 }
@@ -916,6 +949,13 @@ mod tests {
         assert!(!drag.wants_check(), "elsewhere only when the host says maybe");
         drag.set_maybe(true);
         assert!(drag.wants_check());
+        // A Windows agent that watches window drags itself: not looked at.
+        drag.set_left_held(false);
+        drag.set_maybe(false);
+        drag.set_host_os("windows");
+        drag.set_window_drag_watched(true);
+        drag.set_left_held(true);
+        assert!(!drag.wants_check());
     }
 
     // 8. the decision over a drag, and its log line
@@ -957,6 +997,26 @@ mod tests {
         assert_eq!(drag.set_maybe(true), None);
         assert!(!drag.wants_check());
         assert_eq!(drag.set_maybe(false), None);
+    }
+
+    #[test]
+    fn a_drag_that_never_finds_it_checks_less_often() {
+        let mut drag = Drag::default();
+        drag.set_host_os("windows");
+        drag.set_left_held(true);
+        for _ in 0..FAST_MISSES {
+            assert_eq!(drag.check_interval(), CHECK_INTERVAL);
+            drag.record_check(None);
+        }
+        assert_eq!(drag.check_interval(), SLOW_CHECK_INTERVAL);
+        drag.record_check(Some(1.0));
+        assert_eq!(drag.check_interval(), CHECK_INTERVAL, "fast again once found");
+        for _ in 0..FAST_MISSES {
+            drag.record_check(None);
+        }
+        drag.set_left_held(false);
+        drag.set_left_held(true);
+        assert_eq!(drag.check_interval(), CHECK_INTERVAL, "a new drag starts fast");
     }
 
     #[test]

@@ -147,3 +147,9 @@ test('the https address of this page, to keep Esc', () => {
   assert.equal(secureAddress(page, null), null);
   assert.equal(secureAddress({ ...page, protocol: 'https:' }, 8443), null);
 });
+
+test('the Esc hold ends before Chrome leaves full screen by itself', async () => {
+  const { ESCAPE_HOLD_MS } = await import('../src/keyboard.ts');
+  // The browser lets go of a Keyboard Lock after 2 s of Esc.
+  assert.ok(ESCAPE_HOLD_MS >= 1000 && ESCAPE_HOLD_MS <= 1600);
+});

@@ -166,6 +166,8 @@ windows = { version = "0.62", features = [
     "Win32_System_Shutdown",
     "Win32_System_Threading",
     "Win32_UI_WindowsAndMessaging",
+    # window_drag.rs: GetAsyncKeyState.
+    "Win32_UI_Input_KeyboardAndMouse",
     # win_service.rs: GetUserProfileDirectoryW (file transfer's home folder).
     "Win32_UI_Shell",
 ] }

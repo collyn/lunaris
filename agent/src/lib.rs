@@ -36,6 +36,7 @@ mod share;
 mod single;
 mod status;
 mod video;
+mod window_drag;
 #[cfg(target_os = "windows")]
 pub mod win_service;
 #[cfg(target_os = "linux")]
