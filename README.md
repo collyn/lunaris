@@ -144,6 +144,23 @@ address and per account (also against many requests at once); turning
 two-factor on asks for the password again, and **Account security → Sign out
 everywhere** ends every session of the account.
 
+**Backup and restore.** The server keeps everything in its data folder: a
+SQLite database (`lunaris.db`: accounts, computers, groups, install tokens,
+settings) and its keys. Administrators download a backup on the web's
+**Server** page (one `.tar.gz`, made while the server runs) and restore one
+there (it is checked, then applied as the server restarts), or on the command
+line:
+
+```bash
+sudo lunaris-server backup /root/lunaris-backup.tar.gz
+sudo systemctl stop lunaris-server
+sudo lunaris-server restore /root/lunaris-backup.tar.gz   # what was there is kept as *.before-import-<time>
+sudo systemctl start lunaris-server
+```
+
+A backup holds the server's keys and password hashes: keep it safe. A backup
+of a newer server is refused.
+
 **Moving from the app's built-in server** (or from a server run by hand
 somewhere else; on the same Linux computer `install` does it by itself, see
 above). The desktop app's "server on this

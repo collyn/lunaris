@@ -178,6 +178,10 @@ export interface InstallToken {
   max_uses: number | null;
   uses: number;
   revoked: boolean;
+  /** Its command can be shown again (tokens made since 0.8.4). */
+  has_command?: boolean;
+  /** The computers that joined with it. */
+  computers?: { id: string; name: string; online: boolean }[];
 }
 
 export type TokenStatus = 'active' | 'expired' | 'used_up' | 'revoked';

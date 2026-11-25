@@ -290,6 +290,15 @@ pub async fn init_db(database_url: &str) -> Result<SqlitePool, sqlx::Error> {
     )
     .execute(&pool)
     .await?;
+    // The token itself, kept for tokens made from 0.8.4 on so that an
+    // administrator can be shown its command again (GET
+    // .../install-tokens/{id}/command); NULL for older ones, which were kept
+    // as a hash only.
+    let token_columns: Vec<String> = sqlx::query_scalar("SELECT name FROM pragma_table_info('install_tokens')").fetch_all(&pool).await?;
+    if !token_columns.iter().any(|c| c == "token_text") {
+        sqlx::query("ALTER TABLE install_tokens ADD COLUMN token_text TEXT;").execute(&pool).await?;
+    }
+
 
     // Perform migrations for users table if columns don't exist
     let user_columns: Vec<String> =

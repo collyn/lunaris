@@ -20,6 +20,7 @@ mod gateway;
 mod host_admin;
 mod host_settings;
 mod host_update;
+mod backup;
 mod server_info;
 mod import;
 mod takeover;
@@ -145,7 +146,7 @@ fn get_or_generate_agent_token() -> String {
     generated
 }
 
-fn find_database_url() -> String {
+pub(crate) fn find_database_url() -> String {
     if let Ok(url) = std::env::var("DATABASE_URL") {
         return url;
     }
@@ -192,6 +193,10 @@ Commands:
 On Linux with systemd the server runs as the service: without a command it
 says how to install it, and `run` refuses while the service runs with the same
 data folder or port.
+  backup [FILE.tar.gz]        Write the data (database and keys) to one file, also
+                              while the server runs
+  restore FILE.tar.gz         Replace the data with a backup (service stopped; what
+                              was there is kept as *.before-import-<time>)
   status                      Show the service status
   help, version
 
@@ -224,6 +229,8 @@ pub fn run(args: Vec<String>) -> std::process::ExitCode {
         Some("uninstall") => service::uninstall(rest),
         Some("status") => service::status(),
         Some("import") => import::run(rest),
+        Some("backup") => backup::run_backup(rest),
+        Some("restore") => backup::run_restore(rest),
         #[cfg(windows)]
         Some("prepare-data-dir") => service::prepare_data_dir_command(),
         #[cfg(windows)]
@@ -323,6 +330,10 @@ pub(crate) async fn run_server(
     // Before anything listens: a weak sign-in key is a configuration error.
     auth::check_jwt_secret_env()?;
     let database_url = find_database_url();
+    // A backup uploaded from the web is applied now, before the database is opened (backup.rs).
+    if let Ok(data) = backup::data_folder(&database_url) {
+        backup::apply_pending(&data).await;
+    }
 
     info!("Initializing SQLite database: {}", database_url);
     let pool = init_db(&database_url).await?;
@@ -374,6 +385,12 @@ pub(crate) async fn run_server(
         // Version, update, ports and data folder (server_info.rs).
         .route("/api/server/info", get(server_info::info))
         .route("/api/admin/server/update-check", post(server_info::check_update))
+        // The server's data as one file, and back (backup.rs).
+        .route("/api/admin/server/backup", get(backup::download))
+        .route(
+            "/api/admin/server/restore",
+            post(backup::upload).layer(axum::extract::DefaultBodyLimit::max(backup::MAX_UPLOAD_BYTES)),
+        )
         // The server gateway: its state and its switch (gateway.rs).
         .route("/api/admin/server/gateway", get(gateway::get_gateway).put(gateway::put_gateway))
         .route(
@@ -434,6 +451,9 @@ pub(crate) async fn run_server(
             get(install::list_tokens).post(install::create_token),
         )
         .route("/api/admin/install-tokens/{id}", delete(install::revoke_token))
+        .route("/api/admin/install-tokens/{id}/extend", post(install::extend_token))
+        .route("/api/admin/install-tokens/{id}/forget", delete(install::forget_token))
+        .route("/api/admin/install-tokens/{id}/command", get(install::token_command).post(install::renew_command))
         .route("/api/admin/install-fetch", get(install::fetch_info))
         .route("/install/agent.sh", get(install::agent_sh))
         .route("/install/agent.ps1", get(install::agent_ps1))
@@ -929,10 +949,22 @@ async fn delete_host_handler(
         )
             .into_response();
     }
+    match remove_host(&state, &host_id).await {
+        Ok(()) => StatusCode::OK.into_response(),
+        Err(e) => {
+            error!("Database error: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": "Failed to delete host from database" }))).into_response()
+        }
+    }
+}
+
+/// Removes a computer: its row and key (its agent can no longer sign in),
+/// its groups, its sessions, and the connection of its agent.
+pub(crate) async fn remove_host(state: &Arc<SignalingState>, host_id: &str) -> Result<(), sqlx::Error> {
     info!("Unpairing host: {}", host_id);
 
     // A computer added by address: stop connecting to it.
-    let address = host_id.strip_prefix("address:").map(str::to_owned).or_else(|| state.links.address_of(&host_id));
+    let address = host_id.strip_prefix("address:").map(str::to_owned).or_else(|| state.links.address_of(host_id));
     if let Some(address) = address {
         state.links.stop(&address);
         let _ = sqlx::query("DELETE FROM address_hosts WHERE address = ?")
@@ -940,14 +972,14 @@ async fn delete_host_handler(
             .execute(&state.db)
             .await;
         if host_id.starts_with("address:") {
-            return StatusCode::OK.into_response();
+            return Ok(());
         }
     }
 
     // Check if there are active local sessions and end them
     let session = {
         let mut sessions = state.local_sessions.write().unwrap();
-        sessions.remove(&host_id)
+        sessions.remove(host_id)
     };
     if let Some(session) = session {
         let _ = session.peer_connection.close().await;
@@ -956,29 +988,17 @@ async fn delete_host_handler(
     // Its group memberships go explicitly (foreign keys are not on for every
     // pooled connection): an agent registering this id again starts with none.
     let _ = sqlx::query("DELETE FROM host_groups WHERE host_id = ?")
-        .bind(&host_id)
+        .bind(host_id)
         .execute(&state.db)
         .await;
     let _ = sqlx::query("DELETE FROM source_removals WHERE host_id = ?")
-        .bind(&host_id)
+        .bind(host_id)
         .execute(&state.db)
         .await;
-    if let Err(e) = sqlx::query("DELETE FROM hosts WHERE id = ?")
-        .bind(&host_id)
-        .execute(&state.db)
-        .await
-    {
-        error!("Database error: {}", e);
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({ "error": "Failed to delete host from database" })),
-        )
-            .into_response();
-    }
+    sqlx::query("DELETE FROM hosts WHERE id = ?").bind(host_id).execute(&state.db).await?;
     // The agent connected as this host is disconnected, its sessions end.
-    signaling::disconnect_agent(&state, &host_id).await;
-
-    StatusCode::OK.into_response()
+    signaling::disconnect_agent(state, host_id).await;
+    Ok(())
 }
 
 /// The shared agent registration token: admins only (it lets a computer

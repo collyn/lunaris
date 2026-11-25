@@ -330,7 +330,7 @@ function App() {
 
   // Admin State
   const [userRole, setUserRole] = useState<string | null>(localStorage.getItem('lunaris_role'));
-  const [activeTab, setActiveTab] = useState<'devices' | 'users' | 'groups' | 'turn_servers' | 'server'>('devices');
+  const [activeTab, setActiveTab] = useState<'devices' | 'users' | 'groups' | 'turn_servers' | 'install_tokens' | 'server'>('devices');
   // The update banner's "How to update": the Server page scrolls to its steps.
   const [serverFocusUpdate, setServerFocusUpdate] = useState(0);
   // A newer Lunaris for administrators: a notice on every page and a dot on the Server tab.
@@ -1896,6 +1896,15 @@ function App() {
                     {t('TURN Servers')}
                   </button>
                   <button
+                    className={`nav-tab ${activeTab === 'install_tokens' ? 'active' : ''}`}
+                    onClick={() => setActiveTab('install_tokens')}
+                  >
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <circle cx="7.5" cy="15.5" r="4.5" /><path d="M10.7 12.3 21 2" /><path d="m16 7 3 3" /><path d="m19 4 2 2" />
+                    </svg>
+                    {t('Install tokens')}
+                  </button>
+                  <button
                     className={`nav-tab ${activeTab === 'server' ? 'active' : ''}`}
                     onClick={() => setActiveTab('server')}
                     aria-label={serverUpdate.available ? `${t('Server')} (${t('update available')})` : undefined}
@@ -2617,6 +2626,9 @@ function App() {
               {activeTab === 'turn_servers' && (
                 <AdminTurnServers token={token!} getBackendHost={getBackendHost} getBackendProtocol={getBackendProtocol} />
               )}
+              {activeTab === 'install_tokens' && userRole === 'admin' && (
+                <AdminInstallAgents token={token!} getBackendHost={getBackendHost} getBackendProtocol={getBackendProtocol} view="tokens" />
+              )}
               {activeTab === 'server' && userRole === 'admin' && (
                 <AdminServerInfo token={token!} apiBase={() => `${getBackendProtocol().http}//${getBackendHost()}`} focusUpdate={serverFocusUpdate} />
               )}
@@ -2839,7 +2851,7 @@ function App() {
                     </div>
                   )}
                   {installWay && (
-                    <AdminInstallAgents key={lunarisWay} token={token!} getBackendHost={getBackendHost} getBackendProtocol={getBackendProtocol} embedded enroll={lunarisWay === 'enroll'} />
+                    <AdminInstallAgents key={lunarisWay} token={token!} getBackendHost={getBackendHost} getBackendProtocol={getBackendProtocol} embedded enroll={lunarisWay === 'enroll'} view="create" onManageTokens={() => { closeAddHost(); setActiveTab('install_tokens'); }} />
                   )}
                   {!sourceDialog && !installWay && (
                     <div className="form-grid">
