@@ -64,6 +64,72 @@ pub fn enable() {
     ENABLED.store(true, Ordering::SeqCst);
 }
 
+/// One check, its result remembered (and logged when newer).
+async fn check_now(timeout: Duration) {
+    match tokio::time::timeout(timeout, fetch_latest()).await {
+        Ok(Ok(release)) => {
+            if is_newer(&release.tag) {
+                warn!(
+                    "Lunaris {} is available (this server is {}): {}",
+                    release.version,
+                    updater::CURRENT_VERSION,
+                    release.page_url
+                );
+            } else {
+                debug!("Update check: this server is the latest version");
+            }
+            remember(Some((release.version, release.page_url)), None);
+        }
+        Ok(Err(e)) => {
+            debug!("Update check failed: {e}");
+            remember(None, Some(e));
+        }
+        Err(_) => {
+            debug!("Update check failed: timed out");
+            remember(None, Some("timed out".into()));
+        }
+    }
+}
+
+/// A result older than this is asked again when the Server page is opened:
+/// a release made after the last check showed only a day later (2026-11-25).
+const FRESH_FOR: u64 = 10 * 60;
+
+/// Whether a result checked at `checked_at` is too old at `now` (Unix seconds).
+fn stale(checked_at: Option<u64>, now: u64) -> bool {
+    checked_at.is_none_or(|at| now.saturating_sub(at) >= FRESH_FOR)
+}
+
+/// Asks GitHub again when the last result is older than [`FRESH_FOR`]
+/// (one request at a time; waits at most a few seconds).
+pub async fn refresh_if_stale() {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    if stale(last().map(|r| r.checked_at), now) {
+        check_on_request().await;
+    }
+}
+
+/// Asks GitHub now (the Server page's "Check for updates"); one request at
+/// a time: a second one while it runs returns at once.
+pub async fn check_on_request() {
+    static CHECKING: AtomicBool = AtomicBool::new(false);
+    if !checks() || CHECKING.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    // Let go also when the request is dropped while it waits.
+    struct Done;
+    impl Drop for Done {
+        fn drop(&mut self) {
+            CHECKING.store(false, Ordering::SeqCst);
+        }
+    }
+    let _done = Done;
+    check_now(Duration::from_secs(8)).await;
+}
+
 /// Starts the daily check on the current tokio runtime when enabled.
 pub(crate) fn spawn() {
     if !checks() {
@@ -72,29 +138,7 @@ pub(crate) fn spawn() {
     tokio::spawn(async {
         tokio::time::sleep(Duration::from_secs(30)).await;
         loop {
-            match tokio::time::timeout(Duration::from_secs(60), fetch_latest()).await {
-                Ok(Ok(release)) => {
-                    if is_newer(&release.tag) {
-                        warn!(
-                            "Lunaris {} is available (this server is {}): {}",
-                            release.version,
-                            updater::CURRENT_VERSION,
-                            release.page_url
-                        );
-                    } else {
-                        debug!("Update check: this server is the latest version");
-                    }
-                    remember(Some((release.version, release.page_url)), None);
-                }
-                Ok(Err(e)) => {
-                    debug!("Update check failed: {e}");
-                    remember(None, Some(e));
-                }
-                Err(_) => {
-                    debug!("Update check failed: timed out");
-                    remember(None, Some("timed out".into()));
-                }
-            }
+            check_now(Duration::from_secs(60)).await;
             tokio::time::sleep(Duration::from_secs(24 * 3600)).await;
         }
     });
@@ -180,5 +224,19 @@ mod tests {
         assert_eq!(http_body(chunked).unwrap(), b"{\"a\":1}");
         assert!(http_body(b"HTTP/1.1 403 Forbidden\r\n\r\nrate limited").is_err());
         assert!(http_body(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nff\r\nab").is_err());
+    }
+}
+
+#[cfg(test)]
+mod freshness_tests {
+    use super::stale;
+
+    #[test]
+    fn a_result_is_asked_again_after_ten_minutes() {
+        assert!(stale(None, 1000), "never checked");
+        assert!(!stale(Some(1000), 1000 + 599));
+        assert!(stale(Some(1000), 1000 + 600));
+        // A clock set back: not stale.
+        assert!(!stale(Some(5000), 1000));
     }
 }

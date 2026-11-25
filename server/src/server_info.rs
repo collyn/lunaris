@@ -55,12 +55,28 @@ pub async fn info(
     axum::extract::State(state): axum::extract::State<std::sync::Arc<crate::signaling::SignalingState>>,
 ) -> Json<serde_json::Value> {
     let admin = user.role == "admin";
+    if admin {
+        update_notice::refresh_if_stale().await;
+    }
     let mut out = info_json(admin);
     if admin {
         // The server gateway (gateway.rs): its switch and where it is.
         out["gateway"] = crate::gateway::status(&state);
     }
     Json(out)
+}
+
+/// POST /api/admin/server/update-check: asks GitHub now, answers what
+/// GET /api/server/info answers (administrators only).
+pub async fn check_update(
+    user: AuthenticatedUser,
+    state: axum::extract::State<std::sync::Arc<crate::signaling::SignalingState>>,
+) -> Result<Json<serde_json::Value>, axum::http::StatusCode> {
+    if user.role != "admin" {
+        return Err(axum::http::StatusCode::FORBIDDEN);
+    }
+    update_notice::check_on_request().await;
+    Ok(info(user, state).await)
 }
 
 #[cfg(test)]

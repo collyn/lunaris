@@ -185,6 +185,8 @@ fn add_viewer(p: &mut Pipeline, pipeline: &Arc<Mutex<Pipeline>>) -> (mpsc::Recei
 
 /// Starts a pipeline for `screen`, its events handed out to its viewers.
 fn start(screen: &str, config: StreamConfig) -> (u64, Arc<Mutex<Pipeline>>) {
+    // A game loading the computer must not starve the stream (stream_priority.rs).
+    crate::stream_priority::raise_for_streaming();
     let (media, mut events, commands) = MediaPipeline::new(config.clone());
     let id = next_id();
     let display_for_run = screen.to_string();

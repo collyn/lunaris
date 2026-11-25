@@ -1218,6 +1218,9 @@ body {
 .stream-submenu-switch.on { background: var(--accent-cyan); }
 .stream-submenu-switch.on::after { transform: translateX(12px); }
 
+.server-update-check { display: inline-flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
+.server-update-check .btn-secondary { padding: 0.3rem 0.75rem; font-size: 0.8rem; }
+
 .btn-tech {
   background-color: var(--bg-tertiary);
   border: 1px solid var(--border-color);

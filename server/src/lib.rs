@@ -372,6 +372,7 @@ pub(crate) async fn run_server(
         .route("/api/admin/hosts/{id}/address", axum::routing::put(host_admin::update_address_host))
         // Version, update, ports and data folder (server_info.rs).
         .route("/api/server/info", get(server_info::info))
+        .route("/api/admin/server/update-check", post(server_info::check_update))
         // The server gateway: its state and its switch (gateway.rs).
         .route("/api/admin/server/gateway", get(gateway::get_gateway).put(gateway::put_gateway))
         .route(

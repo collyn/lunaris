@@ -10,6 +10,7 @@ import { accessRefusal } from '../accessRequest';
 import { PictureReader, PointerInPictureDrag, looksForPointerInPicture, SentPositions, buildTemplates, matchRegion, searchGroups, type Template } from '../pointerInPicture';
 import { relativeMovePacket, takeRelativeStep } from '../relativePointer';
 import { gameMousePacket, readGameMouseOn, saveGameMouseOn } from '../gameMouse';
+import { CONNECT_TIMEOUT_MS, DISCONNECTED_GRACE_MS, HOST_GONE_MESSAGE, MAX_RECONNECTS, STABLE_AFTER_MS, reconnectDelay, signalingCloseLosesSession } from '../reconnect';
 import { canFullscreen, exitFullscreen, exitPointerLock, requestFullscreen } from '../pageLocks';
 import { hostPointerInPicture, isStaleCursorSeq, saysPointerAlwaysInPicture, showsHostCursor, showsOwnCursor, streamCursorCss, type PointerView } from '../pointerShown';
 import { agentRoundTripMs, decodeStatText, decoderName, encodeStatText, pingStatText, shownPingMs, sourceLatencyMs } from '../streamStats';
@@ -427,6 +428,52 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   // A source that changed its video codec asks for the session to be started again.
   const [sourceRestart, setSourceRestart] = useState(0);
   const sourceRestartsRef = useRef(0);
+
+  // Connecting again after a lost session, up to three times (reconnect.ts).
+  // A new try re-runs the session effect (sourceRestart).
+  const reconnectRef = useRef<{ attempts: number; timer: number | null; stable: number | null; grace: number | null; deadline: number | null }>(
+    { attempts: 0, timer: null, stable: null, grace: null, deadline: null },
+  );
+  const clearReconnectTimers = () => {
+    const r = reconnectRef.current;
+    for (const key of ['timer', 'stable', 'grace', 'deadline'] as const) {
+      if (r[key] !== null) { window.clearTimeout(r[key]!); r[key] = null; }
+    }
+  };
+  /** Starts the next try; false when none is left. */
+  const tryReconnect = (why: string): boolean => {
+    const r = reconnectRef.current;
+    const delay = reconnectDelay(r.attempts);
+    if (delay === null) {
+      addLog(`Connection lost (${why}); no tries left`);
+      // Given up: no later timer may change what is shown.
+      clearReconnectTimers();
+      return false;
+    }
+    r.attempts += 1;
+    addLog(`Connection lost (${why}); connecting again in ${delay} ms (${r.attempts}/${MAX_RECONNECTS})`);
+    clearReconnectTimers();
+    cleanup();
+    setErrorMsg(null);
+    setStatus(t('Connection lost, reconnecting (%1/%2)…', r.attempts, MAX_RECONNECTS));
+    r.timer = window.setTimeout(() => {
+      r.timer = null;
+      setSourceRestart(n => n + 1);
+      // No picture in time (a host still offline does not answer): the next try.
+      r.deadline = window.setTimeout(() => {
+        r.deadline = null;
+        if (pcRef.current?.connectionState === 'connected') return;
+        if (!tryReconnect('no answer')) {
+          setErrorMsg(t('Could not connect again to the remote computer.'));
+          setStatus("Error");
+        }
+      }, CONNECT_TIMEOUT_MS);
+    }, delay);
+    return true;
+  };
+  /** A try is running (waiting or connecting). */
+  const reconnecting = () => reconnectRef.current.timer !== null || reconnectRef.current.deadline !== null;
+  useEffect(() => () => clearReconnectTimers(), []);
   const lastSourceRestartRef = useRef(0);
   const [availableDisplays, setAvailableDisplays] = useState<{id: string; name: string; width: number; height: number; refresh_rate: number; is_primary: boolean}[]>([]);
   const [isMuted, setIsMuted] = useState<boolean>(() => {
@@ -1650,6 +1697,9 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
 
           case "Error":
             addLog(`Error from signaling: ${payload.message}`);
+            // The host went away (an agent restarting, its network), or a try
+            // was answered with an error: the next try.
+            if ((payload.message === HOST_GONE_MESSAGE || reconnecting()) && tryReconnect(`server: ${payload.message}`)) break;
             setErrorMsg(payload.message);
             setStatus("Error");
             break;
@@ -1662,18 +1712,21 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       }
     };
 
+    // An error is followed by "close", which decides.
     ws.onerror = () => {
       if (wsRef.current !== ws) return;
       addLog(`Signaling WebSocket error.`);
-      setErrorMsg("WebSocket connection error.");
-      setStatus("Error");
     };
 
     ws.onclose = () => {
       if (wsRef.current !== ws) return;
       addLog("Signaling WebSocket closed.");
-      if (status !== "Disconnected" && status !== "Error") {
-        setStatus("Disconnected");
+      // The picture still comes (a server restart): the peer connection's
+      // own failure, if it comes, is noticed apart.
+      if (!signalingCloseLosesSession(pcRef.current?.connectionState)) return;
+      if (!tryReconnect('signaling closed')) {
+        setErrorMsg(t('Lost the connection to the server.'));
+        setStatus("Error");
       }
     };
 
@@ -2465,9 +2518,33 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     pc.onconnectionstatechange = () => {
       addLog(`Connection State: ${pc.connectionState}`);
       setStats(prev => ({ ...prev, connState: pc.connectionState }));
-      if (pc.connectionState === 'failed') {
-        setErrorMsg("WebRTC Connection failed. Check network routing.");
-        setStatus("Error");
+      if (pcRef.current !== pc) return;
+      const r = reconnectRef.current;
+      const lost = (why: string, message: string) => {
+        if (!tryReconnect(why)) {
+          setErrorMsg(message);
+          setStatus("Error");
+        }
+      };
+      if (pc.connectionState === 'connected') {
+        if (r.grace !== null) { window.clearTimeout(r.grace); r.grace = null; }
+        if (r.deadline !== null) { window.clearTimeout(r.deadline); r.deadline = null; }
+        // Held a while: the next loss gets all its tries again.
+        if (r.stable !== null) window.clearTimeout(r.stable);
+        r.stable = window.setTimeout(() => { r.stable = null; r.attempts = 0; }, STABLE_AFTER_MS);
+      } else if (pc.connectionState === 'disconnected') {
+        if (r.stable !== null) { window.clearTimeout(r.stable); r.stable = null; }
+        if (r.grace === null) {
+          r.grace = window.setTimeout(() => {
+            r.grace = null;
+            if (pcRef.current === pc && pc.connectionState === 'disconnected') {
+              lost('no packets for a while', t('The connection to the remote computer was lost.'));
+            }
+          }, DISCONNECTED_GRACE_MS);
+        }
+      } else if (pc.connectionState === 'failed') {
+        if (r.grace !== null) { window.clearTimeout(r.grace); r.grace = null; }
+        lost('peer connection failed', "WebRTC Connection failed. Check network routing.");
       }
     };
 

@@ -35,6 +35,7 @@ pub mod settings;
 mod share;
 mod single;
 mod status;
+mod stream_priority;
 mod video;
 mod window_drag;
 #[cfg(target_os = "windows")]
