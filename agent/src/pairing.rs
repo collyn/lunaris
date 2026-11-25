@@ -133,6 +133,13 @@ pub struct AgentConfig {
     /// such login is logged as a warning.
     #[serde(default = "default_true")]
     pub allow_legacy_plain_direct: bool,
+    /// The administrators of the Lunaris server may update this agent from
+    /// the web (remote_update.rs): it then downloads a release of the
+    /// project and installs it only when its signature is right. On by
+    /// default; `lunaris-agent set server-update deny` turns it off (only on
+    /// this computer, never from the server).
+    #[serde(default = "default_true")]
+    pub allow_server_update: bool,
 }
 
 fn default_wayland_capture() -> String {

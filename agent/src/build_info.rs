@@ -13,7 +13,13 @@ pub fn current() -> common::AgentBuild {
         os: std::env::consts::OS.to_string(),
         install: install_kind().to_string(),
         game_mouse: crate::game_mouse::availability().map(str::to_string),
+        remote_update: Some(crate::remote_update::offered()),
     }
+}
+
+/// How this agent was installed (the `INSTALL_*` values).
+pub fn current_install() -> String {
+    install_kind().to_string()
 }
 
 #[cfg(target_os = "linux")]

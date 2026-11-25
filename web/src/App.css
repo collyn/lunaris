@@ -825,6 +825,15 @@ body {
   gap: 0.85rem;
 }
 
+.setup-panel.first-computer { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; padding: 16px 20px; }
+.option-cards.lunaris-ways { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-bottom: 12px; }
+.add-host-card.install-way { width: min(880px, calc(100vw - 32px)); max-width: none; }
+.add-host-card.install-way .add-host-body { max-height: min(62vh, 640px); overflow-y: auto; min-width: 0; }
+.install-embedded { display: flex; flex-direction: column; gap: 12px; }
+.install-embedded .install-card { margin: 0; }
+.install-embedded .install-card-title { font-size: 0.95rem; }
+@media (max-width: 640px) { .option-cards.lunaris-ways { grid-template-columns: 1fr; } }
+
 .add-host-card .form-group {
   margin: 0;
 }
@@ -1230,6 +1239,11 @@ body {
   overflow-x: auto; white-space: pre;
 }
 .server-update-command .btn-secondary { flex-shrink: 0; padding: 0.35rem 0.75rem; font-size: 0.8rem; }
+
+.agent-update-now { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; margin: 4px 0 12px; }
+.agent-update-now .install-hint { margin: 0; }
+.agent-update-progress { display: flex; align-items: center; gap: 10px; margin: 0; color: var(--text-strong); }
+.agent-update-done { margin: 0; color: var(--success, #16a34a); font-weight: 600; }
 
 .btn-tech {
   background-color: var(--bg-tertiary);
@@ -5200,6 +5214,54 @@ select option:disabled { color: var(--text-subtle); }
   .install-empty td { padding: 24px 8px; }
 }
 
+/* Inside "Add computer" the page is narrower than a window: the form wraps
+   (the validity choices on a row of their own) and each token is a card. */
+.install-embedded .install-form-grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+.install-embedded .install-form-grid > .form-group:first-child { grid-column: 1; grid-row: 1; }
+.install-embedded .install-form-grid > .form-group:nth-child(2) { grid-column: 1 / -1; grid-row: 2; }
+.install-embedded .install-form-grid > .form-group:nth-child(3) { grid-column: 2; grid-row: 1; }
+.install-embedded .install-form-submit { grid-column: 1 / -1; grid-row: 3; }
+.install-embedded .install-form-submit .btn-primary { width: 100%; }
+.install-embedded .install-segmented { display: flex; width: 100%; }
+.install-embedded .install-segmented button { flex: 1; padding: 0 6px; }
+.install-embedded .install-command { flex-direction: column; align-items: stretch; }
+.install-embedded .install-copy-btn { justify-content: center; }
+.install-embedded .install-table-container { overflow: visible; }
+.install-embedded .install-table thead { display: none; }
+.install-embedded .install-table, .install-embedded .install-table tbody { display: block; }
+.install-embedded .install-table tr {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr)) auto;
+  align-items: center;
+  gap: 6px 12px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+}
+.install-embedded .install-table tbody tr:last-child { border-bottom: 0; }
+.install-embedded .install-table td { display: block; padding: 0; border: 0; min-width: 0; }
+.install-embedded .install-table td[data-label]::before {
+  content: attr(data-label);
+  display: block;
+  margin-bottom: 2px;
+  font-size: 11px;
+  font-weight: 550;
+  color: var(--text-subtle);
+}
+.install-embedded .install-table td:first-child { grid-column: 1 / -1; }
+.install-embedded .install-table td:first-child::before { display: none; }
+.install-embedded .install-table .install-actions { text-align: right; }
+.install-embedded .install-empty { display: block !important; }
+.install-embedded .install-empty td { padding: 20px 8px; }
+@media (max-width: 640px) {
+  .install-embedded .install-form-grid { grid-template-columns: minmax(0, 1fr); }
+  .install-embedded .install-form-grid > .form-group:first-child,
+  .install-embedded .install-form-grid > .form-group:nth-child(2),
+  .install-embedded .install-form-grid > .form-group:nth-child(3),
+  .install-embedded .install-form-submit { grid-column: auto; grid-row: auto; }
+  .install-embedded .install-table tr { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .install-embedded .install-table .install-actions { grid-column: 1 / -1; text-align: left; }
+}
+
 /* ====== Two-factor sign-in (components/AccountSecurity.tsx, the login code step) ====== */
 .mfa-card {
   width: min(460px, 100%);
@@ -5493,5 +5555,20 @@ select option:disabled { color: var(--text-subtle); }
   cursor: pointer;
   width: fit-content;
 }
+.agent-update-badge svg { width: 12px; height: 12px; }
+.host-name-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.host-name-row .host-name { min-width: 0; }
+.host-rename-btn {
+  flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; padding: 0; border: none; border-radius: 6px;
+  background: none; color: var(--text-muted); cursor: pointer; opacity: 0;
+  transition: opacity 0.15s ease, background 0.15s ease;
+}
+.host-rename-btn svg { width: 14px; height: 14px; }
+.host-card:hover .host-rename-btn, .host-rename-btn:focus-visible { opacity: 1; }
+.host-rename-btn:hover { background: var(--surface-2); color: var(--text-strong); }
+@media (hover: none) { .host-rename-btn { opacity: 0.7; } }
+.host-action-btn.agent-update-btn { color: var(--warning); border-color: rgb(245 158 11 / 0.55); background: rgb(245 158 11 / 0.1); }
+.host-action-btn.agent-update-btn:hover { background: rgb(245 158 11 / 0.2); }
 .agent-update-badge:hover { background: rgb(245 158 11 / 0.18); }
 .agent-update-badge:focus-visible { outline: 2px solid var(--warning); outline-offset: 2px; }

@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { getLang, t } from '../i18n';
 import {
   VALIDITY_CHOICES,
+  enrollCommand,
   installCommand,
   installScriptUrl,
   parseMaxUses,
@@ -9,6 +10,7 @@ import {
   psQuote,
   relativeParts,
   tokenStatus,
+  type EnrollKind,
   type InstallOs,
   type InstallToken,
   type TokenStatus,
@@ -19,6 +21,11 @@ interface AdminInstallAgentsProps {
   token: string;
   getBackendHost: () => string;
   getBackendProtocol: () => { http: string; ws: string };
+  /** Shown inside "Add computer" (no page title of its own). */
+  embedded?: boolean;
+  /** The command joins an agent that is already installed
+   *  (`lunaris-agent --enroll`) instead of installing one. */
+  enroll?: boolean;
 }
 
 /** Copies text; falls back to a hidden textarea where the Clipboard API is
@@ -98,7 +105,8 @@ export function CopyButton({ text, label, className }: { text: string; label: st
   );
 }
 
-export function AdminInstallAgents({ token, getBackendHost, getBackendProtocol }: AdminInstallAgentsProps) {
+export function AdminInstallAgents({ token, getBackendHost, getBackendProtocol, embedded, enroll }: AdminInstallAgentsProps) {
+  const [enrollKind, setEnrollKind] = useState<EnrollKind>('windows');
   const origin = `${getBackendProtocol().http}//${getBackendHost()}`;
   const api = useMemo(() => installTokensApi(origin, token), [origin, token]);
 
@@ -116,6 +124,12 @@ export function AdminInstallAgents({ token, getBackendHost, getBackendProtocol }
 
   // The token just created: shown once, kept only in memory.
   const [created, setCreated] = useState<CreatedInstallToken | null>(null);
+  // A new token's command is what comes next: brought into view (in the
+  // "Add computer" dialog it is below the fold).
+  const revealRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (created) revealRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, [created]);
   const [os, setOs] = useState<InstallOs>(() => (navigator.userAgent.includes('Windows') ? 'windows' : 'linux'));
   const [computerName, setComputerName] = useState('');
   const [insecure, setInsecure] = useState(false);
@@ -195,19 +209,23 @@ export function AdminInstallAgents({ token, getBackendHost, getBackendProtocol }
   const scriptOrigin = created?.install?.scriptOrigin ?? origin;
   const overHttps = scriptOrigin.startsWith('https:');
   const commandOptions = { name: computerName, insecure: !pinned && overHttps && os === 'linux' && insecure, fetch: created?.install ?? null };
-  const command = created ? installCommand(os, origin, created.token, commandOptions) : '';
+  const command = !created ? ''
+    : enroll ? enrollCommand(enrollKind, origin, created.token, { name: computerName, fetch: created.install })
+    : installCommand(os, origin, created.token, commandOptions);
   const localPsCommand = created
     ? `$env:LUNARIS_INSTALL_TOKEN=${psQuote(created.token)}; powershell -ExecutionPolicy Bypass -File .\\agent.ps1${computerName.trim() ? ` -Name ${psQuote(computerName.trim())}` : ''}`
     : '';
 
   return (
-    <div className="admin-page-container install-page">
-      <div className="section-header">
-        <div>
-          <h1 className="section-title">{t('Install agents')}</h1>
-          <p className="section-subtitle">{t('Create an install token, then paste one command on each computer. It installs the agent and connects it to this server.')}</p>
+    <div className={embedded ? 'install-page install-embedded' : 'admin-page-container install-page'}>
+      {!embedded && (
+        <div className="section-header">
+          <div>
+            <h1 className="section-title">{t('Install agents')}</h1>
+            <p className="section-subtitle">{t('Create an install token, then paste one command on each computer. It installs the agent and connects it to this server.')}</p>
+          </div>
         </div>
-      </div>
+      )}
 
       <form className="install-card install-form" onSubmit={handleCreate}>
         <h2 className="install-card-title">{t('New install token')}</h2>
@@ -262,7 +280,7 @@ export function AdminInstallAgents({ token, getBackendHost, getBackendProtocol }
       </form>
 
       {created && (
-        <section className="install-card install-reveal" aria-labelledby="install-reveal-title">
+        <section ref={revealRef} className="install-card install-reveal" aria-labelledby="install-reveal-title">
           <div className="install-reveal-head">
             <h2 className="install-card-title" id="install-reveal-title">
               {created.label ? t('Install token "%1" created', created.label) : t('Install token created')}
@@ -278,26 +296,47 @@ export function AdminInstallAgents({ token, getBackendHost, getBackendProtocol }
             <span>{t('This token is shown only once. Anyone who has it can add computers to this server until it expires or is revoked.')}</span>
           </div>
 
-          <div className="install-os-tabs" role="tablist" aria-label={t('Operating system')}>
-            {(['linux', 'windows'] as InstallOs[]).map((o) => (
-              <button
-                key={o}
-                type="button"
-                role="tab"
-                aria-selected={os === o}
-                className={os === o ? 'active' : ''}
-                onClick={() => setOs(o)}
-              >
-                {o === 'linux' ? 'Linux' : 'Windows'}
-              </button>
-            ))}
-          </div>
+          {enroll ? (
+            <>
+              <div className="install-os-tabs" role="tablist" aria-label={t('Operating system')}>
+                {([['windows', 'Windows'], ['linux-desktop', 'Linux (desktop)'], ['linux-headless', 'Linux (no desktop)']] as [EnrollKind, string][]).map(([kind, name]) => (
+                  <button key={kind} type="button" role="tab" aria-selected={enrollKind === kind} className={enrollKind === kind ? 'active' : ''} onClick={() => setEnrollKind(kind)}>
+                    {t(name)}
+                  </button>
+                ))}
+              </div>
+              <p className="install-hint">
+                {enrollKind === 'windows'
+                  ? t('Paste into PowerShell opened as Administrator on that computer:')
+                  : enrollKind === 'linux-desktop'
+                    ? t('Paste into a terminal on that computer, as the person who uses its desktop (no sudo):')
+                    : t('Paste into a terminal on that computer (needs sudo):')}
+              </p>
+            </>
+          ) : (
+            <>
+              <div className="install-os-tabs" role="tablist" aria-label={t('Operating system')}>
+                {(['linux', 'windows'] as InstallOs[]).map((o) => (
+                  <button
+                    key={o}
+                    type="button"
+                    role="tab"
+                    aria-selected={os === o}
+                    className={os === o ? 'active' : ''}
+                    onClick={() => setOs(o)}
+                  >
+                    {o === 'linux' ? 'Linux' : 'Windows'}
+                  </button>
+                ))}
+              </div>
 
-          <p className="install-hint">
-            {os === 'linux'
-              ? t('Paste into a terminal on each computer (needs sudo):')
-              : t('Paste into PowerShell opened as Administrator on each computer:')}
-          </p>
+              <p className="install-hint">
+                {os === 'linux'
+                  ? t('Paste into a terminal on each computer (needs sudo):')
+                  : t('Paste into PowerShell opened as Administrator on each computer:')}
+              </p>
+            </>
+          )}
           <div className="install-command">
             <code>{command}</code>
             <CopyButton text={command} label={t('Copy command')} />
@@ -317,7 +356,7 @@ export function AdminInstallAgents({ token, getBackendHost, getBackendProtocol }
               <small className="install-small">{t('For installing many computers, leave this empty: each agent uses its own hostname.')}</small>
             </div>
             {/* Only HTTPS has a certificate to skip; a pinned one needs no option. */}
-            {overHttps && !pinned && (
+            {!enroll && overHttps && !pinned && (
               <label className="admin-toggle-label install-toggle">
                 <input type="checkbox" checked={insecure} onChange={(e) => setInsecure(e.target.checked)} />
                 <span>{t('Self-signed certificate')}</span>
@@ -325,10 +364,19 @@ export function AdminInstallAgents({ token, getBackendHost, getBackendProtocol }
             )}
           </div>
 
-          {pinned && (
+          {enroll && (
+            <p className="install-note">
+              {t('Nothing is downloaded or installed: the agent there is told this server\'s address and joins it with the token. An agent that was on another server leaves it.')}
+              {created.install?.certSha256 ? ` ${t('It accepts only this server\'s certificate.')}` : ''}
+            </p>
+          )}
+          {enroll && !overHttps && (
+            <p className="install-note">{t('This server has no HTTPS: the agent connects unprotected. Turn HTTPS on (LUNARIS_HTTPS_PORT) for anything but a network you trust.')}</p>
+          )}
+          {!enroll && pinned && (
             <p className="install-note">{t('The command downloads the script over HTTPS from %1 and accepts only this server\'s certificate, even though it is self-signed.', scriptOrigin)}</p>
           )}
-          {!overHttps && (
+          {!enroll && !overHttps && (
             <div className="install-warning" role="note">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                 <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
@@ -337,10 +385,10 @@ export function AdminInstallAgents({ token, getBackendHost, getBackendProtocol }
               <span>{t('This server has no HTTPS: the script is downloaded unprotected and runs as administrator, so anyone on the network could change it. Turn HTTPS on (LUNARIS_HTTPS_PORT) or use this only on a network you trust.')}</span>
             </div>
           )}
-          {!pinned && overHttps && insecure && os === 'linux' && (
+          {!enroll && !pinned && overHttps && insecure && os === 'linux' && (
             <p className="install-note">{t('Adds -k to curl so the script can be downloaded from a server whose certificate is not trusted. Use it only on a network you trust.')}</p>
           )}
-          {!pinned && overHttps && insecure && os === 'windows' && (
+          {!enroll && !pinned && overHttps && insecure && os === 'windows' && (
             <div className="install-note">
               <p>{t('PowerShell on Windows cannot skip the certificate check for this download. Give the server a trusted certificate (for example from Let\'s Encrypt), or add its certificate to "Trusted Root Certification Authorities" on each computer.')}</p>
               <p>{t('Or download %1 in a browser, then run this as Administrator in the folder where it was saved:', installScriptUrl('windows', scriptOrigin))}</p>

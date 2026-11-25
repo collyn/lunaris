@@ -782,7 +782,24 @@ pub struct AgentBuild {
     /// agents before 0.7.8.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub game_mouse: Option<String>,
+    /// The server's administrators can update this agent from the web
+    /// (`ServerToAgentMessage::Update`): it can install a release by itself
+    /// here and the computer allows it. Absent from agents before 0.8.3.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_update: Option<bool>,
 }
+
+/// `UpdateAnswer.code`: this agent cannot install an update by itself (how
+/// it was installed, or what it runs as): the update command is run there.
+pub const UPDATE_NOT_SUPPORTED: &str = "not_supported";
+/// The computer does not allow updates asked for by the server.
+pub const UPDATE_NOT_ALLOWED: &str = "not_allowed";
+/// The version asked for is not a version, or not newer than the agent's.
+pub const UPDATE_INVALID: &str = "invalid";
+/// An update is already being installed there.
+pub const UPDATE_BUSY: &str = "busy";
+/// Downloading, checking or starting the installer failed; nothing was installed.
+pub const UPDATE_FAILED: &str = "failed";
 
 /// usbip-win2 is installed: the agent plugs its USB game mouse in.
 pub const GAME_MOUSE_USBIP: &str = "usbip";
@@ -868,6 +885,18 @@ pub enum AgentMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         code: Option<String>,
     },
+    /// The answer to `ServerToAgentMessage::Update`, once: without `error`
+    /// the release was downloaded, its signature and checksum were checked
+    /// and its installer was started (the agent restarts as the new version
+    /// within a minute); with `error`, nothing was installed (`code`: the
+    /// `UPDATE_*` values). Servers from before this message drop it.
+    UpdateAnswer {
+        request_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        code: Option<String>,
+    },
 }
 
 // Message from Server to Agent via WebSocket
@@ -892,6 +921,19 @@ pub enum ServerToAgentMessage {
     Settings {
         request_id: String,
         request: SettingsRequest,
+        /// Who asked (user name), for the agent's log.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        requester: Option<String>,
+    },
+    /// Update this agent to release `version` ("0.8.3"); answered with
+    /// `AgentMessage::UpdateAnswer`. The agent downloads the release from
+    /// the project's GitHub releases only and installs it only when the
+    /// release's signature (the key built into the agent) and the file's
+    /// checksum are right: the server names a version, never a file. Agents
+    /// from before this message drop it.
+    Update {
+        request_id: String,
+        version: String,
         /// Who asked (user name), for the agent's log.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         requester: Option<String>,

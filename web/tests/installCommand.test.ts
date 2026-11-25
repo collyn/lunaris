@@ -174,3 +174,20 @@ test('relative time', () => {
   assert.deepEqual(relativeParts(now - 2 * 3600_000, now), { amount: 2, unit: 'hour', future: false });
   assert.deepEqual(relativeParts(now + 5 * 60_000, now), { amount: 5, unit: 'minute', future: true });
 });
+
+test('an installed agent is joined with one command, nothing downloaded', async () => {
+  const { enrollCommand } = await import('../src/installCommand.ts');
+  const pinned = { scriptOrigin: 'https://srv.example:8443', spkiSha256: 'x'.repeat(43) + '=', certSha256: 'AB'.repeat(32) };
+  const desktop = enrollCommand('linux-desktop', 'http://srv.example:8090', 'lit_abc', { fetch: pinned });
+  assert.equal(desktop, `LUNARIS_INSTALL_TOKEN='lit_abc' lunaris-agent --enroll --server 'https://srv.example:8443' --server-cert-sha256 ${'AB'.repeat(32)}`);
+  assert.ok(!/curl|irm|sudo/.test(desktop), 'no download, no root for the desktop agent');
+  const headless = enrollCommand('linux-headless', 'http://srv.example:8090', 'lit_abc', { fetch: pinned, name: "Bob's PC" });
+  assert.match(headless, /^sudo env LUNARIS_INSTALL_TOKEN='lit_abc' lunaris-agent --system --enroll --server 'https:\/\/srv\.example:8443'/);
+  assert.match(headless, / --name 'Bob'\\''s PC'$/);
+  const win = enrollCommand('windows', 'http://srv.example:8090', "lit_a'b", { fetch: pinned, name: 'PC 1' });
+  assert.match(win, /^\$env:LUNARIS_INSTALL_TOKEN='lit_a''b'; \$a = Join-Path \$env:ProgramFiles 'Lunaris Agent\\lunaris-agent\.exe'; & \$a --system --enroll --server 'https:\/\/srv\.example:8443' --server-cert-sha256 [A-F0-9]{64} --name 'PC 1'; if \(\$LASTEXITCODE -eq 0\) \{ & \$a --install-service \}; Remove-Item Env:\\LUNARIS_INSTALL_TOKEN$/);
+  // A server without HTTPS: the page's own address, no certificate.
+  assert.equal(enrollCommand('linux-desktop', 'http://srv.example:8090/', 't', {}), `LUNARIS_INSTALL_TOKEN='t' lunaris-agent --enroll --server 'http://srv.example:8090'`);
+  // A trusted certificate: HTTPS without a pin.
+  assert.ok(!enrollCommand('windows', 'x', 't', { fetch: { scriptOrigin: 'https://a.example', spkiSha256: null, certSha256: null } }).includes('cert-sha256'));
+});

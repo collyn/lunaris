@@ -157,6 +157,7 @@ const ICON_SLIDERS = cardIcon(<><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M2
 const ICON_PLUS = cardIcon(<path d="M12 5v14M5 12h14" />);
 const ICON_CHEVRON = cardIcon(<polyline points="6 9 12 15 18 9" />, 14);
 const ICON_STAR = cardIcon(<polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />);
+const ICON_UPDATE = cardIcon(<><path d="M12 19V5" /><polyline points="5 12 12 5 19 12" /></>);
 const ICON_MORE = cardIcon(<><circle cx="5" cy="12" r="1.2" /><circle cx="12" cy="12" r="1.2" /><circle cx="19" cy="12" r="1.2" /></>);
 const ICON_KEY = cardIcon(<><circle cx="7.5" cy="15.5" r="4.5" /><path d="M10.7 12.3 21 2M16 7l3 3M18 5l2 2" /></>);
 const ICON_INFO = cardIcon(<><circle cx="12" cy="12" r="10" /><path d="M12 16v-4M12 8h.01" /></>, 18);
@@ -270,6 +271,15 @@ const readThemeChoice = (): ThemeChoice => {
   if (cleaned !== null) window.history.replaceState(null, '', cleaned);
 }
 
+/** The "Add computer" dialog's box: a form, or a plain box when what it
+ *  shows has forms of its own (the install way). */
+function AddHostShell({ asForm, className, onSubmit, children }: { asForm: boolean; className: string; onSubmit: () => void; children: React.ReactNode }) {
+  const common = { className, role: 'dialog', 'aria-modal': true, 'aria-labelledby': 'addHostTitle' } as const;
+  return asForm
+    ? <form {...common} noValidate onSubmit={(e) => { e.preventDefault(); onSubmit(); }}>{children}</form>
+    : <div {...common}>{children}</div>;
+}
+
 function App() {
   const [token, setToken] = useState<string | null>(localStorage.getItem('lunaris_token'));
   const [username, setUsername] = useState<string | null>(localStorage.getItem('lunaris_username'));
@@ -320,7 +330,7 @@ function App() {
 
   // Admin State
   const [userRole, setUserRole] = useState<string | null>(localStorage.getItem('lunaris_role'));
-  const [activeTab, setActiveTab] = useState<'devices' | 'users' | 'groups' | 'turn_servers' | 'install_agents' | 'server'>('devices');
+  const [activeTab, setActiveTab] = useState<'devices' | 'users' | 'groups' | 'turn_servers' | 'server'>('devices');
   // The update banner's "How to update": the Server page scrolls to its steps.
   const [serverFocusUpdate, setServerFocusUpdate] = useState(0);
   // A newer Lunaris for administrators: a notice on every page and a dot on the Server tab.
@@ -333,22 +343,6 @@ function App() {
   const [filesHost, setFilesHost] = useState<Host | null>(null);
   // ... or for this source: a computer of another type, through the host it is reached through.
   const [filesSource, setFilesSource] = useState<Source | null>(null);
-  // Agents connect with ws:// to the server's HTTP port, also when this page
-  // was opened over https (another port).
-  const [agentServerUrl, setAgentServerUrl] = useState<string>(() => `ws://${getBackendHost()}`);
-  useEffect(() => {
-    const { http } = getBackendProtocol();
-    if (http !== 'https:') return;
-    fetch(`${http}//${getBackendHost()}/api/server/ports`)
-      .then(r => (r.ok ? r.json() : null))
-      .then(p => {
-        if (p && typeof p.http === 'number') {
-          const hostname = getBackendHost().replace(/:\d+$/, '');
-          setAgentServerUrl(`ws://${hostname}:${p.http}`);
-        }
-      })
-      .catch(() => {});
-  }, []);
   const [hostsError, setHostsError] = useState<string | null>(null);
   const [selectedHost, setSelectedHost] = useState<Host | null>(null);
   // Computers of other types (sources), each reached through a Lunaris host.
@@ -375,9 +369,6 @@ function App() {
   const [pickedMethods, setPickedMethods] = useState<Record<string, string>>({});
   const [chooserCard, setChooserCard] = useState<string | null>(null);
   const [connectorHosts, setConnectorHosts] = useState<ConnectorHost[]>([]);
-  const [agentToken, setAgentToken] = useState<string | null>(null);
-  // The server only gives the connection token to administrators.
-  const [agentTokenDenied, setAgentTokenDenied] = useState<boolean>(false);
 
 
   // Application view navigation states
@@ -517,33 +508,6 @@ function App() {
     }
   }, [token]);
 
-  // Fetch Agent Connection Token
-  const fetchAgentToken = async () => {
-    if (!token) return;
-    try {
-      const serverHost = getBackendHost();
-      const response = await fetch(`${getBackendProtocol().http}//${serverHost}/api/agent/token`, {
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
-      });
-      if (response.ok) {
-        const data = await response.json();
-        setAgentToken(data.token);
-        setAgentTokenDenied(false);
-      } else if (response.status === 403 || response.status === 401) {
-        setAgentToken(null);
-        setAgentTokenDenied(true);
-      }
-    } catch (err) {
-      console.error("Failed to fetch agent token:", err);
-    }
-  };
-
-  // Only for administrators (the role is known once /api/auth/me answered).
-  useEffect(() => {
-    if (token && userRole === 'admin') fetchAgentToken();
-  }, [token, userRole]);
 
   useEffect(() => {
     if (!viewingHost || !token) {
@@ -915,6 +879,10 @@ function App() {
   // The same dialog adds a computer of another type ('' = Lunaris, else a
   // connector id) and edits one (`editSource`).
   const [addType, setAddType] = useState('');
+  // A Lunaris computer is added by installing the agent there (an install
+  // token and one command; administrators) or, when it already runs one, by
+  // its address. One dialog for both (it used to be a page of its own too).
+  const [lunarisWay, setLunarisWay] = useState<'install' | 'enroll' | 'address'>('install');
   const [sourceName, setSourceName] = useState('');
   const [sourceHostId, setSourceHostId] = useState('');
   const [sourceValues, setSourceValues] = useState<Record<string, string>>({});
@@ -1058,7 +1026,11 @@ function App() {
   const dialogTypes: { id: string; name: string; note: string }[] = (addTo ? [] : [{
     id: '',
     name: 'Lunaris',
-    note: 'The server connects to lunaris-agent on that computer (direct access on). `lunaris-agent status --show-password` there shows its addresses and password.',
+    note: userRole === 'admin' && lunarisWay === 'install'
+      ? 'Install lunaris-agent on that computer with one command: it connects to this server by itself and shows up in the list.'
+      : userRole === 'admin' && lunarisWay === 'enroll'
+      ? 'That computer already has lunaris-agent: one command there joins it to this server (it leaves the server it was on). Its settings stay.'
+      : 'The server connects to lunaris-agent on that computer (direct access on). `lunaris-agent status --show-password` there shows its addresses and password.',
   }]).concat(connectorTypes.map(c => ({ id: c.id, name: c.name, note: c.note || '' })));
   const dialogType = dialogTypes.find(type => type.id === addType);
   // The name and the Lunaris computer to go through share a row when there
@@ -1092,6 +1064,7 @@ function App() {
     setSourceHostId('');
     setSourceValues({});
     setSourceSetup(null);
+    setLunarisWay(userRole === 'admin' ? 'install' : 'address');
     setAddHostOpen(true);
     fetchConnectors();
   };
@@ -1605,6 +1578,7 @@ function App() {
 
   const closeAddHost = () => { cancelSourceSetup(); setAddHostOpen(false); setEditSource(null); setAddTo(null); };
   const sourceDialog = !!editSource || !!addType;
+  const installWay = !sourceDialog && !addTo && userRole === 'admin' && lunarisWay !== 'address';
 
   const currentViewingHost = viewingHost ? (hosts.find(h => h.id === viewingHost.id) || viewingHost) : null;
 
@@ -1922,17 +1896,6 @@ function App() {
                     {t('TURN Servers')}
                   </button>
                   <button
-                    className={`nav-tab ${activeTab === 'install_agents' ? 'active' : ''}`}
-                    onClick={() => setActiveTab('install_agents')}
-                  >
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                      <polyline points="7 10 12 15 17 10" />
-                      <line x1="12" y1="15" x2="12" y2="3" />
-                    </svg>
-                    {t('Install agents')}
-                  </button>
-                  <button
                     className={`nav-tab ${activeTab === 'server' ? 'active' : ''}`}
                     onClick={() => setActiveTab('server')}
                     aria-label={serverUpdate.available ? `${t('Server')} (${t('update available')})` : undefined}
@@ -2181,70 +2144,13 @@ function App() {
                         </div>
                       </div>
 
-                      {/* Agent setup credentials — only needed when adding a host, so it is
-                          collapsed unless there are no hosts yet. */}
-                      <details className="setup-panel" open={!hostsLoading && computerHosts.length === 0}>
-                        <summary>
-                          <span className="setup-panel-title">
-                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                              <path d="M12 5v14M5 12h14" />
-                            </svg>
-                            {t('Add a host agent')}
-                          </span>
-                          <span className="setup-panel-hint">{t('Server URL and connection token')}</span>
-                        </summary>
-                        <div className="setup-panel-grid">
-                          <div className="setup-field">
-                            <span className="setup-field-label">Signaling server URL</span>
-                            <div className="setup-field-row">
-                              <code>{agentServerUrl}</code>
-                              <button
-                                type="button"
-                                className="icon-btn"
-                                onClick={() => {
-                                  navigator.clipboard.writeText(agentServerUrl);
-                                  alert("Server URL copied!");
-                                }}
-                                title="Copy server URL"
-                                aria-label="Copy server URL"
-                              >
-                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                                  <rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-                                </svg>
-                              </button>
-                            </div>
-                          </div>
-                          <div className="setup-field">
-                            <span className="setup-field-label">Agent connection token</span>
-                            <div className="setup-field-row">
-                              <code>{agentToken || ((userRole && userRole !== 'admin') || agentTokenDenied ? t("Ask an administrator for the connection token.") : "Loading...")}</code>
-                              <button
-                                type="button"
-                                className="icon-btn"
-                                onClick={() => {
-                                  if (agentToken) {
-                                    navigator.clipboard.writeText(agentToken);
-                                    alert("Connection Token copied!");
-                                  }
-                                }}
-                                disabled={!agentToken}
-                                title="Copy connection token"
-                                aria-label="Copy connection token"
-                              >
-                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                                  <rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-                                </svg>
-                              </button>
-                            </div>
-                          </div>
+                      {/* Nothing yet: where to begin. */}
+                      {!hostsLoading && !hostsError && computerHosts.length === 0 && userRole === 'admin' && (
+                        <div className="setup-panel first-computer">
+                          <span>{t('No computers yet. Add the first one: install the agent on it, or connect one that already has it.')}</span>
+                          <button type="button" className="btn-primary" onClick={openAddHost}>{t('Add computer')}</button>
                         </div>
-                        {userRole === 'admin' && (
-                          <div className="setup-panel-install">
-                            <span>{t('Installing many computers? Create an install token and paste one command on each.')}</span>
-                            <button type="button" className="btn-secondary" onClick={() => setActiveTab('install_agents')}>{t('Install agents')}</button>
-                          </div>
-                        )}
-                      </details>
+                      )}
 
                       {hostsError && (
                         <div className="error-card">
@@ -2384,7 +2290,20 @@ function App() {
                                 <span className="host-card-lead"><TypeMark id={methodType(method)} name={method.label} /></span>
                                 <div className="host-card-header">
                                   <div className="source-card-title">
-                                    <h3 className="host-name" title={card.host?.agent_name ? `${card.title} (${card.host.agent_name})` : undefined}>{card.title}</h3>
+                                    <div className="host-name-row">
+                                      <h3 className="host-name" title={card.host?.agent_name ? `${card.title} (${card.host.agent_name})` : undefined}>{card.title}</h3>
+                                      {card.host && userRole === 'admin' && (
+                                        <button
+                                          type="button"
+                                          className="host-rename-btn"
+                                          title={t('Rename')}
+                                          aria-label={t('Rename')}
+                                          onClick={(e) => { e.stopPropagation(); openRename(card.host!); }}
+                                        >
+                                          {ICON_EDIT}
+                                        </button>
+                                      )}
+                                    </div>
                                     {card.host && !isPlaceholderHost(card.host) && (
                                       <span className="host-id">ID: {card.host.id.slice(0, 8)}...</span>
                                     )}
@@ -2395,6 +2314,7 @@ function App() {
                                         title={t('Agent %1, this server %2', card.host.agent?.version ?? '', serverAgentInfo?.version ?? '')}
                                         onClick={(e) => { e.stopPropagation(); openAgentUpdate(card.host!); }}
                                       >
+                                        {ICON_UPDATE}
                                         {t('Agent update available')}
                                       </button>
                                     )}
@@ -2568,6 +2488,17 @@ function App() {
                                       {ICON_EDIT}
                                     </button>
                                   )}
+                                  {host && userRole === 'admin' && agentOutdated(host) && !host.gateway && (
+                                    <button
+                                      type="button"
+                                      className="host-action-btn agent-update-btn"
+                                      title={t('Update the agent (%1)', host.agent?.version ?? '?')}
+                                      aria-label={t('Update the agent (%1)', host.agent?.version ?? '?')}
+                                      onClick={() => openAgentUpdate(host)}
+                                    >
+                                      {ICON_UPDATE}
+                                    </button>
+                                  )}
                                   {host && userRole === 'admin' && (
                                     <button
                                       type="button"
@@ -2609,13 +2540,6 @@ function App() {
                                 {/* An administrator's changes to the Lunaris computer. */}
                                 {host && userRole === 'admin' && menuCard === card.key && (
                                   <div className="method-chooser card-menu" role="menu" aria-label={t('More')} onClick={(e) => e.stopPropagation()}>
-                                    <button type="button" role="menuitem" className="method-option" onClick={() => openRename(host)}>
-                                      <span className="card-menu-icon">{ICON_EDIT}</span>
-                                      <span className="method-option-text">
-                                        <span className="method-option-name">{t('Rename')}</span>
-                                        <span className="method-option-sub">{t('The name everyone sees in the list')}</span>
-                                      </span>
-                                    </button>
                                     {host.address && (
                                       <button type="button" role="menuitem" className="method-option" onClick={() => openEditAddress(host)}>
                                         <span className="card-menu-icon">{ICON_APP}</span>
@@ -2692,9 +2616,6 @@ function App() {
               )}
               {activeTab === 'turn_servers' && (
                 <AdminTurnServers token={token!} getBackendHost={getBackendHost} getBackendProtocol={getBackendProtocol} />
-              )}
-              {activeTab === 'install_agents' && userRole === 'admin' && (
-                <AdminInstallAgents token={token!} getBackendHost={getBackendHost} getBackendProtocol={getBackendProtocol} />
               )}
               {activeTab === 'server' && userRole === 'admin' && (
                 <AdminServerInfo token={token!} apiBase={() => `${getBackendProtocol().http}//${getBackendHost()}`} focusUpdate={serverFocusUpdate} />
@@ -2803,13 +2724,11 @@ function App() {
 
       {addHostOpen && (
         <div className="host-confirm-overlay add-host-overlay" onMouseDown={(e) => { if (e.target === e.currentTarget && !addHostBusy && !sourceSetup) closeAddHost(); }}>
-          <form
-            className={`host-confirm-card add-host-card${hasTypeRail ? ' has-rail' : ''}`}
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="addHostTitle"
-            noValidate
-            onSubmit={(e) => { e.preventDefault(); if (sourceSetup) return; if (sourceDialog) submitSource(); else submitAddHost(); }}
+          {/* The install way holds forms of its own: then no form around it. */}
+          <AddHostShell
+            asForm={!installWay}
+            className={`host-confirm-card add-host-card${hasTypeRail ? ' has-rail' : ''}${installWay ? ' install-way' : ''}`}
+            onSubmit={() => { if (sourceSetup) return; if (sourceDialog) submitSource(); else submitAddHost(); }}
           >
             <div className="host-confirm-content">
               <h2 id="addHostTitle">{editSource ? t('Edit computer') : addTo ? t('Add a connection method to %1', addTo.title) : t('Add computer')}</h2>
@@ -2887,14 +2806,42 @@ function App() {
                         <span>{t('Or let this server reach them itself: its gateway runs when lunaris-agent is installed on the server too (see the Server page).')}</span>
                       )}
                       {userRole === 'admin' && (
-                        <button type="button" className="btn-secondary" onClick={() => { closeAddHost(); setActiveTab('install_agents'); }}>{t('Install agents')}</button>
+                        <button type="button" className="btn-secondary" onClick={() => { chooseAddType(''); setLunarisWay('install'); }}>{t('Install agents')}</button>
                       )}
                       {userRole === 'admin' && (
                         <button type="button" className="btn-secondary" onClick={() => { closeAddHost(); setActiveTab('server'); }}>{t('Server gateway')}</button>
                       )}
                     </p>
                   )}
-                  {!sourceDialog && (
+                  {!sourceDialog && !addTo && userRole === 'admin' && (
+                    <div className="option-cards lunaris-ways" role="radiogroup" aria-label={t('How to add it')}>
+                      <button type="button" role="radio" aria-checked={lunarisWay === 'install'}
+                        className={`option-card${lunarisWay === 'install' ? ' selected' : ''}`} onClick={() => { setLunarisWay('install'); setAddHostError(''); }}>
+                        <span className="option-card-text">
+                          <span className="option-card-name">{t('Install the agent there')}</span>
+                          <span className="option-card-note">{t('A new computer: one command installs and connects it')}</span>
+                        </span>
+                      </button>
+                      <button type="button" role="radio" aria-checked={lunarisWay === 'enroll'}
+                        className={`option-card${lunarisWay === 'enroll' ? ' selected' : ''}`} onClick={() => { setLunarisWay('enroll'); setAddHostError(''); }}>
+                        <span className="option-card-text">
+                          <span className="option-card-name">{t('It has the agent: join it to this server')}</span>
+                          <span className="option-card-note">{t('One command there, nothing is installed again')}</span>
+                        </span>
+                      </button>
+                      <button type="button" role="radio" aria-checked={lunarisWay === 'address'}
+                        className={`option-card${lunarisWay === 'address' ? ' selected' : ''}`} onClick={() => setLunarisWay('address')}>
+                        <span className="option-card-text">
+                          <span className="option-card-name">{t('The server connects to it')}</span>
+                          <span className="option-card-note">{t('By its address and password (direct access on)')}</span>
+                        </span>
+                      </button>
+                    </div>
+                  )}
+                  {installWay && (
+                    <AdminInstallAgents key={lunarisWay} token={token!} getBackendHost={getBackendHost} getBackendProtocol={getBackendProtocol} embedded enroll={lunarisWay === 'enroll'} />
+                  )}
+                  {!sourceDialog && !installWay && (
                     <div className="form-grid">
                       <div className="form-group span-6">
                         <label htmlFor="addHostName">{t('Name (optional)')}</label>
@@ -3094,13 +3041,15 @@ function App() {
               </div>
             ) : (
               <div className="host-confirm-actions">
-                <button type="button" className="btn-secondary" disabled={addHostBusy} onClick={closeAddHost}>{t('Cancel')}</button>
-                <button type="submit" className="btn-primary" disabled={addHostBusy}>
-                  {editSource ? (addHostBusy ? t('Saving…') : t('Save')) : (addHostBusy ? t('Adding…') : t('Add'))}
-                </button>
+                <button type="button" className={installWay ? 'btn-primary' : 'btn-secondary'} disabled={addHostBusy} onClick={closeAddHost}>{installWay ? t('Close') : t('Cancel')}</button>
+                {!installWay && (
+                  <button type="submit" className="btn-primary" disabled={addHostBusy}>
+                    {editSource ? (addHostBusy ? t('Saving…') : t('Save')) : (addHostBusy ? t('Adding…') : t('Add'))}
+                  </button>
+                )}
               </div>
             )}
-          </form>
+          </AddHostShell>
         </div>
       )}
 
@@ -3246,6 +3195,10 @@ function App() {
           serverVersion={serverAgentInfo?.version ?? null}
           origin={`${getBackendProtocol().http}//${getBackendHost()}`}
           fetch={serverAgentInfo?.fetch ?? null}
+          hostId={agentUpdateHost.id}
+          online={(hosts.find(h => h.id === agentUpdateHost.id) || agentUpdateHost).status === 'Online'}
+          token={token}
+          onRefresh={fetchHosts}
           onClose={() => setAgentUpdateHost(null)}
         />
       )}

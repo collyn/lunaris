@@ -28,6 +28,7 @@ mod hub;
 mod media_hub;
 mod input;
 pub mod pairing;
+mod remote_update;
 mod rtcp_forward;
 pub mod connector;
 pub mod rustdesk;
@@ -1181,6 +1182,8 @@ async fn connect_server_once(
     }
 
     // Never log server_ws_url itself: it carries the agent token and key.
+    // What an update from the web left behind (remote_update.rs).
+    crate::remote_update::clean_up_later(crate::pairing::config_path().to_string());
     debug!("Connecting to signaling server at {}", base_ws_url);
     // TLS first (the certificate is checked or pinned before the token is
     // sent), then the WebSocket handshake over it.
@@ -1312,6 +1315,13 @@ async fn connect_server_once(
                         crate::pairing::config_path(),
                     );
                     let _ = tx.send(answer);
+                });
+            }
+            Ok(ServerToAgentMessage::Update { request_id, version, requester }) => {
+                // A download: not on this loop (remote_update.rs).
+                let tx = server_tx_for_sources.clone();
+                tokio::task::spawn_blocking(move || {
+                    let _ = tx.send(crate::remote_update::reply(request_id, &version, requester.as_deref(), true, crate::pairing::config_path().to_string()));
                 });
             }
             // What a newer server may send is not written out: it can hold
@@ -2515,8 +2525,9 @@ mod enroll_tests {
         let after: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
         let mut expected = before.clone();
         expected["allow_clipboard"] = serde_json::Value::Bool(true);
-        // The one new field, at its default.
+        // The new fields, at their defaults.
         expected["allow_legacy_plain_direct"] = serde_json::Value::Bool(true);
+        expected["allow_server_update"] = serde_json::Value::Bool(true);
         assert_eq!(after, expected);
 
         // And once more through save/load.

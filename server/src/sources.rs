@@ -219,11 +219,12 @@ pub(crate) async fn build_announced(state: &Arc<SignalingState>, agent_id: &str,
         warn!("{} said an agent version that is not one: not kept", agent_id);
         return;
     };
-    if let Err(e) = sqlx::query("UPDATE hosts SET agent_version = ?, agent_os = ?, agent_install = ?, agent_game_mouse = ? WHERE id = ?")
+    if let Err(e) = sqlx::query("UPDATE hosts SET agent_version = ?, agent_os = ?, agent_install = ?, agent_game_mouse = ?, agent_remote_update = ? WHERE id = ?")
         .bind(&build.version)
         .bind(&build.os)
         .bind(&build.install)
         .bind(&build.game_mouse)
+        .bind(build.remote_update)
         .bind(agent_id)
         .execute(&state.db)
         .await
@@ -907,7 +908,7 @@ mod tests {
             connectors: vec![],
             manageable: true,
             addresses: vec![],
-            build: Some(common::AgentBuild { version: version.into(), os: os.into(), install: install.into(), game_mouse: None }),
+            build: Some(common::AgentBuild { version: version.into(), os: os.into(), install: install.into(), game_mouse: None, remote_update: None }),
         };
         let kept = || async {
             sqlx::query_as::<_, (Option<String>, Option<String>, Option<String>)>("SELECT agent_version, agent_os, agent_install FROM hosts WHERE id = 'h1'")
@@ -931,7 +932,7 @@ mod tests {
             connectors: vec![],
             manageable: true,
             addresses: vec![],
-            build: Some(common::AgentBuild { version: "0.7.8".into(), os: "windows".into(), install: "windows".into(), game_mouse: Some(game_mouse.into()) }),
+            build: Some(common::AgentBuild { version: "0.7.8".into(), os: "windows".into(), install: "windows".into(), game_mouse: Some(game_mouse.into()), remote_update: Some(true) }),
         };
         let mouse = || async {
             sqlx::query_scalar::<_, Option<String>>("SELECT agent_game_mouse FROM hosts WHERE id = 'h1'")

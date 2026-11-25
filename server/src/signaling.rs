@@ -105,6 +105,8 @@ pub struct SignalingState {
     /// Requests about computers' own settings waiting for their agents
     /// (host_settings.rs).
     pub host_settings: crate::host_settings::Pending,
+    /// Agent updates asked for from the web, waiting for their agent (host_update.rs).
+    pub host_updates: crate::host_update::Pending,
     /// Failed sign-ins per client address and per (username, address).
     pub login_ip_limit: FailureLimiter,
     pub login_user_limit: FailureLimiter,
@@ -148,6 +150,7 @@ impl SignalingState {
             gateway: crate::gateway::Gateway::from_env(),
             sources: crate::sources::Registry::default(),
             host_settings: crate::host_settings::Pending::default(),
+            host_updates: crate::host_update::Pending::default(),
             login_ip_limit: FailureLimiter::standard(),
             login_user_limit: FailureLimiter::standard(),
             // Twenty wrong passwords for one name in 15 minutes, from any
@@ -934,6 +937,9 @@ pub(crate) async fn agent_message(state: &Arc<SignalingState>, agent_id: &str, m
         }
         AgentMessage::SettingsAnswer { request_id, settings, password, error, code } => {
             crate::host_settings::answered(state, agent_id, &request_id, settings, password, error, code);
+        }
+        AgentMessage::UpdateAnswer { request_id, error, code } => {
+            crate::host_update::answered(state, agent_id, &request_id, error, code);
         }
     }
 }
