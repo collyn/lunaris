@@ -252,6 +252,8 @@ pub async fn init_db(database_url: &str) -> Result<SqlitePool, sqlx::Error> {
         ("agent_install", "ALTER TABLE hosts ADD COLUMN agent_install TEXT;"),
         // Windows: whether its USB game mouse can be plugged in (common::GAME_MOUSE_*).
         ("agent_game_mouse", "ALTER TABLE hosts ADD COLUMN agent_game_mouse TEXT;"),
+        // Whether it can be updated from the web (host_update.rs): 1, 0, or NULL (not said).
+        ("agent_remote_update", "ALTER TABLE hosts ADD COLUMN agent_remote_update INTEGER;"),
     ] {
         if !columns.iter().any(|c| c == column) {
             sqlx::query(add).execute(&pool).await?;

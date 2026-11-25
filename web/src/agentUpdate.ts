@@ -11,7 +11,31 @@ export interface AgentBuild {
   install: string;
   /** Windows: "usbip" (its game mouse can be plugged in) or "none" (src/gameMouse.ts). */
   game_mouse?: string;
+  /** The agent can be updated from this page (server/src/host_update.rs):
+   *  it installs a signed release by itself and its computer allows it.
+   *  Absent from agents before 0.8.3. */
+  remote_update?: boolean;
 }
+
+/** Whether "Update now" is offered: an older agent that says it can, online. */
+export const canUpdateFromWeb = (build: AgentBuild | null | undefined, serverVersion: string | null | undefined, online: boolean): boolean =>
+  online && build?.remote_update === true && agentUpdateState(build, serverVersion) === 'older';
+
+/** Why an update from the web did not start, in words to translate: by
+ *  the answer's `code` (POST /api/admin/hosts/{id}/update), else what the
+ *  computer itself said. */
+export const updateRefusalText = (code: string | undefined, said: string | undefined): string => ({
+  offline: 'That computer is offline. Its agent can be updated while it is connected.',
+  agent_too_old: 'That computer\'s agent is from before updates from the web: update it once with the command below, and from then on this works.',
+  current: 'That computer\'s agent already is this server\'s version.',
+  timeout: 'That computer did not answer in time. The update may still be running there: look again in a few minutes.',
+  not_supported: 'That computer\'s agent cannot update itself (how it was installed), or the computer does not allow it: run the command below there.',
+  not_allowed: 'That computer does not allow its agent to be updated from the server. `lunaris-agent set server-update allow` there turns it on.',
+  busy: 'An update is already being installed on that computer.',
+} as Record<string, string>)[code ?? ''] ?? (said || 'The update could not be started.');
+
+/** How long the page waits for the agent to come back as the new version. */
+export const UPDATE_RETURN_MS = 4 * 60 * 1000;
 
 /** Compares two versions ("0.7.6", "0.8.0-rc.1"): negative when `a` is
  *  older. A pre-release is older than its release; anything not a version
@@ -58,7 +82,7 @@ export const agentUpdateHow = (
   if (build.install === 'package') {
     return { howTo: 'This agent was installed with the system\'s package manager: update the lunaris-agent package with it.' };
   }
-  return { howTo: 'This agent was not installed with the install command (it runs from where it was put): replace it with the new version, or install it with the command from the Install agents page.' };
+  return { howTo: 'This agent was not installed with the install command (it runs from where it was put): replace it with the new version, or install it with the command from Add computer (Install the agent there).' };
 };
 
 /** How an install kind is shown. */

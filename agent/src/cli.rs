@@ -41,6 +41,8 @@ pub enum SettingKey {
     ServerSettings,
     /// Older apps may log in over plain ws:// with the password in the URL: on|off
     LegacyDirect,
+    /// The server's administrators may update this agent from the web: allow|deny
+    ServerUpdate,
     /// The access password: `random`, or `-` to read it from stdin
     Password,
     /// This computer's name on the server
@@ -107,6 +109,10 @@ fn apply(config: &mut AgentConfig, key: SettingKey, value: &str, stdin: impl FnO
         SettingKey::WaylandCapture => change.wayland_capture = Some(word()),
         SettingKey::ServerSettings => {
             config.allow_server_settings = on_off(value)?;
+            return Ok(());
+        }
+        SettingKey::ServerUpdate => {
+            config.allow_server_update = on_off(value)?;
             return Ok(());
         }
         SettingKey::LegacyDirect => {
@@ -277,6 +283,10 @@ pub async fn status(config_path: &str, show_password: bool) -> Res<()> {
         "Server changes:  {}",
         if config.allow_server_settings { "allowed (the server's administrators may change these settings)" } else { "not allowed (the server may only read them; `set server-settings allow`)" }
     );
+    println!(
+        "Server updates:  {}",
+        if config.allow_server_update { "allowed (the server's administrators may update this agent to a signed release; `set server-update deny`)" } else { "not allowed (`set server-update allow`)" }
+    );
     if !config.sources.is_empty() {
         println!("Sources:         {} computer(s) of other types reached through this one", config.sources.len());
     }
@@ -363,6 +373,11 @@ mod tests {
         assert!(!c.allow_legacy_plain_direct);
         apply(&mut c, SettingKey::LegacyDirect, "on", no_stdin).unwrap();
         assert!(c.allow_legacy_plain_direct);
+        assert!(c.allow_server_update, "on by default");
+        apply(&mut c, SettingKey::ServerUpdate, "deny", no_stdin).unwrap();
+        assert!(!c.allow_server_update);
+        apply(&mut c, SettingKey::ServerUpdate, "allow", no_stdin).unwrap();
+        assert!(c.allow_server_update);
     }
 
     #[test]

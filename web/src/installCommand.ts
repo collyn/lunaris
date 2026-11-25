@@ -138,6 +138,36 @@ export const updateCommand = (
   opts: Pick<InstallOptions, 'fetch' | 'insecure'> = {},
 ): string => runScript(os, origin, opts.fetch, !!opts.insecure, '', '') + (os === 'linux' ? ' --update' : ' -Update');
 
+/** Where an agent that is already installed is joined from: a Linux
+ *  desktop (the agent of the person's session), a Linux computer without one
+ *  (the system service) or Windows (the service). */
+export type EnrollKind = 'linux-desktop' | 'linux-headless' | 'windows';
+
+/** The command that joins an agent already installed on a computer to this
+ *  server (`lunaris-agent --enroll`, agent/src/lib.rs): nothing is
+ *  downloaded or installed. The server's HTTPS address and, for its own
+ *  self-signed certificate, the certificate's SHA-256 come from `fetch`;
+ *  without it (a server without HTTPS) the page's own address is used. */
+export const enrollCommand = (
+  kind: EnrollKind,
+  origin: string,
+  token: string,
+  opts: Pick<InstallOptions, 'name' | 'fetch'> = {},
+): string => {
+  const server = opts.fetch?.scriptOrigin ?? normalizeOrigin(origin);
+  const cert = opts.fetch?.certSha256 ?? null;
+  const name = (opts.name ?? '').trim();
+  if (kind === 'windows') {
+    const args = `--system --enroll --server ${psQuote(server)}${cert ? ` --server-cert-sha256 ${cert}` : ''}${name ? ` --name ${psQuote(name)}` : ''}`;
+    // The service is restarted with the new config (as agent.ps1 does).
+    return `$env:LUNARIS_INSTALL_TOKEN=${psQuote(token)}; $a = Join-Path $env:ProgramFiles 'Lunaris Agent\\lunaris-agent.exe'; & $a ${args}; if ($LASTEXITCODE -eq 0) { & $a --install-service }; Remove-Item Env:\\LUNARIS_INSTALL_TOKEN`;
+  }
+  const args = `--enroll --server ${bashQuote(server)}${cert ? ` --server-cert-sha256 ${cert}` : ''}${name ? ` --name ${bashQuote(name)}` : ''}`;
+  return kind === 'linux-headless'
+    ? `sudo env LUNARIS_INSTALL_TOKEN=${bashQuote(token)} lunaris-agent --system ${args}`
+    : `LUNARIS_INSTALL_TOKEN=${bashQuote(token)} lunaris-agent ${args}`;
+};
+
 // ---- Tokens ---------------------------------------------------------------
 
 export interface InstallToken {

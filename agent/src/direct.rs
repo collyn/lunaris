@@ -1212,6 +1212,15 @@ async fn serve_link(ws: Ws, config: Arc<DirectConfig>, conn: Conn) {
                 });
                 continue;
             }
+            Ok(ServerToAgentMessage::Update { request_id, version, requester }) => {
+                // Only for a server that proved the password (remote_update.rs).
+                let trusted = conn.trusted;
+                let tx = tx.clone();
+                tokio::task::spawn_blocking(move || {
+                    let _ = tx.send(crate::remote_update::reply(request_id, &version, requester.as_deref(), trusted, crate::pairing::config_path().to_string()));
+                });
+                continue;
+            }
             Err(e) => {
                 warn!("Ignoring malformed message from server link {}: {}", link_id, e);
                 continue;

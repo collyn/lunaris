@@ -46,3 +46,23 @@ test('each kind of install is updated its own way', () => {
   assert.equal(installKindLabel('deb'), '.deb package');
   assert.equal(installKindLabel('what'), 'By hand');
 });
+
+test('"Update now" is offered only to an older agent that says it can, while online', async () => {
+  const { canUpdateFromWeb, updateRefusalText } = await import('../src/agentUpdate.ts');
+  const win = (over: object = {}) => ({ version: '0.8.3', os: 'windows', install: 'windows', remote_update: true, ...over });
+  assert.equal(canUpdateFromWeb(win(), '0.8.4', true), true);
+  assert.equal(canUpdateFromWeb(win(), '0.8.4', false), false, 'offline');
+  assert.equal(canUpdateFromWeb(win(), '0.8.3', true), false, 'current');
+  assert.equal(canUpdateFromWeb(win(), '0.8.2', true), false, 'newer than the server');
+  assert.equal(canUpdateFromWeb(win({ remote_update: false }), '0.8.4', true), false);
+  // Agents from before 0.8.3 say nothing; anything but true is no.
+  assert.equal(canUpdateFromWeb(win({ remote_update: undefined }), '0.8.4', true), false);
+  assert.equal(canUpdateFromWeb(win({ remote_update: 'yes' }) as never, '0.8.4', true), false);
+  assert.equal(canUpdateFromWeb(null, '0.8.4', true), false);
+  assert.equal(canUpdateFromWeb(win(), null, true), false);
+  // A known code has its own words; else what the computer said; else a general line.
+  assert.match(updateRefusalText('not_allowed', 'x'), /does not allow/);
+  assert.match(updateRefusalText('agent_too_old', undefined), /before updates from the web/);
+  assert.equal(updateRefusalText('failed', 'The release signature is not valid: nothing is installed.'), 'The release signature is not valid: nothing is installed.');
+  assert.equal(updateRefusalText(undefined, undefined), 'The update could not be started.');
+});

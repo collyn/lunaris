@@ -225,7 +225,7 @@ if [ "$UPDATE" -eq 1 ]; then
             done
         fi
     else
-        die "no Lunaris agent is installed here (no lunaris-agent package, no $INSTALL_DIR/lunaris-agent.AppImage): install it with the command of the server's Install agents page"
+        die "no Lunaris agent is installed here (no lunaris-agent package, no $INSTALL_DIR/lunaris-agent.AppImage): install it with the command of the server's Add computer window (Install the agent there)"
     fi
     info "The Lunaris agent is now version $VERSION. An agent in a desktop session restarts by itself within a minute."
     exit 0

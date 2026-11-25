@@ -19,6 +19,7 @@ mod db;
 mod gateway;
 mod host_admin;
 mod host_settings;
+mod host_update;
 mod server_info;
 mod import;
 mod takeover;
@@ -380,6 +381,8 @@ pub(crate) async fn run_server(
             get(host_settings::get_settings).put(host_settings::put_settings),
         )
         .route("/api/admin/hosts/{id}/settings/password", post(host_settings::password))
+        // The computer's agent becomes this server's version (host_update.rs).
+        .route("/api/admin/hosts/{id}/update", post(host_update::update))
         .route("/api/hosts/address", post(add_host_by_address_handler))
         // Computers of other types, shown through a Lunaris computer (sources.rs).
         .route("/api/sources", get(sources::list_sources))
@@ -737,13 +740,13 @@ async fn hosts_handler(
     // the signaling WebSocket applies).
     let access = security::host_access(&state.db, &user.user_id).await.map_err(db_error)?;
     #[allow(clippy::type_complexity)]
-    let all: Vec<(String, String, String, Option<String>, Option<i64>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>)> =
-        sqlx::query_as("SELECT id, name, status, ip_address, server_codec_mode_support, addresses, display_name, agent_version, agent_os, agent_install, agent_game_mouse FROM hosts")
+    let all: Vec<(String, String, String, Option<String>, Option<i64>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<bool>)> =
+        sqlx::query_as("SELECT id, name, status, ip_address, server_codec_mode_support, addresses, display_name, agent_version, agent_os, agent_install, agent_game_mouse, agent_remote_update FROM hosts")
             .fetch_all(&state.db)
             .await
             .map_err(db_error)?;
     #[allow(clippy::type_complexity)]
-    let rows: Vec<(String, String, String, Option<String>, Option<i64>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>)> = all
+    let rows: Vec<(String, String, String, Option<String>, Option<i64>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<bool>)> = all
             .into_iter()
             .filter(|(id, ..)| access.allows(id))
             .collect();
@@ -763,9 +766,9 @@ async fn hosts_handler(
 
     let mut futures = Vec::new();
 
-    for (id, agent_name, status_str, ip_address, server_codec_mode_support, addresses, display_name, agent_version, agent_os, agent_install, agent_game_mouse) in rows {
+    for (id, agent_name, status_str, ip_address, server_codec_mode_support, addresses, display_name, agent_version, agent_os, agent_install, agent_game_mouse, agent_remote_update) in rows {
         let agent = match (agent_version, agent_os) {
-            (Some(version), Some(os)) => Some(common::AgentBuild { version, os, install: agent_install.unwrap_or_default(), game_mouse: agent_game_mouse }),
+            (Some(version), Some(os)) => Some(common::AgentBuild { version, os, install: agent_install.unwrap_or_default(), game_mouse: agent_game_mouse, remote_update: agent_remote_update }),
             _ => None,
         };
         // An administrator's name for it, else the one its agent announces.
