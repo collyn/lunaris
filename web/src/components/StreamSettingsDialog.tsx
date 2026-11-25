@@ -262,7 +262,7 @@ export default function StreamSettingsDialog({
                       {CODECS.map(c => <option key={c.value} value={c.value} disabled={unsupportedCodecs.includes(c.value)}>{codecLabels[c.value] ?? t(c.label)}</option>)}
                     </select>
                   </Row>
-                  <Row title={t('Chroma')} hint={t('4:4:4 keeps coloured text sharp. H.264 only, encoded on NVIDIA or the CPU.')}>
+                  <Row title={t('Chroma')} hint={t('4:4:4 keeps coloured text sharp. H.264 only; the remote computer needs an NVIDIA GPU (on Linux also the CPU can do it). Otherwise it sends 4:2:0.')}>
                     <select value={values.chroma} onChange={(e) => onChange('chroma', e.target.value === '444' ? '444' : '420')}>
                       {CHROMAS.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
                     </select>
