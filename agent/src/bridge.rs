@@ -1212,6 +1212,10 @@ pub async fn setup_bridge_session(
     let no_local_input = from_connector || std::env::var_os(crate::connector::media::TEST_NO_LOCAL_INPUT_ENV).is_some();
     let local_injector = if no_local_input { None } else { lunaris_media::input::InputInjector::new() };
     if let Some(injector) = local_injector {
+        // Absolute moves land on the screen this viewer watches (the id its
+        // capture starts with, as media_hub keys it), not on whichever
+        // screen another viewer started last.
+        injector.set_display(display_id.as_deref().unwrap_or("default"));
         // Windows: the USB mouse the viewer may turn on (game_mouse.rs).
         crate::game_mouse::init();
         let injector = std::sync::Arc::new(injector);
