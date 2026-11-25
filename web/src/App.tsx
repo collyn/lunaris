@@ -1519,6 +1519,9 @@ function App() {
   // the desktop app's command line, so it never carries the sign-in token.
   // The app trades the ticket (good for a minute, once) for a token that
   // opens only that computer. Null when the server gives none.
+  /** The server's self-signed certificate (SHA-256), from the last ticket:
+   *  the link carries it so the desktop app accepts that certificate. */
+  const linkCertRef = useRef<string | null>(null);
   const requestLinkTicket = async (hostId: string, sourceId?: string): Promise<string | null> => {
     try {
       const response = await fetch(`${getBackendProtocol().http}//${getBackendHost()}/api/links/ticket`, {
@@ -1528,6 +1531,7 @@ function App() {
       });
       if (!response.ok) return null;
       const data = await response.json();
+      linkCertRef.current = typeof data?.cert_sha256 === 'string' && /^[0-9a-fA-F]{64}$/.test(data.cert_sha256) ? data.cert_sha256 : null;
       return typeof data?.ticket === 'string' ? data.ticket : null;
     } catch {
       return null;
@@ -1566,6 +1570,8 @@ function App() {
       input_protocol: localStorage.getItem('lunaris_input_protocol') || 'webrtc',
     });
     if (sourceId) params.set('source_id', sourceId);
+    // Only for a link to this server's own HTTPS (its self-signed certificate).
+    if (linkCertRef.current && protocol.ws === 'wss:') params.set('cert_sha256', linkCertRef.current);
     window.location.href = `lunaris://connect?${params.toString()}`;
   };
 
@@ -2061,6 +2067,7 @@ function App() {
                                           return;
                                         }
                                         window.location.href = `lunaris://connect?${new URLSearchParams({
+                                          ...(linkCertRef.current && wsProtocol === 'wss:' ? { cert_sha256: linkCertRef.current } : {}),
                                           host_id: hostToUse.id,
                                           server: wsServerUrl,
                                           ticket,

@@ -41,6 +41,11 @@ gilrs = "0.11"
 # The single-instance channel's key proof (HMAC) and random nonces; the
 # version the workspace already uses.
 ring = "0.17"
+# server_cert.rs: the server's self-signed certificate, accepted by the
+# fingerprint its link carries.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+tokio-rustls = { version = "0.26", default-features = false }
+rustls-native-certs = "0.8"
 
 
 # Qt6 bindings dependencies
@@ -58,3 +63,7 @@ cxx-qt-build = "0.6"
 [features]
 # Link FFmpeg statically (distro packages, see scripts/packaging/build-ffmpeg-static.sh).
 static-ffmpeg = ["ffmpeg-next/static"]
+
+[dev-dependencies]
+# server_cert.rs: a self-signed certificate for its test.
+rcgen = "0.14"

@@ -1605,7 +1605,6 @@ use common::{
     ClientMessage, RtcSdpType, RtcSessionDescription, ServerToClientMessage, SignalingMessage,
 };
 use futures_util::{SinkExt, StreamExt};
-use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::protocol::Message as WsMessage;
 use rtc::interceptor::{
     FlexFec03ReceiveBuilder, NackGeneratorBuilder, NackResponderBuilder, Slot,
@@ -3431,7 +3430,7 @@ async fn run_webrtc_client_task(
         );
         // Never log ws_url itself: it carries the session token.
         println!("Connecting to signaling server at: {}/ws/client", ws_base);
-        connect_async(ws_url.as_str()).await?.0
+        crate::server_cert::connect_ws(ws_url.as_str()).await?
     };
     let (mut ws_write, mut ws_read) = ws_stream.split();
 

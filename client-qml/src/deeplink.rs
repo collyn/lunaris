@@ -316,6 +316,20 @@ fn parse_redeem(status_ok: bool, status: u16, body: &serde_json::Value) -> Resul
 /// UI thread). The error is for the log and never holds the ticket or token.
 fn redeem(server: &str, ticket: &str) -> Result<Redeemed, String> {
     let url = format!("{}/api/links/redeem", http_base(server).ok_or("not a server address")?);
+    // The server's own certificate, from the link (server_cert.rs).
+    if let (Some(pin), Some((true, host, port))) = (crate::server_cert::pin_for(&url), server_key(server)) {
+        let ticket = ticket.to_string();
+        return std::thread::spawn(move || -> Result<Redeemed, String> {
+            let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| e.to_string())?;
+            let host = if host.contains(':') { format!("[{host}]") } else { host };
+            let (status, body) = rt
+                .block_on(crate::server_cert::post_json(&host, port, "/api/links/redeem", &pin, &serde_json::json!({ "ticket": ticket }), REDEEM_TIMEOUT))
+                .map_err(|e| format!("cannot reach the server: {e}"))?;
+            parse_redeem((200..300).contains(&status), status, &body)
+        })
+        .join()
+        .unwrap_or_else(|_| Err("the request failed".into()));
+    }
     let ticket = ticket.to_string();
     // Its own thread and runtime: a caller's thread may run a runtime
     // already (which can't block_on another).
@@ -370,6 +384,8 @@ pub fn parse_deeplink_url(url_str: &str) -> Option<Link> {
     let mut server_url = String::new();
     let mut ticket = String::new();
     let mut source_id: Option<String> = None;
+    // The server's own (self-signed) certificate, as the web page knew it.
+    let mut cert_pin: Option<String> = None;
 
     let mut width = 1920; // Default resolution
     let mut height = 1080;
@@ -391,6 +407,7 @@ pub fn parse_deeplink_url(url_str: &str) -> Option<Link> {
             "server" => server_url = v.trim().to_string(),
             // Never `token`: a link carries no sign-in token any more.
             "ticket" => ticket = v.trim().to_string(),
+            "cert_sha256" => cert_pin = crate::server_cert::parse_fingerprint(&v),
             "source_id" => {
                 let value = text(&v);
                 if !value.trim().is_empty() {
@@ -480,6 +497,9 @@ pub fn parse_deeplink_url(url_str: &str) -> Option<Link> {
 
     if host_id.is_empty() || !valid_ticket(&ticket) {
         return None;
+    }
+    if let Some(pin) = &cert_pin {
+        crate::server_cert::remember(&server_url, pin);
     }
     let args = AppArgs {
         host_id,
