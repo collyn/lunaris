@@ -272,6 +272,10 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   // button is held the picture is looked at, and the three places that hide
   // the pointers for `inWindowMoveSize` hide for `pointerDragRef.current.inPicture` too.
   const leftButtonHeldRef = useRef<boolean>(false);
+  // Host mouse buttons this page pressed and has not released yet (wire
+  // numbers, 1 = left). A release outside the picture (or in another window)
+  // never reaches the picture's handler, so the window lets them go.
+  const heldMouseButtonsRef = useRef<Set<number>>(new Set());
   const pointerMaybeInPictureRef = useRef<boolean>(false);
   /** The host says app-dragged windows in `in_window_move_size` (agent window_drag.rs). */
   const hostWatchesWindowDragsRef = useRef(false);
@@ -1329,15 +1333,22 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
               const xLocal = pos.clientX - rect.left;
               const yLocal = pos.clientY - rect.top;
 
-              let xNorm = (xLocal - offsetX) / actualVidWidth;
-              let yNorm = (yLocal - offsetY) / actualVidHeight;
-
-              xNorm = Math.max(0, Math.min(1, xNorm));
-              yNorm = Math.max(0, Math.min(1, yNorm));
+              const rawX = (xLocal - offsetX) / actualVidWidth;
+              const rawY = (yLocal - offsetY) / actualVidHeight;
+              const xNorm = Math.max(0, Math.min(1, rawX));
+              const yNorm = Math.max(0, Math.min(1, rawY));
+              // A drag (a button held) goes on past the picture's edge, so a
+              // window can be dragged to the host's next monitor (the host
+              // holds the pointer to its desktop). The wire is i16 on a 4096
+              // scale: up to ~8 pictures either way.
+              const dragging = heldMouseButtonsRef.current.size > 0;
+              const wireLimit = 32767 / 4096;
+              const sendX = dragging ? Math.max(-wireLimit, Math.min(wireLimit, rawX)) : xNorm;
+              const sendY = dragging ? Math.max(-wireLimit, Math.min(wireLimit, rawY)) : yNorm;
 
               // Send as 4096-normalized absolute position (13 bytes)
-              const x16 = Math.round(xNorm * 4096.0);
-              const y16 = Math.round(yNorm * 4096.0);
+              const x16 = Math.round(sendX * 4096.0);
+              const y16 = Math.round(sendY * 4096.0);
 
               const predictedX = Math.round(xNorm * vidWidth);
               const predictedY = Math.round(yNorm * vidHeight);
@@ -3506,6 +3517,33 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   };
 
   useEffect(() => {
+    // A button let go outside the picture, or the window lost the mouse
+    // (another window, Alt+Tab): release what the host still holds, or it
+    // keeps dragging (e.g. into another monitor's stream window).
+    const releaseHeldButtons = (e: Event) => {
+      const held = heldMouseButtonsRef.current;
+      if (held.size === 0) return;
+      const wire: Record<number, number> = { 0: 1, 1: 2, 2: 3, 3: 4, 4: 5 };
+      // On the picture itself its own handler sends the release.
+      const tag = (e.target as HTMLElement | null)?.tagName;
+      if (e.type === 'mouseup' && (tag === 'VIDEO' || tag === 'CANVAS')) return;
+      const only = e.type === 'mouseup' ? wire[(e as MouseEvent).button] : undefined;
+      for (const button of [...held]) {
+        if (only === undefined || button === only) sendMouseButtonRef.current(button, false);
+      }
+    };
+    // While a button is held, moves outside the picture (and outside the
+    // window: the browser keeps sending them during a drag) are sent too,
+    // so a drag carries on onto the host's next monitor.
+    const followDrag = (e: MouseEvent) => {
+      if (heldMouseButtonsRef.current.size === 0 || document.pointerLockElement) return;
+      const tag = (e.target as HTMLElement | null)?.tagName;
+      if (tag === 'VIDEO' || tag === 'CANVAS') return; // the picture's own handler
+      latestAbsoluteMousePosRef.current = { clientX: e.clientX, clientY: e.clientY };
+    };
+    const releaseOnHide = (e: Event) => {
+      if (document.visibilityState === 'hidden') releaseHeldButtons(e);
+    };
     const releaseHostCursorSuppression = () => {
       if (leftButtonHeldRef.current) {
         leftButtonHeldRef.current = false;
@@ -3518,9 +3556,18 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       updateVirtualCursorDOMRef.current();
     };
 
+    // Capture phase: menus over the picture stop the event's propagation.
+    window.addEventListener('mouseup', releaseHeldButtons, true);
+    window.addEventListener('mousemove', followDrag, true);
+    window.addEventListener('blur', releaseHeldButtons);
+    document.addEventListener('visibilitychange', releaseOnHide);
     window.addEventListener('mouseup', releaseHostCursorSuppression);
     window.addEventListener('blur', releaseHostCursorSuppression);
     return () => {
+      window.removeEventListener('mouseup', releaseHeldButtons, true);
+      window.removeEventListener('mousemove', followDrag, true);
+      window.removeEventListener('blur', releaseHeldButtons);
+      document.removeEventListener('visibilitychange', releaseOnHide);
       window.removeEventListener('mouseup', releaseHostCursorSuppression);
       window.removeEventListener('blur', releaseHostCursorSuppression);
     };
@@ -4229,20 +4276,26 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     updateHostCursorDOM(hostCursor.x, hostCursor.y, hostCursor.visible, hostCursor.kind);
     updateVirtualCursorDOMRef.current();
     
+    const buttonMap: Record<number, number> = { 0: 1, 1: 2, 2: 3, 3: 4, 4: 5 };
+    sendMouseButton(buttonMap[e.button] || 1, isDown);
+  };
+
+  /** Press or release host button `button` (wire number, 1 = left). */
+  const sendMouseButton = (button: number, isDown: boolean) => {
+    if (isDown) heldMouseButtonsRef.current.add(button);
+    else heldMouseButtonsRef.current.delete(button);
     const mouseReliableChannel = channelsRef.current["mouse_reliable"];
     if (mouseReliableChannel && mouseReliableChannel.readyState === "open") {
-      const buttonMap: Record<number, number> = { 0: 1, 1: 2, 2: 3, 3: 4, 4: 5 };
-      const button = buttonMap[e.button] || 1;
-      const action = isDown ? 1 : 0; // 1 = Press, 0 = Release
-
       const buffer = new ArrayBuffer(3);
       const view = new DataView(buffer);
       view.setUint8(0, 2); // Type 2: MouseButton
-      view.setUint8(1, action);
+      view.setUint8(1, isDown ? 1 : 0); // 1 = Press, 0 = Release
       view.setUint8(2, button);
       mouseReliableChannel.send(buffer);
     }
   };
+  const sendMouseButtonRef = useRef(sendMouseButton);
+  sendMouseButtonRef.current = sendMouseButton;
 
   // Send scroll wheel event
   const handleWheel = (e: React.WheelEvent<HTMLVideoElement | HTMLCanvasElement>) => {
