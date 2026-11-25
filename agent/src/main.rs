@@ -23,6 +23,11 @@ pub extern "C" fn __cpu_indicator_init() -> i32 {
 }
 
 fn main() -> std::process::ExitCode {
+    // First of all, before any DLL is loaded on demand: Windows looks for
+    // DLLs only in System32 and next to this program, not in the current
+    // folder or the PATH (agent::harden_dll_search).
+    #[cfg(target_os = "windows")]
+    agent::harden_dll_search();
     // How this program was started, for the restart after its file is
     // replaced by an update (restart.rs); a restarted one first waits for
     // the old one to exit.

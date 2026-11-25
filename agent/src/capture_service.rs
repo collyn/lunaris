@@ -30,6 +30,9 @@ struct CaptureServiceArgs {
 
     /// AppImage allowed to receive frames (matched through the `APPIMAGE`
     /// variable its runtime sets; must be owned by root). Repeatable.
+    /// WEAK: that variable is set by whoever starts the process, so this
+    /// lets any program of the logged-on user receive the screen
+    /// (`appimage_warning`). Prefer --allow-exe with a root-owned binary.
     #[arg(long, value_name = "PATH")]
     allow_appimage: Vec<PathBuf>,
 
@@ -58,6 +61,9 @@ fn run(args: CaptureServiceArgs) -> std::process::ExitCode {
         ))
         .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr).without_time())
         .try_init();
+    if let Some(warning) = appimage_warning(&args.allow_appimage) {
+        tracing::warn!("{}", warning);
+    }
     let config = lunaris_media::capture::drm_service::ServiceConfig {
         socket_path: args.socket,
         allow_exes: args.allow_exe,
@@ -73,8 +79,34 @@ fn run(args: CaptureServiceArgs) -> std::process::ExitCode {
     }
 }
 
+/// What --allow-appimage really allows: lunaris-media admits a client whose
+/// `APPIMAGE` environment variable names an allowed AppImage, and that
+/// variable is chosen by whoever starts the process (the session's user
+/// can start any program with it), so the screen goes to any program of
+/// the logged-on user. Said at start until lunaris-media checks the
+/// client's executable (the AppImage's mount) instead.
+fn appimage_warning(allowed: &[PathBuf]) -> Option<String> {
+    if allowed.is_empty() {
+        return None;
+    }
+    let list: Vec<String> = allowed.iter().map(|p| p.display().to_string()).collect();
+    Some(format!(
+        "--allow-appimage {}: clients are recognised by their APPIMAGE environment variable, which any program \
+         of the logged-on user can set: with it, every program of the active session's user may receive the screen. \
+         Install the agent as a package (a root-owned binary, --allow-exe) for a real check",
+        list.join(", ")
+    ))
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn allowing_an_appimage_is_said_to_be_weak() {
+        assert!(super::appimage_warning(&[]).is_none());
+        let w = super::appimage_warning(&[super::PathBuf::from("/opt/lunaris-agent/x.AppImage")]).unwrap();
+        assert!(w.contains("/opt/lunaris-agent/x.AppImage") && w.contains("APPIMAGE"));
+    }
+
     use super::*;
 
     #[test]

@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { t } from '../i18n';
+import { MIN_ACCOUNT_PASSWORD, newPasswordError } from '../setup';
 
 interface AdminUsersProps {
   token: string;
@@ -104,6 +105,8 @@ export function AdminUsers({ token, getBackendHost, getBackendProtocol }: AdminU
       setCreateError(t('Username and password are required'));
       return;
     }
+    const weak = newPasswordError(createPassword);
+    if (weak) { setCreateError(t(weak)); return; }
     setCreateLoading(true);
     try {
       const response = await fetch(`${apiBase()}/api/admin/users`, {
@@ -148,6 +151,8 @@ export function AdminUsers({ token, getBackendHost, getBackendProtocol }: AdminU
     e.preventDefault();
     if (!editUser) return;
     setEditError(null);
+    const weak = editPassword.trim() ? newPasswordError(editPassword) : null;
+    if (weak) { setEditError(t(weak)); return; }
     setEditLoading(true);
     try {
       const body: Record<string, unknown> = {
@@ -268,7 +273,7 @@ export function AdminUsers({ token, getBackendHost, getBackendProtocol }: AdminU
       </div>
 
       <div className="admin-table-container">
-        <table className="admin-table">
+        <table className="admin-table stacked">
           <thead>
             <tr>
               <th>{t('Username')}</th>
@@ -282,10 +287,10 @@ export function AdminUsers({ token, getBackendHost, getBackendProtocol }: AdminU
           <tbody>
             {users.map(user => (
               <tr key={user.id}>
-                <td>
+                <td className="cell-title">
                   <span style={{ fontWeight: 600, color: 'var(--text-main)' }}>{user.username}</span>
                 </td>
-                <td>
+                <td data-label={t('Role')}>
                   <div className="user-badges">
                     <span className={`role-badge ${user.role}`}>{user.role === 'admin' ? t('Admin') : t('User')}</span>
                     {user.mfa_enabled && (
@@ -293,13 +298,13 @@ export function AdminUsers({ token, getBackendHost, getBackendProtocol }: AdminU
                     )}
                   </div>
                 </td>
-                <td>
+                <td data-label={t('Status')}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                     <span className={`status-dot ${user.is_active ? 'active' : 'inactive'}`}></span>
                     <span style={{ fontSize: '0.85rem' }}>{user.is_active ? t('Active') : t('Disabled')}</span>
                   </div>
                 </td>
-                <td>
+                <td data-label={t('Groups')}>
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.35rem' }}>
                     {user.groups && user.groups.length > 0 ? (
                       user.groups.map(g => (
@@ -310,12 +315,12 @@ export function AdminUsers({ token, getBackendHost, getBackendProtocol }: AdminU
                     )}
                   </div>
                 </td>
-                <td>
+                <td data-label={t('Created')}>
                   <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontFamily: 'monospace' }}>
                     {user.created_at ? new Date(user.created_at).toLocaleDateString() : '—'}
                   </span>
                 </td>
-                <td>
+                <td className="cell-actions">
                   <div style={{ display: 'flex', gap: '0.5rem' }}>
                     <button
                       onClick={() => openEditModal(user)}
@@ -402,7 +407,9 @@ export function AdminUsers({ token, getBackendHost, getBackendProtocol }: AdminU
                     type="password"
                     value={createPassword}
                     onChange={e => setCreatePassword(e.target.value)}
-                    placeholder={t('Enter password (min 6 chars)')}
+                    placeholder={t('Enter password (min 10 chars)')}
+                    minLength={MIN_ACCOUNT_PASSWORD}
+                    autoComplete="new-password"
                     required
                   />
                 </div>
@@ -478,7 +485,9 @@ export function AdminUsers({ token, getBackendHost, getBackendProtocol }: AdminU
                     type="password"
                     value={editPassword}
                     onChange={e => setEditPassword(e.target.value)}
-                    placeholder={t('New password')}
+                    placeholder={t('New password (min 10 chars)')}
+                    minLength={MIN_ACCOUNT_PASSWORD}
+                    autoComplete="new-password"
                   />
                 </div>
                 {groups.length > 0 && (

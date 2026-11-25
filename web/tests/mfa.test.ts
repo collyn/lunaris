@@ -68,3 +68,12 @@ test('recovery codes file', () => {
   assert.equal(recoveryCodesFileName('Nguyễn Văn/A'), 'lunaris-recovery-codes-Nguyễn-Văn-A.txt');
   assert.equal(recoveryCodesFileName('//'), 'lunaris-recovery-codes.txt');
 });
+
+test('a wrong account password is named, other errors pass through', async () => {
+  const { accountErrorMessage } = await import('../src/mfa.ts');
+  assert.equal(accountErrorMessage({ error: 'wrong_password' }, 'Could not start'), 'Wrong password');
+  assert.equal(accountErrorMessage({ error: 'Nope', code: 'wrong_password' }, 'Could not start'), 'Wrong password');
+  assert.equal(accountErrorMessage({ error: 'Too many attempts' }, 'Could not start'), 'Too many attempts');
+  assert.equal(accountErrorMessage({}, 'Could not start'), 'Could not start');
+  assert.equal(accountErrorMessage(null, 'Could not start'), 'Could not start');
+});

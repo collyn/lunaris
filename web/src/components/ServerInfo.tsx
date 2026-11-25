@@ -26,7 +26,23 @@ const useServerInfo = (token: string | null, apiBase: () => string) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token, asked]);
   const reload = () => { setLoading(true); setAsked(n => n + 1); };
-  return { info, error, loading, reload };
+  // POST /api/admin/server/update-check: GitHub is asked now; the answer is
+  // the same as the info's.
+  const [checking, setChecking] = useState(false);
+  const checkUpdate = () => {
+    if (!token) return;
+    setChecking(true);
+    fetch(`${apiBase()}/api/admin/server/update-check`, { method: 'POST', headers: { Authorization: `Bearer ${token}` } })
+      .then(async (r) => {
+        if (r.status === 404 || r.status === 405) { setError(t('This server is from before this page: update it to see this.')); return; }
+        if (!r.ok) { setError(t('Could not read the server information')); return; }
+        setError('');
+        setInfo(parseServerInfo(await r.json().catch(() => null)));
+      })
+      .catch(() => setError(t('Cannot reach the server')))
+      .finally(() => setChecking(false));
+  };
+  return { info, error, loading, reload, checking, checkUpdate };
 };
 
 const Row = ({ label, children }: { label: string; children: ReactNode }) => (
@@ -116,7 +132,7 @@ function GatewaySection({ token, apiBase, initial }: { token: string; apiBase: (
 
 /** The administrators' "Server" page: version, update, ports, data folder, links. */
 export function AdminServerInfo({ token, apiBase }: { token: string; apiBase: () => string }) {
-  const { info, error, loading, reload } = useServerInfo(token, apiBase);
+  const { info, error, loading, reload, checking, checkUpdate } = useServerInfo(token, apiBase);
   const update = info?.update;
   return (
     <div className="admin-page-container">
@@ -146,7 +162,16 @@ export function AdminServerInfo({ token, apiBase }: { token: string; apiBase: ()
                 : update.error ? t('The last check failed: %1', update.error)
                 : t('Not checked yet (the first check is shortly after the server starts)')}
             </Row>
-            {update?.checkedAt ? <Row label={t('Last checked')}>{checkedText(update.checkedAt)}</Row> : null}
+            {update?.checks ? (
+              <Row label={t('Last checked')}>
+                <span className="server-update-check">
+                  {update.checkedAt ? checkedText(update.checkedAt) : '—'}
+                  <button type="button" className="btn-secondary" onClick={checkUpdate} disabled={checking}>
+                    {checking ? t('Checking…') : t('Check for updates')}
+                  </button>
+                </span>
+              </Row>
+            ) : null}
           </dl>
           <p className="form-hint server-info-hint">{t('The server never updates itself: update the package, the Docker image or the service the way it was installed.')}</p>
 

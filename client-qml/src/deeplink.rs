@@ -7,6 +7,14 @@
 //! confirms in a dialog, and its session gets no clipboard sync or file
 //! transfer.
 //!
+//! Trust is for a server and the account its links are for: the server
+//! names the account when the ticket is traded (`account`, newer servers).
+//! A trusted server's link for another account than the one remembered
+//! (`trusted_accounts.json`) asks first, and its session has clipboard and
+//! files off until the user says to trust that account. An entry without a
+//! remembered account (older versions, a server added by hand) remembers
+//! the account of its next link without asking (trust on first use).
+//!
 //! A link carries no sign-in token (it ends up on a command line), only a
 //! one-time `ticket` that the app trades with the server for a token that
 //! opens only the link's computer (server/src/link_tickets.rs). The trade
@@ -39,6 +47,10 @@ const REDEEM_TIMEOUT: Duration = Duration::from_secs(15);
 /// Servers kept in the always-trusted list at most.
 const MAX_TRUSTED: usize = 64;
 const TRUSTED_FILE: &str = "trusted_servers.json";
+/// The account each trusted server's links are for: `{ "<trust key>": "<account>" }`.
+/// Beside the list (not in it) so that the list keeps the format every
+/// version reads.
+const ACCOUNTS_FILE: &str = "trusted_accounts.json";
 /// Where the app kept its sign-in before signing in moved to the web page.
 const OLD_SIGN_IN_FILE: &str = "client_config.json";
 
@@ -49,15 +61,38 @@ pub struct Link {
     ticket: String,
 }
 
-/// A link to an untrusted server, waiting for the answer.
-static PENDING: Mutex<Option<Link>> = Mutex::new(None);
-/// (server, token, host_id) of the confirmed untrusted session.
-static UNTRUSTED: Mutex<Option<(String, String, String)>> = Mutex::new(None);
+/// A link waiting for the user's answer.
+enum Pending {
+    /// To a server that is not trusted: its ticket is traded once the user
+    /// says yes.
+    Link(Link),
+    /// To a trusted server, already traded, for another account than the
+    /// one remembered: nothing has started.
+    OtherAccount { args: AppArgs, account: String, known: String },
+}
+
+impl Pending {
+    fn args(&self) -> &AppArgs {
+        match self {
+            Pending::Link(l) => &l.args,
+            Pending::OtherAccount { args, .. } => args,
+        }
+    }
+}
+
+static PENDING: Mutex<Option<Pending>> = Mutex::new(None);
 
 /// What the user is asked about.
 pub struct LinkInfo {
     pub server_host: String,
     pub computer: String,
+    /// https/wss: false for a link whose server is reached without
+    /// encryption (http/ws).
+    pub encrypted: bool,
+    /// The account the link is for, when known (`OtherAccount`).
+    pub account: Option<String>,
+    /// The account the server is trusted for, when the link is for another one.
+    pub known_account: Option<String>,
 }
 
 /// (secure, host, port) of a server address; `ws` is `http`, `wss` is `https`.
@@ -130,6 +165,7 @@ fn is_trusted(server: &str) -> bool {
 }
 
 /// Takes `server` off the list in `path`; false when it was not on it.
+#[cfg(test)]
 fn remove_trusted_at(path: &Path, server: &str) -> std::io::Result<bool> {
     let Some(key) = trust_key(server) else { return Ok(false) };
     let mut list = load_trusted(path);
@@ -142,61 +178,73 @@ fn remove_trusted_at(path: &Path, server: &str) -> std::io::Result<bool> {
     crate::secure_fs::write_private(path, data).map(|_| true)
 }
 
-/// A server's address as the user types it: a scheme is optional
-/// (https:// when none is given); the path is dropped. None when it is
-/// not the address of a web server.
-fn typed_server(address: &str) -> Option<String> {
-    let address = address.trim();
-    if address.is_empty() || address.len() > MAX_TEXT_LEN {
-        return None;
-    }
-    let with_scheme = if address.contains("://") { address.to_string() } else { format!("https://{}", address) };
-    http_base(&with_scheme)
+fn accounts_path(list: &Path) -> PathBuf {
+    list.with_file_name(ACCOUNTS_FILE)
 }
 
-/// The address shown for a trusted server: its web page's, without the
-/// scheme's own port.
-fn web_address(key: &str) -> Option<String> {
-    let (secure, host, port) = server_key(key)?;
-    let host = if host.contains(':') && !host.starts_with('[') { format!("[{host}]") } else { host };
-    let scheme = if secure { "https" } else { "http" };
-    Some(if port == if secure { 443 } else { 80 } {
-        format!("{scheme}://{host}")
-    } else {
-        format!("{scheme}://{host}:{port}")
-    })
-}
-
-fn trusted_servers_at(path: &Path) -> Vec<(String, String)> {
-    load_trusted(path)
+/// The remembered accounts beside the list at `list` (none when missing or bad).
+fn load_accounts(list: &Path) -> std::collections::BTreeMap<String, String> {
+    std::fs::read_to_string(accounts_path(list))
+        .ok()
+        .and_then(|data| serde_json::from_str::<std::collections::BTreeMap<String, String>>(&data).ok())
+        .unwrap_or_default()
         .into_iter()
-        .rev()
-        .filter_map(|key| web_address(&key).map(|web| (key, web)))
+        .filter_map(|(k, v)| Some((trust_key(&k)?, v)))
         .collect()
 }
 
-/// The always-trusted servers, the newest first: (as kept, web page address).
-pub fn trusted_servers() -> Vec<(String, String)> {
-    trusted_servers_at(&trusted_list_path())
+fn save_accounts(list: &Path, accounts: &std::collections::BTreeMap<String, String>) -> std::io::Result<()> {
+    let data = serde_json::to_string_pretty(accounts).map_err(std::io::Error::other)?;
+    crate::secure_fs::write_private(&accounts_path(list), data)
 }
 
-/// Adds a server the user typed to the trusted list; its web page's
-/// address, or None when it is not a server address.
-pub fn add_typed_server(address: &str) -> Option<String> {
-    let server = typed_server(address)?;
-    if let Err(e) = add_trusted(&trusted_list_path(), &server) {
-        tracing::warn!("Could not save the trusted server: {}", e);
-        return None;
+fn known_account(list: &Path, server: &str) -> Option<String> {
+    let key = trust_key(server)?;
+    load_accounts(list).remove(&key)
+}
+
+/// Remembers `account` for `server` (None: forgets it, so its next link
+/// remembers again).
+fn set_account(list: &Path, server: &str, account: Option<&str>) -> std::io::Result<()> {
+    let Some(key) = trust_key(server) else { return Ok(()) };
+    let mut accounts = load_accounts(list);
+    let changed = match account {
+        Some(a) => accounts.insert(key, a.to_string()).as_deref() != Some(a),
+        None => accounts.remove(&key).is_some(),
+    };
+    // Only servers still on the list keep an account.
+    let trusted = load_trusted(list);
+    let before = accounts.len();
+    accounts.retain(|k, _| trusted.contains(k));
+    if changed || accounts.len() != before {
+        save_accounts(list, &accounts)?;
     }
-    web_address(&server)
+    Ok(())
 }
 
-/// Takes a server off the trusted list: its links ask again.
-pub fn remove_trusted_server(server: &str) -> bool {
-    remove_trusted_at(&trusted_list_path(), server).unwrap_or_else(|e| {
-        tracing::warn!("Could not change the trusted servers: {}", e);
-        false
-    })
+/// What a trusted server's link may do, given the account the server says
+/// it is for.
+#[derive(Debug, PartialEq, Eq)]
+enum AccountCheck {
+    /// The remembered account, the first one seen (now remembered), or a
+    /// server that names none (older servers).
+    Trusted,
+    /// Another account than the remembered one.
+    Other { known: String },
+}
+
+fn check_account(list: &Path, server: &str, account: Option<&str>) -> AccountCheck {
+    let Some(account) = account else { return AccountCheck::Trusted };
+    match known_account(list, server) {
+        Some(known) if known == account => AccountCheck::Trusted,
+        Some(known) => AccountCheck::Other { known },
+        None => {
+            if let Err(e) = set_account(list, server, Some(account)) {
+                tracing::warn!("Could not remember the trusted server's account: {}", e);
+            }
+            AccountCheck::Trusted
+        }
+    }
 }
 
 /// The app used to sign in to one server (`client_config.json`: its address
@@ -239,14 +287,39 @@ fn valid_ticket(ticket: &str) -> bool {
         && ticket.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
+/// What trading a ticket gave: the session token and the account the link
+/// is for (None from servers that do not say).
+struct Redeemed {
+    token: String,
+    account: Option<String>,
+}
+
+/// The server's answer to a ticket (pure). The error never holds the token.
+fn parse_redeem(status_ok: bool, status: u16, body: &serde_json::Value) -> Result<Redeemed, String> {
+    match body.get("token").and_then(|t| t.as_str()) {
+        Some(token) if status_ok && !token.is_empty() => {
+            let account = body
+                .get("account")
+                .and_then(|a| a.as_str())
+                .map(text)
+                .filter(|a| !a.trim().is_empty());
+            Ok(Redeemed { token: token.to_string(), account })
+        }
+        _ => {
+            let why = body.get("error").and_then(|e| e.as_str()).unwrap_or("no token");
+            Err(format!("{}: {}", status, why.chars().take(200).collect::<String>()))
+        }
+    }
+}
+
 /// Trades a link's ticket for its session token (blocking; call it off the
 /// UI thread). The error is for the log and never holds the ticket or token.
-fn redeem(server: &str, ticket: &str) -> Result<String, String> {
+fn redeem(server: &str, ticket: &str) -> Result<Redeemed, String> {
     let url = format!("{}/api/links/redeem", http_base(server).ok_or("not a server address")?);
     let ticket = ticket.to_string();
     // Its own thread and runtime: a caller's thread may run a runtime
     // already (which can't block_on another).
-    std::thread::spawn(move || -> Result<String, String> {
+    std::thread::spawn(move || -> Result<Redeemed, String> {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -264,24 +337,19 @@ fn redeem(server: &str, ticket: &str) -> Result<String, String> {
                 .map_err(|e| format!("cannot reach the server: {}", e.without_url()))?;
             let status = resp.status();
             let body: serde_json::Value = resp.json().await.unwrap_or(serde_json::Value::Null);
-            match body.get("token").and_then(|t| t.as_str()) {
-                Some(token) if status.is_success() && !token.is_empty() => Ok(token.to_string()),
-                _ => {
-                    let why = body.get("error").and_then(|e| e.as_str()).unwrap_or("no token");
-                    Err(format!("{}: {}", status.as_u16(), why.chars().take(200).collect::<String>()))
-                }
-            }
+            parse_redeem(status.is_success(), status.as_u16(), &body)
         })
     })
     .join()
     .unwrap_or_else(|_| Err("the request failed".into()))
 }
 
-/// The link's session with its token, or why not.
-fn redeem_link(link: Link) -> Result<AppArgs, String> {
+/// The link's session with its token and the account it is for, or why not.
+fn redeem_link(link: Link) -> Result<(AppArgs, Option<String>), String> {
     let mut args = link.args;
-    args.token = redeem(&args.server_url, &link.ticket)?;
-    Ok(args)
+    let r = redeem(&args.server_url, &link.ticket)?;
+    args.token = r.token;
+    Ok((args, r.account))
 }
 
 fn bounded(v: &str, range: &std::ops::RangeInclusive<u32>) -> Option<u32> {
@@ -431,6 +499,8 @@ pub fn parse_deeplink_url(url_str: &str) -> Option<Link> {
         encoder,
         display_id,
         source_id,
+        // Set when the link's session is decided (`judge` / `confirm_pending`).
+        untrusted: true,
     };
     Some(Link { args, ticket })
 }
@@ -465,20 +535,69 @@ pub fn judge(url: &str, blocking: bool) -> Verdict {
     if is_trusted(&link.args.server_url) {
         *PENDING.lock().unwrap_or_else(|e| e.into_inner()) = None;
         if !blocking {
-            redeem_in_background(link, true);
+            std::thread::spawn(move || {
+                if let Some(args) = trusted_session(link, &trusted_list_path()) {
+                    start_session(args);
+                }
+            });
             return Verdict::Redeeming;
         }
-        match redeem_link(link) {
-            Ok(args) => Verdict::Connect(args),
-            Err(why) => {
-                link_failed(&why);
-                Verdict::Invalid
-            }
+        match trusted_session(link, &trusted_list_path()) {
+            Some(args) => Verdict::Connect(args),
+            None if PENDING.lock().unwrap_or_else(|e| e.into_inner()).is_some() => Verdict::NeedsConfirmation,
+            None => Verdict::Invalid,
         }
     } else {
-        *PENDING.lock().unwrap_or_else(|e| e.into_inner()) = Some(link);
+        *PENDING.lock().unwrap_or_else(|e| e.into_inner()) = Some(Pending::Link(link));
         Verdict::NeedsConfirmation
     }
+}
+
+/// A trusted server's link: its ticket traded, then the account checked,
+/// all before any session exists. The session (clipboard and files on), or
+/// None: the ticket was refused (the user is told), or the link is for
+/// another account than the remembered one (it waits for the user's answer
+/// in `PENDING`, and the window is asked to show it).
+fn trusted_session(link: Link, list: &Path) -> Option<AppArgs> {
+    let (mut args, account) = match redeem_link(link) {
+        Ok(r) => r,
+        Err(why) => {
+            link_failed(&why);
+            return None;
+        }
+    };
+    match check_account(list, &args.server_url, account.as_deref()) {
+        AccountCheck::Trusted => {
+            args.untrusted = false;
+            Some(args)
+        }
+        AccountCheck::Other { known } => {
+            let account = account.unwrap_or_default();
+            tracing::warn!(
+                "A link to a trusted server is for the account {:?}, not {:?}: asking the user",
+                account,
+                known
+            );
+            args.untrusted = true;
+            *PENDING.lock().unwrap_or_else(|e| e.into_inner()) = Some(Pending::OtherAccount { args, account, known });
+            // Empty url = focus; the window finds the pending link.
+            bridge::PENDING_EVENTS
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(bridge::PendingDashboardEvent::DeepLinkReceived { url: String::new() });
+            None
+        }
+    }
+}
+
+/// `args` becomes the session to start (with its own `untrusted` flag, set
+/// under the same lock) and `DeepLinkReceived` starts it.
+fn start_session(args: AppArgs) {
+    *bridge::ACTIVE_CONFIG.lock().unwrap_or_else(|e| e.into_inner()) = Some(args);
+    bridge::PENDING_EVENTS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push(bridge::PendingDashboardEvent::DeepLinkReceived { url: "lunaris://connect".to_string() });
 }
 
 /// A ticket was not accepted: logged (`why` holds neither ticket nor
@@ -491,22 +610,20 @@ fn link_failed(why: &str) {
         .push(bridge::PendingDashboardEvent::LinkFailed { message: LINK_FAILED.to_string() });
 }
 
-/// Trades `link`'s ticket off the calling thread; then its session becomes
-/// the one to start (`trusted`: a normal one; otherwise without clipboard
-/// sync and file transfer) and `DeepLinkReceived` starts it.
-fn redeem_in_background(link: Link, trusted: bool) {
+/// Trades an untrusted server's `link` ticket off the calling thread (the
+/// user said yes); then its session becomes the one to start (`trust`: a
+/// normal one, the server now trusted for the link's account; otherwise
+/// without clipboard sync and file transfer).
+fn redeem_in_background(link: Link, trust: bool, list: PathBuf) {
     std::thread::spawn(move || match redeem_link(link) {
-        Ok(args) => {
-            *UNTRUSTED.lock().unwrap_or_else(|e| e.into_inner()) = if trusted {
-                None
-            } else {
-                Some((args.server_url.clone(), args.token.clone(), args.host_id.clone()))
-            };
-            *bridge::ACTIVE_CONFIG.lock().unwrap_or_else(|e| e.into_inner()) = Some(args);
-            bridge::PENDING_EVENTS
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .push(bridge::PendingDashboardEvent::DeepLinkReceived { url: "lunaris://connect".to_string() });
+        Ok((mut args, account)) => {
+            if trust {
+                if let Err(e) = set_account(&list, &args.server_url, account.as_deref()) {
+                    tracing::warn!("Could not remember the trusted server's account: {}", e);
+                }
+            }
+            args.untrusted = !trust;
+            start_session(args);
         }
         Err(why) => link_failed(&why),
     });
@@ -515,11 +632,16 @@ fn redeem_in_background(link: Link, trusted: bool) {
 /// The link waiting for an answer, for the dialog.
 pub fn pending_info() -> Option<LinkInfo> {
     let lock = PENDING.lock().unwrap_or_else(|e| e.into_inner());
-    let a = &lock.as_ref()?.args;
+    let pending = lock.as_ref()?;
+    let a = pending.args();
     let (secure, host, port) = server_key(&a.server_url)?;
     let default_port = if secure { 443 } else { 80 };
     let server_host = if port == default_port { host } else { format!("{}:{}", host, port) };
-    Some(LinkInfo { server_host, computer: a.host_name.clone() })
+    let (account, known_account) = match pending {
+        Pending::Link(_) => (None, None),
+        Pending::OtherAccount { account, known, .. } => (Some(account.clone()), Some(known.clone())),
+    };
+    Some(LinkInfo { server_host, computer: a.host_name.clone(), encrypted: secure, account, known_account })
 }
 
 /// The user said yes: the link's ticket is traded in the background, then
@@ -528,15 +650,36 @@ pub fn pending_info() -> Option<LinkInfo> {
 /// off; with it the server joins the trusted list and the session is a
 /// normal one. Returns whether there was a link to answer.
 pub fn confirm_pending(trust_always: bool) -> bool {
-    let Some(link) = PENDING.lock().unwrap_or_else(|e| e.into_inner()).take() else {
+    confirm_pending_at(trust_always, &trusted_list_path())
+}
+
+fn confirm_pending_at(trust_always: bool, list: &Path) -> bool {
+    let Some(pending) = PENDING.lock().unwrap_or_else(|e| e.into_inner()).take() else {
         return false;
     };
-    if trust_always {
-        if let Err(e) = add_trusted(&trusted_list_path(), &link.args.server_url) {
-            tracing::warn!("Could not save the trusted server: {}", e);
+    match pending {
+        Pending::Link(link) => {
+            if trust_always {
+                if let Err(e) = add_trusted(list, &link.args.server_url) {
+                    tracing::warn!("Could not save the trusted server: {}", e);
+                }
+            }
+            redeem_in_background(link, trust_always, list.to_path_buf());
+        }
+        // Traded already: the session starts now.
+        Pending::OtherAccount { mut args, account, .. } => {
+            if trust_always {
+                // The server is now trusted for this account.
+                if let Err(e) = add_trusted(list, &args.server_url)
+                    .and_then(|_| set_account(list, &args.server_url, Some(&account)))
+                {
+                    tracing::warn!("Could not save the trusted server's account: {}", e);
+                }
+            }
+            args.untrusted = !trust_always;
+            start_session(args);
         }
     }
-    redeem_in_background(link, trust_always);
     true
 }
 
@@ -544,20 +687,14 @@ pub fn cancel_pending() {
     *PENDING.lock().unwrap_or_else(|e| e.into_inner()) = None;
 }
 
-/// A link to a trusted server starts a normal session.
-pub fn mark_trusted_session() {
-    *UNTRUSTED.lock().unwrap_or_else(|e| e.into_inner()) = None;
-}
-
-/// Is the running session the one started from an unconfirmed-server link?
-/// (A session the user starts from the app has other credentials.)
+/// Does the running session have clipboard sync and file transfer off
+/// (started from a link the user confirmed without trusting its server or
+/// account)? The flag is the session's own (`AppArgs::untrusted`).
 pub fn session_is_untrusted() -> bool {
-    let u = UNTRUSTED.lock().unwrap_or_else(|e| e.into_inner());
-    let Some((server, token, host)) = u.as_ref() else { return false };
     let active = bridge::ACTIVE_CONFIG.lock().unwrap_or_else(|e| e.into_inner());
     match active.as_ref() {
-        Some(a) => a.server_url == *server && a.token == *token && a.host_id == *host,
-        None => false,
+        Some(a) => a.untrusted,
+        None => bridge::APP_ARGS.get().is_some_and(|a| a.untrusted),
     }
 }
 
@@ -727,33 +864,6 @@ mod tests {
     }
 
     #[test]
-    fn typed_servers_and_their_web_address() {
-        assert_eq!(typed_server("lunaris.example.com").as_deref(), Some("https://lunaris.example.com:443"));
-        assert_eq!(typed_server(" http://10.0.0.2:8080/dash ").as_deref(), Some("http://10.0.0.2:8080"));
-        assert_eq!(typed_server("srv.example:9443").as_deref(), Some("https://srv.example:9443"));
-        assert_eq!(typed_server(""), None);
-        assert_eq!(typed_server("javascript:alert(1)"), None);
-        assert_eq!(typed_server("ftp://x.example"), None);
-        assert_eq!(web_address("https://a.example:443").as_deref(), Some("https://a.example"));
-        assert_eq!(web_address("http://a.example:8080").as_deref(), Some("http://a.example:8080"));
-    }
-
-    #[test]
-    fn trusted_servers_are_listed_newest_first_and_removed() {
-        let path = temp_list();
-        add_trusted(&path, "https://a.example").unwrap();
-        add_trusted(&path, "ws://b.example:8080").unwrap();
-        let listed = trusted_servers_at(&path);
-        assert_eq!(listed[0], ("http://b.example:8080".to_string(), "http://b.example:8080".to_string()));
-        assert_eq!(listed[1], ("https://a.example:443".to_string(), "https://a.example".to_string()));
-        assert!(remove_trusted_at(&path, "https://A.example/").unwrap());
-        assert!(!remove_trusted_at(&path, "https://a.example").unwrap());
-        assert!(!in_trusted_list(&path, "wss://a.example"));
-        assert!(in_trusted_list(&path, "http://b.example:8080"));
-        let _ = std::fs::remove_dir_all(path.parent().unwrap());
-    }
-
-    #[test]
     fn the_signed_in_server_becomes_trusted() {
         let list = temp_list();
         let dir = list.parent().unwrap().to_path_buf();
@@ -767,6 +877,141 @@ mod tests {
         migrate_signed_in_server_at(&config, &list);
         assert_eq!(load_trusted(&list).len(), 1);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_stored_trusted_list_of_earlier_versions_still_loads() {
+        // trusted_servers.json as 0.7.0 writes it, no accounts file yet.
+        let list = temp_list();
+        std::fs::create_dir_all(list.parent().unwrap()).unwrap();
+        std::fs::write(&list, "[\n  \"https://lunaris.example.com:443\",\n  \"http://10.0.0.2:8080\"\n]").unwrap();
+        assert!(in_trusted_list(&list, "wss://lunaris.example.com"));
+        assert!(in_trusted_list(&list, "ws://10.0.0.2:8080"));
+        assert_eq!(known_account(&list, "wss://lunaris.example.com"), None);
+        // Trust on first use: the first account seen is remembered, without a question.
+        assert_eq!(check_account(&list, "wss://lunaris.example.com", Some("huy")), AccountCheck::Trusted);
+        assert_eq!(known_account(&list, "https://lunaris.example.com").as_deref(), Some("huy"));
+        // The list itself keeps the format every version reads.
+        let data = std::fs::read_to_string(&list).unwrap();
+        assert_eq!(serde_json::from_str::<Vec<String>>(&data).unwrap().len(), 2);
+        let _ = std::fs::remove_dir_all(list.parent().unwrap());
+    }
+
+    #[test]
+    fn trust_is_for_the_remembered_account() {
+        let list = temp_list();
+        add_trusted(&list, "https://srv.example").unwrap();
+        // A server that names no account (older servers): as before.
+        assert_eq!(check_account(&list, "wss://srv.example", None), AccountCheck::Trusted);
+        assert_eq!(known_account(&list, "wss://srv.example"), None);
+        assert_eq!(check_account(&list, "wss://srv.example", Some("alice")), AccountCheck::Trusted);
+        assert_eq!(check_account(&list, "wss://srv.example", Some("alice")), AccountCheck::Trusted);
+        // Another account on the same server asks.
+        assert_eq!(check_account(&list, "wss://srv.example", Some("mallory")), AccountCheck::Other { known: "alice".into() });
+        assert_eq!(known_account(&list, "wss://srv.example").as_deref(), Some("alice"), "not replaced by asking");
+        // Accepted with "Always trust": the new account is the one.
+        set_account(&list, "wss://srv.example", Some("mallory")).unwrap();
+        assert_eq!(check_account(&list, "wss://srv.example", Some("mallory")), AccountCheck::Trusted);
+        // Forgotten with the server; garbage in the file is ignored.
+        remove_trusted_at(&list, "https://srv.example").unwrap();
+        set_account(&list, "https://srv.example", None).unwrap();
+        assert!(load_accounts(&list).is_empty());
+        std::fs::write(accounts_path(&list), "not json").unwrap();
+        assert!(load_accounts(&list).is_empty());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            add_trusted(&list, "https://srv.example").unwrap();
+            set_account(&list, "https://srv.example", Some("a")).unwrap();
+            let mode = std::fs::metadata(accounts_path(&list)).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+        let _ = std::fs::remove_dir_all(list.parent().unwrap());
+    }
+
+    #[test]
+    fn the_redeem_answer_names_the_account() {
+        let ok = parse_redeem(true, 200, &serde_json::json!({"token": "t", "account": "huy"})).unwrap();
+        assert_eq!((ok.token.as_str(), ok.account.as_deref()), ("t", Some("huy")));
+        // Older servers: no account.
+        let old = parse_redeem(true, 200, &serde_json::json!({"token": "t"})).unwrap();
+        assert_eq!(old.account, None);
+        let blank = parse_redeem(true, 200, &serde_json::json!({"token": "t", "account": " "})).unwrap();
+        assert_eq!(blank.account, None);
+        let ctl = parse_redeem(true, 200, &serde_json::json!({"token": "t", "account": "a\nb"})).unwrap();
+        assert_eq!(ctl.account.as_deref(), Some("ab"));
+        let err = parse_redeem(false, 410, &serde_json::json!({"error": "expired"})).err().unwrap();
+        assert_eq!(err, "410: expired");
+        assert!(parse_redeem(true, 200, &serde_json::json!({"token": ""})).is_err());
+    }
+
+    /// PENDING and ACTIVE_CONFIG are the app's own: one test at a time.
+    static GLOBALS: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn a_link_for_another_account_starts_untrusted_unless_trusted() {
+        let _g = GLOBALS.lock().unwrap_or_else(|e| e.into_inner());
+        let list = temp_list();
+        add_trusted(&list, "https://srv.example").unwrap();
+        set_account(&list, "https://srv.example", Some("alice")).unwrap();
+        let other = |encrypted: bool| {
+            let mut args = p("").unwrap();
+            args.server_url = if encrypted { "wss://srv.example" } else { "ws://srv.example:8080" }.into();
+            args.token = "tok".into();
+            Pending::OtherAccount { args, account: "mallory".into(), known: "alice".into() }
+        };
+
+        // Nothing runs while the question is open.
+        *bridge::ACTIVE_CONFIG.lock().unwrap() = None;
+        *PENDING.lock().unwrap() = Some(other(true));
+        let info = pending_info().unwrap();
+        assert_eq!(info.account.as_deref(), Some("mallory"));
+        assert_eq!(info.known_account.as_deref(), Some("alice"));
+        assert!(info.encrypted);
+        assert!(!session_is_untrusted());
+        assert!(bridge::ACTIVE_CONFIG.lock().unwrap().is_none());
+
+        // Connect without "always trust": clipboard and files off.
+        assert!(confirm_pending_at(false, &list));
+        assert!(session_is_untrusted());
+        assert!(bridge::ACTIVE_CONFIG.lock().unwrap().as_ref().unwrap().untrusted);
+        assert!(!crate::share::clipboard_enabled());
+        assert!(!crate::share::files_enabled());
+        assert_eq!(known_account(&list, "https://srv.example").as_deref(), Some("alice"));
+
+        // With "always trust": a normal session, the account remembered.
+        *PENDING.lock().unwrap() = Some(other(true));
+        assert!(confirm_pending_at(true, &list));
+        assert!(!session_is_untrusted());
+        assert_eq!(known_account(&list, "https://srv.example").as_deref(), Some("mallory"));
+
+        // A link to a server reached without encryption says so.
+        *PENDING.lock().unwrap() = Some(other(false));
+        assert!(!pending_info().unwrap().encrypted);
+        cancel_pending();
+        assert!(pending_info().is_none());
+        assert!(!confirm_pending_at(true, &list));
+        *bridge::ACTIVE_CONFIG.lock().unwrap() = None;
+        let _ = std::fs::remove_dir_all(list.parent().unwrap());
+    }
+
+    #[test]
+    fn a_link_starts_untrusted_until_judged() {
+        // The safe default: a parsed link is untrusted until `judge` /
+        // `confirm_pending` decide.
+        assert!(p("").unwrap().untrusted);
+        let _g = GLOBALS.lock().unwrap_or_else(|e| e.into_inner());
+        let mut args = p("").unwrap();
+        args.untrusted = false;
+        *bridge::ACTIVE_CONFIG.lock().unwrap() = Some(args.clone());
+        assert!(!session_is_untrusted());
+        // The flag travels with the session's settings: changing them
+        // (resolution etc.) keeps it.
+        args.untrusted = true;
+        *bridge::ACTIVE_CONFIG.lock().unwrap() = Some(args);
+        bridge::ACTIVE_CONFIG.lock().unwrap().as_mut().unwrap().width = 800;
+        assert!(session_is_untrusted());
+        *bridge::ACTIVE_CONFIG.lock().unwrap() = None;
     }
 
 }

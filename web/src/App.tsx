@@ -21,11 +21,19 @@ import { isCompleteTotp, isPlausibleRecoveryCode, normalizeRecoveryInput, normal
 import FileManager from './components/FileManager';
 import SetupPage from './components/SetupPage';
 import { parseSetupStatus } from './setup';
+import { stripSessionLinkParams } from './linkParams';
 import {
   browserStore, buildCards, choiceAsList, currentMethod, effectiveType, filterCards, layoutFields, loadMethods, loadTypeFilter, loadView, methodType,
   newGroup, rememberMethod, saveTypeFilter, saveView, typeShortName, typesOf, type Card, type ComputerView, type Method,
 } from './computerCards';
 import { typeLogo } from './typeLogos';
+import { UpdateBanner, useServerUpdate } from './components/UpdateBanner';
+import { BrandMark } from './components/BrandMark';
+import AgentUpdateDialog from './components/AgentUpdateDialog';
+import { agentUpdateState, installKindLabel, type AgentBuild } from './agentUpdate';
+import { gameMouseInfo } from './gameMouse';
+import { parseInstallFetch, type InstallFetch } from './installCommand';
+import { watchForNewBuild } from './freshPage';
 import './App.css';
 
 interface Host {
@@ -50,6 +58,9 @@ interface Host {
    *  its own, only the computers added through it; not a card, managed on
    *  the Server page. */
   gateway?: boolean;
+  /** What its agent is (version, OS, how it was installed), as it last
+   *  said; not there for agents from before 0.7.7. */
+  agent?: AgentBuild;
 }
 
 /** One field of a connector's form ("kind": text, port, secret, or choice:
@@ -167,7 +178,6 @@ type HostStreamSettings = {
   bitrate: number;
   mouseQueueLimit: number;
   inputProtocol: string;
-  useNativeClient: boolean;
   useCanvasRenderer: boolean;
   encoder: string;
   display: string;
@@ -179,7 +189,6 @@ const loadHostStreamSettings = (computer: string | null = null): HostStreamSetti
   ...prefsFor(localStorage, computer),
   mouseQueueLimit: Number(localStorage.getItem('lunaris_mouse_queue_limit') || '256'),
   inputProtocol: localStorage.getItem('lunaris_input_protocol') || 'webrtc',
-  useNativeClient: localStorage.getItem('lunaris_tauri_use_native') === 'true',
   // Off unless chosen: drawing on a canvas costs about twice the CPU of a
   // <video> element. The key was renamed because the old one was written as
   // 'true' on every save, whether or not anyone had chosen it.
@@ -198,15 +207,10 @@ const saveHostStreamSettings = (settings: HostStreamSettings, computer: string |
   else saveDefaults(localStorage, picturePrefs(settings));
   localStorage.setItem('lunaris_mouse_queue_limit', String(settings.mouseQueueLimit));
   localStorage.setItem('lunaris_input_protocol', settings.inputProtocol);
-  localStorage.setItem('lunaris_tauri_use_native', String(settings.useNativeClient));
   localStorage.setItem('lunaris_canvas_renderer_v2', String(settings.useCanvasRenderer));
 };
 
 const getCurrentBrowserServerUrl = () => {
-  if (window.location.hostname === 'tauri.localhost' || window.location.protocol.startsWith('tauri')) {
-    return 'http://localhost:8090';
-  }
-
   if (window.location.origin && window.location.origin !== 'null') {
     return window.location.origin;
   }
@@ -222,9 +226,6 @@ const getBackendHost = () => {
   }
   if (window.location.port === '5173' || window.location.port === '3000') {
     return `${window.location.hostname}:8090`;
-  }
-  if (window.location.hostname === 'tauri.localhost' || window.location.protocol.startsWith('tauri')) {
-    return 'localhost:8090';
   }
   return window.location.host;
 };
@@ -261,143 +262,24 @@ const readThemeChoice = (): ThemeChoice => {
   }
 };
 
-/** A sign-in (and maybe a connection) asked for by a link. */
-type LinkRequest = {
-  session: string;
-  user: string;
-  /** Host id to remote-control right away. */
-  connect: string | null;
-  computer: string;
-  /** Stream settings a `?token=` link carries. */
-  settings: Record<string, string>;
-  codecSupport: string | null;
-};
-
-/**
- * Links that carry a session: the desktop app opens the web console as
- * `<server>/#session=<token>&user=<name>[&connect=<host id>]`, and
- * `?token=<token>&host_id=<id>` does the same. The fragment never reaches
- * the server or its logs. The token is always removed from the address bar.
- * Whoever makes the link chooses the account, so it is applied without a
- * question only when this browser holds no login and no connection is asked;
- * otherwise App asks first.
- */
-const takeLinkFromUrl = (): LinkRequest | null => {
-  const hash = new URLSearchParams(window.location.hash.replace(/^#/, ''));
-  const query = new URLSearchParams(window.location.search);
-  let link: LinkRequest | null = null;
-  const session = hash.get('session');
-  if (session) {
-    link = {
-      session,
-      user: hash.get('user') || '',
-      connect: hash.get('connect') || null,
-      computer: hash.get('name') || '',
-      settings: {},
-      codecSupport: null,
-    };
-  } else if (query.get('token') && query.get('host_id')) {
-    const settings: Record<string, string> = {};
-    for (const k of ['res', 'fps', 'bitrate', 'codec']) {
-      const v = query.get(k);
-      if (v) settings[k] = v;
-    }
-    link = {
-      session: query.get('token') as string,
-      user: '',
-      connect: query.get('host_id'),
-      computer: query.get('host_name') || '',
-      settings,
-      codecSupport: query.get('codec_support'),
-    };
-  }
-  if (hash.has('session') || query.has('token') || query.has('host_id')) {
-    for (const k of ['token', 'host_id', 'host_name', 'codec_support', 'res', 'fps', 'bitrate', 'codec']) {
-      query.delete(k);
-    }
-    const qs = query.toString();
-    window.history.replaceState(null, '', window.location.pathname + (qs ? `?${qs}` : ''));
-  }
-  return link;
-};
-
-/** Make the link's login this browser's login (and queue its connection). */
-const applyLink = (link: LinkRequest) => {
-  localStorage.setItem('lunaris_token', link.session);
-  localStorage.setItem('lunaris_username', link.user);
-  // The role comes from /api/auth/me; this page's own server is the server.
-  localStorage.removeItem('lunaris_role');
-  localStorage.removeItem('lunaris_server_host');
-  // The auto-launch keys App reads on load.
-  localStorage.removeItem('lunaris_auto_launch_host_id');
-  localStorage.removeItem('lunaris_auto_launch_host_name');
-  localStorage.removeItem('lunaris_auto_launch_codec_support');
-  if (link.connect) {
-    localStorage.setItem('lunaris_auto_launch_host_id', link.connect);
-    localStorage.setItem('lunaris_auto_launch_host_name', link.computer || 'Remote computer');
-    if (link.codecSupport) localStorage.setItem('lunaris_auto_launch_codec_support', link.codecSupport);
-  }
-  for (const [k, v] of Object.entries(link.settings)) localStorage.setItem(`lunaris_stream_${k}`, v);
-};
-
-let pendingLink: LinkRequest | null = takeLinkFromUrl();
-if (pendingLink && !pendingLink.connect && !localStorage.getItem('lunaris_token')) {
-  applyLink(pendingLink);
-  pendingLink = null;
+// Sign-in links (`#session=`, `?token=&host_id=`) are no longer accepted:
+// a link that signs a browser in lets whoever made it choose the account.
+// Their parameters are only removed from the address bar, unused.
+{
+  const cleaned = stripSessionLinkParams(window.location.pathname, window.location.search, window.location.hash);
+  if (cleaned !== null) window.history.replaceState(null, '', cleaned);
 }
 
 function App() {
-  // A link that wants to sign this browser in as someone else, or to connect.
-  const [linkRequest, setLinkRequest] = useState<LinkRequest | null>(pendingLink);
   const [token, setToken] = useState<string | null>(localStorage.getItem('lunaris_token'));
   const [username, setUsername] = useState<string | null>(localStorage.getItem('lunaris_username'));
 
-  // Check for deep link query parameters or local storage auto-launch flags on load
+  // Auto-launch keys that only the removed sign-in links wrote: drop any
+  // a previous version left behind, unused.
   useEffect(() => {
-    // Only this browser's own saved login and auto-launch keys: a link's
-    // token is dealt with (and confirmed) before the app starts.
-    const qToken = localStorage.getItem('lunaris_token');
-    const qHostId = localStorage.getItem('lunaris_auto_launch_host_id');
-    const qHostName = localStorage.getItem('lunaris_auto_launch_host_name') || 'Remote Host';
-    const qCodecSupport = localStorage.getItem('lunaris_auto_launch_codec_support');
-
-    // Clear temporary auto-launch keys so they don't trigger again on reload
     localStorage.removeItem('lunaris_auto_launch_host_id');
     localStorage.removeItem('lunaris_auto_launch_host_name');
     localStorage.removeItem('lunaris_auto_launch_codec_support');
-
-    const qRes = localStorage.getItem('lunaris_stream_res');
-    const qFps = localStorage.getItem('lunaris_stream_fps');
-    const qBitrate = localStorage.getItem('lunaris_stream_bitrate');
-    const qCodec = localStorage.getItem('lunaris_stream_codec');
-
-    if (qToken && qHostId) {
-      localStorage.setItem('lunaris_token', qToken);
-      setToken(qToken);
-
-      if (qRes) localStorage.setItem('lunaris_stream_res', qRes);
-      if (qFps) localStorage.setItem('lunaris_stream_fps', qFps);
-      if (qBitrate) localStorage.setItem('lunaris_stream_bitrate', qBitrate);
-      if (qCodec) localStorage.setItem('lunaris_stream_codec', qCodec);
-
-      let codecSupportNum: number | undefined = undefined;
-      if (qCodecSupport) {
-        const parsed = parseInt(qCodecSupport, 10);
-        if (!isNaN(parsed)) {
-          codecSupportNum = parsed;
-        }
-      }
-
-      // The desktop (app 0, the only one an agent offers): no app picker.
-      setSelectedAppId(0);
-      setSelectedHost({
-        id: qHostId,
-        name: qHostName,
-        status: 'Online',
-        ip_address: null,
-        server_codec_mode_support: codecSupportNum
-      });
-    }
   }, []);
 
   // Auth Form State
@@ -439,6 +321,8 @@ function App() {
   // Admin State
   const [userRole, setUserRole] = useState<string | null>(localStorage.getItem('lunaris_role'));
   const [activeTab, setActiveTab] = useState<'devices' | 'users' | 'groups' | 'turn_servers' | 'install_agents' | 'server'>('devices');
+  // A newer Lunaris for administrators: a notice on every page and a dot on the Server tab.
+  const serverUpdate = useServerUpdate(token, userRole === 'admin', () => `${getBackendProtocol().http}//${getBackendHost()}`);
 
   // Dashboard State
   const [hosts, setHosts] = useState<Host[]>([]);
@@ -468,6 +352,19 @@ function App() {
   // Computers of other types (sources), each reached through a Lunaris host.
   const [sources, setSources] = useState<Source[]>([]);
   const [selectedSource, setSelectedSource] = useState<Source | null>(null);
+  // A newer build of this page on the server: reload, but not during a session.
+  const inSession = !!token && (!!selectedHost || !!selectedSource);
+  const inSessionRef = useRef(inSession);
+  const newBuildWatch = useRef<ReturnType<typeof watchForNewBuild> | null>(null);
+  useEffect(() => {
+    const watch = watchForNewBuild(() => inSessionRef.current);
+    newBuildWatch.current = watch;
+    return watch.stop;
+  }, []);
+  useEffect(() => {
+    inSessionRef.current = inSession;
+    if (!inSession) newBuildWatch.current?.whenIdle();
+  }, [inSession]);
   // One card for each computer: the way to connect used last for each card
   // (kept in this browser), the one picked on a card since the page opened
   // (it stays picked while it is offline, to edit or remove it), and the
@@ -904,12 +801,23 @@ function App() {
 
   // What the settings dialog shows about its computer, as the list has it now.
   const settingsHostNow = settingsHost ? hosts.find(h => h.id === settingsHost.id) || settingsHost : null;
-  const settingsHostInfo: { label: string; value: string }[] = settingsHostNow ? [
+  const settingsGameMouse = settingsHostNow && !settingsHostNow.gateway ? gameMouseInfo(settingsHostNow.agent) : null;
+  const settingsHostInfo: { label: string; value: string; note?: string; link?: { href: string; label: string } }[] = settingsHostNow ? [
     { label: t('Name'), value: settingsHostNow.name },
     ...(settingsHostNow.agent_name ? [{ label: t('Name it reports'), value: settingsHostNow.agent_name }] : []),
     { label: t('Status'), value: t(settingsHostNow.status) },
     ...((settingsHostNow.addresses || []).length > 0 ? [{ label: t('IP addresses'), value: (settingsHostNow.addresses || []).join(', ') }] : []),
     ...(settingsHostNow.address ? [{ label: t('Added by address'), value: shortAddress(settingsHostNow.address) }] : []),
+    ...(settingsHostNow.agent && !settingsHostNow.gateway ? [{
+      label: t('Agent'),
+      value: `${settingsHostNow.agent.version} · ${t(installKindLabel(settingsHostNow.agent.install))}`,
+    }] : []),
+    ...(settingsGameMouse ? [{
+      label: t('Game mouse'),
+      value: t(settingsGameMouse.value),
+      note: t(settingsGameMouse.note),
+      link: settingsGameMouse.link ? { href: settingsGameMouse.link.href, label: t(settingsGameMouse.link.label) } : undefined,
+    }] : []),
   ] : [];
 
   const applyHostSettings = () => {
@@ -1513,6 +1421,25 @@ function App() {
   const [editAddressPassword, setEditAddressPassword] = useState('');
   const [editAddressName, setEditAddressName] = useState('');
   const [resetKeyHost, setResetKeyHost] = useState<Host | null>(null);
+  const [agentUpdateHost, setAgentUpdateHost] = useState<Host | null>(null);
+  const openAgentUpdate = (host: Host) => { setMenuCard(null); setAgentUpdateHost(host); };
+  // For administrators: this server's version (what an agent update
+  // installs) and how a command fetches the install script.
+  const [fetchedAgentInfo, setServerAgentInfo] = useState<{ version: string; fetch: InstallFetch | null } | null>(null);
+  const serverAgentInfo = token && userRole === 'admin' ? fetchedAgentInfo : null;
+  useEffect(() => {
+    if (!token || userRole !== 'admin') return;
+    let gone = false;
+    fetch(`${getBackendProtocol().http}//${getBackendHost()}/api/admin/install-fetch`, { headers: { Authorization: `Bearer ${token}` } })
+      .then(r => (r.ok ? r.json() : null))
+      .then(j => {
+        if (gone || !j || typeof j.version !== 'string') return;
+        setServerAgentInfo({ version: j.version, fetch: parseInstallFetch(j.install) });
+      })
+      .catch(() => {});
+    return () => { gone = true; };
+  }, [token, userRole]);
+  const agentOutdated = (host: Host) => userRole === 'admin' && !host.gateway && agentUpdateState(host.agent, serverAgentInfo?.version) === 'older';
   const [hostDialogBusy, setHostDialogBusy] = useState(false);
   const [hostDialogError, setHostDialogError] = useState('');
   const openRename = (host: Host) => {
@@ -1708,6 +1635,8 @@ function App() {
         hostId={selectedHost.id}
         hostName={selectedHost.name}
         hostAddress={hostAddressText(hosts.find(h => h.id === selectedHost.id) || selectedHost)}
+        gameMouse={(hosts.find(h => h.id === selectedHost.id) || selectedHost).agent?.game_mouse}
+        windowsHost={(hosts.find(h => h.id === selectedHost.id) || selectedHost).agent?.os === 'windows'}
         token={token}
         serverCodecModeSupport={selectedHost.server_codec_mode_support}
         appId={selectedAppId}
@@ -1727,7 +1656,7 @@ function App() {
       {/* Header bar */}
       <header className="navbar">
         <div className="nav-brand">
-          <img className="brand-logo" src="/favicon.svg" alt="" width={28} height={28} />
+          <BrandMark className="brand-logo" size={30} />
           <span className="brand-name">Lunaris</span>
         </div>
         <div className="nav-actions">
@@ -2004,6 +1933,7 @@ function App() {
                   <button
                     className={`nav-tab ${activeTab === 'server' ? 'active' : ''}`}
                     onClick={() => setActiveTab('server')}
+                    aria-label={serverUpdate.available ? `${t('Server')} (${t('update available')})` : undefined}
                   >
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                       <rect x="3" y="3" width="18" height="7" rx="1.5" />
@@ -2011,8 +1941,17 @@ function App() {
                       <path d="M7 6.5h.01M7 17.5h.01" />
                     </svg>
                     {t('Server')}
+                    {serverUpdate.available && <span className="nav-tab-dot" aria-hidden="true" title={t('update available')} />}
                   </button>
                 </div>
+              )}
+
+              {userRole === 'admin' && !viewingHost && activeTab !== 'server' && serverUpdate.notice && (
+                <UpdateBanner
+                  notice={serverUpdate.notice}
+                  onDismiss={serverUpdate.dismiss}
+                  onOpenServer={() => setActiveTab('server')}
+                />
               )}
 
               {activeTab === 'devices' && (
@@ -2130,62 +2069,38 @@ function App() {
                                     {/* Launch Native App */}
                                     <button
                                       onClick={async () => {
-                                        const protocol = getBackendProtocol().http;
                                         const serverHost = getBackendHost();
-                                        const serverUrl = `${protocol}//${serverHost}`;
                                         const hostToUse = currentViewingHost || viewingHost;
 
                                         if (!hostToUse) return;
                                         const prefs = prefsFor(localStorage, hostPrefsKey(hostToUse.id));
                                         const resStr = resolutionString(prefs.resolution);
-                                        const { fps, bitrate, codec, encoder, display } = prefs;
+                                        const { fps, bitrate, encoder, display } = prefs;
                                         const mouseQueueLimit = localStorage.getItem('lunaris_mouse_queue_limit') || '256';
                                         const inputProtocol = localStorage.getItem('lunaris_input_protocol') || 'webrtc';
 
-                                        const tauri = (window as any).__TAURI__;
-                                        if (tauri) {
-                                          tauri.core.invoke('launch_native_client', {
-                                            hostId: hostToUse.id,
-                                            serverUrl,
-                                            token,
-                                            res: resStr,
-                                            fps: String(fps),
-                                            bitrate: String(bitrate),
-                                            codec,
-                                            appId: app.id,
-                                            mouseQueueLimit: String(mouseQueueLimit),
-                                            hostName: hostToUse.name,
-                                            encoder,
-                                            displayId: display,
-                                            inputProtocol
-                                          }).catch((err: any) => {
-                                            console.error("Failed to launch native client:", err);
-                                            alert("Failed to launch native client: " + err);
-                                          });
-                                        } else {
-                                          const wsProtocol = getBackendProtocol().ws;
-                                          const wsServerUrl = `${wsProtocol}//${serverHost}`;
-                                          const ticket = await requestLinkTicket(hostToUse.id);
-                                          if (!ticket) {
-                                            alert(t("Could not prepare the link for the desktop app. Try again."));
-                                            return;
-                                          }
-                                          window.location.href = `lunaris://connect?${new URLSearchParams({
-                                            host_id: hostToUse.id,
-                                            server: wsServerUrl,
-                                            ticket,
-                                            res: resStr,
-                                            fps: String(fps),
-                                            bitrate: String(bitrate),
-                                            codec: linkCodec(prefs),
-                                            mouse_queue_limit: String(mouseQueueLimit),
-                                            host_name: hostToUse.name,
-                                            app_id: String(app.id),
-                                            encoder: String(encoder),
-                                            display: String(display),
-                                            input_protocol: String(inputProtocol),
-                                          }).toString()}`;
+                                        const wsProtocol = getBackendProtocol().ws;
+                                        const wsServerUrl = `${wsProtocol}//${serverHost}`;
+                                        const ticket = await requestLinkTicket(hostToUse.id);
+                                        if (!ticket) {
+                                          alert(t("Could not prepare the link for the desktop app. Try again."));
+                                          return;
                                         }
+                                        window.location.href = `lunaris://connect?${new URLSearchParams({
+                                          host_id: hostToUse.id,
+                                          server: wsServerUrl,
+                                          ticket,
+                                          res: resStr,
+                                          fps: String(fps),
+                                          bitrate: String(bitrate),
+                                          codec: linkCodec(prefs),
+                                          mouse_queue_limit: String(mouseQueueLimit),
+                                          host_name: hostToUse.name,
+                                          app_id: String(app.id),
+                                          encoder: String(encoder),
+                                          display: String(display),
+                                          input_protocol: String(inputProtocol),
+                                        }).toString()}`;
                                       }}
                                       className="overlay-btn btn-launch-app"
                                       title="Launch in Native Client"
@@ -2224,7 +2139,7 @@ function App() {
                           <h1 className="section-title">{t('Device Directory')}</h1>
                           <p className="section-subtitle">{t('Manage and connect to active remote agent streams')}</p>
                         </div>
-                        <div style={{ display: 'flex', gap: '0.75rem' }}>
+                        <div className="section-actions">
                           {userRole === 'admin' && (
                             <button onClick={openAddHost} className="btn-primary refresh-btn" title={t('Add a computer by its address')}>
                               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -2471,6 +2386,16 @@ function App() {
                                     {card.host && !isPlaceholderHost(card.host) && (
                                       <span className="host-id">ID: {card.host.id.slice(0, 8)}...</span>
                                     )}
+                                    {card.host && agentOutdated(card.host) && (
+                                      <button
+                                        type="button"
+                                        className="agent-update-badge"
+                                        title={t('Agent %1, this server %2', card.host.agent?.version ?? '', serverAgentInfo?.version ?? '')}
+                                        onClick={(e) => { e.stopPropagation(); openAgentUpdate(card.host!); }}
+                                      >
+                                        {t('Agent update available')}
+                                      </button>
+                                    )}
                                     {lone && (
                                       <div className="source-card-sub">
                                         <span className="source-type-badge">{t(lone.connector_name || lone.connector)}</span>
@@ -2698,6 +2623,18 @@ function App() {
                                         </span>
                                       </button>
                                     )}
+                                    {!isPlaceholderHost(host) && !host.gateway && (
+                                      <button type="button" role="menuitem" className="method-option" onClick={() => openAgentUpdate(host)}>
+                                        <span className="card-menu-icon">{ICON_APP}</span>
+                                        <span className="method-option-text">
+                                          <span className="method-option-name">{t('Agent and updates')}</span>
+                                          <span className="method-option-sub">
+                                            {host.agent ? t('Version %1', host.agent.version) : t('Version not known')}
+                                            {agentOutdated(host) ? ` · ${t('update available')}` : ''}
+                                          </span>
+                                        </span>
+                                      </button>
+                                    )}
                                     {!isPlaceholderHost(host) && !host.address && (
                                       <button type="button" role="menuitem" className="method-option" onClick={() => openResetKey(host)}>
                                         <span className="card-menu-icon">{ICON_KEY}</span>
@@ -2791,41 +2728,6 @@ function App() {
           onToken={(next) => { localStorage.setItem('lunaris_token', next); setToken(next); }}
           onSessionEnded={() => { setShowAccountSecurity(false); handleLogout(); }}
         />
-      )}
-      {linkRequest && (
-        <div className="host-confirm-overlay">
-          <div className="host-confirm-card" role="alertdialog" aria-modal="true" aria-labelledby="linkTitle">
-            {/* The card is two columns (icon, text): without the icon the
-                text would be squeezed into the icon's column. */}
-            <div className="host-confirm-icon danger" aria-hidden="true">
-              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4" />
-                <polyline points="10 17 15 12 10 7" />
-                <line x1="15" y1="12" x2="3" y2="12" />
-              </svg>
-            </div>
-            <div className="host-confirm-content">
-              <h2 id="linkTitle">{linkRequest.connect ? t('Sign in and connect?') : t('Sign in?')}</h2>
-              <p>
-                {linkRequest.connect
-                  ? t('Sign in as %1 and connect to %2?', linkRequest.user || t('another account'), linkRequest.computer || linkRequest.connect)
-                  : t('Sign in as %1?', linkRequest.user || t('another account'))}
-              </p>
-              <p>{t('This replaces the account this browser is signed in to (%1). Only continue if you opened this link yourself.', window.location.host)}</p>
-            </div>
-            <div className="host-confirm-actions">
-              <button
-                className="btn-secondary"
-                autoFocus
-                onClick={() => { pendingLink = null; setLinkRequest(null); }}
-              >{t('Cancel')}</button>
-              <button
-                className="btn-danger"
-                onClick={() => { applyLink(linkRequest); pendingLink = null; window.location.reload(); }}
-              >{linkRequest.connect ? t('Sign in and connect') : t('Sign in')}</button>
-            </div>
-          </div>
-        </div>
       )}
 
       {computerSettingsHost && token && userRole === 'admin' && (
@@ -3335,6 +3237,17 @@ function App() {
         </div>
       )}
 
+      {agentUpdateHost && (
+        <AgentUpdateDialog
+          name={agentUpdateHost.name}
+          build={(hosts.find(h => h.id === agentUpdateHost.id) || agentUpdateHost).agent}
+          serverVersion={serverAgentInfo?.version ?? null}
+          origin={`${getBackendProtocol().http}//${getBackendHost()}`}
+          fetch={serverAgentInfo?.fetch ?? null}
+          onClose={() => setAgentUpdateHost(null)}
+        />
+      )}
+
       {settingsOpen && (
         <StreamSettingsDialog
           hostName={settingsHostNow ? settingsHostNow.name : settingsSource ? settingsSource.name : undefined}
@@ -3362,7 +3275,6 @@ function App() {
             label: `${d.name} (${d.width}x${d.height} @ ${d.refresh_rate.toFixed(0)}Hz)${d.is_primary ? ' ★' : ''}`,
           })) : []}
           encoders={hostEncoders}
-          showNativeClient={!!(window as any).__TAURI__}
         />
       )}
 

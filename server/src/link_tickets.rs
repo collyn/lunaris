@@ -166,8 +166,10 @@ async fn consume(db: &SqlitePool, ticket: &str, now: i64) -> Result<Option<Redee
         .map(|(user_id, host_id, source_id, token_version, _)| Redeemed { user_id, host_id, source_id, token_version }))
 }
 
-/// POST /api/links/redeem `{ticket}` → `{token}` (no sign-in: the ticket is
-/// the proof). The token opens only the ticket's computer (or source).
+/// POST /api/links/redeem `{ticket}` → `{token, account}` (no sign-in: the
+/// ticket is the proof). The token opens only the ticket's computer (or
+/// source); `account` is the username it signs in as, so the desktop app
+/// can tie what it trusts to that account.
 pub async fn redeem_ticket(
     State(state): State<Arc<SignalingState>>,
     ConnectInfo(addrs): ConnectInfo<ConnAddrs>,
@@ -175,10 +177,11 @@ pub async fn redeem_ticket(
     Json(req): Json<RedeemRequest>,
 ) -> Response {
     let instant = std::time::Instant::now();
-    let ip_key = security::client_ip(addrs.remote.ip(), &headers).to_string();
-    if state.link_ticket_limit.is_blocked(&ip_key, instant) {
+    let ip_key = security::client_limit_key(addrs.remote.ip(), &headers);
+    // Taken before anything is awaited: requests sent at once count too.
+    let Some(attempt) = state.link_ticket_limit.try_begin(&ip_key, instant) else {
         return error(StatusCode::TOO_MANY_REQUESTS, "Too many tries. Try again in a few minutes.");
-    }
+    };
     let ticket = req.ticket.trim();
     let well_formed = ticket.len() <= MAX_TICKET_LEN && ticket.starts_with(TICKET_PREFIX);
     let redeemed = if well_formed {
@@ -190,9 +193,10 @@ pub async fn redeem_ticket(
         None
     };
     let Some(r) = redeemed else {
-        state.link_ticket_limit.record_failure(&ip_key, instant);
+        attempt.fail();
         return error(StatusCode::UNAUTHORIZED, EXPIRED);
     };
+    attempt.succeed();
 
     // The account as login checks it: it must still exist and be active,
     // and nothing may have ended its sessions (new password, two-factor
@@ -220,7 +224,7 @@ pub async fn redeem_ticket(
     match crate::auth::create_host_jwt(&r.user_id, &username, &role, version, &r.host_id, r.source_id.as_deref()) {
         Ok(token) => {
             info!("Link ticket used by {} for computer {}", username, r.host_id);
-            (StatusCode::OK, Json(serde_json::json!({ "token": token }))).into_response()
+            (StatusCode::OK, Json(serde_json::json!({ "token": token, "account": username }))).into_response()
         }
         Err(e) => {
             error!("Token error: {}", e);
@@ -315,6 +319,8 @@ mod tests {
         assert_eq!(claims.sub, "u1");
         assert_eq!(claims.host.as_deref(), Some("h1"));
         assert_eq!(claims.source, None);
+        // The account it signs in as, for the desktop app.
+        assert_eq!(b["account"], "alice");
 
         // Single use.
         assert_eq!(redeem(&state, &ticket).await.0, StatusCode::UNAUTHORIZED);
@@ -403,6 +409,23 @@ mod tests {
         assert_eq!(redeem_from(&state, "192.0.2.9", &good).await.0, StatusCode::TOO_MANY_REQUESTS);
         assert_eq!(redeem_from(&state, "192.0.2.10", &"x".repeat(5000)).await.0, StatusCode::UNAUTHORIZED);
         assert_eq!(redeem_from(&state, "192.0.2.10", &good).await.0, StatusCode::OK);
+    }
+
+    /// Guesses sent at once: at most the limit of them reach the database.
+    #[tokio::test]
+    async fn concurrent_guesses_are_limited() {
+        let state = state().await;
+        let guesses = (0..40).map(|i| {
+            let state = state.clone();
+            async move { redeem_from(&state, "192.0.2.77", &format!("lct_{i:064}")).await.0 }
+        });
+        let codes = futures_util::future::join_all(guesses).await;
+        let evaluated = codes.iter().filter(|c| **c == StatusCode::UNAUTHORIZED).count();
+        let refused = codes.iter().filter(|c| **c == StatusCode::TOO_MANY_REQUESTS).count();
+        assert!(evaluated <= 10, "{evaluated} guesses were checked");
+        assert_eq!(evaluated + refused, 40);
+        let good = ticket_for(&state, "boss", "h1").await;
+        assert_eq!(redeem_from(&state, "192.0.2.77", &good).await.0, StatusCode::TOO_MANY_REQUESTS);
     }
 
     #[tokio::test]

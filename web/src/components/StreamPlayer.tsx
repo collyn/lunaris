@@ -1,5 +1,5 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { BITRATES, CHROMAS, RESOLUTIONS, bitrateLabel, readDisplayMode, readVolume, objectFitFor, resolutionSize, resolutionString, type DisplayMode } from '../streamOptions';
+import { BITRATES, CHROMAS, RESOLUTIONS, bitrateLabel, readDisplayMode, readVolume, objectFitFor, pictureClip, pointerReference, resolutionSize, shownPictureSize, type DisplayMode } from '../streamOptions';
 import StreamSettingsDialog, { type StreamSettingsValues, type ViewerSettings } from './StreamSettingsDialog';
 import { t } from '../i18n';
 import { WebShare, readClipboardSync, readFileTransfer } from '../share';
@@ -7,10 +7,14 @@ import { GamepadSender } from '../gamepad';
 import FileManager from './FileManager';
 import { TouchGestures, type GestureActions, type TouchPoint } from '../touchGestures';
 import { accessRefusal } from '../accessRequest';
-import { PictureReader, PointerInPictureDrag, SentPositions, buildTemplates, matchRegion, searchGroups, type Template } from '../pointerInPicture';
-import { hostPointerInPicture, saysPointerAlwaysInPicture, showsHostCursor, showsOwnCursor, streamCursorCss, type PointerView } from '../pointerShown';
+import { PictureReader, PointerInPictureDrag, looksForPointerInPicture, SentPositions, buildTemplates, matchRegion, searchGroups, type Template } from '../pointerInPicture';
+import { relativeMovePacket, takeRelativeStep } from '../relativePointer';
+import { gameMousePacket, readGameMouseOn, saveGameMouseOn } from '../gameMouse';
+import { CONNECT_TIMEOUT_MS, DISCONNECTED_GRACE_MS, HOST_GONE_MESSAGE, MAX_RECONNECTS, STABLE_AFTER_MS, reconnectDelay, signalingCloseLosesSession } from '../reconnect';
+import { canFullscreen, exitFullscreen, exitPointerLock, requestFullscreen } from '../pageLocks';
+import { hostPointerInPicture, isStaleCursorSeq, saysPointerAlwaysInPicture, showsHostCursor, showsOwnCursor, streamCursorCss, type PointerView } from '../pointerShown';
 import { agentRoundTripMs, decodeStatText, decoderName, encodeStatText, pingStatText, shownPingMs, sourceLatencyMs } from '../streamStats';
-import { KEY_COMBOS, PressedKeys, applyKeyboardLock, combosFor, comboStrokes, keyboardLockFor, readSystemKeys, tapsUnderMeta, vkOfCode } from '../keyboard';
+import { ESCAPE_HOLD_MS, KEY_COMBOS, PressedKeys, applyKeyboardLock, combosFor, comboStrokes, escapeCanBeKept, keyboardLockFor, readSystemKeys, secureAddress, tapsUnderMeta, vkOfCode } from '../keyboard';
 import { hostPrefsKey, overrideOf, prefsFor, sourcePrefsKey, updateComputerPrefs, type ComputerPrefs } from '../streamPrefs';
 
 /** Windows virtual-key codes for the phone keys bar and keyboard keys. */
@@ -39,9 +43,6 @@ const getBackendHost = () => {
   }
   if (window.location.port === '5173' || window.location.port === '3000') {
     return `${window.location.hostname}:8090`;
-  }
-  if (window.location.hostname === 'tauri.localhost' || window.location.protocol.startsWith('tauri')) {
-    return 'localhost:8090';
   }
   return window.location.host;
 };
@@ -103,6 +104,10 @@ const HOST_CURSOR_ASSETS: Record<HostCursorKind, { src: string; hotspotX: number
   unknown: { src: '/cursors/arrow.svg', hotspotX: 7, hotspotY: 2 },
 };
 
+// Whether a <video> can show part of its frame (object-view-box; not in
+// Safari, where the lines a decoder added are clipped off instead).
+const VIDEO_CAN_CROP = typeof CSS !== 'undefined' && typeof CSS.supports === 'function' && CSS.supports('object-view-box', 'inset(0px)');
+
 const normalizeHostCursorKind = (kind: unknown): HostCursorKind => {
   return typeof kind === 'string' && kind in HOST_CURSOR_ASSETS
     ? (kind as HostCursorKind)
@@ -162,6 +167,11 @@ interface StreamPlayerProps {
   sourceId?: string;
   /** false: that source's connector has no files, so none are offered. */
   sourceFiles?: boolean;
+  /** A Windows computer's game mouse, as its agent said ("usbip", "none");
+   *  undefined: not a Windows computer (src/gameMouse.ts). */
+  gameMouse?: string;
+  /** The computer is a Windows one (the game mouse setting is shown). */
+  windowsHost?: boolean;
 }
 
 /**
@@ -210,7 +220,9 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   onBack,
   appId,
   sourceId,
-  sourceFiles
+  sourceFiles,
+  gameMouse,
+  windowsHost,
 }) => {
   // The files of what is shown can be offered (a computer of another type
   // only when its connector has files).
@@ -246,6 +258,8 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   const hasNativeCursorImageRef = useRef<boolean>(false);
   const hostCursorMouseDownRef = useRef<boolean>(false);
   const lastHostCursorLocalPredictionAtRef = useRef<number>(0);
+  const cursorHideLogRef = useRef({ since: 0, count: 0 });
+  const hostCursorSeqRef = useRef<number | null>(null);
   const hostCursorPosRef = useRef<{ x: number, y: number, visible: boolean, kind: HostCursorKind, inWindowMoveSize: boolean }>({
     x: 0,
     y: 0,
@@ -259,11 +273,13 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   // the pointers for `inWindowMoveSize` hide for `pointerDragRef.current.inPicture` too.
   const leftButtonHeldRef = useRef<boolean>(false);
   const pointerMaybeInPictureRef = useRef<boolean>(false);
+  /** The host says app-dragged windows in `in_window_move_size` (agent window_drag.rs). */
+  const hostWatchesWindowDragsRef = useRef(false);
   // The host's pointer is part of its picture for the whole session
   // (`pointer_in_picture: "always"`, pointerShown.ts): no pointer is shown
   // over the picture. The ref for the handlers, the state for the CSS cursor.
   const pointerAlwaysInPictureRef = useRef<boolean>(false);
-  const [pointerAlwaysInPicture, setPointerAlwaysInPicture] = useState<boolean>(false);
+  const [, setPointerAlwaysInPicture] = useState<boolean>(false);
   const notePointerAlwaysInPicture = (always: boolean): boolean => {
     if (always === pointerAlwaysInPictureRef.current) return false;
     pointerAlwaysInPictureRef.current = always;
@@ -319,7 +335,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   const [isPointerLocked, setIsPointerLocked] = useState<boolean>(false);
   // Host-shaped CSS cursor (see hostCursorImageToCss). When set, the OS draws
   // the pointer instead of the JavaScript-driven DOM cursor.
-  const [hostCssCursor, setHostCssCursor] = useState<string | null>(null);
+  const [, setHostCssCursor] = useState<string | null>(null);
   const hostCssCursorRef = useRef<string | null>(null);
   const hostCssCursorNativeRef = useRef<boolean>(false);
   const [appList, setAppList] = useState<{ id: number; title: string; icon_base64?: string | null }[] | null>(null);
@@ -384,6 +400,15 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   const [availableEncoders, setAvailableEncoders] = useState<string[]>([]);
   const [agentGpuInfo, setAgentGpuInfo] = useState<string>('');
   const [agentHostOs, setAgentHostOs] = useState<string>('unknown');
+  // For handlers made before the host said its system.
+  const agentHostOsRef = useRef<string>('unknown');
+  agentHostOsRef.current = agentHostOs;
+  // The picture's size (EncoderStatus, else the size asked for) and what of
+  // the decoded frame is cropped to show only it (shownPictureSize).
+  const pictureSizeRef = useRef<{ width: number; height: number } | null>(null);
+  const [pictureCrop, setPictureCrop] = useState<{ right: number; bottom: number }>({ right: 0, bottom: 0 });
+  // Where the <video> cannot crop: what of it is clipped (pictureClip).
+  const [videoClip, setVideoClip] = useState<{ right: number; bottom: number }>({ right: 0, bottom: 0 });
   const [activeEncoderStatus, setActiveEncoderStatus] = useState<{ encoder: string; hwType: string; gpuInfo: string; requestedEncoder: string; displayId: string; displayName: string }>({
     encoder: 'Pending',
     hwType: 'Unknown',
@@ -403,25 +428,54 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   // A source that changed its video codec asks for the session to be started again.
   const [sourceRestart, setSourceRestart] = useState(0);
   const sourceRestartsRef = useRef(0);
+
+  // Connecting again after a lost session, up to three times (reconnect.ts).
+  // A new try re-runs the session effect (sourceRestart).
+  const reconnectRef = useRef<{ attempts: number; timer: number | null; stable: number | null; grace: number | null; deadline: number | null }>(
+    { attempts: 0, timer: null, stable: null, grace: null, deadline: null },
+  );
+  const clearReconnectTimers = () => {
+    const r = reconnectRef.current;
+    for (const key of ['timer', 'stable', 'grace', 'deadline'] as const) {
+      if (r[key] !== null) { window.clearTimeout(r[key]!); r[key] = null; }
+    }
+  };
+  /** Starts the next try; false when none is left. */
+  const tryReconnect = (why: string): boolean => {
+    const r = reconnectRef.current;
+    const delay = reconnectDelay(r.attempts);
+    if (delay === null) {
+      addLog(`Connection lost (${why}); no tries left`);
+      // Given up: no later timer may change what is shown.
+      clearReconnectTimers();
+      return false;
+    }
+    r.attempts += 1;
+    addLog(`Connection lost (${why}); connecting again in ${delay} ms (${r.attempts}/${MAX_RECONNECTS})`);
+    clearReconnectTimers();
+    cleanup();
+    setErrorMsg(null);
+    setStatus(t('Connection lost, reconnecting (%1/%2)…', r.attempts, MAX_RECONNECTS));
+    r.timer = window.setTimeout(() => {
+      r.timer = null;
+      setSourceRestart(n => n + 1);
+      // No picture in time (a host still offline does not answer): the next try.
+      r.deadline = window.setTimeout(() => {
+        r.deadline = null;
+        if (pcRef.current?.connectionState === 'connected') return;
+        if (!tryReconnect('no answer')) {
+          setErrorMsg(t('Could not connect again to the remote computer.'));
+          setStatus("Error");
+        }
+      }, CONNECT_TIMEOUT_MS);
+    }, delay);
+    return true;
+  };
+  /** A try is running (waiting or connecting). */
+  const reconnecting = () => reconnectRef.current.timer !== null || reconnectRef.current.deadline !== null;
+  useEffect(() => () => clearReconnectTimers(), []);
   const lastSourceRestartRef = useRef(0);
   const [availableDisplays, setAvailableDisplays] = useState<{id: string; name: string; width: number; height: number; refresh_rate: number; is_primary: boolean}[]>([]);
-  const [useNativeClient, setUseNativeClient] = useState<boolean>(() => {
-    if (typeof window.RTCPeerConnection === 'undefined') {
-      return true;
-    }
-    // Smart reset once to let the user experience WebRTC inline stream by default after this update
-    if (localStorage.getItem('lunaris_reset_use_native_once') !== 'true') {
-      localStorage.setItem('lunaris_reset_use_native_once', 'true');
-      localStorage.setItem('lunaris_tauri_use_native', 'false');
-      return false;
-    }
-    const val = localStorage.getItem('lunaris_tauri_use_native');
-    if (val === null) {
-      return false;
-    }
-    return val === 'true';
-  });
-  const [draftUseNativeClient, setDraftUseNativeClient] = useState<boolean>(useNativeClient);
   const [isMuted, setIsMuted] = useState<boolean>(() => {
     const val = localStorage.getItem('lunaris_stream_muted');
     return val !== null ? val === 'true' : false;
@@ -642,14 +696,13 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       setDraftBitrate(activeBitrate);
       setDraftCodec(activeCodec);
       setDraftMouseQueueLimit(mouseQueueLimit);
-      setDraftUseNativeClient(useNativeClient);
       setDraftInputProtocol(activeInputProtocol);
       setDraftUseCanvasRenderer(useCanvasRenderer);
       setDraftEncoder(activeEncoder);
       setDraftDisplay(activeDisplay);
       setDraftChroma(activeChroma);
     }
-  }, [showSettingsModal, activeResolution, activeFps, activeBitrate, activeCodec, mouseQueueLimit, useNativeClient, activeInputProtocol, useCanvasRenderer, activeEncoder, activeDisplay, activeChroma]);
+  }, [showSettingsModal, activeResolution, activeFps, activeBitrate, activeCodec, mouseQueueLimit, activeInputProtocol, useCanvasRenderer, activeEncoder, activeDisplay, activeChroma]);
   const [hideLocalCursor, setHideLocalCursor] = useState<boolean>(() => localStorage.getItem('lunaris_stream_hide_cursor') !== 'false');
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
   const [isHeaderVisible, setIsHeaderVisible] = useState<boolean>(true);
@@ -921,7 +974,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     const drag = pointerDragRef.current;
     const wasActive = drag.active;
     const wasInPicture = drag.inPicture;
-    const line = drag.update(leftButtonHeldRef.current, pointerMaybeInPictureRef.current);
+    const line = drag.update(leftButtonHeldRef.current, looksForPointerInPicture(pointerMaybeInPictureRef.current, agentHostOsRef.current, hostWatchesWindowDragsRef.current));
     if (drag.active && !wasActive) {
       startPointerCheckLoop();
     } else if (!drag.active && wasActive) {
@@ -934,6 +987,21 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     }
   };
 
+  /** Writes the reference of a pointer position (bytes 5..8 of a
+   *  mouse_absolute message). Positions are fractions of the shown picture
+   *  on a 4096 scale; when the lines a decoder added are cropped
+   *  (shownPictureSize, with the edge next to them) the shown part is
+   *  smaller than the host's picture, and the scale says so: otherwise the
+   *  pointer lands up to two pixels right of and below where it is shown. */
+  const writePointerReference = (view: DataView) => {
+    const activeVideo = getActiveVideoElement();
+    const ref = activeVideo && activeVideo.videoWidth > 0 && activeVideo.videoHeight > 0
+      ? pointerReference(activeVideo.videoWidth, activeVideo.videoHeight, pictureSizeRef.current, framesCropped())
+      : { width: 4096, height: 4096 };
+    view.setInt16(5, ref.width, false);
+    view.setInt16(7, ref.height, false);
+  };
+
   const getHostPointFromClient = (clientX: number, clientY: number) => {
     const video = videoRef.current;
     if (!video) return null;
@@ -944,8 +1012,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       : video.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0) return null;
 
-    const vidWidth = activeVideo?.videoWidth && activeVideo.videoWidth > 0 ? activeVideo.videoWidth : (video as any).width || 1920;
-    const vidHeight = activeVideo?.videoHeight && activeVideo.videoHeight > 0 ? activeVideo.videoHeight : (video as any).height || 1080;
+    const [vidWidth, vidHeight] = shownSize(activeVideo, video);
     let actualVidWidth = rect.width;
     let actualVidHeight = rect.height;
     let offsetX = 0;
@@ -982,8 +1049,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     const point = latest ? getHostPointFromClient(latest.clientX, latest.clientY) : null;
     const video = videoRef.current;
     const activeVideo = getActiveVideoElement();
-    const vidWidth = activeVideo?.videoWidth && activeVideo.videoWidth > 0 ? activeVideo.videoWidth : (video as any)?.width || 1920;
-    const vidHeight = activeVideo?.videoHeight && activeVideo.videoHeight > 0 ? activeVideo.videoHeight : (video as any)?.height || 1080;
+    const [vidWidth, vidHeight] = shownSize(activeVideo, video);
     // Prefer the last confirmed host cursor position as fallback so the
     // virtual cursor starts where the remote cursor actually is, avoiding
     // a visual disconnect when the local mouse was off-video or stale.
@@ -1011,8 +1077,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     view.setUint8(0, 1);
     view.setInt16(1, x16, false);
     view.setInt16(3, y16, false);
-    view.setInt16(5, 4096, false);
-    view.setInt16(7, 4096, false);
+    writePointerReference(view);
     const seq = (mouseSeqRef.current++) >>> 0;
     view.setUint32(9, seq, false);
     mouseAbsoluteChannel.send(buffer);
@@ -1020,8 +1085,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
 
   useEffect(() => {
     addLog(`[System Diagnostics] RTCPeerConnection supported: ${typeof window.RTCPeerConnection !== 'undefined'}`);
-    addLog(`[System Diagnostics] useNativeClient is set to: ${useNativeClient}`);
-  }, [useNativeClient]);
+  }, []);
 
   // The browser's Keyboard Lock (Chromium), decided in one place: every key
   // in full screen when "System shortcuts" is "In full screen only", Esc alone
@@ -1030,6 +1094,39 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     const pointerLocked = !!videoRef.current && document.pointerLockElement === videoRef.current;
     applyKeyboardLock((navigator as any).keyboard, keyboardLockFor(!!document.fullscreenElement, pointerLocked, readSystemKeys()));
   };
+
+  // Where the browser lets go of a locked pointer at the first Esc (an http
+  // page; Safari, Firefox), Esc cannot reach the remote computer: said for a
+  // while after locking, with this page's https address when the server has
+  // one (keyboard.ts escapeCanBeKept, secureAddress).
+  const [escapeNotice, setEscapeNotice] = useState<string | null>(null);
+  const httpsAddressRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (window.isSecureContext) return;
+    let live = true;
+    fetch(`${getBackendProtocol().http}//${getBackendHost()}/api/server/ports`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((p) => {
+        if (live && p) httpsAddressRef.current = secureAddress(window.location, typeof p.https === 'number' ? p.https : null);
+      })
+      .catch(() => {});
+    return () => { live = false; };
+  }, []);
+  useEffect(() => {
+    if (!isPointerLocked || escapeCanBeKept((navigator as any).keyboard, window.isSecureContext)) {
+      setEscapeNotice(null);
+      return;
+    }
+    const address = httpsAddressRef.current;
+    const text = window.isSecureContext
+      ? t('This browser lets go of the pointer at the first Esc, so Esc does not reach the remote computer. Chrome or Edge keep it for the remote computer.')
+      : t('This page is not https, so the browser lets go of the pointer at the first Esc and Esc does not reach the remote computer.')
+        + (address ? ' ' + t('Open %1 to keep it.', address) : '');
+    setEscapeNotice(text);
+    addLog(text);
+    const timer = window.setTimeout(() => setEscapeNotice(null), 10000);
+    return () => window.clearTimeout(timer);
+  }, [isPointerLocked]);
 
   // Pointer lock change listener
   useEffect(() => {
@@ -1043,7 +1140,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       // When unlocked on desktop: keep host cursor visible (browser cursor overlaps it).
 
       // Lock the Escape key so the browser does not exit pointer lock
-      // immediately (our key handlers require a 3‑second hold instead),
+      // immediately (our key handlers require a hold instead, ESCAPE_HOLD_MS),
       // without taking back the keys locked for full screen.
       syncKeyboardLock();
       // Prediction cursor: show on lock, hide on unlock
@@ -1172,69 +1269,28 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     const sendTick = () => {
       const qLimit = mouseQueueLimitRef.current;
 
-      // 1. Process pointer-locked mouse moves via absolute positioning.
-      //    We send absolute positions (normalised to [0, 4095]) instead of
-      //    raw relative deltas so the agent can map them to the hostʼs
-      //    actual monitor resolution — exactly the same code path as
-      //    unlocked absolute mode.  This avoids the scaling mismatch that
-      //    occurs when vidWidth ≠ monitorWidth and keeps the two cursors
-      //    in sync regardless of host DPI / capture resolution.
-      const dx = accDxRef.current;
-      const dy = accDyRef.current;
-      if (dx !== 0 || dy !== 0) {
-        const mouseAbsoluteChannel = channelsRef.current["mouse_absolute"];
-        if (mouseAbsoluteChannel && mouseAbsoluteChannel.readyState === "open") {
-          const buffered = mouseAbsoluteChannel.bufferedAmount;
+      // 1. A locked pointer sends how far the mouse moved (packet type 0,
+      //    src/relativePointer.ts): games read the mouse themselves in a
+      //    match and take only relative moves (an absolute position sent
+      //    League of Legends' pointer to the top of the screen). On the
+      //    reliable channel: a lost move would leave the pointer behind for
+      //    good. Fractions of a pixel are kept for the next send.
+      if (accDxRef.current !== 0 || accDyRef.current !== 0) {
+        const mouseReliableChannel = channelsRef.current["mouse_reliable"];
+        if (mouseReliableChannel && mouseReliableChannel.readyState === "open") {
+          const buffered = mouseReliableChannel.bufferedAmount;
           if (buffered === undefined || buffered <= qLimit) {
-            const activeVideo = getActiveVideoElement();
-            const video = videoRef.current;
-            const rect = cachedVideoRectRef.current;
-            const vidWidth = activeVideo?.videoWidth && activeVideo.videoWidth > 0 ? activeVideo.videoWidth : (video as any)?.width || 1920;
-            const vidHeight = activeVideo?.videoHeight && activeVideo.videoHeight > 0 ? activeVideo.videoHeight : (video as any)?.height || 1080;
-            let scaledDx = dx;
-            let scaledDy = dy;
-            if (rect.width > 0 && rect.height > 0) {
-              let actualVidWidth = rect.width;
-              let actualVidHeight = rect.height;
-              {
-                // Picture area for the display mode (fit, fill, stretch, native size).
-                const box = fitVideoBox(rect.width, rect.height, vidWidth, vidHeight);
-                actualVidWidth = box.w;
-                actualVidHeight = box.h;
-              }
-              scaledDx = (dx / Math.max(1, actualVidWidth)) * vidWidth;
-              scaledDy = (dy / Math.max(1, actualVidHeight)) * vidHeight;
+            const step = takeRelativeStep(accDxRef.current, accDyRef.current);
+            accDxRef.current = step.restX;
+            accDyRef.current = step.restY;
+            if (step.dx !== 0 || step.dy !== 0) {
+              const seq = (mouseSeqRef.current++) >>> 0;
+              mouseReliableChannel.send(relativeMovePacket(step.dx, step.dy, seq));
+              // The cursor drawn here is not moved by a guess: the host's
+              // pointer acceleration (and a game ignoring a move) make where
+              // it lands differ. It follows where the host says its pointer
+              // is (host_cursor, below).
             }
-
-            // Update the predicted cursor position from accumulated deltas
-            localCursorPosRef.current = {
-              x: Math.max(0, Math.min(vidWidth, localCursorPosRef.current.x + scaledDx)),
-              y: Math.max(0, Math.min(vidHeight, localCursorPosRef.current.y + scaledDy)),
-            };
-
-            // Send predicted position as absolute (normalised 0..4095) so the
-            // agent applies the same monitor-resolution mapping as unlocked mode.
-            const x16 = Math.round((localCursorPosRef.current.x / Math.max(1, vidWidth)) * 4096.0);
-            const y16 = Math.round((localCursorPosRef.current.y / Math.max(1, vidHeight)) * 4096.0);
-
-            const buffer = new ArrayBuffer(13);
-            const view = new DataView(buffer);
-            view.setUint8(0, 1); // Type 1: MousePosition (Absolute)
-            view.setInt16(1, x16, false);
-            view.setInt16(3, y16, false);
-            view.setInt16(5, 4096, false);
-            view.setInt16(7, 4096, false);
-            const seq = (mouseSeqRef.current++) >>> 0;
-            view.setUint32(9, seq, false);
-            mouseAbsoluteChannel.send(buffer);
-            recordSentPointer(localCursorPosRef.current.x, localCursorPosRef.current.y);
-
-            lastHostCursorLocalPredictionAtRef.current = performance.now();
-            updateVirtualCursorDOMRef.current();
-
-            // Clear accumulated deltas only on successful transmission
-            accDxRef.current = 0;
-            accDyRef.current = 0;
           }
         }
       }
@@ -1253,8 +1309,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
             if (rect.width > 0 && rect.height > 0) {
               const elWidth = rect.width;
               const elHeight = rect.height;
-              const vidWidth = activeVideo?.videoWidth && activeVideo.videoWidth > 0 ? activeVideo.videoWidth : (video as any).width || 1920;
-              const vidHeight = activeVideo?.videoHeight && activeVideo.videoHeight > 0 ? activeVideo.videoHeight : (video as any).height || 1080;
+              const [vidWidth, vidHeight] = shownSize(activeVideo, video);
 
 
               let actualVidWidth = elWidth;
@@ -1303,8 +1358,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
               view.setUint8(0, 1); // Type 1: MousePosition
               view.setInt16(1, x16, false);
               view.setInt16(3, y16, false);
-              view.setInt16(5, 4096, false); // referenceWidth
-              view.setInt16(7, 4096, false); // referenceHeight
+              writePointerReference(view);
               const seq = (mouseSeqRef.current++) >>> 0;
               view.setUint32(9, seq, false);
               mouseAbsoluteChannel.send(buffer);
@@ -1418,40 +1472,6 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   useEffect(() => {
     if (!hostId || !token) return;
 
-    const tauri = (window as any).__TAURI__;
-    if (tauri && useNativeClient && selectedAppId !== null) {
-      const codecDecision = getCodecDecision(activeCodec);
-      const resolvedCodec = codecDecision.resolved;
-      if (codecDecision.fellBack) {
-        console.warn(`Native client codec fallback: requested=${codecDecision.requested}, resolved=${resolvedCodec}. ${codecDecision.reason}. ${codecSupportSummary()}`);
-      }
-      const resStr = resolutionString(activeResolution);
-      const backendHost = getBackendHost();
-      const serverUrl = `${window.location.protocol === 'https:' ? 'https:' : 'http:'}//${backendHost}`;
-
-      tauri.core.invoke('launch_native_client', {
-        hostId,
-        serverUrl,
-        token,
-        res: resStr,
-        fps: String(activeFps),
-        bitrate: String(activeBitrate),
-        codec: resolvedCodec,
-        appId: selectedAppId,
-        mouseQueueLimit: String(mouseQueueLimit),
-        hostName,
-        encoder: activeEncoder,
-        displayId: activeDisplay,
-        inputProtocol: activeInputProtocol
-      }).then(() => {
-        onBack();
-      }).catch((err: any) => {
-        console.error("Failed to launch native client:", err);
-        alert("Failed to launch native client: " + err);
-      });
-      return;
-    }
-
     // Resolve the requested codec once before creating SDP and RequestSession.
     const codecDecision = getCodecDecision(sessionCodec(activeCodec));
     const resolvedCodec = codecDecision.resolved;
@@ -1507,6 +1527,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
         }
 
         // Request session
+        pictureSizeRef.current = typeof width === 'number' && typeof height === 'number' ? { width, height } : null;
         ws.send(JSON.stringify({
           event: "Signaling",
           data: {
@@ -1570,6 +1591,10 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
             });
             if (payload.gpu_info) setAgentGpuInfo(payload.gpu_info);
             if (payload.host_os) setAgentHostOs(String(payload.host_os).toLowerCase());
+            if (Number(payload.width) > 0 && Number(payload.height) > 0) {
+              pictureSizeRef.current = { width: Number(payload.width), height: Number(payload.height) };
+              updatePictureCrop();
+            }
             addLog(`Agent encoder active: ${payload.encoder || 'unknown'} (${payload.hw_type || 'unknown'}) on ${payload.gpu_info || 'unknown GPU'}${payload.display_id ? ', display: ' + payload.display_id : ''}`);
             break;
 
@@ -1672,6 +1697,9 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
 
           case "Error":
             addLog(`Error from signaling: ${payload.message}`);
+            // The host went away (an agent restarting, its network), or a try
+            // was answered with an error: the next try.
+            if ((payload.message === HOST_GONE_MESSAGE || reconnecting()) && tryReconnect(`server: ${payload.message}`)) break;
             setErrorMsg(payload.message);
             setStatus("Error");
             break;
@@ -1684,18 +1712,21 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       }
     };
 
+    // An error is followed by "close", which decides.
     ws.onerror = () => {
       if (wsRef.current !== ws) return;
       addLog(`Signaling WebSocket error.`);
-      setErrorMsg("WebSocket connection error.");
-      setStatus("Error");
     };
 
     ws.onclose = () => {
       if (wsRef.current !== ws) return;
       addLog("Signaling WebSocket closed.");
-      if (status !== "Disconnected" && status !== "Error") {
-        setStatus("Disconnected");
+      // The picture still comes (a server restart): the peer connection's
+      // own failure, if it comes, is noticed apart.
+      if (!signalingCloseLosesSession(pcRef.current?.connectionState)) return;
+      if (!tryReconnect('signaling closed')) {
+        setErrorMsg(t('Lost the connection to the server.'));
+        setStatus("Error");
       }
     };
 
@@ -1703,7 +1734,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       cleanup();
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hostId, activeResolution, activeCodec, token, hostName, selectedAppId, useNativeClient, activeInputProtocol, useCanvasRenderer, activeEncoder, activeDisplay, activeChroma, activeSource, sourceRestart]);
+  }, [hostId, activeResolution, activeCodec, token, hostName, selectedAppId, activeInputProtocol, useCanvasRenderer, activeEncoder, activeDisplay, activeChroma, activeSource, sourceRestart]);
 
   // Fetch display/encoder capabilities from agent when host is selected (before stream starts)
   useEffect(() => {
@@ -1837,11 +1868,12 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
 
       // ESC hold-to-exit for pointer lock (requires keyboard.lock to be active).
       // When the browser has granted keyboard lock, pressing ESC does not
-      // immediately exit pointer lock — instead we require a 3‑second hold.
+      // immediately exit pointer lock — instead we require a hold (ESCAPE_HOLD_MS).
       if (e.code === 'Escape' && isPointerLockedRef.current) {
         e.preventDefault();
         if (escapeHoldTimerRef.current === null) {
-          const HOLD_MS = 3000;
+          // Shorter than the browser's own 2 s hold (keyboard.ts).
+          const HOLD_MS = ESCAPE_HOLD_MS;
           escapeHoldStartRef.current = performance.now();
           escapeHoldLastTickRef.current = escapeHoldStartRef.current;
           setEscapeHoldProgress(0.001); // > 0 so UI knows we started
@@ -1852,16 +1884,14 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
               // Hold complete — release pointer lock and fullscreen
               escapeHoldTimerRef.current = null;
               setEscapeHoldProgress(0);
-              document.exitPointerLock();
-              if (document.fullscreenElement) {
-                document.exitFullscreen();
-              }
+              exitPointerLock();
+              exitFullscreen().catch(() => {});
             } else {
               setEscapeHoldProgress(Math.min(0.99, elapsed / HOLD_MS));
-              escapeHoldTimerRef.current = window.setTimeout(tick, 50);
+              escapeHoldTimerRef.current = window.setTimeout(tick, 20);
             }
           };
-          escapeHoldTimerRef.current = window.setTimeout(tick, 50);
+          escapeHoldTimerRef.current = window.setTimeout(tick, 20);
         }
         return;
       }
@@ -1899,6 +1929,10 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
         if (escapeHoldTimerRef.current !== null) {
           window.clearTimeout(escapeHoldTimerRef.current);
           escapeHoldTimerRef.current = null;
+          // Let go before the hold left the lock: an Escape press for the
+          // remote computer (a game's menu), sent as a tap.
+          sendKeyEvent('Escape', e.shiftKey, e.ctrlKey, e.altKey, e.metaKey, true);
+          sendKeyEvent('Escape', e.shiftKey, e.ctrlKey, e.altKey, e.metaKey, false);
         }
         setEscapeHoldProgress(0);
         return;
@@ -2393,13 +2427,28 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       const inWindowMoveSize = Boolean(message.in_window_move_size);
       if (!Number.isFinite(x) || !Number.isFinite(y)) return;
 
+      // A late message (unordered channel): its position would pull the
+      // cursor back. Only a new picture of the cursor is taken from it.
+      if (isStaleCursorSeq(hostCursorSeqRef.current, message.seq)) {
+        if (image) {
+          hostCursorImagePayloadRef.current = image;
+          applyNativeCursorImage(localCursorImageRef.current, localCursorImageMetricsRef, kind, image);
+          const now = hostCursorPosRef.current;
+          updateHostCursorDOM(now.x, now.y, now.visible, kind, image, now.inWindowMoveSize);
+        }
+        return;
+      }
+      if (typeof message.seq === 'number') hostCursorSeqRef.current = message.seq;
+
       // A host that cannot know whether its pointer is in its picture: the
       // picture is looked at while the left button is held (pointerInPicture.ts).
       if (image) hostCursorImagePayloadRef.current = image;
       const alwaysChanged = notePointerAlwaysInPicture(saysPointerAlwaysInPicture(message));
       const maybeInPicture = message.pointer_maybe_in_picture === true;
-      if (maybeInPicture !== pointerMaybeInPictureRef.current) {
+      const watchesWindowDrags = message.window_drag_watched === true;
+      if (maybeInPicture !== pointerMaybeInPictureRef.current || watchesWindowDrags !== hostWatchesWindowDragsRef.current) {
         pointerMaybeInPictureRef.current = maybeInPicture;
+        hostWatchesWindowDragsRef.current = watchesWindowDrags;
         syncPointerInPictureDrag();
       }
 
@@ -2469,9 +2518,33 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     pc.onconnectionstatechange = () => {
       addLog(`Connection State: ${pc.connectionState}`);
       setStats(prev => ({ ...prev, connState: pc.connectionState }));
-      if (pc.connectionState === 'failed') {
-        setErrorMsg("WebRTC Connection failed. Check network routing.");
-        setStatus("Error");
+      if (pcRef.current !== pc) return;
+      const r = reconnectRef.current;
+      const lost = (why: string, message: string) => {
+        if (!tryReconnect(why)) {
+          setErrorMsg(message);
+          setStatus("Error");
+        }
+      };
+      if (pc.connectionState === 'connected') {
+        if (r.grace !== null) { window.clearTimeout(r.grace); r.grace = null; }
+        if (r.deadline !== null) { window.clearTimeout(r.deadline); r.deadline = null; }
+        // Held a while: the next loss gets all its tries again.
+        if (r.stable !== null) window.clearTimeout(r.stable);
+        r.stable = window.setTimeout(() => { r.stable = null; r.attempts = 0; }, STABLE_AFTER_MS);
+      } else if (pc.connectionState === 'disconnected') {
+        if (r.stable !== null) { window.clearTimeout(r.stable); r.stable = null; }
+        if (r.grace === null) {
+          r.grace = window.setTimeout(() => {
+            r.grace = null;
+            if (pcRef.current === pc && pc.connectionState === 'disconnected') {
+              lost('no packets for a while', t('The connection to the remote computer was lost.'));
+            }
+          }, DISCONNECTED_GRACE_MS);
+        }
+      } else if (pc.connectionState === 'failed') {
+        if (r.grace !== null) { window.clearTimeout(r.grace); r.grace = null; }
+        lost('peer connection failed', "WebRTC Connection failed. Check network routing.");
       }
     };
 
@@ -2520,6 +2593,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
           hostCursorImagePayloadRef.current = null;
           pointerTemplatesRef.current = null;
           notePointerAlwaysInPicture(false);
+          hostWatchesWindowDragsRef.current = false;
           if (pointerMaybeInPictureRef.current) {
             pointerMaybeInPictureRef.current = false;
             syncPointerInPictureDrag();
@@ -2700,6 +2774,70 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     return useCanvasRenderer ? hiddenVideoRef.current : (videoRef.current as HTMLVideoElement | null);
   };
 
+  /** Width and height of the picture in a decoded frame (shownPictureSize:
+   *  without the lines a decoder may add, H.265 on Windows), for pointer
+   *  coordinates. */
+  const shownSize = (activeVideo: any, video: any): [number, number] => {
+    const decodedW = activeVideo?.videoWidth > 0 ? activeVideo.videoWidth : video?.width || 1920;
+    const decodedH = activeVideo?.videoHeight > 0 ? activeVideo.videoHeight : video?.height || 1080;
+    if (!framesCropped()) return [decodedW, decodedH];
+    const shown = shownPictureSize(decodedW, decodedH, pictureSizeRef.current);
+    return [shown.width, shown.height];
+  };
+
+  /** Whether the lines a decoder added are left out of what is shown (the
+   *  canvas renderer, or a <video> with object-view-box); else the whole
+   *  frame is shown, with them clipped off (videoClip). */
+  const framesCropped = () => useCanvasRendererRef.current || VIDEO_CAN_CROP;
+
+  /** Crops what the decoder added to the picture (shownPictureSize), in the
+   *  <video> (object-view-box) and in the canvas renderer's worker. */
+  const updatePictureCrop = () => {
+    const video = getActiveVideoElement();
+    const picture = pictureSizeRef.current;
+    workerRef.current?.postMessage({ type: 'picture', width: picture?.width || 0, height: picture?.height || 0 });
+    if (!video || video.videoWidth <= 0 || video.videoHeight <= 0) return;
+    const shown = shownPictureSize(video.videoWidth, video.videoHeight, picture);
+    const crop = { right: video.videoWidth - shown.width, bottom: video.videoHeight - shown.height };
+    if (!VIDEO_CAN_CROP) {
+      const el = videoRef.current;
+      const clip = el instanceof HTMLVideoElement
+        ? pictureClip({ width: el.clientWidth, height: el.clientHeight }, { width: video.videoWidth, height: video.videoHeight }, picture, objectFitFor(displayModeRef.current))
+        : { right: 0, bottom: 0 };
+      setVideoClip((old) => (old.right === clip.right && old.bottom === clip.bottom ? old : clip));
+    }
+    setPictureCrop((old) => {
+      if (old.right === crop.right && old.bottom === crop.bottom) return old;
+      if (crop.right || crop.bottom) addLog(`The decoder gives ${video.videoWidth}x${video.videoHeight} for a ${shown.width}x${shown.height} picture: showing the picture only`);
+      return crop;
+    });
+  };
+  // The clip follows the element's size and the display mode.
+  const updatePictureCropRef = useRef(updatePictureCrop);
+  updatePictureCropRef.current = updatePictureCrop;
+  useEffect(() => {
+    if (VIDEO_CAN_CROP || useCanvasRenderer) return;
+    const el = videoRef.current;
+    if (!(el instanceof HTMLVideoElement) || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(() => updatePictureCropRef.current());
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [useCanvasRenderer]);
+  useEffect(() => {
+    if (!VIDEO_CAN_CROP) updatePictureCropRef.current();
+  }, [displayMode]);
+
+  const pictureViewBox = (): React.CSSProperties => {
+    if (!VIDEO_CAN_CROP) {
+      return videoClip.right || videoClip.bottom
+        ? { clipPath: `inset(0px ${videoClip.right}px ${videoClip.bottom}px 0px)` }
+        : {};
+    }
+    return pictureCrop.right || pictureCrop.bottom
+      ? ({ objectViewBox: `inset(0px ${pictureCrop.right}px ${pictureCrop.bottom}px 0px)` } as React.CSSProperties)
+      : {};
+  };
+
   const startCanvasRender = (track: MediaStreamTrack) => {
     if (workerRef.current) {
       try {
@@ -2727,9 +2865,36 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       let ctx = null;
       let reader = null;
       let active = false;
+      // The picture's size (shownPictureSize in streamOptions.ts): the lines
+      // and columns a decoder adds beyond it (at most 64) are not drawn.
+      let picture = null;
+      const draw = (frame) => {
+        let w = frame.displayWidth;
+        let h = frame.displayHeight;
+        if (picture && picture.width > 0 && picture.height > 0
+            && w >= picture.width && h >= picture.height
+            && w - picture.width <= 64 && h - picture.height <= 64) {
+          // And the line (column) whose colour blends with the padding's.
+          if (w > picture.width) w = picture.width - 2;
+          if (h > picture.height) h = picture.height - 2;
+        }
+        if (canvas.width !== w || canvas.height !== h) {
+          canvas.width = w;
+          canvas.height = h;
+          self.postMessage({ type: 'resize', width: w, height: h });
+        }
+        if (ctx) {
+          ctx.drawImage(frame, 0, 0, w, h, 0, 0, w, h);
+          self.postMessage({ type: 'frameDrawn' });
+        }
+      };
 
       self.onmessage = async (e) => {
         const { type } = e.data;
+        if (type === 'picture') {
+          picture = e.data.width > 0 && e.data.height > 0 ? { width: e.data.width, height: e.data.height } : null;
+          return;
+        }
         if (type === 'start') {
           active = true;
           canvas = e.data.canvas;
@@ -2748,18 +2913,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
                 if (!frame) continue;
 
                 try {
-                  if (canvas) {
-                    if (canvas.width !== frame.displayWidth || canvas.height !== frame.displayHeight) {
-                      canvas.width = frame.displayWidth;
-                      canvas.height = frame.displayHeight;
-                      self.postMessage({ type: 'resize', width: frame.displayWidth, height: frame.displayHeight });
-                    }
-
-                    if (ctx) {
-                      ctx.drawImage(frame, 0, 0, frame.displayWidth, frame.displayHeight);
-                      self.postMessage({ type: 'frameDrawn' });
-                    }
-                  }
+                  if (canvas) draw(frame);
                 } catch (err) {
                   console.error("Worker drawImage error:", err);
                 } finally {
@@ -2774,18 +2928,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
           const frame = e.data.frame;
           if (frame) {
             try {
-              if (canvas) {
-                if (canvas.width !== frame.displayWidth || canvas.height !== frame.displayHeight) {
-                  canvas.width = frame.displayWidth;
-                  canvas.height = frame.displayHeight;
-                  self.postMessage({ type: 'resize', width: frame.displayWidth, height: frame.displayHeight });
-                }
-
-                if (ctx) {
-                  ctx.drawImage(frame, 0, 0, frame.displayWidth, frame.displayHeight);
-                  self.postMessage({ type: 'frameDrawn' });
-                }
-              }
+              if (canvas) draw(frame);
             } catch (err) {
               console.error("Worker drawImage error (fallback):", err);
             } finally {
@@ -2841,6 +2984,10 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     } catch (err) {
       console.error("Failed to create MediaStreamTrackProcessor:", err);
     }
+
+    // The picture's size, for the frames the decoder makes larger.
+    const picture = pictureSizeRef.current;
+    worker.postMessage({ type: 'picture', width: picture?.width || 0, height: picture?.height || 0 });
 
     let streamTransferred = false;
     if (offscreenCanvas && readableStream) {
@@ -2967,6 +3114,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     if (hiddenVideoRef.current) {
       hiddenVideoRef.current.srcObject = null;
     }
+    hostWatchesWindowDragsRef.current = false;
     if (pointerMaybeInPictureRef.current) {
       pointerMaybeInPictureRef.current = false;
       syncPointerInPictureDrag();
@@ -2992,23 +3140,67 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     setIsWebTransportConnected(false);
     agentIpsRef.current = [];
 
-    document.exitPointerLock();
+    exitPointerLock();
   };
 
   // Request pointer lock for relative controls.
-  // navigator.keyboard.lock (required for the 3 s ESC hold) only takes
+  // navigator.keyboard.lock (required for the ESC hold) only takes
   // effect while fullscreen is active, so we enter fullscreen alongside
   // pointer lock.  The fullscreenchange handler (which fires shortly
   // after) calls keyboard.lock to intercept ESC.
+  // The game mouse (src/gameMouse.ts): the viewer's choice for this
+  // computer, sent to its agent when the stream starts and when it changes.
+  const [gameMouseOn, setGameMouseOnState] = useState<boolean>(() => readGameMouseOn(hostId));
+  const gameMouseActive = gameMouseOn && gameMouse === 'usbip' && !sourceId;
+  const gameMouseActiveRef = useRef(gameMouseActive);
+  useEffect(() => { gameMouseActiveRef.current = gameMouseActive; }, [gameMouseActive]);
+  const setGameMouseOn = (on: boolean) => {
+    saveGameMouseOn(hostId, on);
+    setGameMouseOnState(on);
+  };
+  useEffect(() => {
+    if (status !== "Streaming" || gameMouse !== 'usbip' || sourceId) return;
+    const send = () => {
+      const channel = channelsRef.current["mouse_reliable"];
+      if (channel && channel.readyState === "open") channel.send(gameMousePacket(gameMouseActive));
+    };
+    send();
+    // Said again while it is on: a new session (a codec change reconnects)
+    // starts with it off on the agent, and the end of the previous one
+    // turns it off; the agent does nothing when nothing changes.
+    if (!gameMouseActive) return;
+    const timer = window.setInterval(send, 2000);
+    return () => window.clearInterval(timer);
+  }, [status, gameMouseActive, gameMouse, sourceId]);
+
+  // The pointer menu in the stream bar closes on a click elsewhere or Esc.
+  const [pointerMenuOpen, setPointerMenuOpen] = useState(false);
+  const pointerMenuRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!pointerMenuOpen) return;
+    const onDown = (e: PointerEvent) => {
+      if (!pointerMenuRef.current?.contains(e.target as Node)) setPointerMenuOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setPointerMenuOpen(false); };
+    document.addEventListener('pointerdown', onDown, true);
+    document.addEventListener('keydown', onKey, true);
+    return () => {
+      document.removeEventListener('pointerdown', onDown, true);
+      document.removeEventListener('keydown', onKey, true);
+    };
+  }, [pointerMenuOpen]);
+  useEffect(() => { if (!isHeaderVisible) setPointerMenuOpen(false); }, [isHeaderVisible]);
+
   const togglePointerLock = () => {
     if (!videoRef.current) return;
     if (document.pointerLockElement === videoRef.current) {
-      document.exitPointerLock();
+      exitPointerLock();
     } else {
       // Enter fullscreen in parallel — keyboard.lock requires it.
       if (!document.fullscreenElement && containerRef.current) {
-        containerRef.current.requestFullscreen().catch(() => {});
+        requestFullscreen(containerRef.current).catch(() => {});
       }
+      if (typeof videoRef.current.requestPointerLock !== 'function') return;
       const promise = (videoRef.current as any).requestPointerLock({
         unadjustedMovement: true,
       });
@@ -3048,7 +3240,6 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     encoder: draftEncoder,
     display: draftDisplay,
     useCanvasRenderer: draftUseCanvasRenderer,
-    useNativeClient: draftUseNativeClient,
   };
 
   const setDraftSettingValue = <K extends keyof StreamSettingsValues>(key: K, value: StreamSettingsValues[K]) => {
@@ -3063,7 +3254,6 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       case 'encoder': setDraftEncoder(value as string); break;
       case 'display': setDraftDisplay(value as string); break;
       case 'useCanvasRenderer': setDraftUseCanvasRenderer(value as boolean); break;
-      case 'useNativeClient': setDraftUseNativeClient(value as boolean); break;
     }
   };
 
@@ -3073,7 +3263,6 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     setDraftBitrate(activeBitrate);
     setDraftCodec(activeCodec);
     setDraftMouseQueueLimit(mouseQueueLimit);
-    setDraftUseNativeClient(useNativeClient);
     setDraftInputProtocol(activeInputProtocol);
     setDraftUseCanvasRenderer(useCanvasRenderer);
     setDraftEncoder(activeEncoder);
@@ -3094,7 +3283,6 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       display: draftDisplay,
     });
     localStorage.setItem('lunaris_mouse_queue_limit', String(draftMouseQueueLimit));
-    localStorage.setItem('lunaris_tauri_use_native', String(draftUseNativeClient));
     localStorage.setItem('lunaris_input_protocol', draftInputProtocol);
     localStorage.setItem('lunaris_canvas_renderer_v2', String(draftUseCanvasRenderer));
     
@@ -3102,7 +3290,6 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     const reconnectNeeded = 
       draftResolution !== activeResolution ||
       draftCodec !== activeCodec ||
-      draftUseNativeClient !== useNativeClient ||
       draftInputProtocol !== activeInputProtocol ||
       draftUseCanvasRenderer !== useCanvasRenderer ||
       draftEncoder !== activeEncoder ||
@@ -3119,7 +3306,6 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       // Update active values to trigger reconnect
       setActiveResolution(draftResolution);
       setActiveCodec(draftCodec);
-      setUseNativeClient(draftUseNativeClient);
       setActiveInputProtocol(draftInputProtocol);
       setUseCanvasRenderer(draftUseCanvasRenderer);
       setActiveEncoder(draftEncoder);
@@ -3180,18 +3366,6 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     }
   };
 
-  const handleMinimize = () => {
-    const tauri = (window as any).__TAURI__;
-    if (tauri && tauri.window) {
-      try {
-        const appWindow = tauri.window.getCurrentWindow();
-        appWindow.minimize();
-      } catch (err) {
-        console.error("Failed to minimize Tauri window:", err);
-      }
-    }
-  };
-
   // What decides which pointers are shown (pointerShown.ts), as it is now.
   const pointerView = (over: Partial<PointerView> = {}): PointerView => ({
     streaming: status === 'Streaming',
@@ -3207,8 +3381,24 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     pointerLocked: isPointerLockedRef.current,
     hostCssCursor: hostCssCursorRef.current,
     hasNativeCursorImage: hasNativeCursorImageRef.current,
+    gameMouse: gameMouseActiveRef.current && isPointerLockedRef.current,
     ...over,
   });
+
+  // Diagnostics (2026-11-24, a cursor blinking with the game mouse): a drawn
+  // cursor that was shown and is hidden says why in the console, a few times
+  // a second at most. `at` names the check in updateHostCursorDOM /
+  // updateVirtualCursorDOM that hid it.
+  const hideCursorFor = (el: HTMLElement, at: number) => {
+    if (el.style.display === 'none') return;
+    el.style.display = 'none';
+    const log = cursorHideLogRef.current;
+    const now = performance.now();
+    if (now - log.since > 1000) { log.since = now; log.count = 0; }
+    if (++log.count > 4) return;
+    const v = pointerView();
+    console.info(`[Lunaris] ${el.className} hidden at ${at}: gameMouse=${!!v.gameMouse} locked=${v.pointerLocked} hostVisible=${v.hostCursorVisible} hardwareMouse=${v.hardwareMouse} buttonHeld=${v.buttonHeld} inPicture=${hostPointerInPicture(v)} nativeImage=${v.hasNativeCursorImage} kind=${hostCursorPosRef.current.kind}`);
+  };
 
   const updateHostCursorDOM = (
     x: number,
@@ -3229,7 +3419,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     // host's) is shown, as with a mouse on a PC. When no finger is on the
     // screen it follows the host's cursor, so the two don't drift apart.
     if (touchModeRef.current === 'trackpad' && !isHardwareMouseActiveRef.current) {
-      if (cursorEl) cursorEl.style.display = 'none';
+      if (cursorEl) hideCursorFor(cursorEl, 3290);
       if (visible && performance.now() - lastTouchAtRef.current > 600) {
         localCursorPosRef.current = { x, y };
       }
@@ -3237,8 +3427,15 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       return;
     }
 
+    // A locked pointer moves by relative steps: the cursor drawn here is
+    // where the host says its pointer is (no guess, see the send above).
+    if (document.pointerLockElement && visible) {
+      localCursorPosRef.current = { x, y };
+      updateVirtualCursorDOMRef.current();
+    }
+
     if (!cursorEl || !video || !wrapper || !showsHostCursor(pointerView())) {
-      if (cursorEl) cursorEl.style.display = 'none';
+      if (cursorEl) hideCursorFor(cursorEl, 3306);
       return;
     }
 
@@ -3253,7 +3450,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     if (!cursorMetrics || !cursorMetrics.native) {
       const allowAssetFallback = !hasNativeCursorImageRef.current;
       if (!allowAssetFallback) {
-        cursorEl.style.display = 'none';
+        hideCursorFor(cursorEl, 3321);
         return;
       }
 
@@ -3276,13 +3473,12 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     const rect = video.getBoundingClientRect();
     const wrapperRect = wrapper.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0 || wrapperRect.width <= 0 || wrapperRect.height <= 0) {
-      cursorEl.style.display = 'none';
+      hideCursorFor(cursorEl, 3344);
       return;
     }
 
     const activeVideo = getActiveVideoElement();
-    const vidWidth = activeVideo?.videoWidth && activeVideo.videoWidth > 0 ? activeVideo.videoWidth : (video as any).width || 1920;
-    const vidHeight = activeVideo?.videoHeight && activeVideo.videoHeight > 0 ? activeVideo.videoHeight : (video as any).height || 1080;
+    const [vidWidth, vidHeight] = shownSize(activeVideo, video);
 
     let actualVidWidth = rect.width;
     let actualVidHeight = rect.height;
@@ -3336,7 +3532,25 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     updateHostCursorDOM(hostCursor.x, hostCursor.y, hostCursor.visible, hostCursor.kind);
   };
 
+  // The picture's CSS cursor also changes between renders (a button held
+  // while the host's pointer is in the picture): set it here, on every update.
+  const pictureCursorRef = useRef<{ el: HTMLElement | null; css: string }>({ el: null, css: '' });
+  const syncPictureCursor = () => {
+    const el = videoRef.current as HTMLElement | null;
+    if (!el) return;
+    const css = streamCursorCss(pointerView());
+    const last = pictureCursorRef.current;
+    if (last.el === el && last.css === css) return;
+    el.style.cursor = css;
+    pictureCursorRef.current = { el, css };
+  };
+
+  // The picture's cursor follows the state after every render too (the
+  // picture element may be new; a setting changed).
+  useEffect(() => { syncPictureCursor(); });
+
   const updateVirtualCursorDOM = () => {
+    syncPictureCursor();
     const cursorEl = localCursorRef.current;
     const imageEl = localCursorImageRef.current;
     const video = videoRef.current;
@@ -3345,7 +3559,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
 
     const hostCursor = hostCursorPosRef.current;
     if (!showsOwnCursor(pointerView())) {
-      cursorEl.style.display = 'none';
+      hideCursorFor(cursorEl, 3412);
       return;
     }
 
@@ -3353,13 +3567,12 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     const wrapperRect = wrapper.getBoundingClientRect();
 
     if (rect.width <= 0 || rect.height <= 0 || wrapperRect.width <= 0 || wrapperRect.height <= 0) {
-      cursorEl.style.display = 'none';
+      hideCursorFor(cursorEl, 3420);
       return;
     }
 
     const activeVideo = getActiveVideoElement();
-    const vidWidth = activeVideo?.videoWidth && activeVideo.videoWidth > 0 ? activeVideo.videoWidth : (video as any).width || 1920;
-    const vidHeight = activeVideo?.videoHeight && activeVideo.videoHeight > 0 ? activeVideo.videoHeight : (video as any).height || 1080;
+    const [vidWidth, vidHeight] = shownSize(activeVideo, video);
 
     const elWidth = rect.width;
     const elHeight = rect.height;
@@ -3388,7 +3601,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     if (!cursorMetrics || !cursorMetrics.native) {
       const allowAssetFallback = !hasNativeCursorImageRef.current;
       if (!allowAssetFallback) {
-        cursorEl.style.display = 'none';
+        hideCursorFor(cursorEl, 3454);
         return;
       }
 
@@ -3422,6 +3635,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   };
 
   const handleVideoLoadedMetadata = () => {
+    updatePictureCrop();
     const video = getActiveVideoElement();
     if (video) {
       localCursorPosRef.current = {
@@ -3460,8 +3674,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
 
       const elWidth = rect.width;
       const elHeight = rect.height;
-      const vidWidth = activeVideo?.videoWidth && activeVideo.videoWidth > 0 ? activeVideo.videoWidth : (video as any).width || 1920;
-      const vidHeight = activeVideo?.videoHeight && activeVideo.videoHeight > 0 ? activeVideo.videoHeight : (video as any).height || 1080;
+      const [vidWidth, vidHeight] = shownSize(activeVideo, video);
 
       let xNorm = 0.5;
       let yNorm = 0.5;
@@ -3501,8 +3714,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       view.setUint8(0, 1); // Type 1: MousePosition
       view.setInt16(1, x16, false);
       view.setInt16(3, y16, false);
-      view.setInt16(5, 4096, false); // referenceWidth
-      view.setInt16(7, 4096, false); // referenceHeight
+      writePointerReference(view);
       const seq = (mouseSeqRef.current++) >>> 0;
       view.setUint32(9, seq, false);
       mouseAbsoluteChannel.send(buffer);
@@ -3540,8 +3752,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     const r = renderedZoomRef.current;
     if (rect.width <= 0 || rect.height <= 0 || r.scale <= 0) return null;
     const activeVideo = getActiveVideoElement();
-    const vidW = activeVideo?.videoWidth && activeVideo.videoWidth > 0 ? activeVideo.videoWidth : (video as any).width || 1920;
-    const vidH = activeVideo?.videoHeight && activeVideo.videoHeight > 0 ? activeVideo.videoHeight : (video as any).height || 1080;
+    const [vidW, vidH] = shownSize(activeVideo, video);
     const baseW = rect.width / r.scale;
     const baseH = rect.height / r.scale;
     return {
@@ -3613,8 +3824,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     view.setUint8(0, 1); // Type 1: MousePosition
     view.setInt16(1, Math.round(Math.max(0, Math.min(1, xNorm)) * 4096), false);
     view.setInt16(3, Math.round(Math.max(0, Math.min(1, yNorm)) * 4096), false);
-    view.setInt16(5, 4096, false);
-    view.setInt16(7, 4096, false);
+    writePointerReference(view);
     view.setUint32(9, (mouseSeqRef.current++) >>> 0, false);
     channel.send(buffer);
   };
@@ -3961,7 +4171,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
     }
 
     // When pointer locked, prediction cursor useEffect handles everything
-    // via pointerrawupdate → absolute mouse position. Skip React handler.
+    // via pointerrawupdate → relative moves (src/relativePointer.ts). Skip React handler.
     if (isPointerLocked) {
       return;
     }
@@ -3998,6 +4208,12 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       }
     }
 
+    // The game mouse moves only a locked pointer: clicking the picture locks it.
+    if (isDown && gameMouseActiveRef.current && !document.pointerLockElement) {
+      togglePointerLock();
+      return;
+    }
+
     hostCursorMouseDownRef.current = isDown ? true : e.buttons !== 0;
     const leftHeld = e.button === 0 ? isDown : (e.buttons & 1) !== 0;
     if (leftHeld !== leftButtonHeldRef.current) {
@@ -4007,7 +4223,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
         sentPositionsRef.current.clear();
         recordSentPointer(localCursorPosRef.current.x, localCursorPosRef.current.y);
       }
-      if (pointerMaybeInPictureRef.current || pointerDragRef.current.active) syncPointerInPictureDrag();
+      if (looksForPointerInPicture(pointerMaybeInPictureRef.current, agentHostOsRef.current, hostWatchesWindowDragsRef.current) || pointerDragRef.current.active) syncPointerInPictureDrag();
     }
     const hostCursor = hostCursorPosRef.current;
     updateHostCursorDOM(hostCursor.x, hostCursor.y, hostCursor.visible, hostCursor.kind);
@@ -4066,13 +4282,13 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   const toggleFullscreen = () => {
     if (!containerRef.current) return;
     if (!document.fullscreenElement) {
-      containerRef.current.requestFullscreen().then(() => {
+      requestFullscreen(containerRef.current).then(() => {
         setIsFullscreen(true);
       }).catch(err => {
         console.error("Error entering fullscreen:", err);
       });
     } else {
-      document.exitFullscreen().then(() => {
+      exitFullscreen().then(() => {
         setIsFullscreen(false);
       }).catch(err => {
         console.error("Error exiting fullscreen:", err);
@@ -4084,9 +4300,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   // stream is usually full screen, and the list must not open in it.
   const leaveSession = () => {
     setShowMobileMenu(false);
-    if (document.fullscreenElement) {
-      document.exitFullscreen().catch(() => {});
-    }
+    exitFullscreen().catch(() => {});
     onBack();
   };
 
@@ -4109,15 +4323,6 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   };
 
   const isStreaming = status === "Streaming";
-  // Hardware-drawn host cursor when possible (smooth as a native pointer);
-  // otherwise hide the OS cursor and draw the DOM cursor as before.
-  // A host whose pointer is always part of its picture: no pointer at all.
-  const streamCursorStyle = streamCursorCss(pointerView({
-    streaming: isStreaming,
-    alwaysInPicture: pointerAlwaysInPicture,
-    pointerLocked: isPointerLocked,
-    hostCssCursor,
-  }));
 
   if (selectedAppId === null) {
     return (
@@ -4169,8 +4374,8 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
             av1: getCodecLabel('AV1', browserCodecs.av1, hostAv1Supported),
           }}
           encoders={availableEncoders}
-            showNativeClient={typeof window.RTCPeerConnection !== 'undefined' && !!(window as any).__TAURI__}
           viewer={viewerSettings}
+          gameMouse={windowsHost && !sourceId ? { available: gameMouse, on: gameMouseOn, setOn: setGameMouseOn } : undefined}
           />
         )}
 
@@ -4343,8 +4548,8 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
             av1: getCodecLabel('AV1', browserCodecs.av1, hostAv1Supported),
           }}
           encoders={availableEncoders}
-          showNativeClient={typeof window.RTCPeerConnection !== 'undefined' && !!(window as any).__TAURI__}
           viewer={viewerSettings}
+          gameMouse={windowsHost && !sourceId ? { available: gameMouse, on: gameMouseOn, setOn: setGameMouseOn } : undefined}
         />
       )}
 
@@ -4521,7 +4726,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
         <button 
           onClick={togglePointerLock}
           className={`stream-action-btn ${isPointerLocked ? 'active' : ''}`}
-          title={isPointerLocked ? "Release Pointer Lock (Hold ESC 3s)" : "Lock Pointer"}
+          title={isPointerLocked ? t('Release the pointer (hold Esc)') : "Lock Pointer"}
         >
           {isPointerLocked ? (
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
@@ -4536,30 +4741,73 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
           )}
         </button>
 
-        {/* Local Cursor Action */}
-        <button 
-          onClick={() => {
-            const newValue = !hideLocalCursor;
-            setHideLocalCursor(newValue);
-            localStorage.setItem('lunaris_stream_hide_cursor', String(newValue));
-
-          }}
-          className={`stream-action-btn ${!hideLocalCursor ? 'active' : ''}`}
-          title={hideLocalCursor ? "Show Local Cursor" : "Hide Local Cursor"}
-        >
-          {hideLocalCursor ? (
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" opacity="0.4">
-              <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
-              <circle cx="12" cy="12" r="3" />
-              <line x1="1" y1="1" x2="23" y2="23" />
+        {/* Pointer menu: the local cursor and, with a Windows computer, the game mouse */}
+        <div className="stream-menu-wrap" ref={pointerMenuRef}>
+          <button
+            onClick={() => setPointerMenuOpen((o) => !o)}
+            className={`stream-action-btn stream-menu-trigger ${!hideLocalCursor || gameMouseActive ? 'active' : ''} ${pointerMenuOpen ? 'open' : ''}`}
+            title={t('Pointer')}
+            aria-label={t('Pointer')}
+            aria-haspopup="menu"
+            aria-expanded={pointerMenuOpen}
+          >
+            {gameMouseActive ? (
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                <rect x="6" y="2" width="12" height="20" rx="6" />
+                <line x1="12" y1="6" x2="12" y2="10" />
+              </svg>
+            ) : hideLocalCursor ? (
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" opacity="0.4">
+                <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                <circle cx="12" cy="12" r="3" />
+                <line x1="1" y1="1" x2="23" y2="23" />
+              </svg>
+            ) : (
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                <circle cx="12" cy="12" r="3" />
+              </svg>
+            )}
+            <svg className="stream-menu-caret" width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="4">
+              <polyline points="6 9 12 15 18 9" />
             </svg>
-          ) : (
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-              <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
-              <circle cx="12" cy="12" r="3" />
-            </svg>
+          </button>
+          {pointerMenuOpen && (
+            <div className="stream-submenu" role="menu">
+              <button
+                role="menuitemcheckbox"
+                aria-checked={!hideLocalCursor}
+                className="stream-submenu-item"
+                onClick={() => {
+                  const newValue = !hideLocalCursor;
+                  setHideLocalCursor(newValue);
+                  localStorage.setItem('lunaris_stream_hide_cursor', String(newValue));
+                }}
+              >
+                <span className="stream-submenu-label">{t('Local cursor')}</span>
+                <span className={`stream-submenu-switch ${!hideLocalCursor ? 'on' : ''}`} />
+              </button>
+              {windowsHost && !sourceId && (
+                <button
+                  role="menuitemcheckbox"
+                  aria-checked={gameMouseActive}
+                  className="stream-submenu-item"
+                  disabled={gameMouse !== 'usbip'}
+                  title={gameMouse === 'usbip' ? undefined : gameMouse === 'none'
+                    ? t('Needs usbip-win2 on the remote computer: install it there and restart its agent.')
+                    : t('Needs agent 0.7.8 or newer on the remote computer.')}
+                  onClick={() => setGameMouseOn(!gameMouseOn)}
+                >
+                  <span className="stream-submenu-label">
+                    {t('Game mouse')}
+                    {gameMouse !== 'usbip' && <small>{gameMouse === 'none' ? t('Needs usbip-win2') : t('Needs a newer agent')}</small>}
+                  </span>
+                  <span className={`stream-submenu-switch ${gameMouseActive ? 'on' : ''}`} />
+                </button>
+              )}
+            </div>
           )}
-        </button>
+        </div>
 
         {/* Stats Action */}
         <button 
@@ -4595,19 +4843,6 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
           </svg>
         </button>
 
-        {/* Tauri Window Minimize Action */}
-        {!!(window as any).__TAURI__ && (
-          <button 
-            onClick={handleMinimize}
-            className="stream-action-btn"
-            title="Minimize Window"
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-              <line x1="5" y1="12" x2="19" y2="12" />
-            </svg>
-          </button>
-        )}
-
         {/* Mute/Unmute Action */}
         <button 
           onClick={() => {
@@ -4633,7 +4868,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
         </button>
 
         {/* Fullscreen/Maximize Action */}
-        <button 
+        {canFullscreen() && <button 
           onClick={toggleFullscreen}
           className={`stream-action-btn ${isFullscreen ? 'active' : ''}`}
           title={isFullscreen ? "Exit Fullscreen" : "Fullscreen"}
@@ -4648,7 +4883,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
               <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
             </svg>
           )}
-        </button>
+        </button>}
 
         {/* Send files to the remote computer */}
         <button
@@ -4741,7 +4976,6 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
               onWheel={handleWheel}
               className={`stream-video-view ${isStreaming ? 'visible' : 'hidden'}`}
               style={{ 
-                cursor: streamCursorStyle,
                 transform: `translate(${zoomPan.x}px, ${zoomPan.y}px) scale(${zoomScale})`,
                 transformOrigin: '0 0',
                 objectFit: objectFitFor(displayMode)
@@ -4753,6 +4987,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
               playsInline
               muted={isMuted}
               onLoadedMetadata={handleVideoLoadedMetadata}
+              onResize={updatePictureCrop}
               style={{ display: 'none' }}
             />
           </>
@@ -4770,11 +5005,12 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
             playsInline
             muted={isMuted}
             onLoadedMetadata={handleVideoLoadedMetadata}
+            onResize={updatePictureCrop}
             style={{ 
-              cursor: streamCursorStyle,
               transform: `translate(${zoomPan.x}px, ${zoomPan.y}px) scale(${zoomScale})`,
               transformOrigin: '0 0',
-              objectFit: objectFitFor(displayMode)
+              objectFit: objectFitFor(displayMode),
+              ...pictureViewBox()
             }}
           />
         )}
@@ -4795,7 +5031,9 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
             transition: 'none',
             display: 'none',
             willChange: 'transform',
-            contain: 'layout paint style',
+            // No paint containment: a host cursor is often larger than 32 px
+            // (League of Legends'), and the box would cut its corner off.
+            contain: 'layout style',
           }}
         >
           <img
@@ -4806,44 +5044,62 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
           />
         </div>
 
-        {/* ESC hold-to-exit progress bar overlay */}
-        {escapeHoldProgress > 0 && (
-          <div style={{
+        {escapeNotice && (
+          <div role="status" style={{
             position: 'absolute',
-            bottom: '12px',
+            top: '16px',
             left: '50%',
             transform: 'translateX(-50%)',
             zIndex: 200,
-            background: 'rgba(0, 0, 0, 0.75)',
-            borderRadius: '6px',
-            padding: '6px 14px',
+            maxWidth: 'min(560px, calc(100% - 32px))',
+            background: 'rgba(0, 0, 0, 0.8)',
+            color: '#fff',
+            borderRadius: '8px',
+            padding: '8px 14px',
+            fontSize: '13px',
+            lineHeight: 1.4,
+            textAlign: 'center',
+            pointerEvents: 'none',
+            userSelect: 'none',
+          }}>{escapeNotice}</div>
+        )}
+
+        {/* ESC hold-to-exit: a ring filling up around the key's name. */}
+        {escapeHoldProgress > 0 && (
+          <div role="status" style={{
+            position: 'absolute',
+            top: '50%',
+            left: '50%',
+            transform: 'translate(-50%, -50%)',
+            zIndex: 200,
+            background: 'rgba(0, 0, 0, 0.7)',
+            borderRadius: '16px',
+            padding: '16px 20px 12px',
             display: 'flex',
+            flexDirection: 'column',
             alignItems: 'center',
             gap: '8px',
             pointerEvents: 'none',
             userSelect: 'none',
           }}>
-            <span style={{
-              color: 'var(--text-muted)',
-              fontSize: '12px',
-              fontFamily: 'system-ui, sans-serif',
-              whiteSpace: 'nowrap',
-            }}>Hold ESC to exit</span>
-            <div style={{
-              width: '80px',
-              height: '4px',
-              background: 'rgb(var(--ink-rgb) / 0.2)',
-              borderRadius: '2px',
-              overflow: 'hidden',
-            }}>
-              <div style={{
-                width: `${Math.round(escapeHoldProgress * 100)}%`,
-                height: '100%',
-                background: '#f44',
-                borderRadius: '2px',
-                transition: 'width 50ms linear',
-              }} />
+            <div style={{ position: 'relative', width: '56px', height: '56px' }}>
+              <svg width="56" height="56" viewBox="0 0 56 56" style={{ transform: 'rotate(-90deg)' }} aria-hidden="true">
+                <circle cx="28" cy="28" r="24" fill="none" stroke="rgba(255, 255, 255, 0.2)" strokeWidth="5" />
+                <circle
+                  cx="28" cy="28" r="24" fill="none" stroke="#f44" strokeWidth="5" strokeLinecap="round"
+                  strokeDasharray={2 * Math.PI * 24}
+                  strokeDashoffset={2 * Math.PI * 24 * (1 - escapeHoldProgress)}
+                  style={{ transition: 'stroke-dashoffset 20ms linear' }}
+                />
+              </svg>
+              <span style={{
+                position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                color: '#fff', fontSize: '12px', fontWeight: 600, fontFamily: 'system-ui, sans-serif',
+              }}>Esc</span>
             </div>
+            <span style={{ color: 'rgba(255, 255, 255, 0.85)', fontSize: '12px', fontFamily: 'system-ui, sans-serif', whiteSpace: 'nowrap' }}>
+              {t('Keep holding Esc to let the pointer go')}
+            </span>
           </div>
         )}
 
@@ -4863,7 +5119,9 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
             transition: 'none',
             display: "none",
             willChange: 'transform',
-            contain: 'layout paint style',
+            // No paint containment: a host cursor is often larger than 32 px
+            // (League of Legends'), and the box would cut its corner off.
+            contain: 'layout style',
           }}
         >
           <img
@@ -5006,10 +5264,10 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
                       )}
                       <span>{isMuted ? t('Sound off') : t('Sound on')}</span>
                     </button>
-                    <button type="button" className={`mobile-action ${isFullscreen ? 'active' : ''}`} onClick={toggleFullscreen}>
+                    {canFullscreen() && <button type="button" className={`mobile-action ${isFullscreen ? 'active' : ''}`} onClick={toggleFullscreen}>
                       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" /></svg>
                       <span>{isFullscreen ? t('Exit full screen') : t('Full screen')}</span>
-                    </button>
+                    </button>}
                     <button
                       type="button"
                       className="mobile-action"
@@ -5150,8 +5408,8 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
                 )}
               </button>
 
-              {/* Fullscreen Button */}
-              <button
+              {/* Fullscreen Button (not on iPhones: Safari shows only videos full screen) */}
+              {canFullscreen() && <button
                 onClick={toggleFullscreen}
                 className={`mobile-footer-btn ${isFullscreen ? 'active' : ''}`}
                 title={isFullscreen ? t('Exit full screen') : t('Full screen')} aria-label={isFullscreen ? t('Exit full screen') : t('Full screen')}
@@ -5171,7 +5429,7 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
                     <line x1="3" y1="21" x2="10" y2="14" />
                   </svg>
                 )}
-              </button>
+              </button>}
 
               {/* Stats Overlay Toggle Button */}
               <button 
@@ -5260,8 +5518,9 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       </div>
 
       {/* Keys the phone keyboard lacks, in a row right above it. Buttons keep
-          the focus in the hidden field so the keyboard stays open. The first
-          eleven fill the width; the rest are reached by sliding the row. */}
+          the focus in the hidden field so the keyboard stays open. "Hide
+          keyboard" comes first and stays put; beside it the first ten
+          keys fill the width and the rest are reached by sliding the row. */}
       {isStreaming && isKeyboardActive && (
         <div
           className="mobile-keys-bar"
@@ -5270,6 +5529,18 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
           onTouchMove={(e) => e.stopPropagation()}
           onTouchEnd={(e) => e.stopPropagation()}
         >
+          {/* First, outside the sliding row: always in reach. */}
+          <button
+            type="button"
+            className="mobile-key mobile-key-hide"
+            aria-label={t('Hide keyboard')}
+            title={t('Hide keyboard')}
+            onClick={() => { keyboardInputRef.current?.blur(); setIsKeyboardActive(false); }}
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <polyline points="6 9 12 15 18 9" />
+            </svg>
+          </button>
           <div className="mobile-keys-row">
             {MOBILE_KEYS.map((key) => (key.mod ? (
               <button
@@ -5287,13 +5558,6 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
               <button key={key.label} type="button" className="mobile-key" aria-label={key.key} onClick={() => sendSpecialKeyRemote(key.key!)}>{key.label}</button>
             )))}
             <button type="button" className="mobile-key wide" onClick={() => pressKeyRemote(46, { ctrl: true, alt: true })}>Ctrl+Alt+Del</button>
-            <button
-              type="button"
-              className="mobile-key"
-              aria-label={t('Hide keyboard')}
-              title={t('Hide keyboard')}
-              onClick={() => { keyboardInputRef.current?.blur(); setIsKeyboardActive(false); }}
-            >⌄</button>
           </div>
         </div>
       )}

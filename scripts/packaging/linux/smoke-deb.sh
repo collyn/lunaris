@@ -72,7 +72,10 @@ for deb in "${DEBS[@]}"; do
             >"$home/agent.log" 2>&1 &
         for _ in 1 2 3 4 5 6 7 8 9 10; do [[ -S "$home/run/lunaris/approval.sock" ]] && break; sleep 0.5; done
     fi
-    "${RUN[@]}" "${ENV[@]}" timeout --kill-after=5 "$SECONDS_TO_RUN" "$bin" >"$log" 2>&1
+    # The client quits without a lunaris:// link: one it ignores keeps its window up.
+    ARGS=()
+    [[ "$name" == lunaris-client ]] && ARGS=("lunaris://connect?smoke=1")
+    "${RUN[@]}" "${ENV[@]}" timeout --kill-after=5 "$SECONDS_TO_RUN" "$bin" "${ARGS[@]}" >"$log" 2>&1
     rc=$?
     wait
     sed 's/\x1b\[[0-9;]*m//g' "$log" | tail -20

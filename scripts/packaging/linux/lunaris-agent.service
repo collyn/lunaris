@@ -23,7 +23,9 @@ ConditionPathExists=%E/lunaris-agent/agent_config.json
 [Service]
 Type=simple
 ExecStart=/usr/bin/lunaris-agent --cli
-Restart=on-failure
+# always: a stray kill (`pkill lunaris`) brings it back; `systemctl stop`
+# still stops it (and logging out, through PartOf=).
+Restart=always
 RestartSec=5
 
 [Install]

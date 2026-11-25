@@ -30,7 +30,9 @@ Group=lunaris
 WorkingDirectory=/var/lib/lunaris
 StateDirectory=lunaris
 StateDirectoryMode=0700
-Restart=on-failure
+# always: a stray kill (`pkill lunaris`) brings it back; `systemctl stop`
+# still stops it.
+Restart=always
 RestartSec=3
 
 # Only for a port below 1024 in server.env (SERVER_PORT=80, LUNARIS_HTTPS_PORT=443).

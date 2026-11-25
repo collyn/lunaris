@@ -7,3 +7,5 @@ Icon=lunaris-client
 Terminal=false
 Categories=Network;RemoteAccess;
 MimeType=x-scheme-handler/lunaris;
+# Opened by lunaris:// links of the server's web page only: not in menus.
+NoDisplay=true

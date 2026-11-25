@@ -254,7 +254,11 @@ pub async fn password(
             return refused(
                 StatusCode::BAD_REQUEST,
                 common::SETTINGS_INVALID,
-                "The password needs 6 to 128 characters, without spaces at either end",
+                &format!(
+                    "The password needs {} to {} characters, without spaces at either end",
+                    common::MIN_ACCESS_PASSWORD_CHARS,
+                    common::MAX_ACCESS_PASSWORD_CHARS
+                ),
             )
         }
         _ => return refused(StatusCode::BAD_REQUEST, common::SETTINGS_INVALID, "The action is \"show\", \"random\" or \"set\""),
@@ -432,10 +436,10 @@ mod tests {
 
         // A new one: the settings come back, not the password.
         let agent = agent_answers(&state, to_agent, "h1", |request| {
-            assert_eq!(*request, SettingsRequest::NewPassword { password: Some(SecretString("my own pw".into())) });
+            assert_eq!(*request, SettingsRequest::NewPassword { password: Some(SecretString("my own password".into())) });
             (Some(settings(true)), None, None)
         });
-        let form = PasswordForm { action: "set".into(), password: Some("my own pw".into()) };
+        let form = PasswordForm { action: "set".into(), password: Some("my own password".into()) };
         let (status, answer, _) = body(password(admin(), Path("h1".into()), State(state.clone()), Json(form)).await).await;
         assert_eq!(status, StatusCode::OK);
         assert!(answer.get("password").is_none() && answer["has_password"] == true);

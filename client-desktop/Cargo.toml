@@ -6,8 +6,6 @@ license.workspace = true
 
 [dependencies]
 client-qml = { path = "../client-qml" }
-# The restart after an update (how the app was started).
-updater = { path = "../updater" }
 
 [build-dependencies]
 # The icon and the manifest of the Windows program (build.rs).

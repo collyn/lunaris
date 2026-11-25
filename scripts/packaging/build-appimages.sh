@@ -1,15 +1,14 @@
 #!/usr/bin/env bash
 # Build the portable Lunaris AppImages (they run on glibc >= 2.35 distros):
 # the agent (the command-line program, without Qt) and the client
-# (client-desktop, plus client-qml, the same program under its old name).
+# (client-desktop).
 #
 # The build happens inside an Ubuntu 22.04 container with Qt 6.8 and a trimmed,
 # static FFmpeg 8.1 (+ x264, SVT-AV1, dav1d) — see Containerfile.appimage. One
 # cargo build makes both binaries; make-appimage.sh packs each and runs the
 # start-up check (smoke-appimage.sh) in the container; a second check then runs
 # the results in a bare ubuntu:22.04 container.
-# Output: dist/Lunaris-Agent-*.AppImage, dist/client-desktop-x86_64.AppImage,
-#         dist/client-qml-x86_64.AppImage
+# Output: dist/Lunaris-Agent-*.AppImage, dist/client-desktop-x86_64.AppImage
 #
 # Env: CONTAINER=docker       use docker instead of podman
 #      PODMAN_ROOT=<dir>      podman storage/temp location (when / is short on space)
@@ -21,7 +20,7 @@
 #      APPIMAGE_ZSTD_LEVEL=22 squashfs zstd level (see make-appimage.sh)
 #      SKIP_SMOKE=1           skip the start-up checks
 #      SKIP_CLEAN_SMOKE=1     skip only the bare-container check
-#      ONLY="agent client-desktop client-qml"  build a subset of the AppImages
+#      ONLY="agent client-desktop"  build a subset of the AppImages
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -31,7 +30,7 @@ ENGINE="${CONTAINER:-$(command -v podman >/dev/null && echo podman || echo docke
 TARGET_DIR="${LUNARIS_APPIMAGE_TARGET_DIR:-$ROOT/build-dir/target-appimage}"
 CARGO_CACHE="${LUNARIS_CARGO_CACHE:-$ROOT/build-dir/cargo-cache}"
 OUT_DIR="${LUNARIS_APPIMAGE_OUT_DIR:-$ROOT/dist}"
-ONLY="${ONLY:-agent client-desktop client-qml}"
+ONLY="${ONLY:-agent client-desktop}"
 CLEAN_IMAGE=docker.io/library/ubuntu:22.04
 
 if [[ "$ENGINE" == podman && -n "${PODMAN_ROOT:-}" ]]; then
@@ -98,7 +97,8 @@ if [[ -z "${SKIP_SMOKE:-}" && -z "${SKIP_CLEAN_SMOKE:-}" ]]; then
     for v in $ONLY; do
         case "$v" in
             agent) f=$(basename "$(ls "$OUT_DIR"/Lunaris-Agent-*-x86_64.AppImage | tail -1)"); args="" ;;
-            *)     f="$v-x86_64.AppImage"; args="" ;;
+            # The client quits without a lunaris:// link: one it ignores keeps it up.
+            *)     f="$v-x86_64.AppImage"; args="lunaris://connect?smoke=1" ;;
         esac
         "${ENGINE_CMD[@]}" run --rm -v "$HERE:/pkg:ro" -v "$OUT_DIR:/out:ro" "$CLEAN_IMAGE" bash -c '
             export DEBIAN_FRONTEND=noninteractive

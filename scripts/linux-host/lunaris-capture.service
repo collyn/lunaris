@@ -15,7 +15,10 @@ After=systemd-logind.service
 [Service]
 Type=simple
 ExecStart=/usr/bin/lunaris-agent --capture-service
-Restart=on-failure
+# always: a stray kill (`pkill lunaris`) brings it back; `systemctl stop`
+# still stops it. Without it the agent falls back to the portal, which
+# waits for someone at this screen (the viewer sees black).
+Restart=always
 RestartSec=2
 
 # /run/lunaris (root, 0755) holds the socket.

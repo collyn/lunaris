@@ -56,12 +56,19 @@ test('a Linux host: the system draws the host-shaped pointer', () => {
   assert.deepEqual(shown({ ...v, hideLocalCursor: false }), { host: false, own: false, css: 'default' });
 });
 
-test('a Windows host: the page draws its own, the system pointer is hidden', () => {
+test('a Windows host: the system draws the host-shaped pointer too (no lag)', () => {
   const v = view({ hostOs: 'windows', hostCursorVisible: true, hardwareMouse: true, hostCssCursor: HOST_CSS, hasNativeCursorImage: true });
-  assert.deepEqual(shown(v), { host: false, own: true, css: 'none' });
-  // Also with "show local cursor", once the host's cursor image came.
-  assert.deepEqual(shown({ ...v, hideLocalCursor: false }), { host: false, own: true, css: 'none' });
-  assert.deepEqual(shown({ ...v, hideLocalCursor: false, hasNativeCursorImage: false }), { host: false, own: false, css: 'none' });
+  assert.deepEqual(shown(v), { host: false, own: false, css: HOST_CSS });
+  // "Show local cursor": the system's ordinary pointer, nothing drawn.
+  assert.deepEqual(shown({ ...v, hideLocalCursor: false }), { host: false, own: false, css: 'default' });
+  // An image the system cannot use (too large): the page draws it.
+  assert.deepEqual(shown({ ...v, hostCssCursor: null }), { host: false, own: true, css: 'none' });
+  assert.deepEqual(shown({ ...v, hostCssCursor: null, hideLocalCursor: false }), { host: false, own: false, css: 'default' });
+  // Pointer locked: the page draws its own.
+  assert.deepEqual(shown({ ...v, pointerLocked: true }), { host: false, own: true, css: 'none' });
+  assert.deepEqual(shown({ ...v, pointerLocked: true, hideLocalCursor: false }), { host: false, own: true, css: 'none' });
+  // A window moved with the button held: the pointer is in the picture, none over it.
+  assert.deepEqual(shown({ ...v, inWindowMoveSize: true, buttonHeld: true }), { host: false, own: false, css: 'none' });
 });
 
 test('no cursor message has ever come: the page draws its own under the mouse', () => {
@@ -127,4 +134,28 @@ test('a phone in touchpad mode draws its own cursor, unless the pointer is alway
   const v = view({ trackpad: true, hostCursorVisible: true });
   assert.deepEqual(shown(v), { host: false, own: true, css: 'none' });
   assert.deepEqual(shown({ ...v, alwaysInPicture: true }), { host: false, own: false, css: 'none' });
+});
+
+test('with the game mouse on and the pointer locked, one pointer: where the host says', () => {
+  const v = view({ hostOs: 'windows', hardwareMouse: true, pointerLocked: true, hasNativeCursorImage: true, hostCursorVisible: true, gameMouse: true });
+  // On the desktop: the host's cursor, drawn where the host puts it.
+  assert.equal(hostPointerInPicture(v), false);
+  assert.equal(showsHostCursor(v), true);
+  assert.equal(showsOwnCursor(v), false);
+  assert.equal(streamCursorCss(v), 'none');
+  // In a game that hides the system's cursor: the game's, in the picture.
+  assert.equal(showsHostCursor({ ...v, hostCursorVisible: false }), false);
+  assert.equal(showsOwnCursor({ ...v, hostCursorVisible: false }), false);
+  // Without it the page draws its own cursor, as before.
+  assert.equal(showsOwnCursor({ ...v, gameMouse: false }), true);
+});
+
+test('a late host_cursor message is stale; a new session is not', async () => {
+  const { isStaleCursorSeq } = await import('../src/pointerShown.ts');
+  assert.equal(isStaleCursorSeq(null, 5), false);
+  assert.equal(isStaleCursorSeq(10, 11), false);
+  assert.equal(isStaleCursorSeq(10, 9), true);
+  assert.equal(isStaleCursorSeq(10, 10), true);
+  assert.equal(isStaleCursorSeq(50_000, 1), false);
+  assert.equal(isStaleCursorSeq(10, undefined), false);
 });

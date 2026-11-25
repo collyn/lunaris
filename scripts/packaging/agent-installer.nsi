@@ -269,6 +269,26 @@ Section "-Service and records"
     StrCmp $0 0 +2
       MessageBox MB_OK|MB_ICONEXCLAMATION "The Lunaris Agent service could not be installed (exit code $0). Run $\"$INSTDIR\${EXE}$\" --install-service from an elevated prompt." /SD IDOK
     StrCmp $1 1 0 svc_done
+      ; That file is the user's own and any program of the user could have
+      ; written it (another server address for the SYSTEM service): it is
+      ; taken only when it is a plain file owned by this user (or by
+      ; Administrators: earlier agents ran elevated), the server it names is
+      ; shown in the details, and an interactive install asks first. The
+      ; path goes through the environment (no quoting problems).
+      System::Call 'Kernel32::SetEnvironmentVariable(t "LUNARIS_IMPORT_CONFIG", t "$APPDATA\lunaris-agent\agent_config.json")i'
+      nsExec::ExecToStack 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "$$ErrorActionPreference = $\'Stop$\'; $$p = $$env:LUNARIS_IMPORT_CONFIG; if ((Get-Item -LiteralPath $$p -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) { $\'a link$\'; exit 2 }; $$o = (Get-Acl -LiteralPath $$p).GetOwner([Security.Principal.SecurityIdentifier]).Value; $$me = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value; if ($$o -ne $$me -and $$o -ne $\'S-1-5-32-544$\') { $\'owned by $\' + $$o; exit 3 }; $$u = (Get-Content -LiteralPath $$p -Raw | ConvertFrom-Json).server_url; if (-not $$u) { $$u = $\'(none)$\' }; [string]$$u"'
+      Pop $0
+      Pop $3
+      StrCmp $0 0 imp_check_ok
+        DetailPrint "Not importing $APPDATA\lunaris-agent\agent_config.json: $3"
+        Goto svc_done
+      imp_check_ok:
+      DetailPrint "Settings of this user's earlier Lunaris Agent: $APPDATA\lunaris-agent\agent_config.json, server $3"
+      IfSilent imp_do
+      MessageBox MB_YESNO|MB_ICONQUESTION "This user ran an earlier Lunaris Agent. Use its settings for the agent service?$\r$\n$\r$\nServer: $3$\r$\n$\r$\nChoose No unless you know this server. The agent can join a server later from the server's web page." /SD IDYES IDYES imp_do
+        DetailPrint "Earlier settings not imported (declined)"
+        Goto svc_done
+      imp_do:
       nsExec::ExecToLog '"$INSTDIR\${EXE}" --system --import-config "$APPDATA\lunaris-agent\agent_config.json" status'
       Pop $0
       nsExec::Exec 'net stop LunarisAgentService'

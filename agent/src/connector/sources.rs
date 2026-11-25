@@ -347,7 +347,7 @@ pub fn views_json(sources: &[SourceConfig], connectors: &[Description]) -> Strin
 }
 
 /// Why a computer's sources cannot be changed from the server.
-pub const NOT_MANAGEABLE: &str = "That computer asks at its screen before each connection, so computers cannot be added to it from here. Add it in the Lunaris app on that computer.";
+pub const NOT_MANAGEABLE: &str = "That computer asks at its screen before each connection, so computers cannot be added to it from here. To manage them from the server, run `lunaris-agent set server-sessions trusted` on that computer (sessions through the server are then let in without asking), or connect it with the access password.";
 
 /// Does what a server asked with this agent's sources, in its config file,
 /// and returns the id of the source it was about.
@@ -758,10 +758,15 @@ pub(crate) fn note_sources_changed() {
 /// of changes is one announcement). Ends when the returned guard is dropped
 /// (the connection ended).
 pub fn announce_changes(tx: tokio::sync::mpsc::UnboundedSender<common::AgentMessage>, manageable: bool) -> AnnounceChanges {
+    announce_changes_with(tx, manageable, true)
+}
+
+/// `announce_changes`, with `detailed` as in [`announcement_with`].
+pub fn announce_changes_with(tx: tokio::sync::mpsc::UnboundedSender<common::AgentMessage>, manageable: bool, detailed: bool) -> AnnounceChanges {
     let mut changed = sources_changed().subscribe();
     AnnounceChanges(tokio::spawn(async move {
         while changed.changed().await.is_ok() {
-            if tx.send(announcement(manageable)).is_err() {
+            if tx.send(announcement_with(manageable, detailed)).is_err() {
                 break;
             }
         }
@@ -823,9 +828,22 @@ impl Drop for StopSetupsOnDrop {
 /// change: the sources (id, name, connector, group, fields that are not
 /// secrets), the connectors there are and this computer's addresses.
 pub fn announcement(manageable: bool) -> common::AgentMessage {
+    announcement_with(manageable, true)
+}
+
+/// The announcement, `detailed` or not: without the details (for a server
+/// that connected by this computer's address without the password, whose
+/// clients the person here accepts one by one) each source is only its id,
+/// name, connector and group, without the values of its form (addresses,
+/// ports, user names of the computers behind this one), and this computer's
+/// own addresses are left out. What the viewers need to pick a source.
+pub fn announcement_with(manageable: bool, detailed: bool) -> common::AgentMessage {
     let configured = crate::connector::configured_sources();
     let available = crate::connector::available(&crate::connector::connectors_dir());
     let mut sources = source_infos(&configured, &available);
+    if !detailed {
+        strip_details(&mut sources);
+    }
     // Whether each is there, as far as it is known (`reachability`).
     if let Some(monitor) = crate::connector::reachability::agent_monitor() {
         for (info, source) in sources.iter_mut().zip(&configured) {
@@ -836,7 +854,15 @@ pub fn announcement(manageable: bool) -> common::AgentMessage {
         sources,
         connectors: connector_infos(&available),
         manageable,
-        addresses: crate::direct::known_local_addresses(),
+        addresses: if detailed { crate::direct::known_local_addresses() } else { Vec::new() },
+        build: Some(crate::build_info::current()),
+    }
+}
+
+/// What a peer that is not trusted is not told of the sources.
+fn strip_details(sources: &mut [common::SourceInfoMsg]) {
+    for source in sources {
+        source.values = None;
     }
 }
 
@@ -970,6 +996,32 @@ mod tests {
             capabilities: Capabilities::default(),
             note: "Demo must be running on that computer.".into(),
         }]
+    }
+
+    #[test]
+    fn a_peer_that_is_not_trusted_hears_no_values() {
+        let mut config = AgentConfig::default();
+        add(&mut config, &connectors(), "Office", "demo", r#"{"host": "10.1.2.3", "port": "5901", "password": "pw"}"#).unwrap();
+        let mut infos = source_infos(&config.sources, &connectors());
+        assert!(infos[0].values.as_ref().is_some_and(|v| v.get("host").map(String::as_str) == Some("10.1.2.3")));
+        strip_details(&mut infos);
+        let told = serde_json::to_string(&infos).unwrap();
+        assert!(!told.contains("10.1.2.3") && !told.contains("5901"), "{}", told);
+        // What a viewer needs to pick it stays.
+        assert_eq!((infos[0].name.as_str(), infos[0].connector.as_str()), ("Office", "demo"));
+        // The whole announcement: no addresses of this computer either.
+        match announcement_with(false, false) {
+            common::AgentMessage::Sources { sources, addresses, .. } => {
+                assert!(addresses.is_empty() && sources.iter().all(|s| s.values.is_none()));
+            }
+            other => panic!("{:?}", other),
+        }
+    }
+
+    #[test]
+    fn not_manageable_says_what_to_do_on_that_computer() {
+        assert!(NOT_MANAGEABLE.contains("lunaris-agent set server-sessions trusted"));
+        assert!(!NOT_MANAGEABLE.contains("Lunaris app"));
     }
 
     #[test]

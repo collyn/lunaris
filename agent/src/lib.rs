@@ -2,7 +2,7 @@
 use clap::Parser;
 use futures_util::{SinkExt, StreamExt};
 use std::sync::Arc;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 use tracing::{debug, error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -19,10 +19,13 @@ mod cli;
 mod bridge;
 pub mod bridge_agent;
 mod buffer;
+mod build_info;
 pub mod direct;
 mod files;
+mod game_mouse;
 mod gamepad;
 mod hub;
+mod media_hub;
 mod input;
 pub mod pairing;
 mod rtcp_forward;
@@ -30,8 +33,11 @@ pub mod connector;
 pub mod rustdesk;
 pub mod settings;
 mod share;
+mod single;
 mod status;
+mod stream_priority;
 mod video;
+mod window_drag;
 #[cfg(target_os = "windows")]
 pub mod win_service;
 #[cfg(target_os = "linux")]
@@ -390,6 +396,13 @@ async fn main_async(args: Args) -> Result<(), Box<dyn std::error::Error + Send +
     if args.approval_stdio {
         approval::attach_stdio();
     }
+    // One agent per config (single.rs); a login entry that started a
+    // second one beside the systemd service is fixed for the next login.
+    crate::single::hold(&config_path).await;
+    #[cfg(target_os = "linux")]
+    if !args.system && !args.bridge_only {
+        autostart::repair_login_entry();
+    }
 
     if args.minimized && !args.cli {
         info!("Started by the agent window's old login entry (--minimized): running the agent without a window");
@@ -494,19 +507,101 @@ async fn main_async(args: Args) -> Result<(), Box<dyn std::error::Error + Send +
     run_agent(config, name).await
 }
 
-/// `ws://`/`wss://` address of a server as given (`http(s)://` and a bare
-/// `host:port` accepted), checked: Err when it isn't one.
-fn normalize_server_url(given: &str) -> Result<(String, String), String> {
-    let given = given.trim().trim_end_matches('/');
-    let url = if let Some(rest) = given.strip_prefix("http://") {
+/// Windows: DLLs loaded later by name (the encoders' runtimes: NVENC's
+/// nvEncodeAPI64.dll, AMF's amfrt64.dll, FFmpeg's own loads) are looked
+/// for only in System32 and in this program's folder (FFmpeg's DLLs and the
+/// C runtime are installed there), no longer in the current folder or the
+/// folders of the PATH, where a user may be able to plant one that the
+/// service, running as SYSTEM, would load. DLLs this program imports
+/// directly are found by the loader before main runs and are not affected.
+/// One loader that may be affected: lunaris-media's native Quick Sync
+/// encoder loads the oneVPL dispatcher `libvpl.dll`, which the installer
+/// does not ship; one found only through the PATH (an Intel oneAPI install)
+/// is no longer used, the FFmpeg encoders remain.
+#[cfg(target_os = "windows")]
+pub fn harden_dll_search() -> bool {
+    use windows::Win32::System::LibraryLoader::{
+        SetDefaultDllDirectories, LOAD_LIBRARY_SEARCH_APPLICATION_DIR, LOAD_LIBRARY_SEARCH_SYSTEM32,
+    };
+    // Before logging is set up: the outcome is only returned.
+    unsafe { SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32 | LOAD_LIBRARY_SEARCH_APPLICATION_DIR).is_ok() }
+}
+
+/// The `ws://`/`wss://` address the agent connects to for a server
+/// address as configured: `http://` is `ws://`, `https://` is `wss://`, and
+/// one without a scheme (`host:port`) is `wss://` (before 0.7.1 it was
+/// `ws://`: unencrypted unless asked for).
+pub(crate) fn server_ws_url(given: &str) -> String {
+    let given = given.trim();
+    if let Some(rest) = given.strip_prefix("http://") {
         format!("ws://{rest}")
     } else if let Some(rest) = given.strip_prefix("https://") {
         format!("wss://{rest}")
     } else if given.starts_with("ws://") || given.starts_with("wss://") {
         given.to_string()
     } else {
-        format!("ws://{given}")
+        format!("wss://{given}")
+    }
+}
+
+/// How the connection to a server (a `server_ws_url`) is protected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ServerTransport {
+    Tls,
+    /// Plain ws:// to this computer itself: nothing crosses a network.
+    PlainLoopback,
+    /// Plain ws:// over the network.
+    Plain,
+}
+
+pub(crate) fn server_transport(ws_url: &str) -> ServerTransport {
+    let Some(rest) = ws_url.trim().strip_prefix("ws://") else { return ServerTransport::Tls };
+    let authority = rest.split(['/', '?']).next().unwrap_or("");
+    let host = match authority.strip_prefix('[') {
+        Some(v6) => v6.split(']').next().unwrap_or(""),
+        None => authority.rsplit_once(':').map(|(h, _)| h).unwrap_or(authority),
     };
+    let loopback = host.eq_ignore_ascii_case("localhost") || host.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback());
+    if loopback {
+        ServerTransport::PlainLoopback
+    } else {
+        ServerTransport::Plain
+    }
+}
+
+/// The WebSocket request to `/ws/agent`: the secrets go both in the query
+/// (`token`, `install_token`, `key`; what servers before 0.7.1 read) and as
+/// the headers `X-Lunaris-Token`, `X-Lunaris-Install-Token` and
+/// `X-Lunaris-Agent-Key`, which newer servers read and which no proxy or
+/// access log records the way it records a URL. The query copy can go once
+/// servers older than 0.7.1 are no longer supported.
+fn server_request(
+    url: &str,
+    token: &str,
+    agent_key: &str,
+    install_token: &str,
+) -> Result<tokio_tungstenite::tungstenite::handshake::client::Request, Box<dyn std::error::Error + Send + Sync>> {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    use tokio_tungstenite::tungstenite::http::HeaderValue;
+    let mut request = url.into_client_request()?;
+    for (name, value) in [("X-Lunaris-Token", token), ("X-Lunaris-Agent-Key", agent_key), ("X-Lunaris-Install-Token", install_token)] {
+        let value = value.trim();
+        if value.is_empty() {
+            continue;
+        }
+        // One a header cannot carry still goes in the query, as before.
+        let Ok(mut header) = HeaderValue::from_str(value) else { continue };
+        header.set_sensitive(true);
+        request.headers_mut().insert(name, header);
+    }
+    Ok(request)
+}
+
+/// `ws://`/`wss://` address of a server as given (`http(s)://` and a bare
+/// `host:port`, which is `wss://`, accepted), checked: Err when it isn't one.
+fn normalize_server_url(given: &str) -> Result<(String, String), String> {
+    let given = given.trim().trim_end_matches('/');
+    let url = server_ws_url(given);
     let uri: tokio_tungstenite::tungstenite::http::Uri =
         url.parse().map_err(|e| format!("not a server address: {given} ({e})"))?;
     let tls = uri.scheme_str() == Some("wss");
@@ -803,6 +898,15 @@ impl Drop for CloseLinksOnDrop {
     }
 }
 
+/// The folder of the agent's config file (files kept with it, such as the
+/// direct listener's certificate).
+fn config_dir() -> std::path::PathBuf {
+    match std::path::Path::new(crate::pairing::config_path()).parent() {
+        Some(dir) if !dir.as_os_str().is_empty() => dir.to_path_buf(),
+        _ => std::path::PathBuf::from("."),
+    }
+}
+
 fn start_local_services(
     config: &mut AgentConfig,
     name: &str,
@@ -824,6 +928,10 @@ fn start_local_services(
             approve_mode: approval::ApproveMode::parse(&config.approve_mode),
             name: name.to_string(),
             links: links.clone(),
+            allow_legacy_plain: config.allow_legacy_plain_direct,
+            // Next to the config: servers pin the certificate. Not in unit
+            // tests, whose config path is the real user's.
+            tls_dir: (!cfg!(test)).then(config_dir),
         };
         let hub = hub.clone();
         let inbound_tx = inbound_tx.clone();
@@ -855,7 +963,10 @@ fn start_local_services(
             // RustDesk's file manager: its own switch, and never when file
             // transfer is off on this computer; held to `file_access`.
             file_transfer: config.rustdesk_file_transfer && config.allow_file_transfer,
-            file_access: files::Access::from_config(&file_access_setting(config)),
+            file_access: file_access(config),
+            // Resolved again for each file manager: for the Windows
+            // service's agent, whoever is logged on at the screen then.
+            file_access_setting: Some(file_access_setting(config)),
             file_home: None,
         };
         tasks.push(tokio::spawn(async move {
@@ -1011,6 +1122,10 @@ async fn run_server_connection(
     }
 }
 
+/// How long the server may stay silent before the connection counts as dead
+/// (it pings every 15 s).
+const SERVER_SILENCE_LIMIT: std::time::Duration = std::time::Duration::from_secs(60);
+
 async fn connect_server_once(
     config: &mut AgentConfig,
     name: &str,
@@ -1020,13 +1135,14 @@ async fn connect_server_once(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let codec_support = Some(codec_support_bits());
 
-    let mut base_ws_url = config.server_url.clone();
-    if base_ws_url.starts_with("http://") {
-        base_ws_url = base_ws_url.replacen("http://", "ws://", 1);
-    } else if base_ws_url.starts_with("https://") {
-        base_ws_url = base_ws_url.replacen("https://", "wss://", 1);
-    } else if !base_ws_url.starts_with("ws://") && !base_ws_url.starts_with("wss://") {
-        base_ws_url = format!("ws://{}", base_ws_url);
+    let base_ws_url = server_ws_url(&config.server_url);
+    if server_transport(&base_ws_url) == ServerTransport::Plain {
+        // Kept working (existing installs name ws:// servers), said every time.
+        warn!(
+            "Unencrypted connection to the server {}: the agent's key and the signaling cross the network \
+             readable by anyone on the way. Use the server's wss:// (https://) address: `lunaris-agent set server wss://...`",
+            base_ws_url
+        );
     }
 
     // Joining with an install token (`--enroll`): sent instead of the
@@ -1037,7 +1153,7 @@ async fn connect_server_once(
     // Connect to Signaling Server
     let mut server_ws_url = if let Some(support) = codec_support {
         format!(
-            "{}/ws/agent?id={}&name={}&codec_support={}&token={}",
+            "{}/ws/agent?id={}&name={}&codec_support={}&multi_viewer=true&token={}",
             base_ws_url.trim_end_matches('/'),
             config.client_unique_id,
             urlencoding::encode(name),
@@ -1046,7 +1162,7 @@ async fn connect_server_once(
         )
     } else {
         format!(
-            "{}/ws/agent?id={}&name={}&token={}",
+            "{}/ws/agent?id={}&name={}&multi_viewer=true&token={}",
             base_ws_url.trim_end_matches('/'),
             config.client_unique_id,
             urlencoding::encode(name),
@@ -1069,7 +1185,8 @@ async fn connect_server_once(
     // TLS first (the certificate is checked or pinned before the token is
     // sent), then the WebSocket handshake over it.
     let stream = server_stream(config, &base_ws_url).await?;
-    let (ws_stream, _) = tokio_tungstenite::client_async(server_ws_url, stream).await.map_err(
+    let request = server_request(&server_ws_url, &token, &config.agent_key, &install_token)?;
+    let (ws_stream, _) = tokio_tungstenite::client_async(request, stream).await.map_err(
         |e| -> Box<dyn std::error::Error + Send + Sync> {
             let status = match &e {
                 tokio_tungstenite::tungstenite::Error::Http(resp) => Some(resp.status().as_u16()),
@@ -1130,9 +1247,16 @@ async fn connect_server_once(
 
     loop {
         let message_result = tokio::select! {
-            message = ws_read.next() => match message {
-                Some(message) => message,
-                None => break,
+            // The server pings every 15 s: silence means the connection died
+            // without closing (this computer slept or changed network), and
+            // waiting on it would keep this computer away until TCP gives up.
+            message = tokio::time::timeout(SERVER_SILENCE_LIMIT, ws_read.next()) => match message {
+                Ok(Some(message)) => message,
+                Ok(None) => break,
+                Err(_) => {
+                    warn!("Nothing from the signaling server for {} s: reconnecting", SERVER_SILENCE_LIMIT.as_secs());
+                    break;
+                }
             },
             changed = settings.changed() => {
                 if changed.is_err() {
@@ -1297,15 +1421,7 @@ impl ServerGate {
             }
             asking.insert(key.clone(), cancel.clone());
         }
-        let requester = match &sig {
-            SignalingMessage::IncomingSession { requester: Some(r), .. }
-            | SignalingMessage::IncomingFileSession { requester: Some(r), .. }
-                if !r.trim().is_empty() =>
-            {
-                format!("{} (through the Lunaris server)", r.trim())
-            }
-            _ => "a user of the Lunaris server".to_string(),
-        };
+        let requester = server_requester_label(&sig);
         let status = |client: &str, s: &str| {
             AgentMessage::Signaling(SignalingMessage::AccessRequest { target_id: client.to_string(), status: s.to_string() })
         };
@@ -1330,6 +1446,22 @@ impl ServerGate {
                 let _ = server_tx.send(AgentMessage::Signaling(SignalingMessage::EndSession { target_id: client }));
             }
         });
+    }
+}
+
+/// Who asks through the server, as shown to the person here: the name the
+/// server gives, cleaned like a direct client's (no control or direction
+/// characters that could fake the rest of the question, not too long).
+fn server_requester_label(sig: &SignalingMessage) -> String {
+    let name = match sig {
+        SignalingMessage::IncomingSession { requester: Some(r), .. }
+        | SignalingMessage::IncomingFileSession { requester: Some(r), .. } => crate::direct::clean_name(r),
+        _ => String::new(),
+    };
+    if name.is_empty() {
+        "a user of the Lunaris server".to_string()
+    } else {
+        format!("{} (through the Lunaris server)", name)
     }
 }
 
@@ -1603,27 +1735,77 @@ mod server_tls {
     }
 }
 
-/// `file_access` as it applies here. Not set: "home", but "full" when
-/// running as LocalSystem (the Windows service's agent), whose home folder
-/// is the system profile; the person used to reach every drive there.
+/// `file_access` as it applies here: as set, "home" when not set. (Before
+/// 0.7.1 an agent running as LocalSystem, the Windows service's, took "not
+/// set" for the whole disk; it now means the home folder of the person
+/// logged on at the screen, `file_access`. A config that says "full" keeps
+/// it.)
 pub(crate) fn file_access_setting(config: &AgentConfig) -> String {
     let value = config.file_access.trim();
-    if !value.is_empty() {
-        return value.to_string();
+    if value.is_empty() {
+        "home".to_string()
+    } else {
+        value.to_string()
     }
+}
+
+/// What file transfer may reach, from the config: `file_access_setting`,
+/// with "home" resolved for the account the agent runs as, or, for the
+/// Windows service's agent (LocalSystem, whose own home is the system
+/// profile), for the person logged on at the screen; nobody logged on:
+/// refused.
+pub(crate) fn file_access(config: &AgentConfig) -> files::Access {
+    file_access_for(&file_access_setting(config))
+}
+
+/// `file_access` for a `file_access_setting` value.
+pub(crate) fn file_access_for(setting: &str) -> files::Access {
+    let setting = setting.trim();
+    if setting == "home" || setting.is_empty() {
+        if let Some(home) = service_home() {
+            return match home {
+                Ok(dir) => files::Access::from_config(&dir.to_string_lossy()),
+                Err(reason) => files::Access::Denied(reason),
+            };
+        }
+    }
+    files::Access::from_config(setting)
+}
+
+/// The home folder "home" means when it is not this account's own: `None`
+/// for an ordinary agent; for the Windows service's agent (LocalSystem) the
+/// profile folder of the user logged on at the console, or why there is
+/// none.
+#[allow(clippy::unnecessary_wraps)]
+fn service_home() -> Option<Result<std::path::PathBuf, String>> {
     #[cfg(target_os = "windows")]
     if win_service::running_as_local_system() {
-        static ONCE: std::sync::Once = std::sync::Once::new();
-        ONCE.call_once(|| {
-            info!(
-                "File transfer may reach the whole disk: this agent runs as LocalSystem (the Windows service). \
-                 To restrict it, set \"file_access\" to a folder (or \"home\") in {}",
-                crate::pairing::config_path()
-            )
-        });
-        return "full".to_string();
+        return Some(win_service::console_user_profile_dir().ok_or_else(|| {
+            "file transfer: nobody is logged on at this computer's screen, so there is no home folder to offer \
+             (the agent runs as the Windows service). Log on, or set file_access to a folder with \
+             `lunaris-agent set file-access <folder>`"
+                .to_string()
+        }));
     }
-    "home".to_string()
+    None
+}
+
+/// Whether `value` (a `file_access` value) keeps file transfer inside the
+/// home folder: "home" (or not set), or a folder in it. "full" and a folder
+/// elsewhere are wider: only set on this computer (settings.rs).
+pub(crate) fn file_access_within_home(value: &str) -> bool {
+    let value = value.trim();
+    if value.is_empty() || value == "home" {
+        return true;
+    }
+    if value == "full" {
+        return false;
+    }
+    let home = match file_access_for("home") {
+        files::Access::Root(root) => root,
+        _ => return false,
+    };
+    matches!(files::Access::from_config(value), files::Access::Root(root) if root.starts_with(&home))
 }
 
 /// Stream parameters from the client, bounded to what the capture and
@@ -1647,17 +1829,37 @@ fn clamp_stream_request(
     )
 }
 
-/// The agent's session logic: one streaming session at a time, driven by
-/// signaling from server and direct clients alike (addressed with the client's
-/// connection id). Replies go to `agent_tx`, which the hub routes.
+/// Ends client `client`'s stream session, if it has one.
+async fn close_stream(sessions: &mut std::collections::HashMap<String, Arc<BridgeSession>>, client: &str) -> bool {
+    let Some(session) = sessions.remove(client) else { return false };
+    let _ = session.peer_connection.close().await;
+    if sessions.is_empty() {
+        // The encoder is let go when its last viewer leaves.
+        LAST_STREAM_STOP_TIME_MS.store(get_current_time_ms(), std::sync::atomic::Ordering::SeqCst);
+    }
+    info!("Stream session of {} ended ({} still streaming)", client, sessions.len());
+    true
+}
+
+/// The agent's session logic, driven by signaling from server and direct
+/// clients alike (addressed with the client's connection id). Replies go to
+/// `agent_tx`, which the hub routes.
+///
+/// Any number of clients stream at once, as with RustDesk: viewers of the
+/// same display share its capture and encoder (media_hub.rs), each with its
+/// own connection and input. A source shown through a connector is the one
+/// exception: what is known of it is the agent's (connector/media.rs), so
+/// its session is alone; it replaces the others, and another session
+/// replaces it.
 async fn run_session_logic(
     config: AgentConfig,
     agent_tx: mpsc::UnboundedSender<AgentMessage>,
     inbound: &mut mpsc::UnboundedReceiver<SignalingMessage>,
 ) {
-    let active_session: Arc<Mutex<Option<Arc<BridgeSession>>>> = Arc::new(Mutex::new(None));
-    // The client connection that owns `active_session`.
-    let mut active_client: Option<String> = None;
+    // Stream sessions, by client connection.
+    let mut sessions: std::collections::HashMap<String, Arc<BridgeSession>> = std::collections::HashMap::new();
+    // The client whose session shows a connector's source.
+    let mut source_client: Option<String> = None;
     // File-transfer connections (files.rs), by client connection; any number,
     // beside the stream.
     let mut file_sessions: std::collections::HashMap<String, Arc<dyn PeerConnection>> =
@@ -1684,7 +1886,7 @@ async fn run_session_logic(
                 let started = match files::source_target(source_id.as_deref(), crate::connector::configured_sources) {
                     Some(target) => files::start_for_source(client_id.clone(), agent_tx.clone(), ice_servers, target).await,
                     None => {
-                        let access = files::Access::from_config(&file_access_setting(&config));
+                        let access = file_access(&config);
                         if let files::Access::Denied(reason) = &access {
                             warn!("{}", reason);
                         }
@@ -1801,18 +2003,26 @@ async fn run_session_logic(
                     client_id, codec, encoder, width, height, fps, bitrate, display_id, chroma, encoder_csc_mode, microphone
                 );
 
-                // Clean up previous active session
-                {
-                    let mut lock = active_session.lock().await;
-                    if let Some(old_session) = lock.take() {
-                        info!("Cleaning up previous active session before setting up new one...");
-                        let _ = old_session.peer_connection.close().await;
-                        LAST_STREAM_STOP_TIME_MS.store(
-                            get_current_time_ms(),
-                            std::sync::atomic::Ordering::SeqCst,
-                        );
+                // This client's previous session; and the sessions this one
+                // cannot run beside (a source's, see above).
+                if close_stream(&mut sessions, &client_id).await {
+                    info!("Replacing the previous session of {}", client_id);
+                }
+                let alone: Vec<String> = if source.is_some() {
+                    sessions.keys().cloned().collect()
+                } else {
+                    source_client.iter().cloned().collect()
+                };
+                for other in alone {
+                    if close_stream(&mut sessions, &other).await {
+                        info!("Session of {} replaced by {}'s (a connector's source is shown alone)", other, client_id);
+                        let _ = agent_tx.send(AgentMessage::Signaling(SignalingMessage::EndSession { target_id: other }));
                     }
                 }
+                if source_client.as_deref().is_some_and(|c| !sessions.contains_key(c)) {
+                    source_client = None;
+                }
+                let shows_source = source.is_some();
 
                 // Wait if the stream was stopped very recently (let encoder release resources)
                 let last_stop = LAST_STREAM_STOP_TIME_MS.load(std::sync::atomic::Ordering::SeqCst);
@@ -1825,8 +2035,6 @@ async fn run_session_logic(
                         tokio::time::sleep(std::time::Duration::from_millis(sleep_ms)).await;
                     }
                 }
-
-                active_client = None;
 
                 // Initialize bridge session
                 let session = match setup_bridge_session(
@@ -1910,23 +2118,22 @@ async fn run_session_logic(
                 // condition where the client's SDP answer arrives before the session
                 // is stored, causing it to be silently dropped (=> no ICE candidate
                 // pairs => connection timeout after ~7s).
-                {
-                    let mut lock = active_session.lock().await;
-                    *lock = Some(session);
+                sessions.insert(client_id.clone(), session);
+                if shows_source {
+                    source_client = Some(client_id.clone());
                 }
-                active_client = Some(client_id.clone());
+                info!("{} stream session(s) now", sessions.len());
 
                 let _ = agent_tx.send(sdp_msg);
                 warn!("[SIGNALING] SDP Offer sent to client: {}", client_id);
             }
-            SignalingMessage::Sdp { target_id, .. } if active_client.as_deref() != Some(target_id.as_str()) => {
-                // Only the client the offer went to answers it.
-                warn!("[SIGNALING] Ignoring an SDP answer from {} (not the session's client)", target_id);
+            SignalingMessage::Sdp { target_id, .. } if !sessions.contains_key(&target_id) => {
+                // Only a client an offer went to answers it.
+                warn!("[SIGNALING] Ignoring an SDP answer from {} (no session of its own)", target_id);
             }
             SignalingMessage::Sdp { target_id, sdp, .. } => {
                 warn!("[SIGNALING] Received SDP answer from client: {}", target_id);
-                let lock = active_session.lock().await;
-                if let Some(session) = lock.as_ref() {
+                if let Some(session) = sessions.get(&target_id) {
                     // Force Level 4.2 in SDP Answer to prevent browser decoder from silently rejecting Level 4.0/4.2 AMF GPU streams.
                     let forced_sdp = sdp
                         .sdp
@@ -1953,19 +2160,16 @@ async fn run_session_logic(
                             error!("[SIGNALING] Failed to parse SDP Answer: {:?}", e);
                         }
                     }
-                } else {
-                    warn!("[SIGNALING] *** BUG: Received SDP answer but active_session is None! Answer dropped.");
                 }
             }
-            SignalingMessage::IceCandidate { target_id, .. } if active_client.as_deref() != Some(target_id.as_str()) => {
-                debug!("Ignoring an ICE candidate from {} (not the session's client)", target_id);
+            SignalingMessage::IceCandidate { target_id, .. } if !sessions.contains_key(&target_id) => {
+                debug!("Ignoring an ICE candidate from {} (no session of its own)", target_id);
             }
             SignalingMessage::IceCandidate {
-                target_id: _,
+                target_id,
                 candidate,
             } => {
-                let lock = active_session.lock().await;
-                if let Some(session) = lock.as_ref() {
+                if let Some(session) = sessions.get(&target_id) {
                     let rtc_cand = RTCIceCandidateInit {
                         candidate: candidate.candidate,
                         sdp_mid: candidate.sdp_mid,
@@ -1981,19 +2185,16 @@ async fn run_session_logic(
                 }
             }
             SignalingMessage::EndSession { target_id } => {
-                // Only the client that owns the session ends it: another
-                // client (e.g. a direct connection that only asked for the
-                // display list) disconnecting must not cut the stream.
-                if active_client.as_deref() != Some(target_id.as_str()) {
-                    debug!("Ignoring EndSession from {} (not the session's client)", target_id);
+                // A client ends its own session only: another one (e.g. a
+                // direct connection that only asked for the display list)
+                // disconnecting must not cut anyone's stream.
+                if !close_stream(&mut sessions, &target_id).await {
+                    debug!("Ignoring EndSession from {} (no session of its own)", target_id);
                     continue;
                 }
                 info!("Session ended by client: {}", target_id);
-                active_client = None;
-                let mut lock = active_session.lock().await;
-                if let Some(session) = lock.take() {
-                    let _ = session.peer_connection.close().await;
-                    LAST_STREAM_STOP_TIME_MS.store(get_current_time_ms(), std::sync::atomic::Ordering::SeqCst);
+                if source_client.as_deref() == Some(target_id.as_str()) {
+                    source_client = None;
                 }
             }
             SignalingMessage::GetAppList { target_id } => {
@@ -2094,18 +2295,14 @@ async fn run_session_logic(
                     "Received StopActiveStream request from target: {}",
                     target_id
                 );
-                // Clean up active session
-                active_client = None;
-                let success = {
-                    let mut lock = active_session.lock().await;
-                    if let Some(session) = lock.take() {
-                        let _ = session.peer_connection.close().await;
-                        LAST_STREAM_STOP_TIME_MS.store(get_current_time_ms(), std::sync::atomic::Ordering::SeqCst);
-                        true
-                    } else {
-                        false
-                    }
-                };
+                // Every stream here stops; their clients are told.
+                let clients: Vec<String> = sessions.keys().cloned().collect();
+                let success = !clients.is_empty();
+                for client in clients {
+                    close_stream(&mut sessions, &client).await;
+                    let _ = agent_tx.send(AgentMessage::Signaling(SignalingMessage::EndSession { target_id: client }));
+                }
+                source_client = None;
                 let resp = AgentMessage::Signaling(
                     SignalingMessage::StopActiveStreamResponse {
                         target_id,
@@ -2119,9 +2316,8 @@ async fn run_session_logic(
         }
     }
 
-    let mut session_lock = active_session.lock().await;
-    if let Some(session) = session_lock.take() {
-        info!("Stopping active remote streaming session on agent exit...");
+    for (client, session) in sessions.drain() {
+        info!("Stopping the stream session of {} on agent exit...", client);
         let _ = session.peer_connection.close().await;
     }
 }
@@ -2168,9 +2364,175 @@ mod enroll_tests {
     }
 
     #[test]
+    fn the_connection_to_the_server_is_encrypted_unless_ws_is_named() {
+        assert_eq!(server_ws_url("srv.lan:8090"), "wss://srv.lan:8090");
+        assert_eq!(server_ws_url(" https://srv "), "wss://srv");
+        assert_eq!(server_ws_url("http://srv:8090"), "ws://srv:8090");
+        // An existing ws:// server keeps working, as it was.
+        assert_eq!(server_ws_url("ws://10.0.0.5:8090"), "ws://10.0.0.5:8090");
+        assert_eq!(server_transport("ws://10.0.0.5:8090"), ServerTransport::Plain);
+        assert_eq!(server_transport("ws://srv.lan"), ServerTransport::Plain);
+        assert_eq!(server_transport("ws://127.0.0.1:8090"), ServerTransport::PlainLoopback);
+        assert_eq!(server_transport("ws://localhost:8090/"), ServerTransport::PlainLoopback);
+        assert_eq!(server_transport("ws://[::1]:8090"), ServerTransport::PlainLoopback);
+        assert_eq!(server_transport("ws://[2001:db8::1]:8090"), ServerTransport::Plain);
+        assert_eq!(server_transport("wss://srv:8443"), ServerTransport::Tls);
+        // The config default (no server_url in the file) is this computer.
+        assert_eq!(server_transport(&server_ws_url(&AgentConfig::default().server_url)), ServerTransport::PlainLoopback);
+    }
+
+    #[test]
+    fn secrets_go_in_headers_as_well_as_the_query() {
+        let url = "wss://srv/ws/agent?id=X&token=tok&install_token=lit_1&key=k";
+        let req = server_request(url, "tok", "k", "lit_1").unwrap();
+        assert_eq!(req.uri().to_string(), url, "old servers still read the query");
+        let h = req.headers();
+        assert_eq!(h["X-Lunaris-Token"], "tok");
+        assert_eq!(h["X-Lunaris-Agent-Key"], "k");
+        assert_eq!(h["X-Lunaris-Install-Token"], "lit_1");
+        assert!(h["X-Lunaris-Agent-Key"].is_sensitive());
+        // Empty ones are left out.
+        let req = server_request("wss://srv/ws/agent?id=X&token=", "", "k", "").unwrap();
+        assert!(!req.headers().contains_key("X-Lunaris-Token") && !req.headers().contains_key("X-Lunaris-Install-Token"));
+        // One a header cannot carry stays in the query only.
+        let req = server_request("wss://srv/ws/agent?token=a%0Ab", "a\nb", "", "").unwrap();
+        assert!(!req.headers().contains_key("X-Lunaris-Token"));
+    }
+
+    #[test]
+    fn requesters_through_the_server_are_shown_cleaned() {
+        let sig = |r: Option<&str>| SignalingMessage::IncomingFileSession {
+            client_id: "c".into(),
+            ice_servers: None,
+            requester: r.map(str::to_string),
+            source_id: None,
+        };
+        assert_eq!(server_requester_label(&sig(Some("bob"))), "bob (through the Lunaris server)");
+        assert_eq!(
+            server_requester_label(&sig(Some("Admin\r\nAccepted\u{202E}"))),
+            "AdminAccepted (through the Lunaris server)"
+        );
+        assert_eq!(server_requester_label(&sig(Some(&"x".repeat(500)))).chars().count(), 64 + " (through the Lunaris server)".len());
+        assert_eq!(server_requester_label(&sig(Some(" \u{7} "))), "a user of the Lunaris server");
+        assert_eq!(server_requester_label(&sig(None)), "a user of the Lunaris server");
+    }
+
+    #[test]
+    fn file_access_defaults_to_the_home_folder() {
+        let mut c = AgentConfig::default();
+        assert_eq!(file_access_setting(&c), "home");
+        // Not running as LocalSystem here: this account's home.
+        if let Some(home) = dirs::home_dir().and_then(|h| files::canonical(h).ok()) {
+            assert_eq!(file_access(&c), files::Access::Root(home));
+        }
+        c.file_access = "full".into();
+        assert_eq!(file_access_setting(&c), "full");
+        assert_eq!(file_access(&c), files::Access::Full);
+        assert!(file_access_within_home("home") && file_access_within_home(""));
+        assert!(!file_access_within_home("full"));
+        if let Some(home) = dirs::home_dir() {
+            let inside = home.join(format!(".lunaris-within-{}", std::process::id()));
+            std::fs::create_dir_all(&inside).unwrap();
+            assert!(file_access_within_home(&inside.to_string_lossy()));
+            let _ = std::fs::remove_dir_all(&inside);
+        }
+        let outside = std::env::temp_dir().join(format!("lunaris-outside-{}", std::process::id()));
+        std::fs::create_dir_all(&outside).unwrap();
+        if dirs::home_dir().is_some_and(|h| !outside.starts_with(h)) {
+            assert!(!file_access_within_home(&outside.to_string_lossy()));
+        }
+        let _ = std::fs::remove_dir_all(&outside);
+    }
+
+    /// A config as written by 0.7.0, every field set: read, changed by every
+    /// fix of this version that touches the config, saved and read again,
+    /// nothing of it is lost or changed.
+    #[test]
+    fn a_config_in_the_current_format_loads_and_round_trips_unchanged() {
+        let json = r#"{
+  "client_unique_id": "8E0B1C1E-1111-4222-8333-944455556666",
+  "client_private_key": "PRIVATE KEY",
+  "client_certificate": "CERT",
+  "server_certificate": "SERVER CERT",
+  "server_url": "ws://192.168.1.10:8090",
+  "server_token": "agent-token",
+  "webtransport_port": 55201,
+  "autostart": true,
+  "close_to_tray": true,
+  "direct_enabled": true,
+  "direct_port": 9101,
+  "direct_password": "short1",
+  "allow_clipboard": false,
+  "allow_file_transfer": true,
+  "approve_mode": "click",
+  "server_sessions": "ask",
+  "server_cert_sha256": "abababababababababababababababababababababababababababababababab",
+  "server_cert_host": "192.168.1.10:8090",
+  "file_access": "full",
+  "agent_key": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "install_token": "lit_abc",
+  "name": "Den PC",
+  "rustdesk_port": 21130,
+  "rustdesk_file_transfer": true,
+  "sources": [
+    {"id": "nas-ab12", "name": "NAS", "connector": "vnc", "address": "10.0.0.7", "port": "5900", "password": "vnc-secret"},
+    {"id": "win-cd34", "name": "Office", "connector": "rdp", "address": "10.0.0.8", "username": "huy", "password": "rdp-secret", "group": "g1"}
+  ],
+  "wayland_capture": "portal",
+  "allow_server_settings": true
+}"#;
+        let dir = std::env::temp_dir().join(format!("lunaris-compat-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("agent_config.json");
+        std::fs::write(&path, json).unwrap();
+        let path = path.to_str().unwrap();
+        let before: serde_json::Value = serde_json::from_str(json).unwrap();
+
+        let mut c = crate::pairing::load_config(path).unwrap();
+        // Nothing regenerated or reset.
+        assert!(!crate::pairing::ensure_client_id(&mut c));
+        assert!(!crate::pairing::ensure_agent_key(&mut c));
+        assert!(!crate::pairing::ensure_direct_password(&mut c));
+        assert_eq!(c.direct_password, "short1", "a password saved before the 12-character rule is kept");
+        assert_eq!(file_access_setting(&c), "full", "an explicit \"full\" stays");
+        assert_eq!(server_ws_url(&c.server_url), "ws://192.168.1.10:8090", "an existing ws:// server is kept");
+        assert!(c.allow_legacy_plain_direct, "older apps keep working after the upgrade");
+        assert_eq!(c.sources.len(), 2);
+
+        // A change from the server that is refused now leaves the file as it was.
+        let server = crate::settings::Channel::server();
+        let widen = common::SettingsRequest::Change {
+            change: common::AgentSettingsChange { server_sessions: Some("trusted".into()), ..Default::default() },
+        };
+        let _ = crate::settings::reply("r".into(), &widen, None, &server, path);
+        // An allowed one changes only what it names.
+        let narrow = common::SettingsRequest::Change {
+            change: common::AgentSettingsChange { allow_clipboard: Some(true), ..Default::default() },
+        };
+        let _ = crate::settings::reply("r".into(), &narrow, None, &server, path);
+
+        let after: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let mut expected = before.clone();
+        expected["allow_clipboard"] = serde_json::Value::Bool(true);
+        // The one new field, at its default.
+        expected["allow_legacy_plain_direct"] = serde_json::Value::Bool(true);
+        assert_eq!(after, expected);
+
+        // And once more through save/load.
+        let c = crate::pairing::load_config(path).unwrap();
+        crate::pairing::save_config(&c, path).unwrap();
+        let again: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        assert_eq!(again, expected);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn server_addresses() {
         assert_eq!(normalize_server_url("https://srv.lan:8443/").unwrap(), ("wss://srv.lan:8443".into(), "srv.lan:8443".into()));
-        assert_eq!(normalize_server_url("srv.lan:8090").unwrap().0, "ws://srv.lan:8090");
+        // No scheme: encrypted (it was ws:// before 0.7.1).
+        assert_eq!(normalize_server_url("srv.lan:8090").unwrap().0, "wss://srv.lan:8090");
+        assert_eq!(normalize_server_url("ws://srv.lan:8090").unwrap().0, "ws://srv.lan:8090");
         assert_eq!(normalize_server_url("wss://example.com").unwrap().1, "example.com:443");
         assert_eq!(normalize_server_url("ws://[::1]:8090").unwrap().1, "::1:8090");
         assert!(normalize_server_url("").is_err());

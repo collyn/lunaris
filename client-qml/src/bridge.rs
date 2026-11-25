@@ -40,6 +40,11 @@ pub struct AppArgs {
     /// The source of the host to show (a computer it reaches through a
     /// connector); None = the host's own screen.
     pub source_id: Option<String>,
+    /// Started from a link the user confirmed without trusting its server
+    /// (or account): clipboard sync and file transfer stay off. Part of the
+    /// session's own settings so that a session never runs with another
+    /// one's flag.
+    pub untrusted: bool,
 }
 
 pub static APP_ARGS: std::sync::OnceLock<AppArgs> = std::sync::OnceLock::new();
@@ -286,6 +291,26 @@ fn get_config_path() -> std::path::PathBuf {
 /// client_config.json.
 pub(crate) fn app_config_file(name: &str) -> std::path::PathBuf {
     get_config_path().with_file_name(name)
+}
+
+/// The server's WebSocket address for `server_url`: only the scheme changes
+/// (http -> ws, https -> wss; ws/wss stay), never a host or path that
+/// happens to contain "http". No trailing slash.
+pub(crate) fn signaling_ws_base(server_url: &str) -> String {
+    let trimmed = server_url.trim();
+    let Ok(mut u) = url::Url::parse(trimmed) else {
+        return trimmed.trim_end_matches('/').to_string();
+    };
+    let scheme = match u.scheme() {
+        "http" => Some("ws"),
+        "https" => Some("wss"),
+        _ => None,
+    };
+    if let Some(scheme) = scheme {
+        // http(s) and ws(s) are all "special" schemes: the change is allowed.
+        let _ = u.set_scheme(scheme);
+    }
+    u.as_str().trim_end_matches('/').to_string()
 }
 
 /// Paths or file:// URLs, one per line.
@@ -692,6 +717,17 @@ pub mod qobject {
         #[qinvokable]
         fn send_mouse_click(self: Pin<&mut StreamBridge>, button: i32, is_down: bool);
 
+        /// Turns the remote computer's game mouse on or off (mouse packet
+        /// type 5, agent/src/game_mouse); main.qml says it again every 2 s
+        /// while it is on.
+        #[qinvokable]
+        fn send_game_mouse(self: Pin<&mut StreamBridge>, on: bool);
+
+        /// The id of the computer shown ("" before a stream), for what is
+        /// kept per computer (ViewPrefs.gameMouseHosts).
+        #[qinvokable]
+        fn current_host_id(self: &StreamBridge) -> QString;
+
         #[qinvokable]
         fn send_mouse_wheel(self: Pin<&mut StreamBridge>, angle_x: i32, angle_y: i32);
 
@@ -780,21 +816,6 @@ pub mod qobject {
         #[qinvokable]
         fn answer_pending_link(self: Pin<&mut StreamBridge>, accept: bool, trust_always: bool) -> bool;
 
-        /// The servers whose links connect without asking (the window shown
-        /// without a link lists them): `[{"server", "web"}]`, `web` being the
-        /// address of its web page.
-        #[qinvokable]
-        fn trusted_servers(self: Pin<&mut StreamBridge>) -> QString;
-
-        /// Adds a server the user typed to that list; its web page's address,
-        /// or "" when it is not a server address.
-        #[qinvokable]
-        fn add_trusted_server(self: Pin<&mut StreamBridge>, address: QString) -> QString;
-
-        /// Takes a server off that list: its links ask again.
-        #[qinvokable]
-        fn remove_trusted_server(self: Pin<&mut StreamBridge>, server: QString) -> bool;
-
         #[qinvokable]
         fn poll_events(self: Pin<&mut StreamBridge>);
 
@@ -862,36 +883,10 @@ pub mod qobject {
         #[qinvokable]
         fn save_store(self: Pin<&mut StreamBridge>, name: QString, json: QString);
 
-        #[qinvokable]
-        fn app_version(self: Pin<&mut StreamBridge>) -> QString;
-
         /// Refresh rate in Hz of the screen the window is on, 0 when unknown.
         #[qinvokable]
         fn screen_refresh_rate(self: Pin<&mut StreamBridge>) -> f64;
 
-        /// "Check now" (in the background; `update_status` shows the result).
-        #[qinvokable]
-        fn check_for_updates(self: Pin<&mut StreamBridge>);
-
-        /// The updater's state as JSON (updater::service::status_json).
-        #[qinvokable]
-        fn update_status(self: Pin<&mut StreamBridge>) -> QString;
-
-        /// Update: download, verify the signature and the checksum, install.
-        #[qinvokable]
-        fn update_install(self: Pin<&mut StreamBridge>);
-
-        /// After the install: true when the app should quit now (it then
-        /// starts again).
-        #[qinvokable]
-        fn update_restart(self: Pin<&mut StreamBridge>) -> bool;
-
-        /// "Check for updates automatically".
-        #[qinvokable]
-        fn update_auto_check(self: Pin<&mut StreamBridge>) -> bool;
-
-        #[qinvokable]
-        fn set_update_auto_check(self: Pin<&mut StreamBridge>, enabled: bool);
     }
 }
 
@@ -1088,6 +1083,19 @@ impl qobject::StreamBridge {
                 }
             }
         }
+    }
+
+    pub fn send_game_mouse(self: Pin<&mut Self>, on: bool) {
+        if let Ok(guard) = self.as_ref().rust().input_senders.try_lock() {
+            if let Some(ref s) = *guard {
+                super::input::send_game_mouse(on, s);
+            }
+        }
+    }
+
+    pub fn current_host_id(&self) -> cxx_qt_lib::QString {
+        let id = ACTIVE_CONFIG.lock().unwrap().as_ref().map(|c| c.host_id.clone()).unwrap_or_default();
+        cxx_qt_lib::QString::from(&id)
     }
 
     pub fn send_mouse_click(self: Pin<&mut Self>, button: i32, is_down: bool) {
@@ -1434,7 +1442,14 @@ impl qobject::StreamBridge {
     pub fn pending_link_info(self: Pin<&mut Self>) -> QString {
         match crate::deeplink::pending_info() {
             Some(i) => QString::from(
-                &serde_json::json!({ "server": i.server_host, "computer": i.computer }).to_string(),
+                &serde_json::json!({
+                    "server": i.server_host,
+                    "computer": i.computer,
+                    "encrypted": i.encrypted,
+                    "account": i.account.unwrap_or_default(),
+                    "knownAccount": i.known_account.unwrap_or_default(),
+                })
+                .to_string(),
             ),
             None => QString::from(""),
         }
@@ -1449,22 +1464,6 @@ impl qobject::StreamBridge {
             crate::deeplink::cancel_pending();
             false
         }
-    }
-
-    pub fn trusted_servers(self: Pin<&mut Self>) -> QString {
-        let list: Vec<serde_json::Value> = crate::deeplink::trusted_servers()
-            .into_iter()
-            .map(|(server, web)| serde_json::json!({ "server": server, "web": web }))
-            .collect();
-        QString::from(&serde_json::Value::Array(list).to_string())
-    }
-
-    pub fn add_trusted_server(self: Pin<&mut Self>, address: QString) -> QString {
-        QString::from(&crate::deeplink::add_typed_server(&address.to_string()).unwrap_or_default())
-    }
-
-    pub fn remove_trusted_server(self: Pin<&mut Self>, server: QString) -> bool {
-        crate::deeplink::remove_trusted_server(&server.to_string())
     }
 
     pub fn poll_events(mut self: Pin<&mut Self>) {
@@ -1593,37 +1592,10 @@ impl qobject::StreamBridge {
         let _ = crate::secure_fs::write_private(&path, json);
     }
 
-    pub fn app_version(self: Pin<&mut Self>) -> QString {
-        QString::from(env!("CARGO_PKG_VERSION"))
-    }
-
     pub fn screen_refresh_rate(self: Pin<&mut Self>) -> f64 {
         qobject::window_screen_refresh_rate()
     }
 
-    pub fn check_for_updates(self: Pin<&mut Self>) {
-        updater::service::check_now();
-    }
-
-    pub fn update_status(self: Pin<&mut Self>) -> QString {
-        QString::from(&updater::service::status_json())
-    }
-
-    pub fn update_install(self: Pin<&mut Self>) {
-        updater::service::install();
-    }
-
-    pub fn update_restart(self: Pin<&mut Self>) -> bool {
-        updater::service::restart_now()
-    }
-
-    pub fn update_auto_check(self: Pin<&mut Self>) -> bool {
-        updater::service::auto_check()
-    }
-
-    pub fn set_update_auto_check(self: Pin<&mut Self>, enabled: bool) {
-        updater::service::set_auto_check(enabled);
-    }
 }
 
 // -----------------------------------------------------------------------------
@@ -1777,6 +1749,9 @@ fn handle_host_cursor_message(data: &[u8]) {
         super::pointer_in_picture::note_cursor(cursor);
     }
     super::pointer_in_picture::note_maybe(pointer_maybe_in_picture);
+    super::pointer_in_picture::note_window_drag_watched(
+        value.get("window_drag_watched").and_then(|v| v.as_bool()).unwrap_or(false),
+    );
 
     *PENDING_HOST_CURSOR.lock().unwrap() = Some(PendingHostCursor {
         x: x.round() as i32,
@@ -1792,6 +1767,19 @@ fn handle_host_cursor_message(data: &[u8]) {
         image_hotspot_x,
         image_hotspot_y,
     });
+}
+
+/// The certificate hash WebTransport input is pinned to, or why WebTransport
+/// is not used. Never without a hash: an agent that sends none (older
+/// agents) would need an unchecked certificate, so anyone on the path could
+/// take the input; such a session keeps its input on the WebRTC data
+/// channels.
+fn webtransport_pinned_digest(cert_hash: Option<&str>, token: Option<&str>) -> Result<[u8; 32], &'static str> {
+    match (cert_hash.and_then(parse_sha256_hex), token.is_some()) {
+        (Some(digest), _) => Ok(digest),
+        (None, true) => Err("the agent sent a token but no valid certificate hash"),
+        (None, false) => Err("the agent sent no certificate hash (an older agent), its certificate cannot be checked"),
+    }
 }
 
 /// Splits the client's codec choice into the codec and chroma to request:
@@ -1841,21 +1829,18 @@ async fn connect_webtransport_input(
         }
     }
 
-    let hash = cert_hash.as_deref().and_then(parse_sha256_hex);
-    let config = match (hash, token.is_some()) {
-        (Some(digest), _) => ClientConfig::builder()
-            .with_bind_default()
-            .with_server_certificate_hashes([wtransport::tls::Sha256Digest::new(digest)])
-            .build(),
-        // An agent that sends a token always sends its certificate hash:
-        // without one the token could go to anyone on the path.
-        (None, true) => {
-            eprintln!("WebTransport: the agent sent a token but no valid certificate hash, input stays on WebRTC");
+    let digest = match webtransport_pinned_digest(cert_hash.as_deref(), token.as_deref()) {
+        Ok(d) => d,
+        Err(why) => {
+            // The input keeps going over the WebRTC data channels.
+            eprintln!("WebTransport: {}, input stays on WebRTC", why);
             return;
         }
-        // Older agents send neither: accept their self-signed certificate.
-        (None, false) => ClientConfig::builder().with_bind_default().with_no_cert_validation().build(),
     };
+    let config = ClientConfig::builder()
+        .with_bind_default()
+        .with_server_certificate_hashes([wtransport::tls::Sha256Digest::new(digest)])
+        .build();
     // Newer agents accept only the session's token as the URL path.
     let path = webtransport_path(token.as_deref());
     let endpoint = match Endpoint::client(config) {
@@ -3437,14 +3422,15 @@ async fn run_webrtc_client_task(
         agent::direct::connect(address, "/ws/client", &token, &crate::session_info::client_name_query()).await?.ws
     } else {
         let encoded_token: String = url::form_urlencoded::byte_serialize(token.as_bytes()).collect();
+        let ws_base = signaling_ws_base(&server_url);
         let ws_url = format!(
             "{}/ws/client?token={}{}",
-            server_url.replace("http", "ws"),
+            ws_base,
             encoded_token,
             crate::session_info::client_name_query()
         );
         // Never log ws_url itself: it carries the session token.
-        println!("Connecting to signaling server at: {}/ws/client", server_url.replace("http", "ws"));
+        println!("Connecting to signaling server at: {}/ws/client", ws_base);
         connect_async(ws_url.as_str()).await?.0
     };
     let (mut ws_write, mut ws_read) = ws_stream.split();
@@ -3801,6 +3787,7 @@ async fn run_webrtc_client_task(
                         if !host_os_lower.is_empty() {
                             *PENDING_HOST_OS.lock().unwrap() = Some(host_os_lower.clone());
                         }
+                        super::pointer_in_picture::note_host_os(&host_os_lower);
                         *PENDING_HOST_INFO.lock().unwrap() = Some(PendingHostInfo {
                             gpu_info: gpu_info.clone().unwrap_or_default(),
                             host_os: host_os_lower,
@@ -4262,3 +4249,30 @@ mod host_cursor_tests {
     }
 }
 
+
+#[cfg(test)]
+mod security_fix_tests {
+    use super::*;
+
+    #[test]
+    fn signaling_address_changes_only_the_scheme() {
+        assert_eq!(signaling_ws_base("https://srv.example"), "wss://srv.example");
+        assert_eq!(signaling_ws_base("http://srv.example:8080/"), "ws://srv.example:8080");
+        // A host or path with "http" in it stays as it is.
+        assert_eq!(signaling_ws_base("wss://httpd.example"), "wss://httpd.example");
+        assert_eq!(signaling_ws_base("https://httpd.example/http-base"), "wss://httpd.example/http-base");
+        assert_eq!(signaling_ws_base("http://myhttp.example"), "ws://myhttp.example");
+        assert_eq!(signaling_ws_base("ws://[2001:db8::1]:8090"), "ws://[2001:db8::1]:8090");
+    }
+
+    #[test]
+    fn webtransport_is_used_only_with_a_pinned_certificate() {
+        let hash = "ab".repeat(32);
+        assert_eq!(webtransport_pinned_digest(Some(&hash), None), Ok([0xab; 32]));
+        assert_eq!(webtransport_pinned_digest(Some(&hash), Some("t")), Ok([0xab; 32]));
+        // Older agents (no hash): no WebTransport, input stays on WebRTC.
+        assert!(webtransport_pinned_digest(None, None).is_err());
+        assert!(webtransport_pinned_digest(Some("zz"), None).is_err());
+        assert!(webtransport_pinned_digest(None, Some("t")).is_err());
+    }
+}

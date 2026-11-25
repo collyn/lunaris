@@ -281,12 +281,6 @@ jobs:
           name: client-desktop-linux
           path: dist/client-desktop-x86_64.AppImage
 
-      - name: Upload Client QML Artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: client-qml-linux
-          path: dist/client-qml-x86_64.AppImage
-
   build-ffmpeg-windows:
     name: Build FFmpeg for Windows (trimmed)
     runs-on: ubuntu-latest
@@ -456,13 +450,9 @@ jobs:
           ./scripts/packaging/windows/prune-qt.ps1 -Dir lunaris-client-desktop
           Copy-Item "C:/ffmpeg/bin/*.dll" -Destination lunaris-client-desktop/
           Copy-Item LICENSE, scripts/packaging/THIRD-PARTY-NOTICES.md -Destination lunaris-client-desktop/
-          ./scripts/packaging/windows/smoke-qml.ps1 -Exe lunaris-client-desktop/client-desktop.exe
+          # The client quits without a lunaris:// link: one it ignores keeps it up.
+          ./scripts/packaging/windows/smoke-qml.ps1 -Exe lunaris-client-desktop/client-desktop.exe -ExeArgs 'lunaris://connect?smoke=1'
           Compress-Archive -Path lunaris-client-desktop/* -DestinationPath lunaris-client-desktop-windows.zip
-          
-          # Package QML Client separately (rename binary and bundle as client-qml)
-          Copy-Item -Recurse lunaris-client-desktop -Destination lunaris-client-qml
-          Rename-Item lunaris-client-qml/client-desktop.exe -NewName client-qml.exe
-          Compress-Archive -Path lunaris-client-qml/* -DestinationPath lunaris-client-qml-windows.zip
           
           # Create Windows NSIS Installer
           makensis client-desktop-installer.nsi
@@ -518,12 +508,6 @@ jobs:
           name: client-desktop-windows
           path: lunaris-client-desktop-windows.zip
 
-      - name: Upload Client QML Artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: client-qml-windows
-          path: lunaris-client-qml-windows.zip
-
       - name: Upload Client Desktop Installer Artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -547,6 +531,12 @@ jobs:
     needs: [build-server-linux, build-server-docker, build-linux-packages, test-linux-packages, build-agent-appimage, build-windows]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
+    # Signs and publishes: runs in the "release" environment, so the signing
+    # key can be kept there as an environment secret, behind required
+    # reviewers and a tag rule (Settings > Environments > release). GitHub
+    # makes the environment, unprotected, on the first run that names it;
+    # repository secrets keep working until the key is moved there.
+    environment: release
     permissions:
       contents: write
     steps:
@@ -571,12 +561,6 @@ jobs:
           name: client-desktop-linux
           path: ./artifacts/linux-client-desktop
 
-      - name: Download Linux Client QML Artifact
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: client-qml-linux
-          path: ./artifacts/linux-client-qml
-
       - name: Download Windows Server Artifact
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
@@ -594,14 +578,6 @@ jobs:
         with:
           name: client-desktop-windows
           path: ./artifacts/windows-client-desktop
-
-      - name: Download Windows Client QML Artifact
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: client-qml-windows
-          path: ./artifacts/windows-client-qml
-
-
 
       - name: Download Linux distro packages
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
@@ -644,7 +620,6 @@ jobs:
           mv ./artifacts/linux-server/lunaris-server-linux-*.tar.gz ./release-files/
           mv ./artifacts/linux-server-deb/lunaris-server_*.deb ./release-files/
           mv ./artifacts/linux-client-desktop/client-desktop-x86_64.AppImage ./release-files/lunaris-client-desktop-linux.AppImage
-          mv ./artifacts/linux-client-qml/client-qml-x86_64.AppImage ./release-files/lunaris-client-qml-linux.AppImage
           mv ./artifacts/linux-packages/* ./release-files/
           mv ./artifacts/linux-agent/Lunaris-Agent-*-x86_64.AppImage ./release-files/lunaris-agent-linux-x86_64.AppImage
 
@@ -652,7 +627,6 @@ jobs:
           mv ./artifacts/windows-server/lunaris-server-windows-x86_64.zip ./release-files/
           mv ./artifacts/windows-server-installer/lunaris-server-installer.exe ./release-files/lunaris-server-installer-windows.exe
           mv ./artifacts/windows-client-desktop/lunaris-client-desktop-windows.zip ./release-files/
-          mv ./artifacts/windows-client-qml/lunaris-client-qml-windows.zip ./release-files/
           mv ./artifacts/windows-agent/lunaris-agent-windows.zip ./release-files/
           mv ./artifacts/windows-agent-installer/lunaris-agent-installer.exe ./release-files/lunaris-agent-installer-windows.exe
           mv ./artifacts/windows-client-desktop-installer/lunaris-client-installer.exe ./release-files/lunaris-client-installer-windows.exe
@@ -715,7 +689,6 @@ jobs:
             release-files/lunaris-server-linux-x86_64.tar.gz
             release-files/lunaris-server-linux-aarch64.tar.gz
             release-files/lunaris-client-desktop-linux.AppImage
-            release-files/lunaris-client-qml-linux.AppImage
             release-files/lunaris-agent-linux-x86_64.AppImage
             release-files/*.deb
             release-files/*.rpm
@@ -723,7 +696,6 @@ jobs:
             release-files/lunaris-server-windows-x86_64.zip
             release-files/lunaris-server-installer-windows.exe
             release-files/lunaris-client-desktop-windows.zip
-            release-files/lunaris-client-qml-windows.zip
             release-files/lunaris-agent-windows.zip
             release-files/lunaris-agent-installer-windows.exe
             release-files/lunaris-client-installer-windows.exe

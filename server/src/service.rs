@@ -120,7 +120,7 @@ mod imp {
              ProtectSystem=strict\n\
              ProtectHome=yes\n\
              PrivateTmp=yes\n\
-             Restart=on-failure\n\
+             Restart=always\n\
              RestartSec=3\n\
              \n\
              [Install]\n\
@@ -194,6 +194,22 @@ mod imp {
         systemctl(&["daemon-reload"])?;
         systemctl(&["enable", SERVICE])?;
         systemctl(&["restart", SERVICE])?;
+        // A server run by hand here: the service takes over its data when it
+        // has no account yet (takeover.rs), also from where this was run.
+        let mut extra: Vec<std::path::PathBuf> = std::env::current_dir().into_iter().collect();
+        extra.extend(exe.parent().map(Path::to_path_buf));
+        let existing_db = match crate::takeover::take_over(Path::new(DATA_DIR), &extra) {
+            Ok(true) => {
+                systemctl(&["start", SERVICE])?;
+                true
+            }
+            Ok(false) => existing_db,
+            Err(e) => {
+                eprintln!("Could not take over the server run by hand: {e}");
+                let _ = systemctl(&["start", SERVICE]);
+                existing_db
+            }
+        };
 
         println!("Installed {BIN_PATH} and the `{SERVICE}` systemd service (starts at boot).");
         print_summary(Path::new(DATA_DIR), ENV_FILE, env_port().unwrap_or(8090), existing_db);

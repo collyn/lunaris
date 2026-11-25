@@ -45,8 +45,8 @@ Var ShowCode         ; 1: setup_code.txt exists (new database, no account yet)
 Var GatewayNote      ; what the finish page says about the server gateway
 
 !define MUI_ABORTWARNING
-!define MUI_ICON   "..\..\client-desktop\icons\icon.ico"
-!define MUI_UNICON "..\..\client-desktop\icons\icon.ico"
+!define MUI_ICON   "..\..\agent\icons\icon.ico"
+!define MUI_UNICON "..\..\agent\icons\icon.ico"
 
 !define MUI_FINISHPAGE_TITLE "Lunaris Server is running"
 !define MUI_FINISHPAGE_TEXT "The server runs as the $\"${APP}$\" Windows service and starts with Windows. Manage it from the web console: http://localhost:$Port (or http://<this computer>:$Port from another one).$\r$\n$\r$\nOn a new install, the web console asks for the one-time setup code in $DataDir\setup_code.txt (administrators only) and then for the first administrator's name and password.$\r$\n$\r$\nSettings: $DataDir\server.env (restart the service after editing).$GatewayNote"
@@ -75,6 +75,54 @@ Var GatewayNote      ; what the finish page says about the server gateway
   StrCpy $DataDir "$APPDATA\Lunaris\Server"
   SetShellVarContext current
 !macroend
+
+; The install folder: the service runs its program as LocalSystem, so only
+; SYSTEM and Administrators may change it (the Section restricts its access).
+; So that this never changes the access of someone else's files, it must be
+; empty or an earlier install of this server, and not inside ProgramData
+; (the agent's and the server's data folders, which have access of their own).
+; Result in $InstDirOk.
+Var InstDirOk
+Function CheckInstDir
+  Push $0
+  Push $1
+  Push $2
+  StrCpy $InstDirOk 1
+  SetShellVarContext all
+  StrCpy $2 "$APPDATA"
+  SetShellVarContext current
+  StrLen $1 $2
+  StrCpy $0 "$INSTDIR" $1
+  StrCmp $0 $2 0 cid_notdata
+    StrCpy $InstDirOk 0
+    Goto cid_done
+  cid_notdata:
+  IfFileExists "$INSTDIR\*.*" 0 cid_done
+  IfFileExists "$INSTDIR\${EXE}" cid_done
+  FindFirst $0 $1 "$INSTDIR\*.*"
+  cid_loop:
+    StrCmp $1 "" cid_empty
+    StrCmp $1 "." cid_next
+    StrCmp $1 ".." cid_next
+    FindClose $0
+    StrCpy $InstDirOk 0
+    Goto cid_done
+  cid_next:
+    FindNext $0 $1
+    Goto cid_loop
+  cid_empty:
+    FindClose $0
+  cid_done:
+  Pop $2
+  Pop $1
+  Pop $0
+FunctionEnd
+
+Function .onVerifyInstDir
+  Call CheckInstDir
+  StrCmp $InstDirOk 1 +2
+    Abort
+FunctionEnd
 
 ; SERVER_PORT from server.env into $Port (8090 when unset).
 Function ReadPort
@@ -144,10 +192,35 @@ Section "Install"
     ${EndIf}
   ${EndIf}
 
+  ; The service runs this folder's program as LocalSystem: only SYSTEM and
+  ; Administrators may change the folder (users may read and run it), also
+  ; when another folder was chosen (C:\Lunaris would otherwise let every
+  ; signed-in user replace the program). Restricted before the files are
+  ; copied, and again on every upgrade; SIDs, not names (localized Windows).
+  ; The data folder in ProgramData is not touched.
+  Call CheckInstDir
+  StrCmp $InstDirOk 1 +3
+    MessageBox MB_OK|MB_ICONSTOP "$INSTDIR is not empty (or is inside ProgramData). Choose an empty folder or the folder of an earlier Lunaris Server install." /SD IDOK
+    Abort
+  CreateDirectory "$INSTDIR"
+  nsExec::ExecToLog 'icacls "$INSTDIR" /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F *S-1-5-32-545:(OI)(CI)RX'
+  Pop $0
+  StrCmp $0 0 +3
+    MessageBox MB_OK|MB_ICONSTOP "Could not restrict access to $INSTDIR (icacls: $0)." /SD IDOK
+    Abort
+
   SetOutPath "$INSTDIR"
   File "..\..\lunaris-server\${EXE}"
   File "..\..\LICENSE"
   WriteUninstaller "$INSTDIR\uninstall.exe"
+  ; Files of an earlier install with access of their own (not inherited):
+  ; back to the folder's.
+  nsExec::ExecToLog 'icacls "$INSTDIR\${EXE}" /reset'
+  Pop $0
+  nsExec::ExecToLog 'icacls "$INSTDIR\LICENSE" /reset'
+  Pop $0
+  nsExec::ExecToLog 'icacls "$INSTDIR\uninstall.exe" /reset'
+  Pop $0
   WriteRegStr HKLM "Software\${APP}" "InstallDir" "$INSTDIR"
 
   ; The data folder holds the server's secrets. The program (the one just

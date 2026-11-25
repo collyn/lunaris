@@ -307,6 +307,9 @@ struct Upload {
     size: u64,
     mtime: u64,
     received: u64,
+    /// The allowed folder, when there is one: the target's folder is
+    /// checked again just before the finished file is moved there.
+    root: Option<PathBuf>,
 }
 
 impl Upload {
@@ -428,9 +431,10 @@ async fn serve(channel: Arc<dyn DataChannel>, mut rx: mpsc::Receiver<RTCDataChan
                 downloads.lock().unwrap().insert(id.clone(), flag.clone());
                 let ch = channel.clone();
                 let downloads = downloads.clone();
+                let access = access.clone();
                 // Downloads run beside the requests, one chunk after another.
                 tokio::spawn(async move {
-                    if let Err(e) = download(&ch, &id, &path, offset, &flag).await {
+                    if let Err(e) = download(&ch, &id, &access, &path, offset, &flag).await {
                         send_json(&ch, err(&id, e)).await;
                     }
                     downloads.lock().unwrap().remove(&id);
@@ -892,6 +896,63 @@ pub(crate) fn resolve_entry(access: &Access, path: &str) -> Result<PathBuf, Stri
     Ok(entry)
 }
 
+/// Opens `path` (already checked against `access` by [`resolve`]) for what
+/// `options` say, and makes sure, once it is open, that what was opened is
+/// inside the allowed folder: the folders on the way may have been
+/// replaced by links between the check and the open. On Unix the last name
+/// is never followed if it is a link (`O_NOFOLLOW`), and the open file's
+/// real location is read back (Linux: `/proc/self/fd`; elsewhere the path
+/// is resolved again and must be the same file). On Windows the path is
+/// resolved again after the open. Outside: refused, the file is closed.
+pub(crate) fn open_inside(access: &Access, path: &Path, options: &mut std::fs::OpenOptions) -> Result<std::fs::File, String> {
+    let Access::Root(root) = access else {
+        return options.open(path).map_err(|e| format!("{}: {}", path.display(), e));
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    let file = options.open(path).map_err(|e| {
+        #[cfg(unix)]
+        if e.raw_os_error() == Some(libc::ELOOP) {
+            return format!("{} is a link: not followed", path.display());
+        }
+        format!("{}: {}", path.display(), e)
+    })?;
+    match opened_location(&file, path) {
+        Some(real) if real.starts_with(root) => Ok(file),
+        _ => {
+            warn!("Files: {} led outside {} when it was opened: refused", path.display(), root.display());
+            Err(outside(root))
+        }
+    }
+}
+
+/// Where the open `file` really is (`path` is the name it was opened by).
+fn opened_location(file: &std::fs::File, path: &Path) -> Option<PathBuf> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::io::AsRawFd;
+        if let Ok(real) = std::fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd())) {
+            return Some(real);
+        }
+    }
+    let real = canonical(path).ok()?;
+    #[cfg(unix)]
+    {
+        // The same file, not one put there since.
+        use std::os::unix::fs::MetadataExt;
+        let (opened, now) = (file.metadata().ok()?, std::fs::metadata(&real).ok()?);
+        if (opened.dev(), opened.ino()) != (now.dev(), now.ino()) {
+            return None;
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = file;
+    Some(real)
+}
+
 /// Whether `path` (a link perhaps) stays inside the allowed folder.
 pub(crate) fn inside(access: &Access, path: &Path) -> bool {
     match access {
@@ -1149,23 +1210,29 @@ fn begin_upload(id: &str, access: &Access, path: &Path, size: u64, mtime: u64, o
         .filter(|&len| len <= size)
         .unwrap_or(0);
     let file = if resume > 0 {
-        std::fs::OpenOptions::new().append(true).open(&part)
+        open_inside(access, &part, std::fs::OpenOptions::new().append(true))
     } else {
-        std::fs::File::create(&part)
+        open_inside(access, &part, std::fs::OpenOptions::new().write(true).create(true).truncate(true))
     }
-    .map_err(|e| format!("cannot write {}: {}", part.display(), e))?;
-    let _ = std::fs::write(&info_path, serde_json::to_vec(&PartInfo { size, mtime }).unwrap_or_default());
+    .map_err(|e| format!("cannot write {}", e))?;
+    if let Ok(mut info) = open_inside(access, &info_path, std::fs::OpenOptions::new().write(true).create(true).truncate(true)) {
+        let _ = info.write_all(&serde_json::to_vec(&PartInfo { size, mtime }).unwrap_or_default());
+    }
     if resume > 0 {
         info!("Resuming {} at {} of {} bytes", target.display(), resume, size);
     } else {
         info!("Receiving {} ({} bytes)", target.display(), size);
     }
-    let up = Upload { id: id.to_string(), target: target.clone(), part, file, size, mtime, received: resume };
+    let root = match access {
+        Access::Root(root) => Some(root.clone()),
+        _ => None,
+    };
+    let up = Upload { id: id.to_string(), target: target.clone(), part, file, size, mtime, received: resume, root };
     Ok((json!({"type": "put_ready", "id": id, "offset": resume, "path": path_str(&target)}), Some(up)))
 }
 
 fn finish_upload(up: Upload) -> Result<Value, String> {
-    let Upload { id, target, part, file, size, mtime, received } = up;
+    let Upload { id, target, part, file, size, mtime, received, root } = up;
     let _ = file.sync_all();
     if received != size {
         return Err(format!("incomplete: {} of {} bytes (it can be resumed)", received, size));
@@ -1174,21 +1241,32 @@ fn finish_upload(up: Upload) -> Result<Value, String> {
         let _ = file.set_modified(UNIX_EPOCH + Duration::from_secs(mtime));
     }
     drop(file);
+    if let Some(root) = &root {
+        // Its folder may have been replaced by a link since the upload began.
+        let dir = target.parent().and_then(|d| canonical(d).ok());
+        if !dir.is_some_and(|d| d.starts_with(root)) || std::fs::symlink_metadata(&part).map(|m| m.file_type().is_symlink()).unwrap_or(true) {
+            warn!("Files: the folder of {} is no longer inside {}: not saved", target.display(), root.display());
+            return Err(outside(root));
+        }
+    }
     std::fs::rename(&part, &target).map_err(|e| format!("cannot save {}: {}", target.display(), e))?;
     let _ = std::fs::remove_file(part_paths(&target).1);
     info!("Received {}", target.display());
     Ok(json!({"type": "done", "id": id, "path": path_str(&target)}))
 }
 
-async fn download(ch: &Arc<dyn DataChannel>, id: &str, path: &Path, offset: u64, cancel: &AtomicBool) -> Result<(), String> {
+async fn download(ch: &Arc<dyn DataChannel>, id: &str, access: &Access, path: &Path, offset: u64, cancel: &AtomicBool) -> Result<(), String> {
     use tokio::io::{AsyncReadExt, AsyncSeekExt};
-    let meta = tokio::fs::metadata(path).await.map_err(|e| format!("{}: {}", path.display(), e))?;
+    // Opened first, then asked what it is: the file that is sent is the one
+    // that was checked (`open_inside`).
+    let std_file = open_inside(access, path, std::fs::OpenOptions::new().read(true))?;
+    let meta = std_file.metadata().map_err(|e| format!("{}: {}", path.display(), e))?;
     if !meta.is_file() {
         return Err(format!("{} is not a file", path.display()));
     }
     let size = meta.len();
     let offset = offset.min(size);
-    let mut file = tokio::fs::File::open(path).await.map_err(|e| format!("{}: {}", path.display(), e))?;
+    let mut file = tokio::fs::File::from_std(std_file);
     if offset > 0 {
         file.seek(std::io::SeekFrom::Start(offset)).await.map_err(|e| e.to_string())?;
     }
@@ -1354,6 +1432,53 @@ mod tests {
         assert!(!w["files"].to_string().contains("link.txt"));
         // Removing a link removes the link, not what it points to.
         assert_eq!(resolve_entry(&access, &path_str(&root.join("link.txt"))).unwrap(), root.join("link.txt"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// A folder on the way replaced by a link after the check (as a racing
+    /// local user could): what is opened is checked again, and refused.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_put_in_after_the_check_is_not_opened() {
+        let (d, access, root) = restricted("toctou");
+        // Checked while it is a real folder...
+        std::fs::create_dir_all(root.join("box")).unwrap();
+        let checked = resolve(&access, &path_str(&root.join("box/secret.txt"))).unwrap();
+        // ...then swapped for a link to the folder outside.
+        std::fs::remove_dir_all(root.join("box")).unwrap();
+        std::os::unix::fs::symlink(&d, root.join("box")).unwrap();
+        let err = open_inside(&access, &checked, std::fs::OpenOptions::new().read(true)).unwrap_err();
+        assert!(err.contains("outside"), "{err}");
+        // Writing through it is refused too (the file may be made, nothing is written to it).
+        let made = root.join("box/new.bin");
+        assert!(open_inside(&access, &made, std::fs::OpenOptions::new().write(true).create(true).truncate(true)).is_err());
+        // A link as the last name is not followed at all.
+        std::os::unix::fs::symlink(d.join("secret.txt"), root.join("last.txt")).unwrap();
+        let err = open_inside(&access, &root.join("last.txt"), std::fs::OpenOptions::new().read(true)).unwrap_err();
+        assert!(err.contains("link"), "{err}");
+        // A plain file inside opens.
+        assert!(open_inside(&access, &root.join("a.txt"), std::fs::OpenOptions::new().read(true)).is_ok());
+        // With the whole disk allowed, links are followed as before.
+        assert!(open_inside(&Access::Full, &root.join("last.txt"), std::fs::OpenOptions::new().read(true)).is_ok());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// The upload's folder replaced by a link before it is finished: the
+    /// file is not moved there.
+    #[cfg(unix)]
+    #[test]
+    fn a_finished_upload_is_not_moved_through_a_new_link() {
+        let (d, access, root) = restricted("toctou-up");
+        std::fs::create_dir_all(root.join("up")).unwrap();
+        let target = resolve(&access, &path_str(&root.join("up/f.bin"))).unwrap();
+        let (_, up) = begin_upload("1", &access, &target, 3, 1_700_000_000, OnExists::Replace).unwrap();
+        let mut up = up.unwrap();
+        up.write(b"abc").unwrap();
+        // The part file stays where it was made; its folder is swapped.
+        std::fs::rename(root.join("up"), root.join("up-moved")).unwrap();
+        std::os::unix::fs::symlink(&d, root.join("up")).unwrap();
+        assert!(finish_upload(up).unwrap_err().contains("outside"));
+        assert!(!d.join("f.bin").exists());
         let _ = std::fs::remove_dir_all(&d);
     }
 

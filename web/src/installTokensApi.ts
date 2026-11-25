@@ -4,10 +4,12 @@
 //   GET    /api/admin/install-tokens        list (never the token itself)
 //   DELETE /api/admin/install-tokens/{id}   revoke
 
-import type { InstallToken } from './installCommand.ts';
+import { parseInstallFetch, type InstallFetch, type InstallToken } from './installCommand.ts';
 
 export interface CreatedInstallToken extends InstallToken {
   token: string;
+  /** How the command fetches the script (null: an older server). */
+  install: InstallFetch | null;
 }
 
 export interface CreateInstallTokenRequest {
@@ -62,7 +64,7 @@ export const installTokensApi = (apiBase: string, authToken: string) => {
       });
       if (!res.ok) throw await failure(res, 'Could not create the install token');
       const data = await res.json();
-      return { ...normalize(data), token: String(data.token ?? '') };
+      return { ...normalize(data), token: String(data.token ?? ''), install: parseInstallFetch(data.install) };
     },
     async revoke(id: string): Promise<void> {
       const res = await fetch(`${url}/${encodeURIComponent(id)}`, { method: 'DELETE', headers: auth });

@@ -57,6 +57,10 @@ pub struct HostInfo {
     /// never a screen of its own. Not deleted or edited like a computer.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub gateway: bool,
+    /// What its agent is (version, OS, how it was installed), as it last
+    /// said; left out when not known (agents from before this).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<AgentBuild>,
 }
 
 /// Adds a computer by address: the server connects to its agent (direct
@@ -513,11 +517,19 @@ pub const WAYLAND_CAPTURE_MODES: [&str; 2] = ["auto", "portal"];
 pub const FILE_ACCESS_CHOICES: [&str; 2] = ["home", "full"];
 /// Ports a setting may use (as the apps take them).
 pub const MIN_SETTINGS_PORT: u16 = 1024;
-/// An access password set by hand: 6 to 128 characters, no control
+/// The fewest characters of an access password set by hand. It is checked
+/// only when a password is set: one saved before (6 characters were enough
+/// then) keeps working.
+pub const MIN_ACCESS_PASSWORD_CHARS: usize = 12;
+pub const MAX_ACCESS_PASSWORD_CHARS: usize = 128;
+
+/// An access password set by hand: 12 to 128 characters, no control
 /// characters, no space at either end.
 pub fn valid_access_password(password: &str) -> bool {
     let count = password.chars().count();
-    (6..=128).contains(&count) && password.trim() == password && !password.chars().any(char::is_control)
+    (MIN_ACCESS_PASSWORD_CHARS..=MAX_ACCESS_PASSWORD_CHARS).contains(&count)
+        && password.trim() == password
+        && !password.chars().any(char::is_control)
 }
 
 /// Why a settings change is not valid (the same rules at the server and the
@@ -722,6 +734,15 @@ pub enum SignalingMessage {
         host_os: Option<String>,
         display_id: Option<String>,
         display_name: Option<String>,
+        /// The picture's size. A decoder may give a taller (or wider) frame:
+        /// H.265 encoders round it up to their block size (1080 -> 1088)
+        /// and say what to crop, which Chrome's D3D11 H.265 decoder on
+        /// Windows ignores, showing the extra lines (green). The viewer
+        /// shows only this much. None from older agents and connectors.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        width: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        height: Option<u32>,
     },
     /// Agent -> client: the connection waits for the person at the host to
     /// accept it (`status` "waiting"), or they did not ("denied", "timeout",
@@ -747,6 +768,38 @@ pub enum SignalingMessage {
     },
 }
 
+/// An agent's version and how it was installed, so the server can show it
+/// and say how to update it.
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq)]
+pub struct AgentBuild {
+    pub version: String,
+    /// "linux", "windows", "macos".
+    pub os: String,
+    /// How it was installed (see the `INSTALL_*` values).
+    pub install: String,
+    /// Windows: whether its game mouse can be plugged in (`GAME_MOUSE_*`),
+    /// for mouse input that anti-cheats accept; absent elsewhere and from
+    /// agents before 0.7.8.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub game_mouse: Option<String>,
+}
+
+/// usbip-win2 is installed: the agent plugs its USB game mouse in.
+pub const GAME_MOUSE_USBIP: &str = "usbip";
+/// usbip-win2 is not installed: injected input only.
+pub const GAME_MOUSE_NONE: &str = "none";
+
+/// The .deb package (apt): `agent.sh --update` updates it.
+pub const INSTALL_DEB: &str = "deb";
+/// The AppImage the Linux installer put in /opt/lunaris-agent: `agent.sh --update`.
+pub const INSTALL_APPIMAGE: &str = "appimage";
+/// The Windows installer (Program Files, the service): `agent.ps1 -Update`.
+pub const INSTALL_WINDOWS: &str = "windows";
+/// Another package manager (e.g. Arch): updated with it.
+pub const INSTALL_PACKAGE: &str = "package";
+/// Run from wherever it was put (an AppImage elsewhere, a build): updated by hand.
+pub const INSTALL_MANUAL: &str = "manual";
+
 // Message from Agent to Server via WebSocket
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "event", content = "data")]
@@ -758,6 +811,10 @@ pub enum AgentMessage {
         /// Sent by agents the server connects to (`/ws/server` of direct.rs).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         codec_support: Option<u32>,
+        /// The agent streams to several clients at once (each its own
+        /// session); older agents run one, which a new session replaces.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        multi_viewer: Option<bool>,
     },
     StatusUpdate { status: HostStatus },
     Signaling(SignalingMessage),
@@ -775,6 +832,10 @@ pub enum AgentMessage {
         /// its name. Left out by agents from before this.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         addresses: Vec<String>,
+        /// What this agent is: its version and how it was installed. Left
+        /// out by agents from before this.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        build: Option<AgentBuild>,
     },
     /// The answer to `ServerToAgentMessage::ChangeSource`.
     SourceChanged {
@@ -937,8 +998,10 @@ mod tests {
         }
         // RustDesk turned off: its port is not in the way.
         assert_eq!(settings_change_error(&AgentSettingsChange { rustdesk_port: Some(8091), rustdesk_enabled: Some(false), ..Default::default() }, 8091), None);
-        assert!(valid_access_password("abc-def"));
-        for bad in ["short", " padded ", "tab\there", &"x".repeat(129)] {
+        assert!(valid_access_password("abcd-efgh-jkm"));
+        assert!(valid_access_password(&"x".repeat(12)) && valid_access_password(&"x".repeat(128)));
+        // What 6 characters used to allow is too short for a new password now.
+        for bad in ["short", "abc-def", &"x".repeat(11), " padded-password ", "tab\there-and-more", &"x".repeat(129)] {
             assert!(!valid_access_password(bad), "{:?}", bad);
         }
     }

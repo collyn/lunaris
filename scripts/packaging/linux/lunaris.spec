@@ -72,7 +72,11 @@ if [ -d /run/systemd/system ]; then
     if [ "$1" -eq 1 ]; then
         systemctl enable --now lunaris-capture.service >/dev/null 2>&1 || :
     else
-        systemctl try-restart lunaris-capture.service lunaris-agent-system.service >/dev/null 2>&1 || :
+        # Runs while enabled, also when something stopped it.
+        if systemctl -q is-enabled lunaris-capture.service 2>/dev/null; then
+            systemctl restart lunaris-capture.service >/dev/null 2>&1 || :
+        fi
+        systemctl try-restart lunaris-agent-system.service >/dev/null 2>&1 || :
     fi
 fi
 

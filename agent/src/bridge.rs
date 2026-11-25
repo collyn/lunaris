@@ -212,6 +212,62 @@ pub struct BridgeSession {
     pub webtransport_shutdown: Option<tokio::sync::oneshot::Sender<()>>,
     pub pipeline_cmd: Option<tokio::sync::mpsc::Sender<lunaris_media::pipeline::PipelineCommand>>,
     pub spawned_tasks: Vec<tokio::task::JoinHandle<()>>,
+    /// This viewer's place in the display's shared pipeline (none for a
+    /// connector's source); leaving it stops the pipeline when it was the
+    /// last viewer.
+    _media: Option<crate::media_hub::Membership>,
+    _live: LiveSession,
+}
+
+/// Sessions that exist now (several viewers at once).
+static LIVE_SESSIONS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Counts a session in `LIVE_SESSIONS` for as long as it lives.
+struct LiveSession;
+
+impl LiveSession {
+    fn new() -> Self {
+        LIVE_SESSIONS.fetch_add(1, Ordering::SeqCst);
+        LiveSession
+    }
+}
+
+impl Drop for LiveSession {
+    fn drop(&mut self) {
+        LIVE_SESSIONS.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// The codec of lunaris-media named as the sessions name it.
+fn codec_name_of(codec: lunaris_media::types::VideoCodec) -> &'static str {
+    match codec {
+        lunaris_media::types::VideoCodec::H265 => "h265",
+        lunaris_media::types::VideoCodec::AV1 => "av1",
+        _ => "h264",
+    }
+}
+
+/// The codec of lunaris-media a session's codec name stands for.
+fn media_codec_of(codec: &str) -> lunaris_media::types::VideoCodec {
+    match codec {
+        "h265" => lunaris_media::types::VideoCodec::H265,
+        "av1" => lunaris_media::types::VideoCodec::AV1,
+        _ => lunaris_media::types::VideoCodec::H264,
+    }
+}
+
+/// Whether a viewer can take a running stream encoded as `running`: it
+/// decodes its codec (the one it would get anyway, or one it says it
+/// decodes), and 4:4:4 only when it asked for 4:4:4 itself.
+pub(crate) fn viewer_decodes(
+    running: &lunaris_media::types::StreamConfig,
+    own_codec: &str,
+    yuv444: bool,
+    decode_codecs: Option<&[String]>,
+) -> bool {
+    let name = codec_name_of(running.codec);
+    let decodes = name == own_codec || decode_codecs.is_some_and(|d| d.iter().any(|c| c.eq_ignore_ascii_case(name)));
+    decodes && (!running.yuv444 || yuv444)
 }
 
 impl Drop for BridgeSession {
@@ -364,10 +420,11 @@ pub async fn setup_bridge_session(
         tokio::sync::mpsc::unbounded_channel::<(InboundPacket, Arc<std::sync::atomic::AtomicU32>)>(
         );
 
-    let resolution_width = width.unwrap_or(1920);
-    let resolution_height = height.unwrap_or(1080);
-    let stream_fps = fps.unwrap_or(60);
-    let stream_bitrate = bitrate.unwrap_or(8000);
+    let mut resolution_width = width.unwrap_or(1920);
+    let mut resolution_height = height.unwrap_or(1080);
+    let mut stream_fps = fps.unwrap_or(60);
+    let mut stream_bitrate = bitrate.unwrap_or(8000);
+    let mut yuv444 = yuv444;
     let requested_codec = codec.as_deref().unwrap_or("h264").to_lowercase();
     let mut codec_str = requested_codec.clone();
 
@@ -456,6 +513,44 @@ pub async fn setup_bridge_session(
         None => None,
     };
     let from_connector = connector_source.is_some();
+
+    // This computer's screen: one capture and encoder per display, shared by
+    // its viewers (media_hub.rs). A viewer that can decode what a display's
+    // running stream encodes joins it, and that stream's size, frame rate
+    // and codec are then this session's.
+    let media = if from_connector {
+        None
+    } else {
+        let wanted = lunaris_media::types::StreamConfig {
+            width: resolution_width,
+            height: resolution_height,
+            fps: stream_fps,
+            codec: media_codec_of(&codec_str),
+            bitrate_kbps: stream_bitrate,
+            pixel_format: lunaris_media::types::PixelFormat::NV12,
+            preferred_encoder: encoder.clone(),
+            yuv444,
+            colorspace: media_colorspace,
+            microphone,
+        };
+        let screen = display_id.clone().unwrap_or_else(|| "default".to_string());
+        let joined = crate::media_hub::join(&screen, wanted, |running| {
+            viewer_decodes(running, &codec_str, yuv444, decode_codecs.as_deref())
+        });
+        if joined.joined_running {
+            resolution_width = joined.config.width;
+            resolution_height = joined.config.height;
+            stream_fps = joined.config.fps;
+            stream_bitrate = joined.config.bitrate_kbps;
+            yuv444 = joined.config.yuv444;
+            codec_str = codec_name_of(joined.config.codec).to_string();
+            info!(
+                "Session joins the running stream of display {}: {}x{} {} fps {} kbps codec={} yuv444={}",
+                screen, resolution_width, resolution_height, stream_fps, stream_bitrate, codec_str, yuv444
+            );
+        }
+        Some(joined)
+    };
     // Level 4.2 (0x2a) covers 1080p60; 0xf4 = High 4:4:4 Predictive.
     let h264_fmtp = if yuv444 {
         "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=f4002a"
@@ -1043,34 +1138,20 @@ pub async fn setup_bridge_session(
     });
     spawned_tasks.push(audio_writer_task);
 
-    let media_codec = match codec_str.as_str() {
-        "h265" => lunaris_media::types::VideoCodec::H265,
-        "av1" => lunaris_media::types::VideoCodec::AV1,
-        _ => lunaris_media::types::VideoCodec::H264,
-    };
-
-    let media_config = lunaris_media::types::StreamConfig {
-        width: resolution_width,
-        height: resolution_height,
-        fps: stream_fps,
-        codec: media_codec,
-        bitrate_kbps: stream_bitrate,
-        pixel_format: lunaris_media::types::PixelFormat::NV12,
-        preferred_encoder: encoder.clone(),
-        yuv444,
-        colorspace: media_colorspace,
-        microphone,
-    };
-
+    // The display's shared pipeline (media_hub.rs): its events for this
+    // viewer, and this viewer's commands to it. A connector replaces both
+    // below.
     #[allow(unused_mut)]
-    let (pipeline, mut media_event_rx, pipeline_cmd_tx) =
-        lunaris_media::pipeline::MediaPipeline::new(media_config);
-
-    *pipeline_cmd_tx_shared.lock().unwrap() = Some(pipeline_cmd_tx);
+    let (mut media_event_rx, media_membership) = match media {
+        Some(joined) => {
+            *pipeline_cmd_tx_shared.lock().unwrap() = Some(joined.commands);
+            (joined.events, Some(joined.membership))
+        }
+        None => (tokio::sync::mpsc::channel(1).1, None),
+    };
 
     let video_frame_tx_clone = video_frame_tx.clone();
     let audio_tx_clone = audio_tx.clone();
-    let display_id_for_pipeline = display_id.clone();
 
     // With a connector as the source the pipeline is never run (nothing is
     // captured or encoded here) and what the session asks of it (key frame,
@@ -1117,17 +1198,6 @@ pub async fn setup_bridge_session(
     }
     drop(viewer_input_tx);
 
-    let pipeline_task = tokio::spawn(async move {
-        if from_connector {
-            return;
-        }
-        info!("Running lunaris-media pipeline...");
-        let display = display_id_for_pipeline.unwrap_or_else(|| "default".to_string());
-        if let Err(e) = pipeline.run(&display).await {
-            error!("Media pipeline exited with error: {:?}", e);
-        }
-    });
-    spawned_tasks.push(pipeline_task);
 
     // The viewer's input is for the computer shown: with a connector as the
     // source it must never reach this one (the connectors do not take input
@@ -1135,6 +1205,8 @@ pub async fn setup_bridge_session(
     let no_local_input = from_connector || std::env::var_os(crate::connector::media::TEST_NO_LOCAL_INPUT_ENV).is_some();
     let local_injector = if no_local_input { None } else { lunaris_media::input::InputInjector::new() };
     if let Some(injector) = local_injector {
+        // Windows: the USB mouse the viewer may turn on (game_mouse.rs).
+        crate::game_mouse::init();
         let injector = std::sync::Arc::new(injector);
         let injector_clone = injector.clone();
         // The keys the viewer holds, let go when its input ends (below).
@@ -1160,6 +1232,8 @@ pub async fn setup_bridge_session(
                 }
                 // Keys may come this way too (WebTransport input).
                 release_held_keys(&injector, &held_keys);
+                // The viewer left: its game mouse is unplugged.
+                crate::game_mouse::set_wanted(false);
                 info!("InputInjector: stopped mouse input processing thread");
             })
             .expect("Failed to spawn mouse input thread");
@@ -1203,6 +1277,12 @@ pub async fn setup_bridge_session(
         let mut dropped_frames: u64 = 0;
         let mut forwarded_bytes: u64 = 0;
         let mut latest_cursor_image: Option<serde_json::Value> = None;
+        // Numbers the host_cursor messages: the cursor channel is unordered,
+        // and a viewer drops a position older than one it has (with_seq).
+        let mut cursor_seq: u64 = 0;
+        // A window dragged by an app itself (window_drag.rs).
+        #[cfg(target_os = "windows")]
+        let mut window_drag = crate::window_drag::Watch::default();
         while let Some(event) = media_event_rx.recv().await {
             match event {
                 lunaris_media::pipeline::MediaEvent::EncoderStarted {
@@ -1227,6 +1307,10 @@ pub async fn setup_bridge_session(
                             host_os: Some(std::env::consts::OS.to_string()),
                             display_id: active_display_id_for_media.clone(),
                             display_name: None, // Could be resolved from display list if needed
+                            // What the encoder was given (the running
+                            // stream's size for a viewer that joined it).
+                            width: Some(resolution_width),
+                            height: Some(resolution_height),
                         },
                     ));
                 }
@@ -1282,6 +1366,12 @@ pub async fn setup_bridge_session(
                     let _ = audio_tx_clone.try_send(sample);
                 }
                 lunaris_media::pipeline::MediaEvent::CursorUpdate(cursor) => {
+                    #[cfg(target_os = "windows")]
+                    let cursor = {
+                        let mut cursor = cursor;
+                        cursor.in_window_move_size |= window_drag.poll();
+                        cursor
+                    };
                     let cursor_kind = cursor.kind.as_str();
                     let image = cursor.image.as_ref().map(|image| {
                         serde_json::json!({
@@ -1310,8 +1400,10 @@ pub async fn setup_bridge_session(
                     // (connector/media.rs).
                     let maybe_in_picture = crate::connector::media::pointer_maybe_in_picture();
                     let in_picture = crate::connector::media::pointer_in_picture();
-                    let realtime_payload = host_cursor_message(&cursor, image.as_ref(), maybe_in_picture, in_picture);
-                    let cached_payload = host_cursor_message(&cursor, latest_cursor_image.as_ref(), maybe_in_picture, in_picture);
+                    cursor_seq += 1;
+                    let watched = cfg!(target_os = "windows");
+                    let realtime_payload = with_seq(host_cursor_message(&cursor, image.as_ref(), maybe_in_picture, in_picture), cursor_seq, watched);
+                    let cached_payload = with_seq(host_cursor_message(&cursor, latest_cursor_image.as_ref(), maybe_in_picture, in_picture), cursor_seq, watched);
                     *latest_host_cursor_for_media.lock().await = Some(cached_payload.clone());
 
                     if image.is_some()
@@ -1714,9 +1806,12 @@ pub async fn setup_bridge_session(
             // The previous session's endpoint may still hold the port for a
             // moment: retry, then take any free port (the offer carries the
             // port, so clients follow it).
+            // With other sessions alive the port is theirs: one try, then
+            // any free port, without waiting.
+            let attempts: u32 = if LIVE_SESSIONS.load(Ordering::SeqCst) > 0 { 1 } else { 10 };
             let mut bound = None;
-            for attempt in 0..=10u32 {
-                let port = if attempt < 10 { agent_config.webtransport_port } else { 0 };
+            for attempt in 0..=attempts {
+                let port = if attempt < attempts { agent_config.webtransport_port } else { 0 };
                 let config = wtransport::ServerConfig::builder()
                     .with_bind_default(port)
                     .with_identity(identity.clone_identity())
@@ -1726,7 +1821,7 @@ pub async fn setup_bridge_session(
                         bound = Some(Ok(endpoint));
                         break;
                     }
-                    Err(e) if e.kind() == std::io::ErrorKind::AddrInUse && attempt < 10 => {
+                    Err(e) if e.kind() == std::io::ErrorKind::AddrInUse && attempt < attempts => {
                         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
                     }
                     Err(e) => {
@@ -1778,12 +1873,18 @@ pub async fn setup_bridge_session(
         webtransport_shutdown,
         pipeline_cmd,
         spawned_tasks,
+        _media: media_membership,
+        _live: LiveSession::new(),
     }))
 }
 
-/// Failed WebTransport handshakes (bad token, broken handshake) after which a
-/// session's endpoint accepts no more connections.
+/// Failed WebTransport handshakes (bad token, broken handshake) from one
+/// address after which a session's endpoint accepts no more connections
+/// from it. Other addresses (the session's own client) are still served.
 const WEBTRANSPORT_MAX_FAILED_HANDSHAKES: u32 = 20;
+/// Addresses whose failures a session's endpoint remembers; beyond them a
+/// new address is not counted (the 256-bit token is what keeps it out).
+const WEBTRANSPORT_MAX_TRACKED: usize = 1024;
 
 /// A random per-session secret, 32 bytes as hex, from the OS random source
 /// (through rustls' ring provider, which wtransport already uses).
@@ -1805,12 +1906,14 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 }
 
 /// Who may feed input through a session's WebTransport endpoint: a request
-/// whose path is `/<token>`, one connection at a time, and nobody once too
-/// many handshakes failed.
+/// whose path is `/<token>`, one connection at a time, and no address from
+/// which too many handshakes failed (so a stranger's failures do not lock
+/// the session's own client out).
 pub(crate) struct WebTransportGate {
     expected_path: String,
     connected: AtomicBool,
-    failures: std::sync::atomic::AtomicU32,
+    /// Failed handshakes per remote address (IP; any port).
+    failures: std::sync::Mutex<std::collections::HashMap<std::net::IpAddr, u32>>,
 }
 
 impl WebTransportGate {
@@ -1818,21 +1921,35 @@ impl WebTransportGate {
         Self {
             expected_path: format!("/{token}"),
             connected: AtomicBool::new(false),
-            failures: std::sync::atomic::AtomicU32::new(0),
+            failures: std::sync::Mutex::new(std::collections::HashMap::new()),
         }
     }
 
-    fn locked(&self) -> bool {
-        self.failures.load(Ordering::SeqCst) >= WEBTRANSPORT_MAX_FAILED_HANDSHAKES
+    fn failures_from(&self, ip: std::net::IpAddr) -> u32 {
+        self.failures.lock().unwrap().get(&ip).copied().unwrap_or(0)
+    }
+
+    fn locked(&self, from: std::net::SocketAddr) -> bool {
+        self.failures_from(from.ip()) >= WEBTRANSPORT_MAX_FAILED_HANDSHAKES
     }
 
     fn record_failure(&self, from: std::net::SocketAddr, what: &str) {
-        let failures = self.failures.fetch_add(1, Ordering::SeqCst) + 1;
-        warn!("WebTransport: {} from {} ({} failed)", what, from, failures);
+        let failures = {
+            let mut map = self.failures.lock().unwrap();
+            if !map.contains_key(&from.ip()) && map.len() >= WEBTRANSPORT_MAX_TRACKED {
+                warn!("WebTransport: {} from {} (not counted: too many addresses failed)", what, from);
+                return;
+            }
+            let count = map.entry(from.ip()).or_insert(0);
+            *count += 1;
+            *count
+        };
+        warn!("WebTransport: {} from {} ({} failed from there)", what, from, failures);
         if failures == WEBTRANSPORT_MAX_FAILED_HANDSHAKES {
             warn!(
-                "WebTransport: {} failed handshakes, refusing all further connections for this session",
-                failures
+                "WebTransport: {} failed handshakes from {}, refusing its further connections for this session",
+                failures,
+                from.ip()
             );
         }
     }
@@ -1867,7 +1984,7 @@ async fn authenticate_webtransport<'a>(
     gate: &'a WebTransportGate,
 ) -> Option<(wtransport::Connection, WebTransportSlot<'a>)> {
     let remote = incoming.remote_address();
-    if gate.locked() {
+    if gate.locked(remote) {
         incoming.refuse();
         return None;
     }
@@ -1908,7 +2025,7 @@ pub(crate) async fn serve_webtransport_input(
     loop {
         tokio::select! {
             incoming = endpoint.accept() => {
-                if gate.locked() {
+                if gate.locked(incoming.remote_address()) {
                     incoming.refuse();
                     continue;
                 }
@@ -2255,6 +2372,7 @@ fn handle_inbound_packet(
             let last_ts = last_timestamp.load(std::sync::atomic::Ordering::SeqCst);
             if last_ts == 0 || (timestamp.wrapping_sub(last_ts) as i32) >= 0 {
                 last_timestamp.store(timestamp, std::sync::atomic::Ordering::SeqCst);
+                crate::game_mouse::absolute_move();
                 injector.move_mouse_absolute(
                     x as i32,
                     y as i32,
@@ -2266,23 +2384,35 @@ fn handle_inbound_packet(
         InboundPacket::MouseMove {
             delta_x, delta_y, ..
         } => {
-            injector.move_mouse_relative(delta_x as i32, delta_y as i32);
+            // A locked pointer: through the game mouse when it is plugged in
+            // (game_mouse.rs: anti-cheats drop injected moves).
+            let through_game_mouse = crate::game_mouse::relative_move(delta_x as i32, delta_y as i32);
+            if !through_game_mouse {
+                injector.move_mouse_relative(delta_x as i32, delta_y as i32);
+            }
         }
         InboundPacket::MouseButton { action, button } => {
             let is_press = match action {
                 MouseButtonAction::Press => true,
                 MouseButtonAction::Release => false,
             };
-            let x11_btn = match button {
-                MouseButton::Left => 1,
-                MouseButton::Middle => 2,
-                MouseButton::Right => 3,
-                MouseButton::X1 => 8,
-                MouseButton::X2 => 9,
+            let (x11_btn, hid_bit) = match button {
+                MouseButton::Left => (1, 0),
+                MouseButton::Middle => (2, 2),
+                MouseButton::Right => (3, 1),
+                MouseButton::X1 => (8, 3),
+                MouseButton::X2 => (9, 4),
             };
-            injector.mouse_button(x11_btn, is_press);
+            if !crate::game_mouse::button(hid_bit, is_press) {
+                injector.mouse_button(x11_btn, is_press);
+            }
         }
+        InboundPacket::GameMouse { on } => crate::game_mouse::set_wanted(on),
         InboundPacket::Scroll { delta_y, delta_x } => {
+            let (delta_y, delta_x) = (
+                if crate::game_mouse::wheel(delta_y as i32, true) { 0 } else { delta_y },
+                if crate::game_mouse::wheel(delta_x as i32, false) { 0 } else { delta_x },
+            );
             if delta_y > 0 {
                 for _ in 0..delta_y {
                     injector.mouse_button(4, true);
@@ -2317,6 +2447,8 @@ fn handle_inbound_packet(
             } else {
                 -((-delta_x + 119) / 120)
             };
+            let click_y = if crate::game_mouse::wheel(click_y as i32, true) { 0 } else { click_y };
+            let click_x = if crate::game_mouse::wheel(click_x as i32, false) { 0 } else { click_x };
 
             if click_y > 0 {
                 for _ in 0..click_y {
@@ -2443,6 +2575,25 @@ mod held_keys_tests {
     }
 }
 
+/// A `host_cursor` message with its number (`seq`): positions come on an
+/// unordered channel, so a viewer keeps the newest one it has seen. Viewers
+/// from before this field ignore it.
+/// `window_drag_watched`: this host says in `in_window_move_size` also when
+/// an app drags its own window (window_drag.rs); viewers then do not look for
+/// the pointer in the picture on every drag.
+fn with_seq(message: String, seq: u64, window_drag_watched: bool) -> String {
+    match serde_json::from_str::<serde_json::Value>(&message) {
+        Ok(serde_json::Value::Object(mut fields)) => {
+            fields.insert("seq".into(), seq.into());
+            if window_drag_watched {
+                fields.insert("window_drag_watched".into(), true.into());
+            }
+            serde_json::Value::Object(fields).to_string()
+        }
+        _ => message,
+    }
+}
+
 #[cfg(test)]
 mod host_cursor_message_tests {
     use super::host_cursor_message;
@@ -2487,6 +2638,20 @@ mod host_cursor_message_tests {
     }
 
     #[test]
+    fn a_message_carries_its_number() {
+        let message = parsed(&super::with_seq(host_cursor_message(&cursor(), None, false, None), 42, false));
+        assert_eq!(message["seq"], 42);
+        assert_eq!(message["x"], 10);
+        assert!(message.get("window_drag_watched").is_none(), "not said where not watched");
+    }
+
+    #[test]
+    fn a_windows_host_says_it_watches_window_drags() {
+        let message = parsed(&super::with_seq(host_cursor_message(&cursor(), None, false, None), 1, true));
+        assert_eq!(message["window_drag_watched"], true);
+    }
+
+    #[test]
     fn the_cursors_picture_goes_with_it() {
         let image = serde_json::json!({"width": 1, "height": 1, "hotspot_x": 0, "hotspot_y": 0, "rgba": "AAAAAA=="});
         let message = parsed(&host_cursor_message(&cursor(), Some(&image), false, None));
@@ -2498,6 +2663,22 @@ mod host_cursor_message_tests {
 mod codec_support_tests {
     use super::*;
     use lunaris_media::{EncoderInfo, HwAccelType, VideoCodec};
+
+    #[test]
+    fn a_viewer_joins_a_stream_it_decodes() {
+        let running = |codec, yuv444| lunaris_media::types::StreamConfig { codec, yuv444, ..Default::default() };
+        let names = |n: &[&str]| n.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        // The codec it would get anyway, or one it says it decodes.
+        assert!(viewer_decodes(&running(VideoCodec::H264, false), "h264", false, None));
+        assert!(viewer_decodes(&running(VideoCodec::H265, false), "h264", false, Some(&names(&["h264", "H265"]))));
+        // Not one it does not name (older clients name none).
+        assert!(!viewer_decodes(&running(VideoCodec::H265, false), "h264", false, None));
+        assert!(!viewer_decodes(&running(VideoCodec::AV1, false), "h264", false, Some(&names(&["h264", "h265"]))));
+        // 4:4:4 only for a viewer that asked for it; 4:2:0 for anyone.
+        assert!(!viewer_decodes(&running(VideoCodec::H264, true), "h264", false, None));
+        assert!(viewer_decodes(&running(VideoCodec::H264, true), "h264", true, None));
+        assert!(viewer_decodes(&running(VideoCodec::H264, false), "h264", true, None));
+    }
 
     fn listed(codecs: &[VideoCodec], hw_type: HwAccelType) -> Vec<EncoderInfo> {
         vec![EncoderInfo { name: "test".into(), hw_type, supported_codecs: codecs.to_vec() }]
@@ -2579,9 +2760,15 @@ mod webtransport_auth_tests {
         Server { port, cert_hash, token, gate, input_rx, _shutdown: shutdown }
     }
 
+    const LOCAL: std::net::IpAddr = std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
+
     async fn connect(server: &Server, path: &str) -> Result<wtransport::Connection, String> {
+        connect_from(server, LOCAL, path).await
+    }
+
+    async fn connect_from(server: &Server, from: std::net::IpAddr, path: &str) -> Result<wtransport::Connection, String> {
         let config = ClientConfig::builder()
-            .with_bind_address("127.0.0.1:0".parse().unwrap())
+            .with_bind_address(std::net::SocketAddr::new(from, 0))
             .with_server_certificate_hashes([server.cert_hash.clone()])
             .build();
         let client = Endpoint::client(config).unwrap();
@@ -2659,7 +2846,7 @@ mod webtransport_auth_tests {
         for path in ["", "/", wrong.as_str()] {
             assert!(connect(&server, path).await.is_err(), "path {path:?} accepted");
         }
-        assert_eq!(server.gate.failures.load(Ordering::SeqCst), 3);
+        assert_eq!(server.gate.failures_from(LOCAL), 3);
         assert!(next_input(&mut server).await.is_none());
         // The right token still works after a few failures.
         let path = format!("/{}", server.token);
@@ -2673,7 +2860,7 @@ mod webtransport_auth_tests {
         let first = connect(&server, &path).await.expect("first accepted");
         assert!(connect(&server, &path).await.is_err(), "second connection accepted");
         // Not counted as a failed handshake: it had the token.
-        assert_eq!(server.gate.failures.load(Ordering::SeqCst), 0);
+        assert_eq!(server.gate.failures_from(LOCAL), 0);
         first.close(wtransport::VarInt::from_u32(0), b"bye");
         drop(first);
         // The server notices the close, then the slot is free again.
@@ -2689,15 +2876,29 @@ mod webtransport_auth_tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn too_many_failures_lock_the_endpoint() {
+    async fn too_many_failures_lock_out_that_address_only() {
         let server = start_server().await;
+        // A stranger on another (loopback) address.
+        let stranger: std::net::IpAddr = "127.0.0.2".parse().unwrap();
         for _ in 0..WEBTRANSPORT_MAX_FAILED_HANDSHAKES {
-            assert!(connect(&server, "/nope").await.is_err());
+            assert!(connect_from(&server, stranger, "/nope").await.is_err());
         }
-        assert!(server.gate.locked());
+        assert!(server.gate.locked(std::net::SocketAddr::new(stranger, 1)));
         let path = format!("/{}", server.token);
-        assert!(connect(&server, &path).await.is_err(), "accepted after the limit");
-        assert_eq!(server.gate.failures.load(Ordering::SeqCst), WEBTRANSPORT_MAX_FAILED_HANDSHAKES);
+        assert!(connect_from(&server, stranger, &path).await.is_err(), "accepted after the limit");
+        assert_eq!(server.gate.failures_from(stranger), WEBTRANSPORT_MAX_FAILED_HANDSHAKES);
+        // The session's own client is still served.
+        assert!(!server.gate.locked(std::net::SocketAddr::new(LOCAL, 1)));
+        assert!(connect(&server, &path).await.is_ok(), "the legitimate address was locked out too");
+    }
+
+    #[test]
+    fn the_failure_map_stays_bounded() {
+        let gate = WebTransportGate::new("t".into());
+        for i in 0..(WEBTRANSPORT_MAX_TRACKED as u32 + 50) {
+            gate.record_failure(std::net::SocketAddr::new(std::net::Ipv4Addr::from(0x0a00_0000 + i).into(), 9), "test");
+        }
+        assert_eq!(gate.failures.lock().unwrap().len(), WEBTRANSPORT_MAX_TRACKED);
     }
 
     #[test]

@@ -39,6 +39,8 @@ pub enum SettingKey {
     WaylandCapture,
     /// The server's administrators may change these settings: allow|deny
     ServerSettings,
+    /// Older apps may log in over plain ws:// with the password in the URL: on|off
+    LegacyDirect,
     /// The access password: `random`, or `-` to read it from stdin
     Password,
     /// This computer's name on the server
@@ -85,7 +87,7 @@ fn load_or_new(config_path: &str) -> Res<AgentConfig> {
 
 /// Makes the change in `config` (no file involved).
 fn apply(config: &mut AgentConfig, key: SettingKey, value: &str, stdin: impl FnOnce(&str) -> Res<String>) -> Res<()> {
-    let channel = crate::settings::Channel { via: "this computer".into(), link: false, trusted: true };
+    let channel = crate::settings::Channel::local();
     let mut change = AgentSettingsChange::default();
     let word = || value.trim().to_ascii_lowercase();
     match key {
@@ -105,6 +107,10 @@ fn apply(config: &mut AgentConfig, key: SettingKey, value: &str, stdin: impl FnO
         SettingKey::WaylandCapture => change.wayland_capture = Some(word()),
         SettingKey::ServerSettings => {
             config.allow_server_settings = on_off(value)?;
+            return Ok(());
+        }
+        SettingKey::LegacyDirect => {
+            config.allow_legacy_plain_direct = on_off(value)?;
             return Ok(());
         }
         SettingKey::Password => {
@@ -162,6 +168,16 @@ pub fn set(config_path: &str, key: SettingKey, value: &str) -> Res<()> {
     Ok(())
 }
 
+/// What `status` says under the server address when the connection to it
+/// is not encrypted.
+fn server_warning(server_url: &str) -> Option<&'static str> {
+    if server_url.trim().is_empty() {
+        return None;
+    }
+    (crate::server_transport(&crate::server_ws_url(server_url)) == crate::ServerTransport::Plain)
+        .then_some("WARNING: unencrypted connection to the server (ws://); use its wss:// address: `lunaris-agent set server wss://...`")
+}
+
 fn restart_hint(config_path: &str) -> String {
     let system = crate::system_config_path().is_some_and(|p| p.to_string_lossy() == config_path);
     if cfg!(target_os = "windows") {
@@ -203,6 +219,9 @@ pub async fn status(config_path: &str, show_password: bool) -> Res<()> {
     } else {
         println!("Server:          {server}");
     }
+    if let Some(warning) = server_warning(server) {
+        println!("                 {warning}");
+    }
     match crate::status::read(config_path) {
         Seen::Running(s) => {
             let state = if server.is_empty() {
@@ -221,7 +240,12 @@ pub async fn status(config_path: &str, show_password: bool) -> Res<()> {
         Seen::NotRunning => println!("Agent:           not running"),
     }
     if config.direct_enabled {
-        println!("Direct access:   on, port {}", config.direct_port);
+        let legacy = if config.allow_legacy_plain_direct {
+            "older apps over plain ws:// allowed: `set legacy-direct off`"
+        } else {
+            "encrypted only"
+        };
+        println!("Direct access:   on, port {} ({legacy})", config.direct_port);
         for addr in crate::direct::local_addresses().await {
             println!("                 {}:{}", addr, config.direct_port);
         }
@@ -297,8 +321,9 @@ mod tests {
         apply(&mut c, SettingKey::Password, "random", no_stdin).unwrap();
         assert_ne!(c.direct_password, before);
         assert!(apply(&mut c, SettingKey::Password, "hunter22", no_stdin).is_err());
-        apply(&mut c, SettingKey::Password, "-", |_| Ok("a-new-one".into())).unwrap();
-        assert_eq!(c.direct_password, "a-new-one");
+        apply(&mut c, SettingKey::Password, "-", |_| Ok("a-new-one-of-mine".into())).unwrap();
+        assert_eq!(c.direct_password, "a-new-one-of-mine");
+        assert!(apply(&mut c, SettingKey::Password, "-", |_| Ok("only11chars".into())).is_err(), "12 at least now");
         assert!(apply(&mut c, SettingKey::Password, "-", |_| Ok("abc".into())).is_err(), "too short");
         assert!(apply(&mut c, SettingKey::ServerToken, "tok", no_stdin).is_err());
         apply(&mut c, SettingKey::ServerToken, "-", |_| Ok(" tok ".into())).unwrap();
@@ -313,7 +338,39 @@ mod tests {
         apply(&mut c, SettingKey::Server, "https://a:8443/", no_stdin).unwrap();
         assert_eq!(c.server_cert_sha256.len(), 64, "same server keeps it");
         apply(&mut c, SettingKey::Server, "b:8090", no_stdin).unwrap();
-        assert_eq!(c.server_url, "ws://b:8090");
+        // No scheme: encrypted.
+        assert_eq!(c.server_url, "wss://b:8090");
         assert!(c.server_cert_sha256.is_empty());
+        // An explicit ws:// is kept as asked.
+        apply(&mut c, SettingKey::Server, "ws://b:8090", no_stdin).unwrap();
+        assert_eq!(c.server_url, "ws://b:8090");
+    }
+
+    #[test]
+    fn status_warns_about_an_unencrypted_server() {
+        assert!(server_warning("ws://srv.lan:8090").is_some());
+        assert!(server_warning("http://10.0.0.5:8090").is_some());
+        for fine in ["wss://srv.lan:8443", "https://srv", "srv.lan:8090", "ws://127.0.0.1:8090", "ws://localhost:8090", "ws://[::1]:8090", ""] {
+            assert!(server_warning(fine).is_none(), "{fine}");
+        }
+    }
+
+    #[test]
+    fn legacy_direct_is_switched_here_only() {
+        let mut c = crate::pairing::new_config();
+        assert!(c.allow_legacy_plain_direct, "on by default: older apps keep working");
+        apply(&mut c, SettingKey::LegacyDirect, "off", no_stdin).unwrap();
+        assert!(!c.allow_legacy_plain_direct);
+        apply(&mut c, SettingKey::LegacyDirect, "on", no_stdin).unwrap();
+        assert!(c.allow_legacy_plain_direct);
+    }
+
+    #[test]
+    fn widening_is_allowed_here() {
+        let mut c = crate::pairing::new_config();
+        c.server_sessions = "ask".into();
+        apply(&mut c, SettingKey::FileAccess, "full", no_stdin).unwrap();
+        apply(&mut c, SettingKey::ServerSessions, "trusted", no_stdin).unwrap();
+        assert_eq!((c.file_access.as_str(), c.server_sessions.as_str()), ("full", "trusted"));
     }
 }

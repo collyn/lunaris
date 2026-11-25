@@ -4,7 +4,7 @@
 // Run: npm run test:keyboard   (node --test, no packages needed)
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { KEY_COMBOS, KEY_TO_VK, PressedKeys, applyKeyboardLock, combosFor, comboStrokes, keyboardLockFor, tapsUnderMeta, vkOfCode } from '../src/keyboard.ts';
+import { KEY_COMBOS, KEY_TO_VK, PressedKeys, applyKeyboardLock, combosFor, comboStrokes, keyboardLockFor, tapsUnderMeta, vkOfCode, escapeCanBeKept, secureAddress } from '../src/keyboard.ts';
 
 test('keys are named by where they are', () => {
   assert.equal(vkOfCode('KeyA'), 0x41);
@@ -127,4 +127,29 @@ test('Ctrl+Alt+Del is not offered for a Windows computer', () => {
   assert.ok(!ids('windows').includes('ctrl-alt-del'));
   assert.ok(!ids('Windows').includes('ctrl-alt-del'));
   assert.ok(ids('windows').includes('alt-tab'));
+});
+
+test('Esc is kept only where Keyboard Lock is: a secure page in Chromium', () => {
+  const chromium = { lock: async () => {}, unlock: () => {} };
+  assert.equal(escapeCanBeKept(chromium, true), true);
+  // http://host:8090: Chromium has no navigator.keyboard there.
+  assert.equal(escapeCanBeKept(undefined, false), false);
+  assert.equal(escapeCanBeKept(chromium, false), false);
+  // Safari, Firefox.
+  assert.equal(escapeCanBeKept(undefined, true), false);
+});
+
+test('the https address of this page, to keep Esc', () => {
+  const page = { protocol: 'http:', hostname: '192.168.1.5', pathname: '/', search: '' };
+  assert.equal(secureAddress(page, 8443), 'https://192.168.1.5:8443/');
+  assert.equal(secureAddress({ ...page, hostname: 'lunaris.example', search: '?a=1' }, 443), 'https://lunaris.example/?a=1');
+  assert.equal(secureAddress({ ...page, hostname: '::1' }, 8443), 'https://[::1]:8443/');
+  assert.equal(secureAddress(page, null), null);
+  assert.equal(secureAddress({ ...page, protocol: 'https:' }, 8443), null);
+});
+
+test('the Esc hold ends before Chrome leaves full screen by itself', async () => {
+  const { ESCAPE_HOLD_MS } = await import('../src/keyboard.ts');
+  // The browser lets go of a Keyboard Lock after 2 s of Esc.
+  assert.ok(ESCAPE_HOLD_MS >= 1000 && ESCAPE_HOLD_MS <= 1600);
 });

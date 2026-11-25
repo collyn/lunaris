@@ -51,9 +51,6 @@ ApplicationWindow {
     property bool useCuda: true
     property string renderBackend: "auto_gpu"
     property bool nativeVideoActive: gpuVideoItem.cudaActive || d3d11VideoItem.d3d11Active || vaapiDmabufVideoItem.dmabufActive
-    // The updater's state (bridge.updateStatus(), updater/src/service.rs);
-    // the banner and the Updates panel of the window without a link show it.
-    property var updateStatus: ({ state: "idle", current: "", latest: "", autoCheck: true })
     property int hostCursorX: streamWidth / 2
     property int hostCursorY: streamHeight / 2
     property bool hostCursorVisible: false
@@ -73,8 +70,25 @@ ApplicationWindow {
     // host-shaped one nor this computer's: the only pointer is the one in
     // the picture. The web client decides the same way (web/src/pointerShown.ts).
     property bool pointerAlwaysInPicture: false
+    // The game mouse of the computer shown (ViewPrefs.gameMouseHosts): said
+    // to its agent now and every 2 s while it is on (a reconnect, such as a
+    // codec change, starts with it off there; packets are not resent).
+    property bool gameMouseOn: false
+    function setGameMouse(on) {
+        ViewPrefs.setGameMouseFor(bridge.currentHostId(), on);
+        window.gameMouseOn = on;
+        bridge.sendGameMouse(on);
+    }
+    Timer {
+        interval: 2000
+        repeat: true
+        triggeredOnStart: true
+        running: window.isStreamMode && window.gameMouseOn
+        onTriggered: bridge.sendGameMouse(true)
+    }
     onIsStreamModeChanged: {
         if (isStreamMode) {
+            gameMouseOn = ViewPrefs.gameMouseFor(bridge.currentHostId());
             systemKeysKind = bridge.systemKeysSupport();
         } else {
             pointerAlwaysInPicture = false;
@@ -268,6 +282,15 @@ ApplicationWindow {
             || (window.hostCursorMouseDown
                 && ((window.agentHostOs === "windows" && window.hostCursorInWindowMoveSize)
                     || window.pointerFoundInPicture));
+    }
+
+    // The game mouse moves the host's pointer (with its own acceleration):
+    // while the pointer is locked the cursor is drawn where the host says,
+    // not predicted; a game that hides the system's cursor draws its own
+    // into the picture, and the host says its cursor is hidden (as the web,
+    // src/pointerShown.ts).
+    function gameMouseLocked() {
+        return window.gameMouseOn && window.isPointerLocked;
     }
 
     // Hold ESC to unlock cursor properties
@@ -510,7 +533,7 @@ ApplicationWindow {
             window.hostCursorInWindowMoveSize = inWindowMoveSize
             if (!visible) {
                 window.localCursorVisible = false
-            } else if (!window.localCursorInitialized) {
+            } else if (window.gameMouseLocked() || !window.localCursorInitialized) {
                 window.localCursorX = x
                 window.localCursorY = y
                 window.localCursorVisualX = (x / Math.max(1, window.streamWidth)) * videoContainer.width
@@ -559,6 +582,7 @@ ApplicationWindow {
         }
 
         onLocalCursorDelta: (rx, ry) => {
+            if (window.gameMouseLocked()) return
             window.updateLocalCursorDelta(rx, ry)
         }
 
@@ -584,7 +608,7 @@ ApplicationWindow {
             if (linkDialog.openIfPending()) return;
 
             if (url !== "") {
-                launcherView.showMessage("");
+                messageView.showMessage("");
                 window.isStreamMode = true;
                 bridge.setVideoSink(videoOutput.videoSink);
                 bridge.startStream();
@@ -599,7 +623,7 @@ ApplicationWindow {
             window.show();
             window.raise();
             if (window.isStreamMode) window.showToast(I18n.t(message));
-            else launcherView.showMessage(I18n.t(message));
+            else messageView.showMessage(I18n.t(message));
         }
 
         onShareStatus: (message) => {
@@ -618,7 +642,7 @@ ApplicationWindow {
                 return;
             }
             window.isStreamMode = false;
-            launcherView.showMessage(I18n.tError(message));
+            messageView.showMessage(I18n.tError(message));
         }
 
         // The source being shown could not be connected, or closed: the
@@ -637,7 +661,7 @@ ApplicationWindow {
                 return;
             }
             window.isStreamMode = false;
-            launcherView.showMessage(message);
+            messageView.showMessage(message);
         }
 
     }
@@ -815,6 +839,11 @@ ApplicationWindow {
 
             onPressed: (mouse) => {
                 rootContainer.forceActiveFocus();
+                // The game mouse moves only a locked pointer: a click locks it.
+                if (window.gameMouseOn && !window.isPointerLocked) {
+                    window.isPointerLocked = true;
+                    return;
+                }
                 // A click in the picture sends the system shortcuts again.
                 window.systemKeysPaused = false;
                 window.hostCursorMouseDown = true;
@@ -1121,14 +1150,10 @@ ApplicationWindow {
         }
 
         onExitTriggered: {
+            // One stream per window: leaving it closes the client.
             bridge.stopStream();
-            if (bridge.hasConnectionArgs()) {
-                window.exitRequested = true;
-                Qt.quit();
-            } else {
-                window.isStreamMode = false;
-                sessionSettings.close();
-            }
+            window.exitRequested = true;
+            Qt.quit();
         }
     }
 
@@ -1187,6 +1212,8 @@ ApplicationWindow {
         showStats: window.showStats
         renderBackend: window.renderBackend
         systemKeysKind: window.systemKeysKind
+        gameMouseOn: window.gameMouseOn
+        onGameMouseToggled: (on) => window.setGameMouse(on)
         onStatsToggled: (on) => window.showStats = on
         onRenderBackendPicked: (backend) => menuBar.setRenderBackend(backend)
         onClosed: if (window.isStreamMode) rootContainer.forceActiveFocus()
@@ -1301,28 +1328,36 @@ ApplicationWindow {
     }
     }
 
-    // Update notice above the window without a link (UpdateBanner.qml),
-    // from the updater's state.
-    UpdateBanner {
-        id: updateBanner
-        status: window.updateStatus
-        visible: shown && !window.isStreamMode
-        anchors.top: parent.top
-        anchors.left: parent.left
-        anchors.right: parent.right
-        z: 9999
-    }
-
-    // Started without a link: where streams come from (the server's web
-    // page), the trusted servers, language, theme, updates, version.
-    Launcher {
-        id: launcherView
-        anchors.left: parent.left
-        anchors.right: parent.right
-        anchors.bottom: parent.bottom
-        anchors.top: updateBanner.visible ? updateBanner.bottom : parent.top
+    // Without a stream: why (a link refused, a stream that ended), and the
+    // way out. The client is opened from the server's web page; there is
+    // nothing else to do here.
+    Rectangle {
+        id: messageView
+        property string message: ""
+        function showMessage(text) { message = text; }
+        anchors.fill: parent
         visible: !window.isStreamMode
-        updateStatus: window.updateStatus
+        color: Theme.bg
+        Column {
+            anchors.centerIn: parent
+            width: Math.min(parent.width - 48, 480)
+            spacing: 18
+            Text {
+                width: parent.width
+                horizontalAlignment: Text.AlignHCenter
+                wrapMode: Text.Wrap
+                color: Theme.text
+                font.pixelSize: 15
+                text: messageView.message !== ""
+                    ? messageView.message
+                    : I18n.t("Open a computer from your Lunaris server's web page (Open in the Lunaris app).")
+            }
+            PrimaryButton {
+                anchors.horizontalCenter: parent.horizontalCenter
+                text: I18n.t("Close")
+                onClicked: { window.exitRequested = true; Qt.quit(); }
+            }
+        }
     }
     }
 
@@ -1342,6 +1377,7 @@ ApplicationWindow {
         function onFileTransferChanged() { window.applySharing(); }
         function onGamepadChanged() { window.applySharing(); }
         function onSystemKeysChanged() { bridge.saveStore("view_prefs", ViewPrefs.toJson()); }
+        function onGameMouseHostsChanged() { bridge.saveStore("view_prefs", ViewPrefs.toJson()); }
     }
     function applySharing() {
         bridge.setShareOptions(ViewPrefs.clipboardSync, ViewPrefs.fileTransfer);
@@ -1379,33 +1415,21 @@ ApplicationWindow {
         }
     }
 
-    // The updater checks by itself (shortly after the start, then daily,
-    // unless turned off); this shows its state. Once an update is
-    // installed the app quits and starts again.
-    function pollUpdate() {
-        var s;
-        try { s = JSON.parse(bridge.updateStatus()); } catch (e) { return; }
-        window.updateStatus = s;
-        if (s.state === "restart" && bridge.updateRestart()) {
-            window.exitRequested = true;
-            Qt.quit();
-        }
-    }
-    Timer {
-        interval: 1000
-        running: true
-        repeat: true
-        triggeredOnStart: true
-        onTriggered: window.pollUpdate()
-    }
 
 
     // A lunaris:// link to a server that is not trusted: nothing connects
     // until the user says so.
     DialogFrame {
         id: linkDialog
+        objectName: "linkDialog"
         property string server: ""
         property string computer: ""
+        // http/ws: the session's sign-in and picture travel unencrypted.
+        property bool encrypted: true
+        // A trusted server's link for another account than the one trusted.
+        property string account: ""
+        property string knownAccount: ""
+        readonly property bool otherAccount: account !== "" && knownAccount !== ""
         property bool answered: false
         width: 460
         function openIfPending() {
@@ -1416,6 +1440,10 @@ ApplicationWindow {
             try { info = JSON.parse(raw); } catch (e) { bridge.answerPendingLink(false); return false; }
             server = info.server || "";
             computer = info.computer || "";
+            // Older bridges do not say: shown as encrypted, as before.
+            encrypted = info.encrypted !== false;
+            account = info.account || "";
+            knownAccount = info.knownAccount || "";
             answered = false;
             open();
             return true;
@@ -1434,7 +1462,7 @@ ApplicationWindow {
             spacing: 12
             Text {
                 Layout.fillWidth: true
-                text: I18n.t("Connect to another server?")
+                text: linkDialog.otherAccount ? I18n.t("Connect with another account?") : I18n.t("Connect to another server?")
                 color: Theme.textStrong
                 font.pixelSize: 16
                 font.weight: Font.DemiBold
@@ -1443,10 +1471,21 @@ ApplicationWindow {
             Text {
                 Layout.fillWidth: true
                 textFormat: Text.PlainText
-                text: I18n.t("A link wants to connect this app to %1. Only continue if you opened this link yourself.").arg(linkDialog.server)
+                text: linkDialog.otherAccount
+                    ? I18n.t("A link wants to connect this app to %1 as the account %2, but you trust this server for the account %3. Only continue if you opened this link yourself.").arg(linkDialog.server).arg(linkDialog.account).arg(linkDialog.knownAccount)
+                    : I18n.t("A link wants to connect this app to %1. Only continue if you opened this link yourself.").arg(linkDialog.server)
                 color: Theme.text
                 font.pixelSize: 13
                 wrapMode: Text.WrapAnywhere
+            }
+            Text {
+                objectName: "linkNotEncrypted"
+                Layout.fillWidth: true
+                visible: !linkDialog.encrypted
+                text: I18n.t("Not encrypted: this server is reached over http, so others on the network can see and change the session.")
+                color: Theme.danger
+                font.pixelSize: 12
+                wrapMode: Text.WordWrap
             }
             Text {
                 Layout.fillWidth: true
@@ -1458,8 +1497,9 @@ ApplicationWindow {
             }
             CheckRow {
                 id: trustBox
+                objectName: "linkTrustBox"
                 Layout.fillWidth: true
-                text: I18n.t("Always trust this server")
+                text: linkDialog.otherAccount ? I18n.t("Always trust this server for the account %1").arg(linkDialog.account) : I18n.t("Always trust this server")
             }
             Text {
                 Layout.fillWidth: true
@@ -1467,6 +1507,15 @@ ApplicationWindow {
                     ? I18n.t("Links to this server will connect without asking, with clipboard and file transfer.")
                     : I18n.t("Clipboard and file transfer stay off in this session.")
                 color: Theme.textMuted
+                font.pixelSize: 12
+                wrapMode: Text.WordWrap
+            }
+            Text {
+                objectName: "linkTrustNotEncrypted"
+                Layout.fillWidth: true
+                visible: trustBox.checked && !linkDialog.encrypted
+                text: I18n.t("This server is not encrypted: someone on the network could pose as it, and its links would then connect without asking, with clipboard and file transfer.")
+                color: Theme.danger
                 font.pixelSize: 12
                 wrapMode: Text.WordWrap
             }

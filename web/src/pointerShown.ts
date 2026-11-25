@@ -50,6 +50,12 @@ export type PointerView = {
   hostCssCursor: string | null;
   /** The host delivered a cursor image (not only a kind). */
   hasNativeCursorImage: boolean;
+  /** The game mouse is on and the pointer locked (src/gameMouse.ts): the
+   *  pointer is where the host says (the page does not predict it). On the
+   *  desktop the host's cursor is drawn there; a game that hides the
+   *  system's cursor draws its own into the picture, and the host says its
+   *  cursor is hidden. */
+  gameMouse?: boolean;
 };
 
 /** `pointer_in_picture` of a `host_cursor` message: only "always" says so. */
@@ -64,35 +70,47 @@ export const hostPointerInPicture = (view: PointerView): boolean =>
 /** The host's cursor drawn at the place the host reports. */
 export const showsHostCursor = (view: PointerView): boolean => {
   if (hostPointerInPicture(view)) return false;
+  if (view.gameMouse) return view.hostCursorVisible;
   // Touchpad on a phone: only the page's own cursor is shown.
   if (view.trackpad && !view.hardwareMouse) return false;
   // Under a real mouse the own cursor or the system's pointer stands for it.
   return view.hostCursorVisible && !view.hardwareMouse;
 };
 
+/** The system draws the host-shaped pointer (the CSS cursor from the host's
+ *  image): it moves with the mouse at once, while a pointer drawn by the page
+ *  trails it by a frame or two. Any host, Windows included (2026-11-25: the
+ *  drawn one felt late there). */
+const systemDrawsHostCursor = (view: PointerView): boolean =>
+  view.hostCssCursor !== null && !view.pointerLocked;
+
 /** The page's own cursor, drawn where the person's mouse or finger is. */
 export const showsOwnCursor = (view: PointerView): boolean => {
-  if (hostPointerInPicture(view)) return false;
+  if (hostPointerInPicture(view) || view.gameMouse) return false;
   const trackpad = view.trackpad && view.streaming && !view.hardwareMouse;
-  // While the system draws the host-shaped CSS cursor (pointer not locked,
-  // host not Windows) the cursor drawn by the page is not needed.
-  const systemDrawsHostCursor = view.hostCssCursor !== null && view.hostOs !== 'windows' && !view.pointerLocked;
-  const windowsPrediction = view.hostOs === 'windows' && view.hasNativeCursorImage;
+  // Under a mouse: a locked pointer is invisible, so the page draws one;
+  // otherwise only when the system cannot draw the host's shape and the
+  // person chose the host's pointer over the ordinary local one.
   const underMouse = view.streaming
     && view.hardwareMouse
-    && (view.hideLocalCursor || windowsPrediction)
-    && !systemDrawsHostCursor;
+    && (view.pointerLocked || (view.hideLocalCursor && !systemDrawsHostCursor(view)));
   return trackpad || underMouse;
 };
 
 /** The CSS `cursor` of the picture: the system's pointer over it. */
 export const streamCursorCss = (view: PointerView): string => {
   if (!view.streaming) return 'default';
-  if (view.alwaysInPicture) return 'none';
-  // The system draws the host's cursor when it can (as smooth as a pointer
-  // of this computer); otherwise it is hidden and the page draws one.
-  if (view.hideLocalCursor && view.hostOs !== 'windows' && !view.pointerLocked && view.hostCssCursor !== null) {
-    return view.hostCssCursor;
-  }
-  return view.hideLocalCursor || view.hostOs === 'windows' ? 'none' : 'default';
+  if (hostPointerInPicture(view)) return 'none';
+  if (view.pointerLocked) return 'none';
+  // "Hide local cursor" (the default): the host-shaped pointer, drawn by the
+  // system when it can, otherwise by the page. Off: the ordinary local one.
+  if (!view.hideLocalCursor) return 'default';
+  return systemDrawsHostCursor(view) ? view.hostCssCursor! : 'none';
 };
+
+/** A `host_cursor` message older than one already used: positions come on an
+ *  unordered channel (agent bridge.rs `with_seq`), and a late one would pull
+ *  the cursor back. A number far below the last is a new agent session
+ *  (counting from 1 again), not a late message. */
+export const isStaleCursorSeq = (last: number | null, seq: unknown): boolean =>
+  typeof seq === 'number' && last !== null && seq <= last && last - seq < 1000;

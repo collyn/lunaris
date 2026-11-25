@@ -1,5 +1,3 @@
-use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
 use tracing::{error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -13,7 +11,6 @@ pub mod deeplink;
 pub mod display_gpu;
 pub mod files;
 pub mod gamepad;
-pub mod legacy_autostart;
 pub mod luma_tap;
 pub mod pointer_in_picture;
 pub mod input;
@@ -21,6 +18,7 @@ pub mod protocol;
 pub mod secure_fs;
 pub mod session_info;
 pub mod share;
+pub mod single_instance;
 
 use bridge::{AppArgs, PendingDashboardEvent, APP_ARGS};
 
@@ -51,91 +49,75 @@ fn push_event(event: PendingDashboardEvent) {
         .push(event);
 }
 
+/// The message a second copy hands to the running one.
+fn single_instance_message(args: &[String]) -> String {
+    if args.len() >= 2 && args[1].starts_with("lunaris://") {
+        format!("CONNECT {}", args[1])
+    } else {
+        "FOCUS".to_string()
+    }
+}
+
+/// A message from a second copy of the app (its sender passed the
+/// single-instance check).
+fn handle_instance_message(msg: &str) {
+    if msg == "FOCUS" {
+        info!("Single-instance: Received FOCUS command");
+        push_event(PendingDashboardEvent::DeepLinkReceived { url: String::new() });
+    } else if let Some(url) = msg.strip_prefix("CONNECT ") {
+        // Same checks as a link on the command line; a bad line is
+        // ignored (the listener must not panic).
+        let url = url.trim();
+        // A trusted server's ticket is traded in the background
+        // (`Redeeming`): this thread stays free for the next message.
+        match deeplink::judge(url, false) {
+            deeplink::Verdict::Connect(args) => {
+                info!("Single-instance: link to {} (host {})", args.server_url, args.host_id);
+                *bridge::ACTIVE_CONFIG.lock().unwrap_or_else(|e| e.into_inner()) = Some(args);
+                push_event(PendingDashboardEvent::DeepLinkReceived { url: "lunaris://connect".to_string() });
+            }
+            deeplink::Verdict::Redeeming => {
+                info!("Single-instance: link to a trusted server, trading its ticket");
+            }
+            deeplink::Verdict::NeedsConfirmation => {
+                info!("Single-instance: link to an unknown server, asking the user");
+                // Empty url = focus; the window then finds the pending link.
+                push_event(PendingDashboardEvent::DeepLinkReceived { url: String::new() });
+            }
+            deeplink::Verdict::Invalid => {
+                warn!("Single-instance: ignored an invalid link");
+            }
+        }
+    }
+}
+
+/// True when another copy of the app (this user's) took this one's link
+/// and this copy should exit. The channel is private to the user
+/// (single_instance.rs): a listener that is not this user's app never gets
+/// the link, and this copy then runs on its own.
 fn handle_single_instance() -> bool {
     // Development/testing: run a second, independent client.
     if std::env::var_os("LUNARIS_ALLOW_SECOND_INSTANCE").is_some() {
         return false;
     }
     let args: Vec<String> = std::env::args().collect();
-    let message = if args.len() >= 2 && args[1].starts_with("lunaris://") {
-        format!("CONNECT {}\n", args[1])
-    } else {
-        "FOCUS\n".to_string()
-    };
+    let message = single_instance_message(&args);
+    let dir = app_settings_dir();
 
-    // Try to connect to the existing instance
-    if let Ok(mut stream) = TcpStream::connect("127.0.0.1:28435") {
-        let _ = stream.write_all(message.as_bytes());
-        let _ = stream.flush();
-        info!("Sent activation command to running instance. Exiting.");
-        return true; // Should exit
+    match single_instance::send_to_running(&dir, &message) {
+        Ok(true) => {
+            info!("Sent activation command to running instance. Exiting.");
+            return true;
+        }
+        Ok(false) => {}
+        Err(e) => {
+            // Never the link to it: this copy is a window of its own.
+            warn!("Single-instance: the running listener failed the check ({}); running on our own", e);
+            return false;
+        }
     }
 
-    // No running instance found, start listener thread
-    std::thread::spawn(move || {
-        let listener = match TcpListener::bind("127.0.0.1:28435") {
-            Ok(l) => l,
-            Err(e) => {
-                error!("Failed to bind single-instance listener: {:?}", e);
-                return;
-            }
-        };
-
-        for stream in listener.incoming() {
-            let mut stream = match stream {
-                Ok(s) => s,
-                Err(_) => continue,
-            };
-
-            // A client that connects and says nothing must not block the others.
-            let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(2)));
-            let mut buffer = [0; 16384];
-            let n = match stream.read(&mut buffer) {
-                Ok(n) => n,
-                Err(_) => continue,
-            };
-
-            let msg = String::from_utf8_lossy(&buffer[..n]);
-            let msg = msg.trim();
-
-            if msg == "FOCUS" {
-                info!("Single-instance: Received FOCUS command");
-                push_event(PendingDashboardEvent::DeepLinkReceived { url: String::new() });
-            } else if let Some(url) = msg.strip_prefix("CONNECT ") {
-                // Same checks as a link on the command line; a bad line is
-                // ignored (the listener must not panic).
-                let url = url.trim();
-                // A trusted server's ticket is traded in the background
-                // (`Redeeming`): this thread stays free for the next message.
-                match deeplink::judge(url, false) {
-                    deeplink::Verdict::Connect(args) => {
-                        info!(
-                            "Single-instance: link to {} (host {})",
-                            args.server_url, args.host_id
-                        );
-                        deeplink::mark_trusted_session();
-                        *bridge::ACTIVE_CONFIG.lock().unwrap_or_else(|e| e.into_inner()) =
-                            Some(args);
-                        push_event(PendingDashboardEvent::DeepLinkReceived {
-                            url: "lunaris://connect".to_string(),
-                        });
-                    }
-                    deeplink::Verdict::Redeeming => {
-                        info!("Single-instance: link to a trusted server, trading its ticket");
-                    }
-                    deeplink::Verdict::NeedsConfirmation => {
-                        info!("Single-instance: link to an unknown server, asking the user");
-                        // Empty url = focus; the window then finds the pending link.
-                        push_event(PendingDashboardEvent::DeepLinkReceived { url: String::new() });
-                    }
-                    deeplink::Verdict::Invalid => {
-                        warn!("Single-instance: ignored an invalid link");
-                    }
-                }
-            }
-        }
-    });
-
+    single_instance::listen(&dir, handle_instance_message);
     false
 }
 
@@ -150,10 +132,7 @@ fn parse_args() -> Option<AppArgs> {
         // Blocking: the app starts for this one session (`APP_ARGS`); the
         // single-instance listener already runs on its own thread.
         return match deeplink::judge(&args[1], true) {
-            deeplink::Verdict::Connect(a) => {
-                deeplink::mark_trusted_session();
-                Some(a)
-            }
+            deeplink::Verdict::Connect(a) => Some(a),
             // Not when blocking; the window opens and the session starts
             // when the ticket is traded.
             deeplink::Verdict::Redeeming => None,
@@ -166,10 +145,39 @@ fn parse_args() -> Option<AppArgs> {
         };
     }
 
-    // Fallback to normal CLI arguments: client --host-id ID --server URL --token TOKEN ...
+    // The sign-in token of the developer command line: from the
+    // environment (not on the command line, where other users of this
+    // computer see it), taken out so that no program started later inherits it.
+    let env_token = std::env::var("LUNARIS_TOKEN").ok().filter(|t| !t.trim().is_empty());
+    std::env::remove_var("LUNARIS_TOKEN");
+    let (parsed, warnings) = parse_cli_args(&args, env_token, || {
+        let mut line = String::new();
+        std::io::stdin().read_line(&mut line).ok()?;
+        Some(line)
+    });
+    for w in warnings {
+        warn!("{}", w);
+        eprintln!("lunaris: {}", w);
+    }
+    parsed
+}
+
+/// Shown when the token is given with `--token <value>`.
+const TOKEN_ARG_WARNING: &str = "--token puts the sign-in token on the command line, where other users of this computer can read it; set LUNARIS_TOKEN or use --token - (read from standard input) instead";
+
+/// The developer command line: `client --host-id ID --server URL [--token -] ...`
+/// with the token from `env_token` (LUNARIS_TOKEN), or `--token -` (one
+/// line from `read_stdin`), or (deprecated, warned about) `--token TOKEN`.
+/// Returns the session and the warnings for the user.
+fn parse_cli_args(
+    args: &[String],
+    env_token: Option<String>,
+    read_stdin: impl FnOnce() -> Option<String>,
+) -> (Option<AppArgs>, Vec<String>) {
+    let mut warnings = Vec::new();
+    let mut token_arg: Option<String> = None;
     let mut host_id = String::new();
     let mut server_url = String::new();
-    let mut token = String::new();
 
     let mut width = 1280; // Changed default window size to QML's preferred size 1280x720
     let mut height = 720;
@@ -212,7 +220,7 @@ fn parse_args() -> Option<AppArgs> {
                 i += 2;
             }
             "--token" => {
-                token = args[i + 1].clone();
+                token_arg = Some(args[i + 1].clone());
                 i += 2;
             }
             "--host-name" => {
@@ -294,7 +302,16 @@ fn parse_args() -> Option<AppArgs> {
         .unwrap_or_else(|| bridge::render_backend_from_disable_cuda(disable_cuda));
     disable_cuda = bridge::render_backend_disables_cuda(&render_backend);
 
-    if !host_id.is_empty() && !server_url.is_empty() && !token.is_empty() {
+    let token = match token_arg.as_deref() {
+        Some("-") => read_stdin().map(|t| t.trim().to_string()).unwrap_or_default(),
+        Some(t) => {
+            warnings.push(TOKEN_ARG_WARNING.to_string());
+            t.to_string()
+        }
+        None => env_token.map(|t| t.trim().to_string()).unwrap_or_default(),
+    };
+
+    let parsed = if !host_id.is_empty() && !server_url.is_empty() && !token.is_empty() {
         Some(AppArgs {
             host_id,
             server_url,
@@ -313,19 +330,16 @@ fn parse_args() -> Option<AppArgs> {
             encoder,
             display_id,
             source_id: None,
+            // Typed by the user on this computer's command line.
+            untrusted: false,
         })
     } else {
         None
-    }
+    };
+    (parsed, warnings)
 }
 
 pub fn run() {
-    // Started with the computer by an entry of an earlier version (it hosted
-    // this computer or sat in the tray): the entry goes, and so does this.
-    if legacy_autostart::started_by_old_entry() {
-        legacy_autostart::remove();
-        return;
-    }
     if handle_single_instance() {
         return;
     }
@@ -374,8 +388,11 @@ pub fn run() {
             error!("Failed to set static APP_ARGS configuration OnceLock.");
             std::process::exit(1);
         }
-    } else {
-        info!("No link on the command line: showing the window that points to the web page.");
+    } else if !std::env::args().nth(1).is_some_and(|a| a.starts_with("lunaris://")) {
+        // Nothing to show: the client opens a computer from the Lunaris
+        // server's web page (Connect, "Open in the Lunaris app").
+        eprintln!("lunaris-client: open a computer from your Lunaris server's web page (\"Open in the Lunaris app\").");
+        return;
     }
 
     // ── GPU present auto-configuration ──────────────────────────────────────
@@ -504,14 +521,6 @@ pub fn run() {
     bridge::qobject::register_gpu_video_item_type();
     bridge::qobject::register_native_video_item_types();
 
-    // Updates: the automatic check (at start, then daily) and the notice
-    // and Updates panel of the window shown without a link. Not for a
-    // one-stream launch (lunaris:// link).
-    if APP_ARGS.get().is_none() {
-        // Earlier versions' start-with-the-computer entries go.
-        legacy_autostart::remove();
-        updater::service::init(updater::App::Client, &app_settings_dir());
-    }
 
     let mut engine = QQmlApplicationEngine::new();
 
@@ -527,7 +536,6 @@ pub fn run() {
     bridge::qobject::exec_widgets_application();
 
     // After an update the window quit: start the new version.
-    updater::restart::relaunch_if_requested();
 }
 
 /// `~/.lunaris` (Windows: `%USERPROFILE%\.lunaris`), where the app keeps its settings.
@@ -539,4 +547,48 @@ fn app_settings_dir() -> std::path::PathBuf {
     let dir = home.join(".lunaris");
     let _ = secure_fs::create_private_dir(&dir);
     dir
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn argv(a: &[&str]) -> Vec<String> {
+        std::iter::once("client").chain(a.iter().copied()).map(String::from).collect()
+    }
+
+    #[test]
+    fn cli_token_comes_from_the_environment() {
+        let (a, w) = parse_cli_args(&argv(&["--host-id", "h", "--server", "http://s"]), Some("envtok".into()), || None);
+        let a = a.unwrap();
+        assert_eq!(a.token, "envtok");
+        assert!(!a.untrusted);
+        assert!(w.is_empty());
+        // No token at all: no session.
+        let (a, _) = parse_cli_args(&argv(&["--host-id", "h", "--server", "http://s"]), None, || None);
+        assert!(a.is_none());
+    }
+
+    #[test]
+    fn cli_token_from_stdin() {
+        let (a, w) = parse_cli_args(&argv(&["--host-id", "h", "--server", "http://s", "--token", "-"]), Some("env".into()), || Some("stdintok\n".into()));
+        assert_eq!(a.unwrap().token, "stdintok");
+        assert!(w.is_empty());
+    }
+
+    #[test]
+    fn cli_token_argument_still_works_with_a_warning() {
+        let (a, w) = parse_cli_args(&argv(&["--host-id", "h", "--server", "http://s", "--token", "argtok", "--fps", "30"]), None, || None);
+        let a = a.unwrap();
+        assert_eq!(a.token, "argtok");
+        assert_eq!(a.fps, 30);
+        assert_eq!(w, vec![TOKEN_ARG_WARNING.to_string()]);
+    }
+
+    #[test]
+    fn single_instance_messages() {
+        assert_eq!(single_instance_message(&argv(&[])), "FOCUS");
+        assert_eq!(single_instance_message(&argv(&["lunaris://connect?x=1"])), "CONNECT lunaris://connect?x=1");
+        assert_eq!(single_instance_message(&argv(&["--host-id", "h"])), "FOCUS");
+    }
 }

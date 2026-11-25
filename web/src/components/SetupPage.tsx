@@ -117,7 +117,7 @@ export default function SetupPage({ apiBase, onDone, onClosed }: Props) {
               id="setupPassword"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              placeholder={t('At least 6 characters')}
+              placeholder={t('At least 10 characters')}
               autoComplete="new-password"
               required
               disabled={busy}

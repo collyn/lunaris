@@ -1,7 +1,7 @@
 # Lunaris agent installer for Windows (x64), made by the Lunaris server.
 #
 # In an elevated PowerShell ("Run as administrator"):
-#   $env:LUNARIS_INSTALL_TOKEN='TOKEN'; & ([scriptblock]::Create((irm https://SERVER/install/agent.ps1))) [-Name NAME]
+#   $env:LUNARIS_INSTALL_TOKEN='TOKEN'; [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12; & ([scriptblock]::Create((irm https://SERVER/install/agent.ps1))) [-Name NAME]
 # or saved as a file:
 #   $env:LUNARIS_INSTALL_TOKEN='TOKEN'; powershell -ExecutionPolicy Bypass -File .\agent.ps1 [-Name NAME]
 # (-Token TOKEN works too, but then the token shows in the process list.)
@@ -13,9 +13,18 @@
 # token (used once, then the agent signs in with its own key) and runs it as
 # the "Lunaris Agent" Windows service (LunarisAgentService), which starts at
 # boot.
+#
+# The installer runs only when its SHA-256 is the expected one: written in by
+# the server after it checked the signature of the release's SHA256SUMS
+# (Ed25519, the Lunaris release key), or else its line in SHA256SUMS fetched
+# here from GitHub over HTTPS (Windows PowerShell has no Ed25519 to check the
+# signature itself). Anything else stops the installation.
 param(
     [string]$Token = $env:LUNARIS_INSTALL_TOKEN,
-    [string]$Name = ''
+    [string]$Name = '',
+    # The agent installed here becomes this server's version; settings, key
+    # and server stay (no token needed).
+    [switch]$Update
 )
 
 $ErrorActionPreference = 'Stop'
@@ -28,6 +37,9 @@ $ProgressPreference = 'SilentlyContinue'
 $ServerUrl = '@@SERVER_URL@@'
 $Version = '@@VERSION@@'
 $CertSha256 = '@@CERT_SHA256@@'
+# SHA-256 of the installer, from the release's signed SHA256SUMS as the
+# server checked it (empty: from SHA256SUMS below).
+$PinnedInstaller = '@@SHA256_INSTALLER@@'
 $ReleaseBase = "https://github.com/collyn/lunaris/releases/download/v$Version"
 $AppName = 'Lunaris Agent'
 
@@ -64,8 +76,10 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
     Fail 'run this in PowerShell started with "Run as administrator" (the agent runs as a service to control every window)'
 }
 if (-not [Environment]::Is64BitOperatingSystem) { Fail 'only 64-bit Windows is supported' }
-if (-not $Token) { Fail 'missing install token: set $env:LUNARIS_INSTALL_TOKEN (copy the command from the server''s web page)' }
-if ($Token -notmatch '^lit_[A-Za-z0-9_-]{16,128}$') { Fail 'this is not an install token (they start with lit_)' }
+if (-not $Update) {
+    if (-not $Token) { Fail 'missing install token: set $env:LUNARIS_INSTALL_TOKEN (copy the command from the server''s web page)' }
+    if ($Token -notmatch '^lit_[A-Za-z0-9_-]{16,128}$') { Fail 'this is not an install token (they start with lit_)' }
+}
 if ($Name.Length -gt 128) { Fail '-Name is longer than 128 characters' }
 
 $tmp = Join-Path $env:TEMP ('lunaris-agent-' + [guid]::NewGuid().ToString('N'))
@@ -78,6 +92,34 @@ try {
     } catch {
         Fail "cannot download the installer (is version $Version released?): $($_.Exception.Message)"
     }
+
+    $installerName = 'lunaris-agent-installer-windows.exe'
+    $expected = $PinnedInstaller
+    if ($expected) {
+        Write-Host '==> Checking the installer against the release checksum the server verified'
+    } else {
+        Write-Host "==> Checking the installer against $ReleaseBase/SHA256SUMS"
+        $sumsFile = Join-Path $tmp 'SHA256SUMS'
+        try {
+            Invoke-WebRequest -Uri "$ReleaseBase/SHA256SUMS" -OutFile $sumsFile -UseBasicParsing
+        } catch {
+            Fail "cannot download SHA256SUMS, so the installer can't be checked: nothing is installed ($($_.Exception.Message))"
+        }
+        $lines = @(Get-Content -LiteralPath $sumsFile)
+        if ($lines.Count -eq 0 -or $lines[0] -ne "# lunaris $Version") {
+            Fail "SHA256SUMS is not the list of release ${Version}: nothing is installed"
+        }
+        foreach ($line in $lines) {
+            if ($line -match '^([0-9a-fA-F]{64}) [ *](.+)$' -and $Matches[2] -eq $installerName) { $expected = $Matches[1]; break }
+        }
+        if (-not $expected) { Fail "$installerName is not in SHA256SUMS of release ${Version}: nothing is installed" }
+        Write-Host '   (the signature of SHA256SUMS is not checked here: Windows PowerShell cannot check Ed25519; the list comes from GitHub over HTTPS)'
+    }
+    $actual = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash
+    if ($actual -ne $expected) {
+        Fail "the installer does not match its checksum (expected $expected, got $actual): nothing is installed"
+    }
+    Write-Host '   checksum OK'
 
     Write-Host "==> Installing $AppName $Version"
     $p = Start-Process -FilePath $installer -ArgumentList '/S' -Wait -PassThru
@@ -92,6 +134,14 @@ try {
     if (-not $dir) { $dir = Join-Path $env:ProgramFiles $AppName }
     $exe = Join-Path $dir 'lunaris-agent.exe'
     if (-not (Test-Path $exe)) { Fail "$exe is missing after the install" }
+
+    if ($Update) {
+        # The installer replaced the program and restarted the service, with
+        # the settings it had.
+        Write-Host ''
+        Write-Host "$AppName is now version $Version."
+        return
+    }
 
     # The config the service uses (agent/src/win_service.rs): --system.
     $enroll = @('--system', '--enroll', '--server', (Quote-Arg $ServerUrl))

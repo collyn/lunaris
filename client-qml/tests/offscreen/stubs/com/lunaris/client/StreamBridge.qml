@@ -42,8 +42,16 @@ StubBridge {
     function pollCursor() {}
     function pollEvents() {}
     function hasConnectionArgs() { return false; }
-    function pendingLinkInfo() { return ""; }
-    function answerPendingLink(accept) { return false; }
+    // The link waiting for an answer, as the bridge describes it ("" for none).
+    property string pendingLink: ""
+    // The answers given, newest last: [accept, trustAlways].
+    property var linkAnswers: []
+    function pendingLinkInfo() { return stub.pendingLink; }
+    function answerPendingLink(accept, trustAlways) {
+        stub.linkAnswers = stub.linkAnswers.concat([[accept, trustAlways === true]]);
+        stub.pendingLink = "";
+        return accept;
+    }
     function sendMouseMove(x, y, w, h, rx, ry, locked) {}
     function sendMouseClick(button, down) {}
     function sendMouseWheel(x, y) {}

@@ -102,6 +102,13 @@ if [ -d "$DATA" ]; then
     chmod 700 "$DATA"
 fi
 
+# A server run by hand on this computer (data in a user's folder): the
+# service takes it over while it has no account yet; otherwise the command
+# to do it is printed. Nothing is replaced. (server/src/takeover.rs)
+if [ -d /run/systemd/system ]; then
+    /usr/bin/lunaris-server import --auto || echo "lunaris-server: could not take over a server run by hand (see above)."
+fi
+
 # Settings: not a conffile (`lunaris-server install` may have written it
 # already), created once and then the admin's.
 if [ ! -e "$ENV_FILE" ]; then
@@ -157,7 +164,7 @@ if [ -z "$2" ] || [ "$had_db" = no ]; then
         echo "  The page asks for the one-time setup code in $DATA/setup_code.txt"
         echo "  (written when the service first starts):"
         echo "    sudo cat $DATA/setup_code.txt"
-        echo "  Or take over the desktop app's built-in server (service stopped):"
+        echo "  Or take over a server run by hand elsewhere (service stopped):"
         echo "    sudo lunaris-server import /home/<user>/.local/share/lunaris-server"
     fi
     echo "  Settings: $ENV_FILE   Logs: journalctl -u lunaris-server"

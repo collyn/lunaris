@@ -76,6 +76,39 @@ pub fn write_private(path: &std::path::Path, contents: &str) -> std::io::Result<
     }
 }
 
+/// A secret file the server reads (token, keys) made readable by its owner
+/// only, without touching its content: files written before
+/// `write_private` existed may be 0644. Unix only (Windows: the data folder's
+/// ACL, win_acl.rs); a link, a file of another owner or an error is left
+/// alone. Returns whether the mode was changed.
+pub fn tighten_private(path: &std::path::Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let Ok(meta) = std::fs::symlink_metadata(path) else { return false };
+        // SAFETY: geteuid has no preconditions and cannot fail.
+        let me = unsafe { libc::geteuid() };
+        if !meta.file_type().is_file() || meta.uid() != me || meta.mode() & 0o077 == 0 {
+            return false;
+        }
+        match std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)) {
+            Ok(()) => {
+                tracing::info!("Made {:?} readable by its owner only (it was {:o})", path, meta.mode() & 0o777);
+                true
+            }
+            Err(e) => {
+                tracing::warn!("Cannot make {:?} readable by its owner only: {}", path, e);
+                false
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        false
+    }
+}
+
 /// Moves the server's files (`SERVER_FILES`) from `old` to `new` when `new`
 /// has no database yet and `old` has one: the Windows service's data moved
 /// from `%ProgramData%\Lunaris` (shared with the agent) to its own folder.
@@ -145,6 +178,29 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("lunaris-paths-{}-{}", name, crate::security::random_hex(6)));
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    /// An old secret file readable by others is tightened, its content kept.
+    #[cfg(unix)]
+    #[test]
+    fn old_secret_files_are_tightened_not_changed() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = temp("tighten");
+        let file = dir.join("server_token.txt");
+        std::fs::write(&file, "old-token\n").unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(tighten_private(&file));
+        assert_eq!(std::fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "old-token\n");
+        // Already private, missing, or a link: nothing done.
+        assert!(!tighten_private(&file));
+        assert!(!tighten_private(&dir.join("missing")));
+        let target = dir.join("target");
+        std::fs::write(&target, "x").unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o644)).unwrap();
+        std::os::unix::fs::symlink(&target, dir.join("link")).unwrap();
+        assert!(!tighten_private(&dir.join("link")));
+        assert_eq!(std::fs::metadata(&target).unwrap().permissions().mode() & 0o777, 0o644);
     }
 
     #[cfg(unix)]

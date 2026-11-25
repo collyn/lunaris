@@ -20,8 +20,11 @@ Popup {
     property string systemKeysKind: "grab"
     // The controllers' live test is shown.
     property bool testerShown: false
+    // main.qml: the game mouse of the computer shown is on.
+    property bool gameMouseOn: false
 
     signal statsToggled(bool on)
+    signal gameMouseToggled(bool on)
     signal renderBackendPicked(string backend)
 
     width: Math.min(440, parent ? parent.width - 32 : 440)
@@ -192,6 +195,19 @@ Popup {
                 active: panel.testerShown && panel.visible
                 visible: active
                 sourceComponent: GamepadTester { objectName: "gamepadTester"; source: bridge }
+            }
+
+            // ===== Mouse =====
+            SectionTitle { text: I18n.t("Mouse") }
+            SettingRow {
+                title: I18n.t("Game mouse")
+                hint: I18n.t("A USB mouse the remote computer plugs in, for games with an anti-cheat (League of Legends, Valorant) that ignore the remote mouse. When on, clicking the picture locks the pointer; hold Esc to let it go. Needs usbip-win2 on that Windows computer.")
+                Toggle {
+                    objectName: "gameMouseToggle"
+                    checked: panel.gameMouseOn
+                    onToggled: panel.gameMouseToggled(checked)
+                    Accessible.name: I18n.t("Game mouse")
+                }
             }
 
             // ===== Keyboard =====

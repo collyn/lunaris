@@ -78,7 +78,12 @@ if [ "$1" = configure ]; then
         else
             # Upgrade: keep the admin's choices, run the new binary. (Agents
             # run by users restart themselves once their file is replaced.)
-            systemctl try-restart lunaris-capture.service lunaris-agent-system.service >/dev/null 2>&1 || true
+            # The capture service runs while enabled, also when something
+            # stopped it (try-restart alone would leave it off).
+            if systemctl -q is-enabled lunaris-capture.service 2>/dev/null; then
+                systemctl restart lunaris-capture.service >/dev/null 2>&1 || true
+            fi
+            systemctl try-restart lunaris-agent-system.service >/dev/null 2>&1 || true
         fi
     fi
 fi

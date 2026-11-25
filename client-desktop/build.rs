@@ -1,7 +1,7 @@
 //! Windows: the program's icon and its manifest.
 //!
-//! The manifest asks for no administrator rights (`asInvoker`): the app only
-//! shows streams. Earlier versions were also the host agent and asked for
+//! The manifest asks for no administrator rights (`asInvoker`): the client
+//! only shows streams. Earlier versions were also the host agent and asked for
 //! them, to send input to elevated windows of this computer; that is
 //! lunaris-agent's now.
 

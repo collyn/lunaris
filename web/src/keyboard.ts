@@ -102,7 +102,32 @@ export const keyboardLockFor = (fullscreen: boolean, pointerLocked: boolean, sys
   return 'none';
 };
 
+/** How long Esc is held to let the pointer go. Shorter than the browser's
+ *  own hold under Keyboard Lock (2 s, after which it leaves full screen by
+ *  itself, WICG Keyboard Lock): a 3 s hold was cut by the browser
+ *  (2026-11-24). The desktop client, without that limit, keeps 3 s. */
+export const ESCAPE_HOLD_MS = 1500;
+
 type KeyboardLockApi = { lock?: (codes?: string[]) => Promise<void>; unlock?: () => void };
+
+/** Whether Esc can be kept from the browser while the pointer is locked
+ *  (Keyboard Lock: a tap goes to the remote computer, a hold lets go).
+ *  Chromium gives it only to secure pages (https, localhost); on an http
+ *  page, in Safari and in Firefox the browser lets go of the pointer at the
+ *  first Esc. */
+export const escapeCanBeKept = (keyboard: KeyboardLockApi | undefined, secure: boolean): boolean =>
+  secure && !!keyboard && typeof keyboard.lock === 'function';
+
+/** This page over the server's https port (`/api/server/ports`), to keep
+ *  Esc; null when the server has none, or the page is https already. */
+export const secureAddress = (
+  page: { protocol: string; hostname: string; pathname: string; search: string },
+  httpsPort: number | null | undefined,
+): string | null => {
+  if (page.protocol === 'https:' || !httpsPort) return null;
+  const host = page.hostname.includes(':') ? `[${page.hostname}]` : page.hostname;
+  return `https://${host}${httpsPort === 443 ? '' : `:${httpsPort}`}${page.pathname}${page.search}`;
+};
 
 /** Applies [`keyboardLockFor`]; false when the browser has no Keyboard Lock. */
 export const applyKeyboardLock = (keyboard: KeyboardLockApi | undefined, want: 'all' | 'escape' | 'none'): boolean => {

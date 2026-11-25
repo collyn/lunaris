@@ -136,11 +136,8 @@ pub async fn create_user(
             Json(serde_json::json!({ "error": "Username cannot be empty" })),
         ));
     }
-    if payload.password.len() < 6 {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "error": "Password must be at least 6 characters" })),
-        ));
+    if let Err(why) = crate::auth::check_new_password(&payload.password) {
+        return Err((StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": why }))));
     }
     let role = payload.role.unwrap_or_else(|| "user".to_string());
     if role != "admin" && role != "user" {
@@ -250,11 +247,8 @@ pub async fn update_user(
     }
 
     if let Some(ref password) = payload.password {
-        if password.len() < 6 {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({ "error": "Password must be at least 6 characters" })),
-            ));
+        if let Err(why) = crate::auth::check_new_password(password) {
+            return Err((StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": why }))));
         }
         let hashed = hash_password_blocking(password.clone()).await.map_err(|e| {
             error!("Hashing error: {}", e);
@@ -426,10 +420,26 @@ pub async fn delete_user(
     Ok(StatusCode::OK)
 }
 
+// POST /api/auth/logout-all
+/// Signs the user out everywhere: every token of theirs stops working (this
+/// one too) and their open connections close, as after a new password.
+pub async fn logout_all(
+    user: AuthenticatedUser,
+    State(state): State<Arc<SignalingState>>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    crate::auth::revoke_sessions(&state, &user.user_id).await.map_err(|e| {
+        error!("Database error: {}", e);
+        (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": "Internal Database Error" })))
+    })?;
+    info!("User {} signed out everywhere", user.username);
+    Ok(Json(serde_json::json!({ "signed_out": true })))
+}
+
 // POST /api/admin/hosts/:id/reset-key
 /// Forgets a host's agent key (e.g. the agent lost its config): the next
-/// agent registering with this id and a key stores a new one. The host keeps
-/// its groups.
+/// agent registering with this id and a key stores a new one. For a
+/// computer added by address (also as "address:<address>"): forgets the
+/// pinned certificate. The host keeps its groups.
 pub async fn reset_host_key(
     admin: AdminUser,
     State(state): State<Arc<SignalingState>>,
@@ -447,7 +457,16 @@ pub async fn reset_host_key(
                 Json(serde_json::json!({ "error": "Internal Database Error" })),
             )
         })?;
-    if done.rows_affected() == 0 {
+    // A computer added by address: the certificate pinned for it goes, the
+    // next connection pins the one it answers with then (links.rs).
+    let link = crate::links::reset_pin(&state, &host_id).await.map_err(|e| {
+        error!("Database error: {}", e);
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": "Internal Database Error" })),
+        )
+    })?;
+    if done.rows_affected() == 0 && !link {
         return Err((
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({ "error": "Host not found" })),
@@ -892,6 +911,15 @@ pub async fn list_turn_servers(
     Ok((StatusCode::OK, Json(servers)))
 }
 
+// GET /api/admin/turn-servers/builtin
+/// The relay the server runs itself (turn.rs): not in the table above.
+pub async fn builtin_turn_status(
+    _admin: AdminUser,
+    State(state): State<Arc<SignalingState>>,
+) -> Json<crate::turn::BuiltinTurnStatus> {
+    Json(crate::turn::status(state.turn.as_deref()).await)
+}
+
 // POST /api/admin/turn-servers
 pub async fn create_turn_server(
     _admin: AdminUser,
@@ -1113,5 +1141,23 @@ mod authz_tests {
         assert_eq!(update(&state, "a1", "a2", change(Some("user"), None)).await, StatusCode::OK);
         assert_eq!(ended(&mut agent_rx).as_deref(), Some("c-a2"));
         assert!(state.client_to_agent.read().unwrap().is_empty());
+    }
+
+    /// New passwords: at least 10 characters, at most 71 bytes (bcrypt
+    /// would cut longer ones); the hash is made without cutting.
+    #[tokio::test]
+    async fn new_passwords_follow_the_rules() {
+        let state = state().await;
+        let make = |pw: &str| CreateUserRequest { username: format!("n{}", pw.len()), password: pw.into(), role: None };
+        for (pw, ok) in [("short-pw1", false), ("ten-chars!", true), (&"x".repeat(72) as &str, false), (&"y".repeat(71) as &str, true)] {
+            let r = create_user(as_admin("a1"), State(state.clone()), Json(make(pw))).await;
+            assert_eq!(r.is_ok(), ok, "{}", pw.len());
+        }
+        let set = |pw: &str| Json(UpdateUserRequest { role: None, is_active: None, password: Some(pw.into()), group_ids: None });
+        assert_eq!(update(&state, "a1", "u1", set("nine-char")).await, StatusCode::BAD_REQUEST);
+        assert_eq!(update(&state, "a1", "u1", set("a-good-password")).await, StatusCode::OK);
+        let hash: String = sqlx::query_scalar("SELECT password_hash FROM users WHERE id = 'u1'").fetch_one(&state.db).await.unwrap();
+        assert!(crate::auth::verify_password("a-good-password", &hash));
+        assert!(crate::auth::hash_password(&"z".repeat(72)).is_err(), "never cut silently");
     }
 }

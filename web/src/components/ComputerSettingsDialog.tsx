@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import { t } from '../i18n';
-import { portProblem, settingsChanges, type ComputerSettings } from '../computerSettings';
+import { accessPasswordOk, portProblem, settingsChanges, type ComputerSettings } from '../computerSettings';
 
 /**
  * A Lunaris computer's own settings (its agent's: direct access, how
@@ -157,7 +157,7 @@ export default function ComputerSettingsDialog({ hostId, hostName, token, apiBas
   };
 
   const current = CATEGORIES.find(c => c.key === category)!;
-  const customOk = customPassword.length >= 6 && customPassword.length <= 128 && customPassword.trim() === customPassword;
+  const customOk = accessPasswordOk(customPassword);
 
   return (
     <div className="ssd-overlay" onMouseDown={(e) => { if (e.target === e.currentTarget && !busy) onClose(); }}>
@@ -215,7 +215,7 @@ export default function ComputerSettingsDialog({ hostId, hostName, token, apiBas
                   <Row title={t('New random password')} hint={t('Clients that use the old password have to be given the new one.')}>
                     <button type="button" className="btn-secondary" disabled={!editable || linked} onClick={() => passwordAction('random')}>{t('Generate')}</button>
                   </Row>
-                  <Row title={t('Set a password')} hint={t('6 to 128 characters. Sent once to the computer over its secure connection.')}>
+                  <Row title={t('Set a password')} hint={t('12 to 128 characters. Sent once to the computer over its secure connection.')}>
                     <div className="csd-password">
                       <input
                         type="password" autoComplete="new-password" className="csd-input"
@@ -288,7 +288,17 @@ export default function ComputerSettingsDialog({ hostId, hostName, token, apiBas
                   <Row title={t('Allow RustDesk clients')} hint={t('RustDesk can connect to this computer by its IP address (unencrypted: for a LAN or a VPN), with the access password.')}>
                     <Switch label={t('Allow RustDesk clients')} checked={draft.rustdesk_enabled} disabled={!editable} onChange={(v) => set('rustdesk_enabled', v)} />
                   </Row>
-                  <Row title={t('RustDesk port')} hint={t("RustDesk's own is 21118.")}>
+                  {draft.rustdesk_enabled && (
+                    <div className="install-warning csd-warning" role="note">
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                        <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+                        <line x1="12" y1="9" x2="12" y2="13" />
+                        <line x1="12" y1="17" x2="12.01" y2="17" />
+                      </svg>
+                      <span>{t('RustDesk connections are not encrypted: the picture, keystrokes and the access password cross the network readable by anyone on it. Allow them only on a LAN or through a VPN, never from the internet.')}</span>
+                    </div>
+                  )}
+                  <Row title={t('RustDesk port')} hint={t('Default 21128. RustDesk itself uses 21118, often taken when RustDesk is installed here. In RustDesk, connect to address:port.')}>
                     <input
                       type="number" min={1024} max={65535} className="csd-input csd-port"
                       value={Number.isNaN(draft.rustdesk_port) ? '' : draft.rustdesk_port} disabled={!editable || !draft.rustdesk_enabled}

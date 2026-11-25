@@ -43,6 +43,12 @@ pub const MAX_SCORE: u32 = 26;
 pub const CHECKS_NEEDED: u32 = 3;
 /// At most one check in this time.
 pub const CHECK_INTERVAL: Duration = Duration::from_millis(30);
+/// After this many misses in a row the checks slow down to
+/// `SLOW_CHECK_INTERVAL`: a drag that is not a window's (selecting an area)
+/// must not read the picture all along (web/src/pointerInPicture.ts: there
+/// each check copies a frame back from the GPU and the stream skips frames).
+pub const FAST_MISSES: u32 = 10;
+pub const SLOW_CHECK_INTERVAL: Duration = Duration::from_millis(300);
 /// Positions sent longer ago are not looked at (the newest one always is).
 pub const POSITION_WINDOW: Duration = Duration::from_millis(600);
 pub const MAX_POSITIONS: usize = 16;
@@ -215,14 +221,27 @@ pub fn check(templates: &[Template], luma: &LumaView, positions: &[(i32, i32)]) 
 }
 
 /// The decision over drags: a drag is on while the left button is held and
-/// the host says the pointer may be in the picture.
+/// the host says the pointer may be in the picture, or the host is a
+/// Windows computer.
 #[derive(Default)]
 pub struct Drag {
     left_held: bool,
     maybe: bool,
+    /// The host is a Windows computer: every drag looks (web:
+    /// `looksForPointerInPicture`). Windows draws its pointer into the
+    /// picture while a window is dragged; the host says so
+    /// (`in_window_move_size`) only for the system's own move loop, not for
+    /// the many apps that move their windows themselves.
+    windows_host: bool,
+    /// The host says app-dragged windows in `in_window_move_size` itself
+    /// (`window_drag_watched`, agent window_drag.rs): its drags are not
+    /// looked at.
+    window_drag_watched: bool,
     active: bool,
     checks: u32,
     run: u32,
+    /// Checks in a row that did not find it.
+    misses: u32,
     found_after: Option<u32>,
     scale: Option<f32>,
     /// Changes whenever a drag starts or ends: a check started in one drag
@@ -244,8 +263,20 @@ impl Drag {
         self.update()
     }
 
+    /// The host's system, as it said it ("windows", "linux", ...).
+    pub fn set_host_os(&mut self, host_os: &str) -> Option<String> {
+        self.windows_host = host_os.eq_ignore_ascii_case("windows");
+        self.update()
+    }
+
+    /// The host's `window_drag_watched`.
+    pub fn set_window_drag_watched(&mut self, watched: bool) -> Option<String> {
+        self.window_drag_watched = watched;
+        self.update()
+    }
+
     fn update(&mut self) -> Option<String> {
-        let on = self.left_held && self.maybe;
+        let on = self.left_held && (self.maybe || (self.windows_host && !self.window_drag_watched));
         if on == self.active {
             return None;
         }
@@ -261,6 +292,7 @@ impl Drag {
         };
         self.checks = 0;
         self.run = 0;
+        self.misses = 0;
         self.found_after = None;
         self.scale = None;
         line
@@ -284,6 +316,11 @@ impl Drag {
         self.active && self.found_after.is_none()
     }
 
+    /// The least time between two checks now: longer after many misses.
+    pub fn check_interval(&self) -> Duration {
+        if self.misses >= FAST_MISSES { SLOW_CHECK_INTERVAL } else { CHECK_INTERVAL }
+    }
+
     /// The scale that matched in this drag: the only one still tried.
     pub fn scale(&self) -> Option<f32> {
         self.scale
@@ -299,11 +336,15 @@ impl Drag {
             Some(scale) => {
                 self.scale.get_or_insert(scale);
                 self.run += 1;
+                self.misses = 0;
                 if self.run >= CHECKS_NEEDED {
                     self.found_after = Some(self.checks);
                 }
             }
-            None => self.run = 0,
+            None => {
+                self.run = 0;
+                self.misses += 1;
+            }
         }
     }
 }
@@ -437,7 +478,8 @@ impl Tracker {
         if !self.wanted() || picture_width <= 0 || picture_height <= 0 {
             return None;
         }
-        if self.last_check.is_some_and(|t| now.duration_since(t) < CHECK_INTERVAL) {
+        let interval = self.drag.check_interval();
+        if self.last_check.is_some_and(|t| now.duration_since(t) < interval) {
             return None;
         }
         self.last_check = Some(now);
@@ -530,8 +572,10 @@ fn log_end(line: Option<String>) {
 pub fn reset() {
     with_tracker(|t| {
         let reported = t.reported;
+        let windows_host = t.drag.windows_host;
         *t = Tracker::default();
         t.reported = reported;
+        t.drag.windows_host = windows_host;
     });
 }
 
@@ -543,6 +587,15 @@ pub fn note_cursor(cursor: CursorImage) {
 /// `pointer_maybe_in_picture` of a `host_cursor` message (absent = false).
 pub fn note_maybe(maybe: bool) {
     log_end(with_tracker(|t| t.drag_mut().set_maybe(maybe)));
+}
+
+/// The host's system, from its capabilities.
+pub fn note_window_drag_watched(watched: bool) {
+    log_end(with_tracker(|t| t.drag_mut().set_window_drag_watched(watched)));
+}
+
+pub fn note_host_os(host_os: &str) {
+    log_end(with_tracker(|t| t.drag_mut().set_host_os(host_os)));
 }
 
 /// The viewer's left button went down or up.
@@ -882,6 +935,29 @@ mod tests {
         assert_eq!(found(&Picture::flat(255), &white, &[(100, 100)]), None);
     }
 
+    #[test]
+    fn every_drag_on_a_windows_host_looks() {
+        // Apps that move their own windows: Windows draws the pointer into
+        // the picture and the host cannot say so.
+        let mut drag = Drag::default();
+        drag.set_host_os("windows");
+        drag.set_left_held(true);
+        assert!(drag.wants_check());
+        drag.set_left_held(false);
+        drag.set_host_os("linux");
+        drag.set_left_held(true);
+        assert!(!drag.wants_check(), "elsewhere only when the host says maybe");
+        drag.set_maybe(true);
+        assert!(drag.wants_check());
+        // A Windows agent that watches window drags itself: not looked at.
+        drag.set_left_held(false);
+        drag.set_maybe(false);
+        drag.set_host_os("windows");
+        drag.set_window_drag_watched(true);
+        drag.set_left_held(true);
+        assert!(!drag.wants_check());
+    }
+
     // 8. the decision over a drag, and its log line
     #[test]
     fn three_consecutive_checks_decide() {
@@ -921,6 +997,26 @@ mod tests {
         assert_eq!(drag.set_maybe(true), None);
         assert!(!drag.wants_check());
         assert_eq!(drag.set_maybe(false), None);
+    }
+
+    #[test]
+    fn a_drag_that_never_finds_it_checks_less_often() {
+        let mut drag = Drag::default();
+        drag.set_host_os("windows");
+        drag.set_left_held(true);
+        for _ in 0..FAST_MISSES {
+            assert_eq!(drag.check_interval(), CHECK_INTERVAL);
+            drag.record_check(None);
+        }
+        assert_eq!(drag.check_interval(), SLOW_CHECK_INTERVAL);
+        drag.record_check(Some(1.0));
+        assert_eq!(drag.check_interval(), CHECK_INTERVAL, "fast again once found");
+        for _ in 0..FAST_MISSES {
+            drag.record_check(None);
+        }
+        drag.set_left_held(false);
+        drag.set_left_held(true);
+        assert_eq!(drag.check_interval(), CHECK_INTERVAL, "a new drag starts fast");
     }
 
     #[test]

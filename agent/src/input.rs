@@ -156,6 +156,10 @@ pub enum InboundPacket {
         action: MouseButtonAction,
         button: MouseButton,
     },
+    /// The viewer turns the game mouse on or off (agent/src/game_mouse).
+    GameMouse {
+        on: bool,
+    },
     HighResScroll {
         delta_x: i16,
         delta_y: i16,
@@ -338,6 +342,11 @@ impl InboundPacket {
                     let delta_x = buffer.get_i8();
                     let delta_y = buffer.get_i8();
                     Some(InboundPacket::Scroll { delta_x, delta_y })
+                } else if ty == 5 {
+                    if buffer.remaining() < 1 {
+                        return None;
+                    }
+                    Some(InboundPacket::GameMouse { on: buffer.get_u8() != 0 })
                 } else {
                     None
                 }
@@ -454,6 +463,15 @@ mod tests {
         v.extend_from_slice(&(text.len() as u16).to_be_bytes());
         v.extend_from_slice(text.as_bytes());
         v
+    }
+
+    #[test]
+    fn the_viewer_turns_the_game_mouse_on_and_off() {
+        let on = InboundPacket::deserialize(TransportChannel(TransportChannelId::MOUSE_RELIABLE), &[5, 1]);
+        assert!(matches!(on, Some(InboundPacket::GameMouse { on: true })));
+        let off = InboundPacket::deserialize(TransportChannel(TransportChannelId::MOUSE_RELIABLE), &[5, 0]);
+        assert!(matches!(off, Some(InboundPacket::GameMouse { on: false })));
+        assert!(InboundPacket::deserialize(TransportChannel(TransportChannelId::MOUSE_RELIABLE), &[5]).is_none());
     }
 
     #[test]

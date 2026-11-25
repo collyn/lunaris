@@ -306,7 +306,7 @@ async fn connect(server_url: String, token: String, host_id: String, source_id: 
             .ws
     } else {
         let encoded: String = url::form_urlencoded::byte_serialize(token.as_bytes()).collect();
-        let ws_url = format!("{}/ws/client?token={}{}", server_url.trim_end_matches('/').replacen("http", "ws", 1), encoded, crate::session_info::client_name_query());
+        let ws_url = format!("{}/ws/client?token={}{}", crate::bridge::signaling_ws_base(&server_url), encoded, crate::session_info::client_name_query());
         tokio::time::timeout(Duration::from_secs(10), tokio_tungstenite::connect_async(ws_url.as_str()))
             .await
             .map_err(|_| "cannot reach the server".to_string())?

@@ -21,7 +21,6 @@ export type StreamSettingsValues = {
   encoder: string;
   display: string;
   useCanvasRenderer: boolean;
-  useNativeClient: boolean;
 };
 
 /** Settings of the viewing device (not of the remote computer), applied right away. */
@@ -53,7 +52,11 @@ type Props = {
   sourceOnly?: boolean;
   /** What is known about the computer (name, status, addresses), shown
    *  read-only first under "Remote computer". */
-  hostInfo?: { label: string; value: string }[];
+  /** In a session with a Windows computer: its game mouse (src/gameMouse.ts).
+   *  `available`: what its agent said ("usbip", "none", or nothing). */
+  gameMouse?: { available?: string; on: boolean; setOn: (on: boolean) => void };
+  /** Rows of "This computer"; a row may add a line under it and a link. */
+  hostInfo?: { label: string; value: string; note?: string; link?: { href: string; label: string } }[];
   values: StreamSettingsValues;
   onChange: <K extends keyof StreamSettingsValues>(key: K, value: StreamSettingsValues[K]) => void;
   onCancel: () => void;
@@ -73,7 +76,6 @@ type Props = {
    *  own (`ownSettings`: it has some now). */
   onUseDefaults?: () => void;
   ownSettings?: boolean;
-  showNativeClient?: boolean;
   /** This device's display and sound in a session. Without it the dialog
    *  keeps them itself, as this browser's defaults. */
   viewer?: ViewerSettings;
@@ -170,8 +172,8 @@ const useStoredViewer = (): ViewerSettings => {
  * same layout and choices.
  */
 export default function StreamSettingsDialog({
-  hostName, hostAddress, sourceOnly, hostInfo, values, onChange, onCancel, onSave, saveLabel, footerNote, displays, unsupportedCodecs = [],
-  codecLabels = {}, encoders = [], showNativeClient, viewer: viewerProp, onUseDefaults, ownSettings,
+  hostName, hostAddress, sourceOnly, hostInfo, gameMouse, values, onChange, onCancel, onSave, saveLabel, footerNote, displays, unsupportedCodecs = [],
+  codecLabels = {}, encoders = [], viewer: viewerProp, onUseDefaults, ownSettings,
 }: Props) {
   const [category, setCategory] = useState<Category>('video');
   // Ask the remote computer to record its microphone too (sent with the
@@ -272,11 +274,6 @@ export default function StreamSettingsDialog({
                   <Row title={t('Canvas renderer')} hint={t('Draws frames on a canvas as soon as they are decoded. Can lower latency, but uses about twice the CPU. Not available in every browser.') + (canvasSupported ? '' : ' ' + t('(not supported by this browser)'))}>
                     <Switch label={t('Canvas renderer')} checked={values.useCanvasRenderer && canvasSupported} disabled={!canvasSupported} onChange={(v) => onChange('useCanvasRenderer', v)} />
                   </Row>
-                  {showNativeClient && (
-                    <Row title={t('Desktop app')} hint={t('Open sessions in the Lunaris desktop app instead of this browser.')}>
-                      <Switch label={t('Desktop app')} checked={values.useNativeClient} onChange={(v) => onChange('useNativeClient', v)} />
-                    </Row>
-                  )}
                 </div>
               </>
             )}
@@ -359,7 +356,13 @@ export default function StreamSettingsDialog({
                       {hostInfo.map(item => (
                         <div className="ssd-info-row" key={item.label}>
                           <dt>{item.label}</dt>
-                          <dd>{item.value}</dd>
+                          <dd>
+                            {item.value}
+                            {item.note && <span className="ssd-info-note">{item.note}</span>}
+                            {item.link && (
+                              <a className="ssd-info-link" href={item.link.href} target="_blank" rel="noopener noreferrer">{item.link.label}</a>
+                            )}
+                          </dd>
                         </div>
                       ))}
                     </dl>
@@ -416,6 +419,26 @@ export default function StreamSettingsDialog({
                       <option value="off">{t('Never')}</option>
                     </select>
                   </Row>
+                  {gameMouse && (
+                    <Row
+                      title={t('Game mouse')}
+                      hint={gameMouse.available === 'usbip'
+                        ? t('A USB mouse the remote computer plugs in, for games with an anti-cheat (League of Legends, Valorant) that ignore the remote mouse. When on, clicking the picture locks the pointer; hold Esc to let it go. Applies right away.')
+                        : gameMouse.available === 'none'
+                          ? t('Needs usbip-win2 on the remote computer: install it there and restart its agent.')
+                          : t('Needs agent 0.7.8 or newer on the remote computer.')}
+                    >
+                      <select
+                        value={gameMouse.on && gameMouse.available === 'usbip' ? 'on' : 'off'}
+                        aria-label={t('Game mouse')}
+                        disabled={gameMouse.available !== 'usbip'}
+                        onChange={(e) => gameMouse.setOn(e.target.value === 'on')}
+                      >
+                        <option value="off">{t('Off')}</option>
+                        <option value="on">{t('On')}</option>
+                      </select>
+                    </Row>
+                  )}
                 </div>
               </>
             )}

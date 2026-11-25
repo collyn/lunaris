@@ -3,11 +3,21 @@
 #
 #   curl -fsSL https://SERVER/install/agent.sh | sudo LUNARIS_INSTALL_TOKEN='TOKEN' bash -s -- [--name NAME]
 #   (or: ... | sudo bash -s -- --token TOKEN [--name NAME])
+#   curl -fsSL https://SERVER/install/agent.sh | sudo bash -s -- --update
+#
+# --update: the agent installed here (package or AppImage) becomes this
+# server's version; nothing else changes (no token, the agent keeps its
+# settings and its place on the server). The same checks as an install.
 #
 # Installs the Lunaris agent of this server's version from GitHub Releases
 # (the .deb with apt, otherwise the AppImage in /opt/lunaris-agent) and joins
 # it to the server with the install token (used once, then the agent signs in
-# with its own key). The agent has no window; it runs as a service:
+# with its own key). Every downloaded file is checked before it is installed:
+# its SHA-256 must be the one in the release's SHA256SUMS, whose Ed25519
+# signature is checked against the Lunaris release key (by the server, which
+# then writes the expected values into this script, or else here with
+# OpenSSL 3); anything else stops the installation. The agent has no window;
+# it runs as a service:
 #   - desktop: the systemd user service lunaris-agent of the desktop user
 #     (shares that user's screen), plus the lunaris-capture service (root:
 #     unattended capture on Wayland without the portal prompt) and, with apt,
@@ -28,11 +38,19 @@
 #   --desktop       the desktop user's service, even without a graphical session now
 #   --no-helper     do not install the approval helper (desktop, apt)
 #   --appimage      use the AppImage even where apt is available
+#   --update        update the agent installed here (no token needed)
 set -euo pipefail
 
 SERVER_URL='@@SERVER_URL@@'
 VERSION='@@VERSION@@'
 CERT_SHA256='@@CERT_SHA256@@'
+# The Lunaris release signing key (Ed25519, the base64 of a PEM public key).
+RELEASE_KEY='@@RELEASE_KEY@@'
+# The SHA-256 of the release files, written in by the server after it
+# checked the release's signed SHA256SUMS (empty: checked here instead).
+PINNED_AGENT_DEB='@@SHA256_AGENT_DEB@@'
+PINNED_HELPER_DEB='@@SHA256_HELPER_DEB@@'
+PINNED_APPIMAGE='@@SHA256_APPIMAGE@@'
 RELEASE_BASE="https://github.com/collyn/lunaris/releases/download/v${VERSION}"
 INSTALL_DIR=/opt/lunaris-agent
 SYSTEM_DATA=/var/lib/lunaris-agent
@@ -46,6 +64,7 @@ TARGET_USER="${SUDO_USER:-}"
 FORCE_APPIMAGE=0
 MODE=""
 HELPER=1
+UPDATE=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --token) [ $# -ge 2 ] || die "--token needs a value"; TOKEN="$2"; shift 2 ;;
@@ -58,18 +77,22 @@ while [ $# -gt 0 ]; do
         --desktop) MODE=desktop; shift ;;
         --no-helper) HELPER=0; shift ;;
         --appimage) FORCE_APPIMAGE=1; shift ;;
-        -h|--help) sed -n '2,31p' "$0" 2>/dev/null || true; exit 0 ;;
+        --update) UPDATE=1; shift ;;
+        -h|--help) sed -n '2,35p' "$0" 2>/dev/null || true; exit 0 ;;
         *) die "unknown option: $1" ;;
     esac
 done
 
-[ -n "$TOKEN" ] || die "missing install token: set LUNARIS_INSTALL_TOKEN or pass --token (copy the command from the server's web page)"
-[[ "$TOKEN" =~ ^lit_[A-Za-z0-9_-]{16,128}$ ]] || die "this is not an install token (they start with lit_)"
+if [ "$UPDATE" -eq 0 ]; then
+    [ -n "$TOKEN" ] || die "missing install token: set LUNARIS_INSTALL_TOKEN or pass --token (copy the command from the server's web page)"
+    [[ "$TOKEN" =~ ^lit_[A-Za-z0-9_-]{16,128}$ ]] || die "this is not an install token (they start with lit_)"
+fi
 [ "${#NAME}" -le 128 ] || die "--name is longer than 128 characters"
 [ "$(uname -s)" = Linux ] || die "this installer is for Linux"
 [ "$(uname -m)" = x86_64 ] || die "only x86_64 (amd64) computers are supported, this one is $(uname -m)"
 [ "$(id -u)" -eq 0 ] || die "run as root: curl -fsSL <url>/install/agent.sh | sudo LUNARIS_INSTALL_TOKEN=<token> bash -s"
 command -v curl >/dev/null || die "curl is needed"
+command -v sha256sum >/dev/null || die "sha256sum is needed (coreutils)"
 SYSTEMD=0
 if [ -d /run/systemd/system ] && command -v systemctl >/dev/null; then SYSTEMD=1; fi
 
@@ -90,7 +113,9 @@ has_desktop() {
     return 1
 }
 
-if [ -z "$MODE" ]; then
+if [ "$UPDATE" -eq 1 ]; then
+    :  # What is installed decides (below).
+elif [ -z "$MODE" ]; then
     if [ -z "$TARGET_USER" ] || [ "$TARGET_USER" = root ]; then
         MODE=headless
     elif has_desktop; then
@@ -99,7 +124,9 @@ if [ -z "$MODE" ]; then
         MODE=headless
     fi
 fi
-if [ "$MODE" = desktop ]; then
+if [ "$UPDATE" -eq 1 ]; then
+    :
+elif [ "$MODE" = desktop ]; then
     if [ -z "$TARGET_USER" ] || [ "$TARGET_USER" = root ]; then
         die "the desktop agent runs in a desktop user's session, not as root. Run this with sudo from that user's account, add --user <name>, or use --headless."
     fi
@@ -123,11 +150,93 @@ download() {
         || die "cannot download $RELEASE_BASE/$1 (is version $VERSION released?)"
 }
 
+# The release's SHA256SUMS, checked once: its signature with the release key
+# (OpenSSL 3 can check Ed25519; without it only the HTTPS download from
+# GitHub vouches for the list) and its first line, which names the version.
+SUMS=""
+load_sums() {
+    [ -n "$SUMS" ] && return 0
+    SUMS="$tmp/SHA256SUMS"
+    curl -fsSL --proto '=https' --tlsv1.2 --retry 3 -o "$SUMS" "$RELEASE_BASE/SHA256SUMS" \
+        || die "cannot download $RELEASE_BASE/SHA256SUMS: the files can't be checked, nothing is installed"
+    if [ -n "$RELEASE_KEY" ] && command -v openssl >/dev/null && openssl pkeyutl -help 2>&1 | grep -q -- '-rawin'; then
+        curl -fsSL --proto '=https' --tlsv1.2 --retry 3 -o "$tmp/SHA256SUMS.sig" "$RELEASE_BASE/SHA256SUMS.sig" \
+            || die "cannot download $RELEASE_BASE/SHA256SUMS.sig: the files can't be checked, nothing is installed"
+        printf -- '-----BEGIN PUBLIC KEY-----\n%s\n-----END PUBLIC KEY-----\n' "$RELEASE_KEY" > "$tmp/release-key.pem"
+        openssl pkeyutl -verify -pubin -inkey "$tmp/release-key.pem" -rawin \
+            -in "$SUMS" -sigfile "$tmp/SHA256SUMS.sig" >/dev/null 2>&1 \
+            || die "the signature of SHA256SUMS of release $VERSION is not valid: nothing is installed"
+        info "SHA256SUMS: signature checked"
+    else
+        echo "warning: OpenSSL 3 is not installed: the release's checksum list is trusted for coming from GitHub over HTTPS, its signature is not checked" >&2
+    fi
+    [ "$(head -n 1 "$SUMS")" = "# lunaris $VERSION" ] \
+        || die "SHA256SUMS is not the list of release $VERSION: nothing is installed"
+}
+
+# Refuses file $2 (release file $1) unless its SHA-256 is the expected one:
+# $3 (written in by the server), or else its line in SHA256SUMS.
+check_file() {
+    local want got
+    if [ -n "$3" ]; then
+        want="$3"
+    else
+        load_sums
+        want="$(awk -v f="$1" '($2 == f || $2 == "*" f) && $1 ~ /^[0-9a-f]+$/ && length($1) == 64 { print $1; exit }' "$SUMS")"
+    fi
+    [ -n "$want" ] || die "$1 is not in the checksum list of release $VERSION: nothing is installed"
+    got="$(sha256sum "$2" | cut -d' ' -f1)"
+    [ "$got" = "$want" ] || die "$1 does not match its checksum (expected $want, got $got): nothing is installed"
+    info "$1: checksum OK"
+}
+
+# --update: the agent installed here becomes this version, as it was
+# installed (package or AppImage); settings, key and server stay. The
+# package's scripts restart the capture and system services; an agent in a
+# desktop session restarts by itself once its program file is replaced.
+installed() { dpkg-query -W -f='${Status}' "$1" 2>/dev/null | grep -q "install ok installed"; }
+if [ "$UPDATE" -eq 1 ]; then
+    if command -v dpkg-query >/dev/null && installed lunaris-agent; then
+        debs=("lunaris-agent_${VERSION}_amd64.deb")
+        pins=("$PINNED_AGENT_DEB")
+        if installed lunaris-approval-helper; then
+            debs+=("lunaris-approval-helper_${VERSION}_amd64.deb")
+            pins+=("$PINNED_HELPER_DEB")
+        fi
+        files=()
+        for i in "${!debs[@]}"; do
+            download "${debs[$i]}" "$tmp/${debs[$i]}"
+            check_file "${debs[$i]}" "$tmp/${debs[$i]}" "${pins[$i]}"
+            chmod 644 "$tmp/${debs[$i]}"
+            files+=("$tmp/${debs[$i]}")
+        done
+        info "Installing ${debs[*]}"
+        DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${files[@]}"
+    elif [ -f "$INSTALL_DIR/lunaris-agent.AppImage" ]; then
+        appimage="lunaris-agent-linux-x86_64.AppImage"
+        download "$appimage" "$tmp/$appimage"
+        check_file "$appimage" "$tmp/$appimage" "$PINNED_APPIMAGE"
+        info "Replacing $INSTALL_DIR/lunaris-agent.AppImage"
+        install -m 755 "$tmp/$appimage" "$INSTALL_DIR/lunaris-agent.AppImage.new"
+        mv -f "$INSTALL_DIR/lunaris-agent.AppImage.new" "$INSTALL_DIR/lunaris-agent.AppImage"
+        if [ "$SYSTEMD" -eq 1 ]; then
+            for unit in lunaris-capture.service lunaris-agent-system.service; do
+                systemctl try-restart "$unit" >/dev/null 2>&1 || true
+            done
+        fi
+    else
+        die "no Lunaris agent is installed here (no lunaris-agent package, no $INSTALL_DIR/lunaris-agent.AppImage): install it with the command of the server's Install agents page"
+    fi
+    info "The Lunaris agent is now version $VERSION. An agent in a desktop session restarts by itself within a minute."
+    exit 0
+fi
+
 if [ "$FORCE_APPIMAGE" -eq 0 ] && command -v apt-get >/dev/null && command -v dpkg >/dev/null; then
     debs=("lunaris-agent_${VERSION}_amd64.deb")
     files=()
     for deb in "${debs[@]}"; do
         download "$deb" "$tmp/$deb"
+        check_file "$deb" "$tmp/$deb" "$PINNED_AGENT_DEB"
         chmod 644 "$tmp/$deb"
         files+=("$tmp/$deb")
     done
@@ -136,6 +245,7 @@ if [ "$FORCE_APPIMAGE" -eq 0 ] && command -v apt-get >/dev/null && command -v dp
         deb="lunaris-approval-helper_${VERSION}_amd64.deb"
         info "Downloading $deb"
         if curl -fL --proto '=https' --tlsv1.2 --retry 3 --progress-bar -o "$tmp/$deb" "$RELEASE_BASE/$deb"; then
+            check_file "$deb" "$tmp/$deb" "$PINNED_HELPER_DEB"
             chmod 644 "$tmp/$deb"
             debs+=("$deb")
             files+=("$tmp/$deb")
@@ -154,6 +264,7 @@ if [ "$FORCE_APPIMAGE" -eq 0 ] && command -v apt-get >/dev/null && command -v dp
 else
     appimage="lunaris-agent-linux-x86_64.AppImage"
     download "$appimage" "$tmp/$appimage"
+    check_file "$appimage" "$tmp/$appimage" "$PINNED_APPIMAGE"
     info "Installing $INSTALL_DIR/lunaris-agent.AppImage"
     install -d -m 755 "$INSTALL_DIR"
     install -m 755 "$tmp/$appimage" "$INSTALL_DIR/lunaris-agent.AppImage"
@@ -211,7 +322,8 @@ Group=lunaris-agent
 WorkingDirectory=$SYSTEM_DATA
 StateDirectory=lunaris-agent
 StateDirectoryMode=0700
-Restart=on-failure
+# always: back after a stray kill; `systemctl stop` still stops it.
+Restart=always
 RestartSec=5
 CapabilityBoundingSet=
 NoNewPrivileges=yes
@@ -261,7 +373,8 @@ Type=simple
 # Unpacked to the private /tmp instead of a FUSE mount.
 Environment=APPIMAGE_EXTRACT_AND_RUN=1
 ExecStart=$AGENT_BIN --capture-service --allow-appimage $AGENT_BIN
-Restart=on-failure
+# always: back after a stray kill; `systemctl stop` still stops it.
+Restart=always
 RestartSec=2
 RuntimeDirectory=lunaris
 RuntimeDirectoryMode=0755

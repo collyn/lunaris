@@ -42,3 +42,12 @@ export const settingsChanges = (loaded: ComputerSettings, draft: ComputerSetting
 /** Whether a port typed can be one (the server and the agent check it again). */
 export const portProblem = (port: number): boolean => !(Number.isInteger(port) && port >= 1024 && port <= 65535);
 
+
+/** The shortest access password the agent takes when it is set from here
+ *  (agent/src/pairing.rs); the longest is 128. */
+export const MIN_ACCESS_PASSWORD = 12;
+
+/** An access password typed in "Set a password": 12 to 128 characters, no
+ *  spaces at either end. */
+export const accessPasswordOk = (password: string): boolean =>
+  password.length >= MIN_ACCESS_PASSWORD && password.length <= 128 && password.trim() === password;

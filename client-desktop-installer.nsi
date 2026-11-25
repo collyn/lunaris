@@ -214,20 +214,20 @@ Section "Install"
   Call LogDir
   FileClose $LogFile
 
-  # Create Start Menu shortcuts
+  # The client opens from lunaris:// links of the server's web page only:
+  # no shortcut to start it (the ones of earlier versions go), only the
+  # uninstaller in the Start Menu.
+  Delete "$SMPROGRAMS\Lunaris Client\Lunaris Client.lnk"
+  Delete "$DESKTOP\Lunaris Client.lnk"
   CreateDirectory "$SMPROGRAMS\Lunaris Client"
-  CreateShortcut "$SMPROGRAMS\Lunaris Client\Lunaris Client.lnk" "$INSTDIR\client-desktop.exe"
   CreateShortcut "$SMPROGRAMS\Lunaris Client\Uninstall Lunaris Client.lnk" "$INSTDIR\uninstall.exe"
-
-  # Create Desktop shortcut
-  CreateShortcut "$DESKTOP\Lunaris Client.lnk" "$INSTDIR\client-desktop.exe"
 
   # Write registry keys for Add/Remove Programs
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Lunaris Client" "DisplayName" "Lunaris Client"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Lunaris Client" "UninstallString" '"$INSTDIR\uninstall.exe"'
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Lunaris Client" "DisplayIcon" '"$INSTDIR\client-desktop.exe"'
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Lunaris Client" "Publisher" "Lunaris"
-  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Lunaris Client" "DisplayVersion" "0.7.0"
+  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Lunaris Client" "DisplayVersion" "0.8.1"
 SectionEnd
 
 Section "Uninstall"

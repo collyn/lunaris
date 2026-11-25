@@ -7,23 +7,47 @@
 //!    still checks the handshake signature, so the peer owns that
 //!    certificate's key) and relies on step 3 instead.
 //! 2. WebSocket over it, without the password in the URL.
-//! 3. Client: `hello`; agent: `challenge` with a random nonce; client:
-//!    `proof` = its own nonce and HMAC-SHA256(password, CLIENT_LABEL ||
-//!    agent nonce || client nonce || SHA-256 of the agent's certificate as
-//!    the client saw it); agent: `ok` with HMAC over AGENT_LABEL and the same
-//!    data, or `refused`. Binding the certificate into the MAC is the
-//!    `tls-server-end-point` channel binding of SCRAM (RFC 5929): someone in
-//!    the middle presents another certificate, so without the password the
-//!    MACs don't match on either side.
+//! 3. Client: `hello`; agent: `challenge` with a random nonce and the
+//!    versions it speaks (`versions`, absent from agents before v2).
+//!
+//! v2 (both sides new, a password given), a balanced PAKE: SPAKE2 over
+//! Ed25519 (RustCrypto `spake2`), client in role A, agent in role B. Both
+//! identities carry `context` = SHA-256(V2_LABEL || agent nonce || client
+//! nonce || SHA-256 of the agent's certificate as the client saw it), so the
+//! key is bound to this TLS channel (RFC 5929 `tls-server-end-point`) and to
+//! this run.
+//!    - client: `pake` = its nonce and SPAKE2 message X;
+//!    - agent (unless locked out; the attempt is counted as a failure in
+//!      advance, see `Gate`): `pake_reply` = its message Y and its key
+//!      confirmation HMAC(K, AGENT_CONFIRM_LABEL || context || X || Y): the
+//!      agent proves first;
+//!    - client: checks it; `confirm` with HMAC(K, CLIENT_CONFIRM_LABEL || ...)
+//!      when right, without a MAC when not (then the password is wrong or the
+//!      peer is not that computer: it is never told anything that depends on
+//!      the password beyond X);
+//!    - agent: `ok` (`trusted`) or `refused`.
+//!
+//!    X and Y reveal nothing about the password; each confirmation can only
+//!    be checked against one guess per run, so someone answering at the
+//!    address the client dials (ARP spoofing, a reused address) gets one
+//!    online guess per connection, never an offline test.
+//!
+//! v1 (an old agent or an old client): `proof` = client nonce and
+//! HMAC-SHA256(password, CLIENT_LABEL || agent nonce || client nonce ||
+//! certificate hash); agent: `ok` with HMAC over AGENT_LABEL and the same
+//! data, or `refused`. The client's MAC is an offline-testable verifier for
+//! whoever answers, so new clients send it only to agents that don't offer
+//! v2 (with a warning); the agent still takes it from old clients.
 //!
 //! Without a password (the person at the computer accepts) there is no
-//! binding: TLS still keeps passive listeners out.
+//! binding: `proof` without a MAC, in both versions; TLS still keeps
+//! passive listeners out.
 //!
-//! A client with a password goes on only after the agent's MAC checked out,
-//! whatever else the answer says. Older agents don't speak TLS: the client
-//! then gives up (there is no plain fallback an attacker could force, the
-//! password never goes in a URL); the agent still takes old clients over
-//! plain ws:// with `?token=`.
+//! A client with a password goes on only after the agent proved it knows it
+//! (its confirmation, v2, or its MAC, v1), whatever else the answer says.
+//! Older agents don't speak TLS: the client then gives up (there is no plain
+//! fallback an attacker could force, the password never goes in a URL); the
+//! agent still takes old clients over plain ws:// with `?token=`.
 
 use std::net::IpAddr;
 use std::sync::Arc;
@@ -46,6 +70,16 @@ use tracing::{info, warn};
 pub const CLIENT_LABEL: &[u8] = b"lunaris-direct-auth-v1 client";
 pub const AGENT_LABEL: &[u8] = b"lunaris-direct-auth-v1 agent";
 pub const NONCE_LEN: usize = 32;
+/// The v2 handshake (SPAKE2), as `hello`/`challenge` advertise it.
+pub const VERSION_PAKE: u32 = 2;
+pub const V2_LABEL: &[u8] = b"lunaris-direct-auth-v2";
+const PAKE_CLIENT_ID: &[u8] = b"lunaris-direct-auth-v2 client";
+const PAKE_AGENT_ID: &[u8] = b"lunaris-direct-auth-v2 agent";
+const CLIENT_CONFIRM_LABEL: &[u8] = b"lunaris-direct-auth-v2 client confirm";
+const AGENT_CONFIRM_LABEL: &[u8] = b"lunaris-direct-auth-v2 agent confirm";
+/// A SPAKE2 message: the side byte and a compressed Ed25519 point.
+pub const PAKE_MSG_LEN: usize = 33;
+pub type PakeMsg = [u8; PAKE_MSG_LEN];
 pub type Nonce = [u8; NONCE_LEN];
 pub type Digest = [u8; 32];
 
@@ -89,6 +123,77 @@ pub fn digest_eq(a: &Digest, b: &Digest) -> bool {
     a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
+// ---- v2: SPAKE2 ----
+
+/// What both PAKE identities carry: this run (both nonces) and this TLS
+/// channel (the certificate hash).
+pub fn v2_context(agent_nonce: &Nonce, client_nonce: &Nonce, cert_hash: &Digest) -> Digest {
+    sha256(&[V2_LABEL, &agent_nonce[..], &client_nonce[..], &cert_hash[..]].concat())
+}
+
+fn pake_ids(context: &Digest) -> (spake2::Identity, spake2::Identity) {
+    (
+        spake2::Identity::new(&[PAKE_CLIENT_ID, &context[..]].concat()),
+        spake2::Identity::new(&[PAKE_AGENT_ID, &context[..]].concat()),
+    )
+}
+
+/// The OS random source (ring's) for SPAKE2.
+pub struct OsRng;
+
+impl rand_core::TryRng for OsRng {
+    type Error = std::convert::Infallible;
+    fn try_next_u32(&mut self) -> Result<u32, Self::Error> {
+        let mut b = [0u8; 4];
+        self.try_fill_bytes(&mut b)?;
+        Ok(u32::from_le_bytes(b))
+    }
+    fn try_next_u64(&mut self) -> Result<u64, Self::Error> {
+        let mut b = [0u8; 8];
+        self.try_fill_bytes(&mut b)?;
+        Ok(u64::from_le_bytes(b))
+    }
+    fn try_fill_bytes(&mut self, dst: &mut [u8]) -> Result<(), Self::Error> {
+        SystemRandom::new().fill(dst).expect("the OS random source failed");
+        Ok(())
+    }
+}
+
+impl rand_core::TryCryptoRng for OsRng {}
+
+pub type Pake = spake2::Spake2<spake2::Ed25519Group>;
+
+/// The client's side (role A): its state and message X.
+pub fn pake_client(password: &str, context: &Digest, rng: impl rand_core::CryptoRng) -> (Pake, PakeMsg) {
+    let (a, b) = pake_ids(context);
+    let (state, msg) = Pake::start_a_with_rng(&spake2::Password::new(password.trim().as_bytes()), &a, &b, rng);
+    (state, msg.try_into().expect("SPAKE2 Ed25519 messages are 33 bytes"))
+}
+
+/// The agent's side (role B): its state and message Y.
+pub fn pake_agent(password: &str, context: &Digest, rng: impl rand_core::CryptoRng) -> (Pake, PakeMsg) {
+    let (a, b) = pake_ids(context);
+    let (state, msg) = Pake::start_b_with_rng(&spake2::Password::new(password.trim().as_bytes()), &a, &b, rng);
+    (state, msg.try_into().expect("SPAKE2 Ed25519 messages are 33 bytes"))
+}
+
+/// The two key confirmations of a run: (agent's, client's).
+pub fn confirmations(key: &[u8], context: &Digest, client_msg: &PakeMsg, agent_msg: &PakeMsg) -> (Digest, Digest) {
+    let key = hmac::Key::new(hmac::HMAC_SHA256, key);
+    let tag = |label: &[u8]| -> Digest {
+        let input = [label, &context[..], &client_msg[..], &agent_msg[..]].concat();
+        hmac::sign(&key, &input).as_ref().try_into().expect("HMAC-SHA256 is 32 bytes")
+    };
+    (tag(AGENT_CONFIRM_LABEL), tag(CLIENT_CONFIRM_LABEL))
+}
+
+/// The confirmations once the peer's message came; None when it is not a
+/// valid SPAKE2 message of the other role.
+fn finish(state: Pake, context: &Digest, client_msg: &PakeMsg, agent_msg: &PakeMsg, peer_msg: &PakeMsg) -> Option<(Digest, Digest)> {
+    let key = state.finish(peer_msg).ok()?;
+    Some(confirmations(&key, context, client_msg, agent_msg))
+}
+
 pub fn random_nonce() -> Nonce {
     let mut nonce = [0u8; NONCE_LEN];
     SystemRandom::new().fill(&mut nonce).expect("the OS random source failed");
@@ -114,8 +219,15 @@ pub fn from_hex<const N: usize>(text: &str) -> Option<[u8; N]> {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "auth", rename_all = "snake_case")]
 pub enum AuthMessage {
+    /// `version`: the newest the client speaks (old agents ignore it).
     Hello { version: u32 },
-    Challenge { nonce: String },
+    Challenge {
+        nonce: String,
+        /// The handshake versions this agent speaks besides v1 (absent from
+        /// agents before v2; old clients ignore it).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        versions: Vec<u32>,
+    },
     Proof {
         client_nonce: String,
         /// Absent without a password (asks the person at the computer).
@@ -130,6 +242,16 @@ pub enum AuthMessage {
     },
     /// "unauthorized" or "too_many_attempts".
     Refused { reason: String },
+    /// v2, client: its nonce and SPAKE2 message (hex).
+    Pake { client_nonce: String, msg: String },
+    /// v2, agent: its SPAKE2 message and key confirmation (hex).
+    PakeReply { msg: String, confirm: String },
+    /// v2, client: its key confirmation; absent when the agent's did not
+    /// check out.
+    Confirm {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mac: Option<String>,
+    },
 }
 
 pub const REFUSED_UNAUTHORIZED: &str = "unauthorized";
@@ -161,7 +283,8 @@ pub enum Presented {
     Wrong,
 }
 
-/// TLS of the direct listener: a fresh self-signed certificate per start.
+/// TLS of the direct listener: a self-signed certificate, kept across
+/// starts (`load_or_make_tls_server`) or made fresh (`make_tls_server`).
 pub struct TlsServer {
     pub acceptor: tokio_rustls::TlsAcceptor,
     pub cert_hash: Digest,
@@ -179,58 +302,157 @@ pub fn make_tls_server() -> anyhow::Result<TlsServer> {
     Ok(TlsServer { acceptor: tokio_rustls::TlsAcceptor::from(Arc::new(config)), cert_hash })
 }
 
-/// Runs the agent side of step 3. `decide` turns what the client showed into
-/// the admission (and counts failures); the client is told the outcome.
+/// Files of the listener's kept certificate, next to the agent's config.
+pub const TLS_CERT_FILE: &str = "direct_tls_cert.der";
+pub const TLS_KEY_FILE: &str = "direct_tls_key.der";
+
+fn tls_server_from(cert: Vec<u8>, key: Vec<u8>) -> anyhow::Result<TlsServer> {
+    let cert = CertificateDer::from(cert);
+    let cert_hash = sha256(&cert);
+    let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key));
+    let config = rustls::ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+        .with_safe_default_protocol_versions()?
+        .with_no_client_auth()
+        .with_single_cert(vec![cert], key)?;
+    Ok(TlsServer { acceptor: tokio_rustls::TlsAcceptor::from(Arc::new(config)), cert_hash })
+}
+
+/// The listener's certificate kept in `dir` (made and saved there the first
+/// time): servers that added this computer by address pin it, so it must
+/// not change when the agent or its listener starts again. A pair that
+/// can't be read or used is replaced (those servers then need a key reset);
+/// one that can't be saved is used for this start only.
+pub fn load_or_make_tls_server(dir: &std::path::Path) -> anyhow::Result<TlsServer> {
+    let (cert_path, key_path) = (dir.join(TLS_CERT_FILE), dir.join(TLS_KEY_FILE));
+    match (std::fs::read(&cert_path), std::fs::read(&key_path)) {
+        (Ok(cert), Ok(key)) => match tls_server_from(cert, key) {
+            Ok(tls) => return Ok(tls),
+            Err(e) => warn!("The kept certificate in {} can't be used ({}): making a new one", dir.display(), e),
+        },
+        (Err(e), _) | (_, Err(e)) if e.kind() != std::io::ErrorKind::NotFound => {
+            warn!("The kept certificate in {} can't be read ({}): making a new one", dir.display(), e)
+        }
+        _ => {}
+    }
+    let made = rcgen::generate_simple_self_signed(vec!["lunaris-agent".to_string()])?;
+    let (cert, key) = (made.cert.der().to_vec(), made.signing_key.serialize_der());
+    // The key first: a certificate is never kept without its key.
+    let saved = crate::pairing::write_private(&key_path, &key).and_then(|()| crate::pairing::write_private(&cert_path, &cert));
+    match saved {
+        Ok(()) => info!("Made the direct listener's certificate, kept in {}", dir.display()),
+        Err(e) => warn!(
+            "The direct listener's certificate could not be kept in {} ({}): a new one comes at each start, and servers that \
+             added this computer by address will need a key reset after it",
+            dir.display(),
+            e
+        ),
+    }
+    tls_server_from(cert, key)
+}
+
+/// How the listener judges an attempt (direct.rs, around its lockout).
+pub(super) trait Gate {
+    /// v2, before the agent's PAKE message, which lets whoever is on the
+    /// other end test one guess: false when the address is locked out;
+    /// otherwise the attempt counts as a failure in advance, so a client
+    /// that hangs up (or several at once) can't guess for free. `decide`
+    /// settles it.
+    fn charge(&mut self) -> bool;
+    /// The admission for what the client showed (failures counted);
+    /// `charged`: `charge` counted one for this attempt already.
+    fn decide(&mut self, presented: Presented, charged: bool) -> super::Admission;
+}
+
+/// The answer that ends the handshake; `mac` only in v1.
+fn final_answer(admission: &super::Admission, v1_mac: impl FnOnce(bool) -> Option<String>) -> AuthMessage {
+    use super::Admission;
+    match admission {
+        Admission::Accept { trusted, .. } => AuthMessage::Ok { trusted: *trusted, mac: v1_mac(*trusted) },
+        Admission::TooManyAttempts => AuthMessage::Refused { reason: REFUSED_TOO_MANY.into() },
+        Admission::Unauthorized | Admission::NotFound => AuthMessage::Refused { reason: REFUSED_UNAUTHORIZED.into() },
+    }
+}
+
+/// Runs the agent side of step 3: the admission and the version the client
+/// used (1 or 2). Failures are counted through `gate`; the client is told
+/// the outcome.
 pub(super) async fn agent_auth<S: AsyncRead + AsyncWrite + Unpin>(
     ws: &mut WebSocketStream<S>,
     password: &str,
     cert_hash: &Digest,
-    decide: impl FnOnce(Presented) -> super::Admission,
-) -> anyhow::Result<super::Admission> {
+    gate: &mut impl Gate,
+) -> anyhow::Result<(super::Admission, u32)> {
     use super::Admission;
     match recv_auth(ws).await {
         Some(AuthMessage::Hello { .. }) => {}
         other => anyhow::bail!("expected hello, got {:?}", other),
     }
     let agent_nonce = random_nonce();
-    send_auth(ws, &AuthMessage::Challenge { nonce: to_hex(&agent_nonce) }).await?;
-    let (client_nonce, mac) = match recv_auth(ws).await {
-        Some(AuthMessage::Proof { client_nonce, mac }) => (client_nonce, mac),
-        other => anyhow::bail!("expected proof, got {:?}", other),
-    };
-    let Some(client_nonce) = from_hex::<NONCE_LEN>(&client_nonce) else {
-        anyhow::bail!("bad client nonce");
-    };
-    let presented = match mac.as_deref() {
-        None | Some("") => Presented::Nothing,
-        Some(_) if password.trim().is_empty() => Presented::Wrong,
-        Some(tag) => {
-            let tag = from_hex::<32>(tag).unwrap_or([0; 32]);
-            if mac_ok(CLIENT_LABEL, password, &agent_nonce, &client_nonce, cert_hash, &tag) {
-                Presented::Right
-            } else {
-                Presented::Wrong
-            }
+    send_auth(ws, &AuthMessage::Challenge { nonce: to_hex(&agent_nonce), versions: vec![VERSION_PAKE] }).await?;
+    match recv_auth(ws).await {
+        Some(AuthMessage::Proof { client_nonce, mac }) => {
+            let Some(client_nonce) = from_hex::<NONCE_LEN>(&client_nonce) else {
+                anyhow::bail!("bad client nonce");
+            };
+            let presented = match mac.as_deref() {
+                None | Some("") => Presented::Nothing,
+                Some(_) if password.trim().is_empty() => Presented::Wrong,
+                Some(tag) => {
+                    let tag = from_hex::<32>(tag).unwrap_or([0; 32]);
+                    if mac_ok(CLIENT_LABEL, password, &agent_nonce, &client_nonce, cert_hash, &tag) {
+                        Presented::Right
+                    } else {
+                        Presented::Wrong
+                    }
+                }
+            };
+            let admission = gate.decide(presented, false);
+            // Click mode with the right password: still asked here, but the
+            // client, which holds a password, needs our MAC to go on.
+            let answer = final_answer(&admission, |_| {
+                (presented == Presented::Right).then(|| to_hex(&agent_mac(password, &agent_nonce, &client_nonce, cert_hash)))
+            });
+            send_auth(ws, &answer).await?;
+            Ok((admission, 1))
         }
-    };
-    let admission = decide(presented);
-    let answer = match admission {
-        Admission::Accept { trusted: true, .. } => AuthMessage::Ok {
-            trusted: true,
-            mac: Some(to_hex(&agent_mac(password, &agent_nonce, &client_nonce, cert_hash))),
-        },
-        // Click mode with the right password: still asked here, but the
-        // client, which holds a password, needs our MAC to go on.
-        Admission::Accept { trusted: false, .. } => AuthMessage::Ok {
-            trusted: false,
-            mac: (presented == Presented::Right)
-                .then(|| to_hex(&agent_mac(password, &agent_nonce, &client_nonce, cert_hash))),
-        },
-        Admission::TooManyAttempts => AuthMessage::Refused { reason: REFUSED_TOO_MANY.into() },
-        Admission::Unauthorized | Admission::NotFound => AuthMessage::Refused { reason: REFUSED_UNAUTHORIZED.into() },
-    };
-    send_auth(ws, &answer).await?;
-    Ok(admission)
+        Some(AuthMessage::Pake { client_nonce, msg }) => {
+            let (Some(client_nonce), Some(client_msg)) = (from_hex::<NONCE_LEN>(&client_nonce), from_hex::<PAKE_MSG_LEN>(&msg)) else {
+                anyhow::bail!("bad PAKE message");
+            };
+            if password.trim().is_empty() {
+                // Nothing to run the PAKE with: a password here is wrong.
+                let admission = gate.decide(Presented::Wrong, false);
+                send_auth(ws, &final_answer(&admission, |_| None)).await?;
+                return Ok((admission, VERSION_PAKE));
+            }
+            if !gate.charge() {
+                send_auth(ws, &AuthMessage::Refused { reason: REFUSED_TOO_MANY.into() }).await?;
+                return Ok((Admission::TooManyAttempts, VERSION_PAKE));
+            }
+            let context = v2_context(&agent_nonce, &client_nonce, cert_hash);
+            let (state, agent_msg) = pake_agent(password, &context, OsRng);
+            let Some((agent_confirm, client_confirm)) = finish(state, &context, &client_msg, &agent_msg, &client_msg) else {
+                // Not a valid role-A message: like a wrong password.
+                let admission = gate.decide(Presented::Wrong, true);
+                send_auth(ws, &final_answer(&admission, |_| None)).await?;
+                return Ok((admission, VERSION_PAKE));
+            };
+            send_auth(ws, &AuthMessage::PakeReply { msg: to_hex(&agent_msg), confirm: to_hex(&agent_confirm) }).await?;
+            // Anything but `confirm` (a hang-up, a timeout): the failure
+            // counted by `charge` stays.
+            let presented = match recv_auth(ws).await {
+                Some(AuthMessage::Confirm { mac }) => {
+                    let tag = mac.as_deref().and_then(from_hex::<32>);
+                    if tag.is_some_and(|t| digest_eq(&t, &client_confirm)) { Presented::Right } else { Presented::Wrong }
+                }
+                other => anyhow::bail!("expected confirm, got {:?}", other),
+            };
+            let admission = gate.decide(presented, true);
+            send_auth(ws, &final_answer(&admission, |_| None)).await?;
+            Ok((admission, VERSION_PAKE))
+        }
+        other => anyhow::bail!("expected proof, got {:?}", other),
+    }
 }
 
 // ---- Client side ----
@@ -306,6 +528,9 @@ pub struct Connected {
     pub trusted: bool,
     /// This side's address of the connection.
     pub local_ip: Option<IpAddr>,
+    /// The handshake used: VERSION_PAKE, or 1 with an older agent (or
+    /// without a password, where nothing is proven either way).
+    pub version: u32,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -319,6 +544,9 @@ pub enum ConnectError {
     /// the password is wrong, or the peer is not that computer.
     NotProven,
     TooManyAttempts,
+    /// The agent offered only the old password proof (v1) where the new
+    /// one (v2) was required: nothing was sent that depends on the password.
+    Downgraded,
     /// No such path: not a Lunaris agent, or one too old.
     NotFound,
     Refused(String),
@@ -342,6 +570,11 @@ impl std::fmt::Display for ConnectError {
                 write!(f, "Wrong password, or this is not the computer you expect (it could not prove it knows the password).")
             }
             ConnectError::TooManyAttempts => write!(f, "Too many wrong passwords: try again in a minute."),
+            ConnectError::Downgraded => write!(
+                f,
+                "The computer answered like an old Lunaris agent (without the secure password check) although it had \
+                 the new one before: not connecting, someone else may be answering at that address."
+            ),
             ConnectError::NotFound => write!(f, "That address is not a Lunaris agent, or its agent is too old (update it)."),
             ConnectError::Refused(e) => write!(f, "The computer refused the connection ({}).", e),
             ConnectError::Protocol(e) => write!(f, "The connection failed: {}.", e),
@@ -369,6 +602,18 @@ fn http_error(e: tungstenite::Error) -> ConnectError {
 /// plain fallback, which anyone on the network could force to read the
 /// password.
 pub async fn connect(address: &str, path: &str, password: &str, query: &str) -> Result<Connected, ConnectError> {
+    connect_with(address, path, password, query, false).await
+}
+
+/// As `connect`; `require_pake`: with a password, refuse an agent that offers
+/// only v1 (`ConnectError::Downgraded`) instead of sending it the v1 MAC.
+pub async fn connect_with(
+    address: &str,
+    path: &str,
+    password: &str,
+    query: &str,
+    require_pake: bool,
+) -> Result<Connected, ConnectError> {
     let query = query.trim_start_matches(['&', '?']);
     let tcp = match tokio::time::timeout(STEP_TIMEOUT, TcpStream::connect(address)).await {
         Ok(Ok(tcp)) => tcp,
@@ -401,12 +646,18 @@ pub async fn connect(address: &str, path: &str, password: &str, query: &str) -> 
             Ok(r) => r.map_err(http_error)?,
             Err(_) => return Err(ConnectError::Unreachable("WebSocket: timed out".into())),
         };
-    let trusted = match tokio::time::timeout(STEP_TIMEOUT, client_auth(&mut ws, password, &cert_hash)).await {
-        Ok(r) => r?,
-        Err(_) => return Err(ConnectError::Protocol("no answer to the password proof".into())),
-    };
-    info!("Connected to {} over TLS ({})", address, if trusted { "password" } else { "to be accepted there" });
-    Ok(Connected { ws, trusted, local_ip })
+    let (trusted, version) =
+        match tokio::time::timeout(STEP_TIMEOUT, client_auth(&mut ws, password, &cert_hash, require_pake, address)).await {
+            Ok(r) => r?,
+            Err(_) => return Err(ConnectError::Protocol("no answer to the password proof".into())),
+        };
+    info!(
+        "Connected to {} over TLS ({}, handshake v{})",
+        address,
+        if trusted { "password" } else { "to be accepted there" },
+        version
+    );
+    Ok(Connected { ws, trusted, local_ip, version })
 }
 
 /// What the client makes of the agent's answer to its proof; Ok(trusted).
@@ -436,25 +687,85 @@ fn judge_answer(
     }
 }
 
-/// Client side of step 3; Ok(trusted).
+/// What the client makes of the agent's v2 `pake_reply`: whether its
+/// confirmation checks out, and the client's own to send then.
+fn judge_pake_reply(
+    state: Pake,
+    context: &Digest,
+    client_msg: &PakeMsg,
+    reply_msg: &str,
+    reply_confirm: &str,
+) -> Option<Digest> {
+    let agent_msg = from_hex::<PAKE_MSG_LEN>(reply_msg)?;
+    let (agent_confirm, client_confirm) = finish(state, context, client_msg, &agent_msg, &agent_msg)?;
+    let tag = from_hex::<32>(reply_confirm)?;
+    digest_eq(&tag, &agent_confirm).then_some(client_confirm)
+}
+
+/// The end of a v2 run: the agent's answer to our `confirm`. `proven`: its
+/// confirmation checked out (we sent ours).
+fn judge_v2_answer(answer: Option<AuthMessage>, proven: bool) -> Result<bool, ConnectError> {
+    match answer {
+        Some(AuthMessage::Refused { reason }) => Err(refusal(&reason)),
+        Some(AuthMessage::Ok { trusted, .. }) if proven => Ok(trusted),
+        // Not proven: whatever it says, it is not let in on (click mode with
+        // a wrong password, or an impostor).
+        Some(AuthMessage::Ok { .. }) => Err(ConnectError::NotProven),
+        _ if !proven => Err(ConnectError::NotProven),
+        _ => Err(ConnectError::Protocol("unexpected answer to the password check".into())),
+    }
+}
+
+/// Client side of step 3; Ok((trusted, version)).
 async fn client_auth<S: AsyncRead + AsyncWrite + Unpin>(
     ws: &mut WebSocketStream<S>,
     password: &str,
     cert_hash: &Digest,
-) -> Result<bool, ConnectError> {
+    require_pake: bool,
+    address: &str,
+) -> Result<(bool, u32), ConnectError> {
     let lost = |e: tungstenite::Error| ConnectError::Unreachable(e.to_string());
-    send_auth(ws, &AuthMessage::Hello { version: 1 }).await.map_err(lost)?;
-    let agent_nonce = match recv_auth(ws).await {
-        Some(AuthMessage::Challenge { nonce }) => from_hex::<NONCE_LEN>(&nonce),
+    send_auth(ws, &AuthMessage::Hello { version: VERSION_PAKE }).await.map_err(lost)?;
+    let (agent_nonce, versions) = match recv_auth(ws).await {
+        Some(AuthMessage::Challenge { nonce, versions }) => (from_hex::<NONCE_LEN>(&nonce), versions),
         Some(AuthMessage::Refused { reason }) => return Err(refusal(&reason)),
-        _ => None,
-    }
-    .ok_or_else(|| ConnectError::Protocol("unexpected answer (not a Lunaris agent?)".into()))?;
+        _ => (None, Vec::new()),
+    };
+    let agent_nonce = agent_nonce.ok_or_else(|| ConnectError::Protocol("unexpected answer (not a Lunaris agent?)".into()))?;
     let client_nonce = random_nonce();
     let has_password = !password.trim().is_empty();
+    if has_password && versions.contains(&VERSION_PAKE) {
+        let context = v2_context(&agent_nonce, &client_nonce, cert_hash);
+        let (state, client_msg) = pake_client(password, &context, OsRng);
+        send_auth(ws, &AuthMessage::Pake { client_nonce: to_hex(&client_nonce), msg: to_hex(&client_msg) })
+            .await
+            .map_err(lost)?;
+        let client_confirm = match recv_auth(ws).await {
+            Some(AuthMessage::PakeReply { msg, confirm }) => judge_pake_reply(state, &context, &client_msg, &msg, &confirm),
+            Some(AuthMessage::Refused { reason }) => return Err(refusal(&reason)),
+            // "ok" without a reply: an agent without a password (click
+            // mode), or an impostor.
+            Some(AuthMessage::Ok { .. }) => return Err(ConnectError::NotProven),
+            _ => return Err(ConnectError::Protocol("unexpected answer to the password check".into())),
+        };
+        let proven = client_confirm.is_some();
+        send_auth(ws, &AuthMessage::Confirm { mac: client_confirm.map(|c| to_hex(&c)) }).await.map_err(lost)?;
+        return judge_v2_answer(recv_auth(ws).await, proven).map(|trusted| (trusted, VERSION_PAKE));
+    }
+    if has_password {
+        if require_pake {
+            warn!("{} offered only the old password proof (v1) where it used the new one before: refused", address);
+            return Err(ConnectError::Downgraded);
+        }
+        warn!(
+            "{} runs an older Lunaris agent (password proof v1): whoever answers at that address could test \
+             passwords against it offline; update that agent",
+            address
+        );
+    }
     let mac = has_password.then(|| to_hex(&client_mac(password, &agent_nonce, &client_nonce, cert_hash)));
     send_auth(ws, &AuthMessage::Proof { client_nonce: to_hex(&client_nonce), mac }).await.map_err(lost)?;
-    judge_answer(recv_auth(ws).await, password, &agent_nonce, &client_nonce, cert_hash)
+    judge_answer(recv_auth(ws).await, password, &agent_nonce, &client_nonce, cert_hash).map(|trusted| (trusted, 1))
 }
 
 fn refusal(reason: &str) -> ConnectError {
@@ -476,6 +787,51 @@ mod tests {
     const CLIENT_MAC_HEX: &str = "5443f1e19d8c91e2256950e29b0476d5f90f9e9bba6ee2d799e271af115739cd";
     const AGENT_MAC_HEX: &str = "a389673baba901cf246ec3b4b83db77a97e466384fc8c76897ddd2d3abe497e8";
 
+    fn cert_dir(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("lunaris-tls-{}-{}", name, crate::pairing::to_hex(&crate::pairing::random_bytes(6))));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn the_kept_certificate_is_the_same_at_every_start() {
+        let dir = cert_dir("kept");
+        let first = load_or_make_tls_server(&dir).unwrap().cert_hash;
+        let again = load_or_make_tls_server(&dir).unwrap().cert_hash;
+        assert_eq!(first, again);
+        // Fresh ones (tests, the gateway's agent) differ.
+        assert_ne!(make_tls_server().unwrap().cert_hash, first);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(dir.join(TLS_KEY_FILE)).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_broken_kept_certificate_is_replaced_and_kept_again() {
+        let dir = cert_dir("broken");
+        let first = load_or_make_tls_server(&dir).unwrap().cert_hash;
+        std::fs::write(dir.join(TLS_KEY_FILE), b"not a key").unwrap();
+        let replaced = load_or_make_tls_server(&dir).unwrap().cert_hash;
+        assert_ne!(replaced, first);
+        assert_eq!(load_or_make_tls_server(&dir).unwrap().cert_hash, replaced);
+        // A certificate without its key: made again.
+        std::fs::remove_file(dir.join(TLS_KEY_FILE)).unwrap();
+        let remade = load_or_make_tls_server(&dir).unwrap().cert_hash;
+        assert_ne!(remade, replaced);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_folder_that_cannot_keep_it_still_gives_a_certificate() {
+        let missing = std::env::temp_dir().join(format!("lunaris-tls-missing-{}", crate::pairing::to_hex(&crate::pairing::random_bytes(6))));
+        assert!(load_or_make_tls_server(&missing).is_ok());
+        assert!(!missing.exists());
+    }
+
     #[test]
     fn mac_test_vectors() {
         let cert_hash = sha256(b"lunaris test certificate");
@@ -496,7 +852,7 @@ mod tests {
     fn message_test_vectors() {
         let json = |m: &AuthMessage| serde_json::to_string(m).unwrap();
         assert_eq!(json(&AuthMessage::Hello { version: 1 }), r#"{"auth":"hello","version":1}"#);
-        assert_eq!(json(&AuthMessage::Challenge { nonce: "ab".into() }), r#"{"auth":"challenge","nonce":"ab"}"#);
+        assert_eq!(json(&AuthMessage::Challenge { nonce: "ab".into(), versions: vec![] }), r#"{"auth":"challenge","nonce":"ab"}"#);
         assert_eq!(
             json(&AuthMessage::Proof { client_nonce: "cd".into(), mac: Some("ef".into()) }),
             r#"{"auth":"proof","client_nonce":"cd","mac":"ef"}"#
@@ -553,5 +909,463 @@ mod tests {
         assert_eq!(server_name("192.168.1.2:8091"), ServerName::try_from("192.168.1.2").unwrap());
         assert_eq!(server_name("[fe80::1]:8091"), ServerName::try_from("fe80::1").unwrap());
         assert_eq!(server_name("pc.lan:8091"), ServerName::try_from("pc.lan").unwrap());
+    }
+
+    // ---- v2 ----
+
+    /// Deterministic "randomness" for the test vectors.
+    pub(crate) struct FixedRng(pub u8);
+
+    impl rand_core::TryRng for FixedRng {
+        type Error = std::convert::Infallible;
+        fn try_next_u32(&mut self) -> Result<u32, Self::Error> {
+            let mut b = [0u8; 4];
+            self.try_fill_bytes(&mut b)?;
+            Ok(u32::from_le_bytes(b))
+        }
+        fn try_next_u64(&mut self) -> Result<u64, Self::Error> {
+            let mut b = [0u8; 8];
+            self.try_fill_bytes(&mut b)?;
+            Ok(u64::from_le_bytes(b))
+        }
+        fn try_fill_bytes(&mut self, dst: &mut [u8]) -> Result<(), Self::Error> {
+            for (i, b) in dst.iter_mut().enumerate() {
+                *b = self.0.wrapping_add(i as u8);
+            }
+            Ok(())
+        }
+    }
+
+    impl rand_core::TryCryptoRng for FixedRng {}
+
+    // The same vectors are in server/src/links.rs. CONTEXT_HEX and the
+    // confirmations from KEY_HEX were computed independently (Python
+    // hashlib/hmac); X, Y and the key by this code with FixedRng(1)/(2).
+    const CONTEXT_HEX: &str = "f10f7c03fdf9223a967c8f2159ac7db893d605a749896ad6713c179e3b9d3b3b";
+    const X_HEX: &str = "41d1ec4c004e3ddfff0d121a1e00dbf012ca79514cd0de9c890cb9fa80f3601d98";
+    const Y_HEX: &str = "4292015d892636f03b4a6ebe39b18cd673d90d10fed452f6e925b043695a97e482";
+    const KEY_HEX: &str = "2f27a9b7db0666500a3e7f454a4c830f02f752d0fe2ac3a3894afa066553b07b";
+    const AGENT_CONFIRM_HEX: &str = "a91983da23e1ea1a612989a6d2a32684fd850d639e12327f25e9d55dced4df67";
+    const CLIENT_CONFIRM_HEX: &str = "62debb0ceb6a09e145c9c016219a15111aa3e276f59d4136be70c469c6879244";
+
+    #[test]
+    fn pake_test_vectors() {
+        let cert_hash = sha256(b"lunaris test certificate");
+        let (an, cn) = ([0x11u8; 32], [0x22u8; 32]);
+        let context = v2_context(&an, &cn, &cert_hash);
+        let (a, x) = pake_client(PASSWORD, &context, FixedRng(1));
+        let (b, y) = pake_agent(PASSWORD, &context, FixedRng(2));
+        let key_a = a.finish(&y).unwrap();
+        let key_b = b.finish(&x).unwrap();
+        let (ac, cc) = confirmations(&key_a, &context, &x, &y);
+        assert_eq!(key_a, key_b);
+        assert_eq!(to_hex(&context), CONTEXT_HEX);
+        assert_eq!(to_hex(&x), X_HEX);
+        assert_eq!(to_hex(&y), Y_HEX);
+        assert_eq!(to_hex(&key_a), KEY_HEX);
+        assert_eq!(to_hex(&ac), AGENT_CONFIRM_HEX);
+        assert_eq!(to_hex(&cc), CLIENT_CONFIRM_HEX);
+        // The password is trimmed, like everywhere else.
+        let (_, x2) = pake_client(" abcd-efgh-ijkl\n", &context, FixedRng(1));
+        assert_eq!(x2, x);
+        // Role bytes: 'A' from the client, 'B' from the agent.
+        assert_eq!((x[0], y[0]), (b'A', b'B'));
+    }
+
+    #[test]
+    fn v2_message_test_vectors() {
+        let json = |m: &AuthMessage| serde_json::to_string(m).unwrap();
+        assert_eq!(json(&AuthMessage::Hello { version: 2 }), r#"{"auth":"hello","version":2}"#);
+        assert_eq!(
+            json(&AuthMessage::Challenge { nonce: "ab".into(), versions: vec![2] }),
+            r#"{"auth":"challenge","nonce":"ab","versions":[2]}"#
+        );
+        assert_eq!(
+            json(&AuthMessage::Pake { client_nonce: "cd".into(), msg: "41".into() }),
+            r#"{"auth":"pake","client_nonce":"cd","msg":"41"}"#
+        );
+        assert_eq!(
+            json(&AuthMessage::PakeReply { msg: "42".into(), confirm: "ef".into() }),
+            r#"{"auth":"pake_reply","msg":"42","confirm":"ef"}"#
+        );
+        assert_eq!(json(&AuthMessage::Confirm { mac: Some("01".into()) }), r#"{"auth":"confirm","mac":"01"}"#);
+        assert_eq!(json(&AuthMessage::Confirm { mac: None }), r#"{"auth":"confirm"}"#);
+        // An old agent's challenge (no versions) still reads.
+        let old: AuthMessage = serde_json::from_str(r#"{"auth":"challenge","nonce":"ab"}"#).unwrap();
+        assert_eq!(old, AuthMessage::Challenge { nonce: "ab".into(), versions: vec![] });
+    }
+
+    /// The new messages read by the v1 shapes: an old client takes a new
+    /// agent's challenge, an old agent a new client's hello.
+    #[test]
+    fn old_peers_read_the_new_messages() {
+        let challenge = serde_json::to_string(&AuthMessage::Challenge { nonce: "ab".into(), versions: vec![2] }).unwrap();
+        assert_eq!(serde_json::from_str::<v1::AuthMessage>(&challenge).unwrap(), v1::AuthMessage::Challenge { nonce: "ab".into() });
+        let hello = serde_json::to_string(&AuthMessage::Hello { version: VERSION_PAKE }).unwrap();
+        assert!(matches!(serde_json::from_str::<v1::AuthMessage>(&hello).unwrap(), v1::AuthMessage::Hello { .. }));
+    }
+
+    #[test]
+    fn tampered_or_wrong_runs_do_not_confirm() {
+        let ch = sha256(b"cert");
+        let ctx = v2_context(&[1; 32], &[2; 32], &ch);
+        let reply = |pw: &str, ctx: &Digest, x: &PakeMsg| {
+            let (b, y) = pake_agent(pw, ctx, OsRng);
+            let (ac, cc) = finish(b, ctx, x, &y, x).unwrap();
+            (y, ac, cc)
+        };
+        // Right password: the agent's confirmation checks out, ours matches.
+        let (a, x) = pake_client("pw-right", &ctx, OsRng);
+        let (y, ac, cc) = reply("pw-right", &ctx, &x);
+        assert_eq!(judge_pake_reply(a, &ctx, &x, &to_hex(&y), &to_hex(&ac)), Some(cc));
+        // Wrong password on the agent's side (or an impostor guessing).
+        let (a, x) = pake_client("pw-right", &ctx, OsRng);
+        let (y, ac, _) = reply("pw-wrong", &ctx, &x);
+        assert_eq!(judge_pake_reply(a, &ctx, &x, &to_hex(&y), &to_hex(&ac)), None);
+        // Another certificate on the agent's side (a relay): another context.
+        let (a, x) = pake_client("pw-right", &ctx, OsRng);
+        let (y, ac, _) = reply("pw-right", &v2_context(&[1; 32], &[2; 32], &sha256(b"relay")), &x);
+        assert_eq!(judge_pake_reply(a, &ctx, &x, &to_hex(&y), &to_hex(&ac)), None);
+        // Tampered Y, tampered confirmation, our own message reflected, junk.
+        let (a, x) = pake_client("pw-right", &ctx, OsRng);
+        let (mut y, ac, _) = reply("pw-right", &ctx, &x);
+        y[5] ^= 1;
+        assert_eq!(judge_pake_reply(a, &ctx, &x, &to_hex(&y), &to_hex(&ac)), None);
+        let (a, x) = pake_client("pw-right", &ctx, OsRng);
+        let (y, mut ac, _) = reply("pw-right", &ctx, &x);
+        ac[0] ^= 1;
+        assert_eq!(judge_pake_reply(a, &ctx, &x, &to_hex(&y), &to_hex(&ac)), None);
+        let (a, x) = pake_client("pw-right", &ctx, OsRng);
+        let (_, ac, _) = reply("pw-right", &ctx, &x);
+        assert_eq!(judge_pake_reply(a, &ctx, &x, &to_hex(&x), &to_hex(&ac)), None);
+        let (a, x) = pake_client("pw-right", &ctx, OsRng);
+        assert_eq!(judge_pake_reply(a, &ctx, &x, "zz", "00"), None);
+        // The agent's confirmation is not the client's (no reflection).
+        let (a, x) = pake_client("pw-right", &ctx, OsRng);
+        let (y, _, cc) = reply("pw-right", &ctx, &x);
+        assert_eq!(judge_pake_reply(a, &ctx, &x, &to_hex(&y), &to_hex(&cc)), None);
+    }
+
+    #[test]
+    fn the_v2_answer_counts_only_when_the_agent_proved_itself() {
+        let ok = |trusted| Some(AuthMessage::Ok { trusted, mac: None });
+        assert_eq!(judge_v2_answer(ok(true), true), Ok(true));
+        assert_eq!(judge_v2_answer(ok(false), true), Ok(false));
+        assert_eq!(judge_v2_answer(ok(true), false), Err(ConnectError::NotProven));
+        assert_eq!(judge_v2_answer(None, false), Err(ConnectError::NotProven));
+        let refused = Some(AuthMessage::Refused { reason: REFUSED_UNAUTHORIZED.into() });
+        assert_eq!(judge_v2_answer(refused, false), Err(ConnectError::WrongPassword));
+    }
+
+    // ---- Both sides over an in-memory WebSocket ----
+
+    use super::super::Admission;
+    use tokio_tungstenite::tungstenite::protocol::Role;
+
+    /// Password-only mode, recording what it was asked.
+    #[derive(Default)]
+    struct TestGate {
+        charges: u32,
+        decided: Vec<(Presented, bool)>,
+        locked: bool,
+    }
+
+    impl Gate for TestGate {
+        fn charge(&mut self) -> bool {
+            self.charges += 1;
+            !self.locked
+        }
+        fn decide(&mut self, presented: Presented, charged: bool) -> Admission {
+            self.decided.push((presented, charged));
+            match presented {
+                Presented::Right => Admission::Accept { trusted: true, link: false },
+                _ => Admission::Unauthorized,
+            }
+        }
+    }
+
+    type Duplex = WebSocketStream<tokio::io::DuplexStream>;
+
+    async fn ws_pair() -> (Duplex, Duplex) {
+        let (a, b) = tokio::io::duplex(64 * 1024);
+        (
+            WebSocketStream::from_raw_socket(a, Role::Client, None).await,
+            WebSocketStream::from_raw_socket(b, Role::Server, None).await,
+        )
+    }
+
+    /// One run: (client's result, agent's result, the gate).
+    async fn run(
+        client_pw: &str,
+        agent_pw: &str,
+        client_cert: Digest,
+        agent_cert: Digest,
+        require: bool,
+        gate: TestGate,
+    ) -> (Result<(bool, u32), ConnectError>, anyhow::Result<(Admission, u32)>, TestGate) {
+        let (mut c, mut a) = ws_pair().await;
+        let mut gate = gate;
+        let (cr, ar) = tokio::join!(client_auth(&mut c, client_pw, &client_cert, require, "test"), async {
+            let r = agent_auth(&mut a, agent_pw, &agent_cert, &mut gate).await;
+            // The client may still read the answer.
+            drop(a);
+            r
+        });
+        (cr, ar, gate)
+    }
+
+    #[tokio::test]
+    async fn v2_with_the_right_password() {
+        let ch = sha256(b"cert");
+        let (c, a, gate) = run("pw", " pw ", ch, ch, false, TestGate::default()).await;
+        assert_eq!(c, Ok((true, VERSION_PAKE)));
+        assert_eq!(a.unwrap(), (Admission::Accept { trusted: true, link: false }, VERSION_PAKE));
+        assert_eq!((gate.charges, gate.decided), (1, vec![(Presented::Right, true)]));
+    }
+
+    #[tokio::test]
+    async fn v2_with_a_wrong_password_both_sides_fail_and_it_counts() {
+        let ch = sha256(b"cert");
+        let (c, a, gate) = run("pw-wrong", "pw", ch, ch, false, TestGate::default()).await;
+        assert_eq!(c, Err(ConnectError::WrongPassword));
+        assert_eq!(a.unwrap(), (Admission::Unauthorized, VERSION_PAKE));
+        assert_eq!((gate.charges, gate.decided), (1, vec![(Presented::Wrong, true)]));
+    }
+
+    /// A relay: the client sees another certificate than the agent's own.
+    #[tokio::test]
+    async fn v2_bound_to_the_certificate() {
+        let (c, a, gate) = run("pw", "pw", sha256(b"relay"), sha256(b"agent"), false, TestGate::default()).await;
+        assert_eq!(c, Err(ConnectError::WrongPassword));
+        assert_eq!(a.unwrap().0, Admission::Unauthorized);
+        assert_eq!(gate.decided, vec![(Presented::Wrong, true)]);
+    }
+
+    /// Locked out: no PAKE message at all (no guess to test).
+    #[tokio::test]
+    async fn v2_locked_out_runs_no_pake() {
+        let ch = sha256(b"cert");
+        let (c, a, gate) = run("pw", "pw", ch, ch, false, TestGate { locked: true, ..Default::default() }).await;
+        assert_eq!(c, Err(ConnectError::TooManyAttempts));
+        assert_eq!(a.unwrap().0, Admission::TooManyAttempts);
+        assert!(gate.decided.is_empty());
+    }
+
+    /// Without a password: the v1 `proof` without a MAC, as before.
+    #[tokio::test]
+    async fn without_a_password_nothing_is_proven() {
+        let ch = sha256(b"cert");
+        let (c, a, gate) = run("", "pw", ch, ch, true, TestGate::default()).await;
+        assert_eq!(c, Err(ConnectError::WrongPassword));
+        assert_eq!(a.unwrap(), (Admission::Unauthorized, 1));
+        assert_eq!((gate.charges, gate.decided), (0, vec![(Presented::Nothing, false)]));
+    }
+
+    /// A client that hangs up after the agent's reply (it got its one
+    /// guess): the failure counted in advance stays.
+    #[tokio::test]
+    async fn hanging_up_after_the_reply_still_counts() {
+        let (mut c, mut a) = ws_pair().await;
+        let ch = sha256(b"cert");
+        let mut gate = TestGate::default();
+        let client = async {
+            send_auth(&mut c, &AuthMessage::Hello { version: 2 }).await.unwrap();
+            let Some(AuthMessage::Challenge { nonce, .. }) = recv_auth(&mut c).await else { panic!() };
+            let an = from_hex::<32>(&nonce).unwrap();
+            let ctx = v2_context(&an, &[3; 32], &ch);
+            let (_, x) = pake_client("guess", &ctx, OsRng);
+            send_auth(&mut c, &AuthMessage::Pake { client_nonce: to_hex(&[3; 32]), msg: to_hex(&x) }).await.unwrap();
+            assert!(matches!(recv_auth(&mut c).await, Some(AuthMessage::PakeReply { .. })));
+            drop(c);
+        };
+        let (_, r) = tokio::join!(client, agent_auth(&mut a, "pw", &ch, &mut gate));
+        assert!(r.is_err());
+        assert_eq!((gate.charges, gate.decided.len()), (1, 0));
+    }
+
+    /// A tampered client message (a man in the middle flipping a bit):
+    /// the agent's confirmation fails at the client, nothing is let in.
+    #[tokio::test]
+    async fn a_tampered_client_message_fails_both_sides() {
+        let (mut c, mut a) = ws_pair().await;
+        let ch = sha256(b"cert");
+        let mut gate = TestGate::default();
+        let client = async {
+            send_auth(&mut c, &AuthMessage::Hello { version: 2 }).await.unwrap();
+            let Some(AuthMessage::Challenge { nonce, .. }) = recv_auth(&mut c).await else { panic!() };
+            let an = from_hex::<32>(&nonce).unwrap();
+            let ctx = v2_context(&an, &[3; 32], &ch);
+            let (state, x) = pake_client("pw", &ctx, OsRng);
+            let mut sent = x;
+            sent[9] ^= 0x40;
+            send_auth(&mut c, &AuthMessage::Pake { client_nonce: to_hex(&[3; 32]), msg: to_hex(&sent) }).await.unwrap();
+            match recv_auth(&mut c).await {
+                Some(AuthMessage::PakeReply { msg, confirm }) => {
+                    assert_eq!(judge_pake_reply(state, &ctx, &x, &msg, &confirm), None);
+                    send_auth(&mut c, &AuthMessage::Confirm { mac: None }).await.unwrap();
+                    recv_auth(&mut c).await
+                }
+                // Not a point on the curve: refused at once, the last word
+                // (waiting for another would wait forever).
+                refused @ Some(AuthMessage::Refused { .. }) => refused,
+                other => panic!("{:?}", other),
+            }
+        };
+        let (_, r) = tokio::join!(client, agent_auth(&mut a, "pw", &ch, &mut gate));
+        assert_eq!(r.unwrap().0, Admission::Unauthorized);
+        assert_eq!(gate.decided, vec![(Presented::Wrong, true)]);
+    }
+
+    /// An agent before v2, with the right and a wrong password.
+    #[tokio::test]
+    async fn a_new_client_falls_back_to_v1_with_an_old_agent() {
+        let ch = sha256(b"cert");
+        for (pw, want) in [("pw", Ok((true, 1))), ("nope", Err(ConnectError::WrongPassword))] {
+            let (mut c, mut a) = ws_pair().await;
+            let (cr, ar) = tokio::join!(client_auth(&mut c, pw, &ch, false, "test"), v1::agent_auth(&mut a, "pw", &ch));
+            assert_eq!(cr, want);
+            assert_eq!(ar, Some(pw == "pw"));
+        }
+    }
+
+    /// Where v2 was seen before: an old-style answer gets no MAC at all.
+    #[tokio::test]
+    async fn a_downgrade_is_refused_before_anything_is_sent() {
+        let ch = sha256(b"cert");
+        let (mut c, mut a) = ws_pair().await;
+        let (cr, ar) = tokio::join!(
+            async {
+                let r = client_auth(&mut c, "pw", &ch, true, "test").await;
+                drop(c);
+                r
+            },
+            v1::agent_auth(&mut a, "pw", &ch)
+        );
+        assert_eq!(cr, Err(ConnectError::Downgraded));
+        // The fake old agent never got a proof.
+        assert_eq!(ar, None);
+    }
+
+    /// A client before v2 against this agent: the v1 proof still works.
+    #[tokio::test]
+    async fn an_old_client_still_logs_in_with_v1() {
+        let ch = sha256(b"cert");
+        for (pw, trusted) in [("pw", true), ("nope", false)] {
+            let (mut c, mut a) = ws_pair().await;
+            let mut gate = TestGate::default();
+            let (cr, ar) = tokio::join!(
+                v1::client_auth(&mut c, pw, &ch),
+                async {
+                    let r = agent_auth(&mut a, "pw", &ch, &mut gate).await;
+                    drop(a);
+                    r
+                }
+            );
+            assert_eq!(cr, if trusted { Ok(true) } else { Err(ConnectError::WrongPassword) });
+            assert_eq!(ar.unwrap().1, 1);
+            assert_eq!(gate.charges, 0);
+            assert_eq!(gate.decided, vec![(if trusted { Presented::Right } else { Presented::Wrong }, false)]);
+        }
+    }
+}
+
+/// TLS and the WebSocket upgrade without the password step: for tests that
+/// speak the handshake themselves (old clients). Returns the certificate hash.
+#[cfg(test)]
+pub(crate) async fn open_for_test(address: &str, path: &str) -> (WebSocketStream<MaybeTlsStream<TcpStream>>, Digest) {
+    let tcp = TcpStream::connect(address).await.unwrap();
+    let connector = tokio_rustls::TlsConnector::from(client_tls_config().unwrap());
+    let tls = connector.connect(server_name(address), tcp).await.unwrap();
+    let cert_hash = sha256(tls.get_ref().1.peer_certificates().unwrap().first().unwrap());
+    let (ws, _) = tokio_tungstenite::client_async(format!("wss://{}{}", address, path), MaybeTlsStream::Rustls(tls)).await.unwrap();
+    (ws, cert_hash)
+}
+
+/// The v1 handshake exactly as agents and clients before v2 spoke it (the
+/// message shapes and both sides), to test against.
+#[cfg(test)]
+pub(crate) mod v1 {
+    use super::*;
+
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    #[serde(tag = "auth", rename_all = "snake_case")]
+    pub enum AuthMessage {
+        Hello { version: u32 },
+        Challenge { nonce: String },
+        Proof {
+            client_nonce: String,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            mac: Option<String>,
+        },
+        Ok {
+            trusted: bool,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            mac: Option<String>,
+        },
+        Refused { reason: String },
+    }
+
+    async fn send<S: AsyncRead + AsyncWrite + Unpin>(ws: &mut WebSocketStream<S>, msg: &AuthMessage) -> Option<()> {
+        ws.send(WsMessage::Text(serde_json::to_string(msg).unwrap().into())).await.ok()
+    }
+
+    async fn recv<S: AsyncRead + AsyncWrite + Unpin>(ws: &mut WebSocketStream<S>) -> Option<AuthMessage> {
+        loop {
+            match ws.next().await? {
+                Ok(WsMessage::Text(text)) => return serde_json::from_str(&text).ok(),
+                Ok(WsMessage::Ping(_) | WsMessage::Pong(_)) => continue,
+                _ => return None,
+            }
+        }
+    }
+
+    /// The old client: Ok(trusted).
+    pub async fn client_auth<S: AsyncRead + AsyncWrite + Unpin>(
+        ws: &mut WebSocketStream<S>,
+        password: &str,
+        cert_hash: &Digest,
+    ) -> Result<bool, ConnectError> {
+        let lost = || ConnectError::Unreachable("lost".into());
+        send(ws, &AuthMessage::Hello { version: 1 }).await.ok_or_else(lost)?;
+        let agent_nonce = match recv(ws).await {
+            Some(AuthMessage::Challenge { nonce }) => from_hex::<NONCE_LEN>(&nonce),
+            Some(AuthMessage::Refused { reason }) => return Err(refusal(&reason)),
+            _ => None,
+        }
+        .ok_or_else(|| ConnectError::Protocol("not a Lunaris agent".into()))?;
+        let client_nonce = random_nonce();
+        let mac = (!password.trim().is_empty()).then(|| to_hex(&client_mac(password, &agent_nonce, &client_nonce, cert_hash)));
+        send(ws, &AuthMessage::Proof { client_nonce: to_hex(&client_nonce), mac }).await.ok_or_else(lost)?;
+        let answer = match recv(ws).await {
+            Some(AuthMessage::Ok { trusted, mac }) => Some(super::AuthMessage::Ok { trusted, mac }),
+            Some(AuthMessage::Refused { reason }) => Some(super::AuthMessage::Refused { reason }),
+            _ => None,
+        };
+        judge_answer(answer, password, &agent_nonce, &client_nonce, cert_hash)
+    }
+
+    /// The old agent in password mode: Some(whether the proof was right),
+    /// None when no proof came.
+    pub async fn agent_auth<S: AsyncRead + AsyncWrite + Unpin>(
+        ws: &mut WebSocketStream<S>,
+        password: &str,
+        cert_hash: &Digest,
+    ) -> Option<bool> {
+        let Some(AuthMessage::Hello { .. }) = recv(ws).await else { return None };
+        let agent_nonce = random_nonce();
+        send(ws, &AuthMessage::Challenge { nonce: to_hex(&agent_nonce) }).await?;
+        let Some(AuthMessage::Proof { client_nonce, mac }) = recv(ws).await else { return None };
+        let client_nonce = from_hex::<NONCE_LEN>(&client_nonce)?;
+        let right = mac
+            .as_deref()
+            .and_then(from_hex::<32>)
+            .is_some_and(|t| mac_ok(CLIENT_LABEL, password, &agent_nonce, &client_nonce, cert_hash, &t));
+        let answer = if right {
+            AuthMessage::Ok { trusted: true, mac: Some(to_hex(&agent_mac(password, &agent_nonce, &client_nonce, cert_hash))) }
+        } else {
+            AuthMessage::Refused { reason: REFUSED_UNAUTHORIZED.into() }
+        };
+        send(ws, &answer).await?;
+        Some(right)
     }
 }
