@@ -52,3 +52,19 @@ test('the server gateway', () => {
   assert.equal(parseServerInfo({ version: '1' })!.gateway, undefined);
   assert.equal(gatewayRunning(undefined), false);
 });
+
+test('how to update follows how the server was installed', async () => {
+  const { updateSteps, windowsInstallerUrl, parseServerInfo } = await import('../src/serverInfo.ts');
+  const deb = updateSteps('deb', 'x86_64', '0.8.1');
+  assert.match(deb[0].command!, /releases\/download\/v0\.8\.1\/lunaris-server_0\.8\.1_amd64\.deb/);
+  assert.match(deb[0].command!, /sudo apt install \.\/lunaris-server_0\.8\.1_amd64\.deb/);
+  assert.match(updateSteps('deb', 'aarch64', 'v0.8.1')[0].command!, /_arm64\.deb/);
+  const service = updateSteps('service', 'x86_64', '0.8.1')[0].command!;
+  assert.match(service, /v0\.8\.1\/lunaris-server-linux-x86_64\.tar\.gz \| tar xz/);
+  assert.match(service, /sudo \.\/lunaris-server-linux-x86_64\/lunaris-server install/);
+  assert.match(updateSteps('docker', 'x86_64', '0.8.1')[0].command!, /git checkout v0\.8\.1\ndocker compose up -d --build/);
+  assert.equal(updateSteps('windows', 'x86_64', '0.8.1')[0].command, undefined);
+  assert.equal(windowsInstallerUrl('0.8.1'), 'https://github.com/collyn/lunaris/releases/download/v0.8.1/lunaris-server-installer-windows.exe');
+  assert.deepEqual(parseServerInfo({ version: '0.8.1', install: { kind: 'service', arch: 'aarch64' } })!.install, { kind: 'service', arch: 'aarch64' });
+  assert.equal(parseServerInfo({ version: '0.8.1', install: { kind: 'other' } })!.install, undefined, 'an unknown kind is left out');
+});

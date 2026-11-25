@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { t } from '../i18n';
-import { DEFAULT_LINKS, parseGateway, parseServerInfo, webVersion, type GatewayInfo, type ServerInfo } from '../serverInfo';
+import { DEFAULT_LINKS, parseGateway, parseServerInfo, updateSteps, webVersion, windowsInstallerUrl, type GatewayInfo, type ServerInfo } from '../serverInfo';
 
 /** GET /api/server/info (server/src/server_info.rs). */
 const useServerInfo = (token: string | null, apiBase: () => string) => {
@@ -131,9 +131,54 @@ function GatewaySection({ token, apiBase, initial }: { token: string; apiBase: (
 }
 
 /** The administrators' "Server" page: version, update, ports, data folder, links. */
-export function AdminServerInfo({ token, apiBase }: { token: string; apiBase: () => string }) {
+/** "How to update": the steps for the way this server was installed. */
+const HowToUpdate = ({ info }: { info: ServerInfo }) => {
+  const [copied, setCopied] = useState<number | null>(null);
+  if (!info.install) return null;
+  const version = (info.update?.available && info.update.latest) || info.version;
+  const steps = updateSteps(info.install.kind, info.install.arch, version);
+  const copy = (i: number, command: string) => {
+    navigator.clipboard?.writeText(command).then(() => {
+      setCopied(i);
+      window.setTimeout(() => setCopied(c => (c === i ? null : c)), 1500);
+    }).catch(() => {});
+  };
+  return (
+    <>
+      <h3 className="ssd-section" id="server-update-howto">{t('How to update')}</h3>
+      <div className="ssd-card server-update-howto">
+        {steps.map((step, i) => (
+          <div key={i} className="server-update-step">
+            <p>
+              {t(step.text, version)}
+              {info.install!.kind === 'windows' && (
+                <> <a href={windowsInstallerUrl(version)} target="_blank" rel="noreferrer noopener">lunaris-server-installer-windows.exe</a></>
+              )}
+            </p>
+            {step.command && (
+              <div className="server-update-command">
+                <pre>{step.command}</pre>
+                <button type="button" className="btn-secondary" onClick={() => copy(i, step.command!)}>
+                  {copied === i ? t('Copied') : t('Copy')}
+                </button>
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </>
+  );
+};
+
+export function AdminServerInfo({ token, apiBase, focusUpdate }: { token: string; apiBase: () => string; focusUpdate?: number }) {
   const { info, error, loading, reload, checking, checkUpdate } = useServerInfo(token, apiBase);
   const update = info?.update;
+  // Opened from the banner's "How to update": scrolled to those steps once they are shown.
+  const hasInfo = !!info;
+  useEffect(() => {
+    if (!focusUpdate || !hasInfo) return;
+    document.getElementById('server-update-howto')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, [focusUpdate, hasInfo]);
   return (
     <div className="admin-page-container">
       <div className="section-header">
@@ -174,6 +219,7 @@ export function AdminServerInfo({ token, apiBase }: { token: string; apiBase: ()
             ) : null}
           </dl>
           <p className="form-hint server-info-hint">{t('The server never updates itself: update the package, the Docker image or the service the way it was installed.')}</p>
+          <HowToUpdate info={info} />
 
           <h3 className="ssd-section">{t('Network')}</h3>
           <dl className="ssd-card ssd-info">

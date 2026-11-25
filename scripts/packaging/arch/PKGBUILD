@@ -8,7 +8,7 @@
 
 pkgbase=lunaris
 pkgname=(lunaris-agent lunaris-approval-helper lunaris-client)
-pkgver=0.8.1
+pkgver=0.8.2
 pkgrel=1
 pkgdesc="Low-latency remote desktop"
 arch=(x86_64)

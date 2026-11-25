@@ -487,6 +487,13 @@ pub async fn setup_bridge_session(
         info!("H.265 requested but host doesn't support it, falling back to H.264");
         codec_str = "h264".to_string();
     }
+    // 4:4:4 needs an encoder that makes it (NVENC, or x264 where FFmpeg has
+    // it): asked of an AMD or Intel Windows computer the pipeline failed and
+    // the viewer saw nothing (2026-11-25, RX 6600 XT). Then 4:2:0.
+    if yuv444 && connector_target.is_none() && !yuv444_encodable(&encoders) {
+        info!("YUV 4:4:4 requested but no encoder here makes it (it needs NVENC, or x264); encoding 4:2:0");
+        yuv444 = false;
+    }
     // YUV 4:4:4 is offered as H.264 High 4:4:4 Predictive (browsers decode
     // profile-level-id f4…; HEVC/AV1 4:4:4 are not available here).
     if yuv444 && codec_str != "h264" {
@@ -2578,6 +2585,15 @@ mod held_keys_tests {
 /// A `host_cursor` message with its number (`seq`): positions come on an
 /// unordered channel, so a viewer keeps the newest one it has seen. Viewers
 /// from before this field ignore it.
+/// Whether an encoder listed here makes H.264 4:4:4: NVENC, or x264 (the
+/// software encoder FFmpeg has on Linux and macOS; Windows builds have none).
+fn yuv444_encodable(encoders: &[lunaris_media::EncoderInfo]) -> bool {
+    encoders.iter().any(|e| {
+        e.supported_codecs.contains(&lunaris_media::VideoCodec::H264)
+            && (e.hw_type == lunaris_media::HwAccelType::Nvenc || e.name == "libx264")
+    })
+}
+
 /// `window_drag_watched`: this host says in `in_window_move_size` also when
 /// an app drags its own window (window_drag.rs); viewers then do not look for
 /// the pointer in the picture on every drag.
@@ -2643,6 +2659,17 @@ mod host_cursor_message_tests {
         assert_eq!(message["seq"], 42);
         assert_eq!(message["x"], 10);
         assert!(message.get("window_drag_watched").is_none(), "not said where not watched");
+    }
+
+    #[test]
+    fn four_four_four_needs_nvenc_or_x264() {
+        use lunaris_media::{EncoderInfo, HwAccelType, VideoCodec};
+        let enc = |name: &str, hw_type| EncoderInfo { name: name.into(), hw_type, supported_codecs: vec![VideoCodec::H264] };
+        assert!(!super::yuv444_encodable(&[enc("native_amf_d3d11", HwAccelType::Amf)]), "AMD on Windows");
+        assert!(!super::yuv444_encodable(&[enc("native_qsv_d3d11", HwAccelType::Qsv), enc("h264_vaapi", HwAccelType::Vaapi)]));
+        assert!(super::yuv444_encodable(&[enc("native_nvenc_d3d11", HwAccelType::Nvenc)]));
+        assert!(super::yuv444_encodable(&[enc("h264_vaapi", HwAccelType::Vaapi), enc("libx264", HwAccelType::Software)]));
+        assert!(!super::yuv444_encodable(&[]));
     }
 
     #[test]

@@ -12,7 +12,12 @@ export type ServerInfo = {
   dataDir?: string;
   /** Administrators only: the server gateway (server/src/gateway.rs). */
   gateway?: GatewayInfo;
+  /** Administrators only: how this server was installed (server_info.rs install_kind_of). */
+  install?: { kind: InstallKind; arch: string };
 };
+
+export type InstallKind = 'docker' | 'windows' | 'deb' | 'package' | 'service' | 'manual';
+const INSTALL_KINDS: InstallKind[] = ['docker', 'windows', 'deb', 'package', 'service', 'manual'];
 
 export type GatewayState = 'disabled' | 'not_found' | 'unsupported' | 'starting' | 'running' | 'failing';
 
@@ -96,6 +101,11 @@ export function parseServerInfo(body: unknown): ServerInfo | null {
   if (typeof b.data_dir === 'string') info.dataDir = b.data_dir;
   const gateway = parseGateway(b.gateway);
   if (gateway) info.gateway = gateway;
+  if (b.install && typeof b.install === 'object') {
+    const i = b.install as Record<string, unknown>;
+    const kind = INSTALL_KINDS.find(k => k === i.kind);
+    if (kind) info.install = { kind, arch: str(i.arch) || 'x86_64' };
+  }
   return info;
 }
 
@@ -103,3 +113,49 @@ declare const __APP_VERSION__: string | undefined;
 
 /** The version this page was built as (vite.config.ts, from the workspace's Cargo.toml). */
 export const webVersion = (): string => (typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : '');
+
+/** One step of "How to update": a sentence, and a command to copy when there is one. */
+export type UpdateStep = { text: string; command?: string };
+
+const DOWNLOAD = 'https://github.com/collyn/lunaris/releases/download';
+
+/** What updates this server to `version` (its install kind and machine).
+ *  The sentences are English keys for t(); `%1` in them is the version. */
+export function updateSteps(kind: InstallKind, arch: string, version: string): UpdateStep[] {
+  const v = version.replace(/^v/, '');
+  const arm = arch === 'aarch64';
+  switch (kind) {
+    case 'deb': {
+      const file = `lunaris-server_${v}_${arm ? 'arm64' : 'amd64'}.deb`;
+      return [
+        { text: 'Download the package and install it over this one (the service restarts; accounts, computers and settings stay):', command: `curl -LO ${DOWNLOAD}/v${v}/${file}\nsudo apt install ./${file}` },
+      ];
+    }
+    case 'service': {
+      const dir = `lunaris-server-linux-${arm ? 'aarch64' : 'x86_64'}`;
+      return [
+        { text: 'Download the new server and run its install again (it replaces the program and the service; the data and settings stay):', command: `curl -L ${DOWNLOAD}/v${v}/${dir}.tar.gz | tar xz\nsudo ./${dir}/lunaris-server install` },
+      ];
+    }
+    case 'docker':
+      return [
+        { text: 'In the folder with the Lunaris source and docker-compose.yml, take the new version and build the image again (the data volume stays):', command: `git fetch --tags && git checkout v${v}\ndocker compose up -d --build` },
+      ];
+    case 'windows':
+      return [
+        { text: 'Download the server installer for Windows (%1) and run it on this computer: it updates the LunarisServer service and keeps the data.' },
+      ];
+    case 'package':
+      return [
+        { text: 'This server was installed from a package: update it with the package manager that installed it.' },
+      ];
+    case 'manual':
+      return [
+        { text: 'This server runs from where it was unpacked: stop it, unpack the new version over it and start it again. Installing it as a service makes later updates one command:', command: `curl -L ${DOWNLOAD}/v${v}/lunaris-server-linux-${arm ? 'aarch64' : 'x86_64'}.tar.gz | tar xz\nsudo ./lunaris-server-linux-${arm ? 'aarch64' : 'x86_64'}/lunaris-server install` },
+      ];
+  }
+}
+
+/** The Windows installer of `version`, for the Windows step's link. */
+export const windowsInstallerUrl = (version: string): string =>
+  `${DOWNLOAD}/v${version.replace(/^v/, '')}/lunaris-server-installer-windows.exe`;

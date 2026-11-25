@@ -1221,6 +1221,16 @@ body {
 .server-update-check { display: inline-flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
 .server-update-check .btn-secondary { padding: 0.3rem 0.75rem; font-size: 0.8rem; }
 
+.server-update-howto { padding: 14px 16px; display: flex; flex-direction: column; gap: 12px; }
+.server-update-step p { margin: 0 0 8px; color: var(--text-main); line-height: 1.5; }
+.server-update-command { display: flex; align-items: flex-start; gap: 8px; }
+.server-update-command pre {
+  flex: 1; min-width: 0; margin: 0; padding: 10px 12px; border-radius: 8px;
+  background: rgb(var(--ink-rgb) / 0.06); font-size: 0.8rem; line-height: 1.5;
+  overflow-x: auto; white-space: pre;
+}
+.server-update-command .btn-secondary { flex-shrink: 0; padding: 0.35rem 0.75rem; font-size: 0.8rem; }
+
 .btn-tech {
   background-color: var(--bg-tertiary);
   border: 1px solid var(--border-color);

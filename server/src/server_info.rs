@@ -20,6 +20,39 @@ fn data_dir_text() -> String {
         .unwrap_or_default()
 }
 
+/// How this server was installed, for the Server page's "How to update":
+/// "docker", "windows", "deb" (the Debian package), "package" (another
+/// package in /usr/bin), "service" (`lunaris-server install`, in
+/// /usr/local/bin) or "manual" (run from where it was unpacked).
+fn install_kind_of(windows: bool, in_docker: bool, exe: &str, deb_installed: bool) -> &'static str {
+    if windows {
+        "windows"
+    } else if in_docker {
+        "docker"
+    } else if exe == "/usr/bin/lunaris-server" {
+        if deb_installed { "deb" } else { "package" }
+    } else if exe == "/usr/local/bin/lunaris-server" {
+        "service"
+    } else {
+        "manual"
+    }
+}
+
+fn install_json() -> serde_json::Value {
+    let exe = std::env::current_exe()
+        .ok()
+        .and_then(|p| std::fs::canonicalize(&p).ok().or(Some(p)))
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let kind = install_kind_of(
+        cfg!(windows),
+        std::path::Path::new("/.dockerenv").exists(),
+        &exe,
+        std::path::Path::new("/var/lib/dpkg/info/lunaris-server.list").exists(),
+    );
+    serde_json::json!({ "kind": kind, "arch": std::env::consts::ARCH })
+}
+
 fn update_json(checks: bool, last: Option<update_notice::CheckResult>) -> serde_json::Value {
     let mut out = serde_json::json!({ "checks": checks });
     if let Some(last) = last {
@@ -44,6 +77,7 @@ pub fn info_json(admin: bool) -> serde_json::Value {
     if admin {
         let http: u16 = std::env::var("SERVER_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(8090);
         out["update"] = update_json(update_notice::checks(), update_notice::last());
+        out["install"] = install_json();
         out["ports"] = serde_json::json!({ "http": http, "https": tls::https_port() });
         out["data_dir"] = data_dir_text().into();
     }
@@ -117,5 +151,20 @@ mod tests {
         let failed = update_json(true, Some(update_notice::CheckResult { checked_at: 7, latest: None, error: Some("timed out".into()) }));
         assert_eq!(failed["error"], "timed out");
         assert!(failed.get("available").is_none());
+    }
+}
+
+#[cfg(test)]
+mod install_kind_tests {
+    use super::install_kind_of;
+
+    #[test]
+    fn how_the_server_was_installed() {
+        assert_eq!(install_kind_of(true, false, "C:\\Program Files\\Lunaris Server\\lunaris-server.exe", false), "windows");
+        assert_eq!(install_kind_of(false, true, "/usr/local/bin/lunaris-server", false), "docker");
+        assert_eq!(install_kind_of(false, false, "/usr/bin/lunaris-server", true), "deb");
+        assert_eq!(install_kind_of(false, false, "/usr/bin/lunaris-server", false), "package");
+        assert_eq!(install_kind_of(false, false, "/usr/local/bin/lunaris-server", false), "service");
+        assert_eq!(install_kind_of(false, false, "/home/a/lunaris-server-linux-x86_64/lunaris-server", false), "manual");
     }
 }

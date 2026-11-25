@@ -321,6 +321,8 @@ function App() {
   // Admin State
   const [userRole, setUserRole] = useState<string | null>(localStorage.getItem('lunaris_role'));
   const [activeTab, setActiveTab] = useState<'devices' | 'users' | 'groups' | 'turn_servers' | 'install_agents' | 'server'>('devices');
+  // The update banner's "How to update": the Server page scrolls to its steps.
+  const [serverFocusUpdate, setServerFocusUpdate] = useState(0);
   // A newer Lunaris for administrators: a notice on every page and a dot on the Server tab.
   const serverUpdate = useServerUpdate(token, userRole === 'admin', () => `${getBackendProtocol().http}//${getBackendHost()}`);
 
@@ -1950,7 +1952,7 @@ function App() {
                 <UpdateBanner
                   notice={serverUpdate.notice}
                   onDismiss={serverUpdate.dismiss}
-                  onOpenServer={() => setActiveTab('server')}
+                  onOpenServer={() => { setActiveTab('server'); setServerFocusUpdate(n => n + 1); }}
                 />
               )}
 
@@ -2695,7 +2697,7 @@ function App() {
                 <AdminInstallAgents token={token!} getBackendHost={getBackendHost} getBackendProtocol={getBackendProtocol} />
               )}
               {activeTab === 'server' && userRole === 'admin' && (
-                <AdminServerInfo token={token!} apiBase={() => `${getBackendProtocol().http}//${getBackendHost()}`} />
+                <AdminServerInfo token={token!} apiBase={() => `${getBackendProtocol().http}//${getBackendHost()}`} focusUpdate={serverFocusUpdate} />
               )}
             </div>
           </div>
