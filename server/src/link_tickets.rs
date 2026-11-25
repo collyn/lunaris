@@ -103,7 +103,16 @@ pub async fn create_ticket(
         }
     }
     match issue(&state.db, &user.user_id, host_id, source_id, now_secs()).await {
-        Ok(Some(ticket)) => (StatusCode::OK, Json(serde_json::json!({ "ticket": ticket }))).into_response(),
+        Ok(Some(ticket)) => {
+            let mut body = serde_json::json!({ "ticket": ticket });
+            // The server's own self-signed certificate: the desktop app
+            // accepts it by this fingerprint when the link is for this
+            // server's HTTPS port (client-qml server_cert.rs).
+            if let Some(cert) = crate::tls::served_cert_sha256().filter(|_| crate::tls::self_signed()) {
+                body["cert_sha256"] = cert.into();
+            }
+            (StatusCode::OK, Json(body)).into_response()
+        }
         Ok(None) => error(StatusCode::TOO_MANY_REQUESTS, "Too many links opened at once. Try again in a minute."),
         Err(e) => db_error(e),
     }

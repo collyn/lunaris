@@ -16,6 +16,7 @@ pub mod pointer_in_picture;
 pub mod input;
 pub mod protocol;
 pub mod secure_fs;
+pub mod server_cert;
 pub mod session_info;
 pub mod share;
 pub mod single_instance;

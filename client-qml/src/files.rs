@@ -307,11 +307,10 @@ async fn connect(server_url: String, token: String, host_id: String, source_id: 
     } else {
         let encoded: String = url::form_urlencoded::byte_serialize(token.as_bytes()).collect();
         let ws_url = format!("{}/ws/client?token={}{}", crate::bridge::signaling_ws_base(&server_url), encoded, crate::session_info::client_name_query());
-        tokio::time::timeout(Duration::from_secs(10), tokio_tungstenite::connect_async(ws_url.as_str()))
+        tokio::time::timeout(Duration::from_secs(10), crate::server_cert::connect_ws(ws_url.as_str()))
             .await
             .map_err(|_| "cannot reach the server".to_string())?
             .map_err(|e| format!("cannot reach the server: {}", e))?
-            .0
     };
     let (mut ws_tx, mut ws_rx) = ws.split();
     let (out_tx, mut out_rx) = mpsc::unbounded_channel::<SignalingMessage>();
