@@ -491,7 +491,7 @@ async fn main_async(args: Args) -> Result<(), Box<dyn std::error::Error + Send +
     // A daemon: the person here answers through the approval helper, if
     // one connects (approval.rs); `--approval-stdio` answers on stdio.
     if !args.approval_stdio {
-        approval::spawn_helper_listener();
+        approval::spawn_helper_listener(&config.server_url);
     }
 
     // A package upgrade or a new AppImage does not restart this headless

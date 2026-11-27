@@ -15,6 +15,10 @@ pub mod qobject {
 
         #[rust_name = "create_widgets_application"]
         unsafe fn create_widgets_application();
+        #[rust_name = "create_tray"]
+        unsafe fn create_tray();
+        #[rust_name = "tray_show_message"]
+        fn tray_show_message(title: &QString, text: &QString, timeout_ms: i32);
         #[rust_name = "exec_widgets_application"]
         unsafe fn exec_widgets_application() -> i32;
     }
@@ -35,6 +39,10 @@ pub mod qobject {
         /// Whether an agent lets this helper answer now.
         #[qinvokable]
         fn connected(self: &ApprovalBridge) -> bool;
+
+        /// A notification from the tray icon (qt_app.cpp).
+        #[qinvokable]
+        fn notify(self: &ApprovalBridge, title: &QString, text: &QString, timeout_ms: i32);
     }
 }
 
@@ -52,5 +60,9 @@ impl qobject::ApprovalBridge {
 
     pub fn connected(&self) -> bool {
         crate::helper::CONNECTED.load(Ordering::SeqCst)
+    }
+
+    pub fn notify(&self, title: &QString, text: &QString, timeout_ms: i32) {
+        qobject::tray_show_message(title, text, timeout_ms);
     }
 }

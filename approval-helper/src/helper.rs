@@ -27,6 +27,7 @@ pub async fn run(mut on_ready: impl FnMut()) {
                         on_ready();
                     },
                     crate::pending::on_event,
+                    crate::pending::on_info,
                     &mut answers,
                 )
                 .await;

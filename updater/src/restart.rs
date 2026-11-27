@@ -200,6 +200,29 @@ pub fn relaunch_if_requested() {
     }
 }
 
+/// Starts this program again now, as it was started, when the person asks
+/// (the agent tray's Restart). Unix: re-executes it in place (same pid, so
+/// a service manager sees no exit); returns only when that failed. Windows:
+/// starts the new process, which waits until this one is gone
+/// ([`wait_for_previous`]); the caller then exits.
+pub fn restart_now() -> std::io::Error {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        relaunch_command().exec()
+    }
+    #[cfg(not(unix))]
+    {
+        let mut cmd = relaunch_command();
+        cmd.env(WAIT_PID_ENV, std::process::id().to_string());
+        cmd.stdin(std::process::Stdio::null());
+        match cmd.spawn() {
+            Ok(_) => std::io::Error::other("started again"),
+            Err(e) => e,
+        }
+    }
+}
+
 /// In a restarted program: waits (up to 30 s) until the program that
 /// started it has exited. Call first in `main`, after [`remember_launch`].
 pub fn wait_for_previous() {

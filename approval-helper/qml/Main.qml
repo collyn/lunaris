@@ -1,6 +1,5 @@
 import QtQuick
 import QtQuick.Controls
-import Qt.labs.platform as Platform
 import com.lunaris.approval 1.0
 
 // lunaris-approval-helper (src/main.rs): the tray of the person at this
@@ -20,25 +19,7 @@ ApplicationWindow {
 
     ApprovalBridge { id: bridge }
 
-    property bool connected: false
-    Timer {
-        interval: 1000; running: true; repeat: true; triggeredOnStart: true
-        onTriggered: window.connected = bridge.connected()
-    }
-
-    // Shown while an agent lets this helper answer.
-    Platform.SystemTrayIcon {
-        id: trayIcon
-        visible: window.connected
-        icon.source: "qrc:/icons/icon.png"
-        tooltip: "Lunaris Agent — you are asked before anyone connects without the password"
-        menu: Platform.Menu {
-            Platform.MenuItem {
-                text: "You are asked before anyone connects without the password"
-                enabled: false
-            }
-        }
-    }
+    // The tray icon and its menu are qt_app.cpp's (QSystemTrayIcon).
 
     // Nothing to show without a question: closing only hides it (the
     // helper keeps running for the next one).
@@ -48,7 +29,6 @@ ApplicationWindow {
         id: dialog
         agentBridge: bridge
         hostWindow: window
-        tray: trayIcon
         onClosed: window.hide()
     }
 }
