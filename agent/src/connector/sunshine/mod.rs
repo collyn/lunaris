@@ -13,8 +13,8 @@
 //! and `keymap`, `session` (one connection from start to end).
 //!
 //! Limits: stereo sound; 8 bit 4:2:0 SDR picture (no HDR, no 4:4:4); one
-//! display, the one the host's configuration shows; no game controllers,
-//! touch or pen; no Wake-on-LAN; bitrate, frame rate and size are fixed
+//! display, the one the host's configuration shows; game controllers
+//! without rumble, motion or their touch pads; no touch or pen; no Wake-on-LAN; bitrate, frame rate and size are fixed
 //! when a session starts (they are the viewer's wish then, within the
 //! computer's `resolution` and `bitrate`). The pointer is the one in the
 //! host's picture; the protocol has neither its shape nor its place. With

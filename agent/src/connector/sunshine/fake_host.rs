@@ -753,6 +753,11 @@ pub(crate) enum InputSeen {
     Key { vk: u8, release: bool, modifiers: u8, flags: u8 },
     /// passthrough(const NV_UNICODE_PACKET *)
     Text(String),
+    /// passthrough(PSS_CONTROLLER_ARRIVAL_PACKET)
+    ControllerArrival { number: u8, kind: u8, capabilities: u16, buttons: u32 },
+    /// passthrough(PNV_MULTI_CONTROLLER_PACKET): `bf | (bf2 << 16)`, the
+    /// sticks as the host's platform gets them (y upwards).
+    Controller { number: i16, active_mask: u16, buttons: u32, lt: u8, rt: u8, sticks: [i16; 4] },
     Other { magic: u32 },
 }
 
@@ -1329,6 +1334,28 @@ pub(crate) fn read_input_packet(packet: &[u8]) -> Result<InputSeen, ()> {
                 return Err(());
             }
             Ok(InputSeen::Text(String::from_utf8_lossy(&packet[8..4 + declared]).into_owned()))
+        }
+        // The controller packets are read as the host's (little-endian) structs.
+        0x5500_0004 => {
+            fixed(16)?;
+            Ok(InputSeen::ControllerArrival {
+                number: packet[8],
+                kind: packet[9],
+                capabilities: u16::from_le_bytes([packet[10], packet[11]]),
+                buttons: u32::from_le_bytes(packet[12..16].try_into().unwrap()),
+            })
+        }
+        0x0C => {
+            fixed(34)?;
+            let le16 = |at: usize| u16::from_le_bytes([packet[at], packet[at + 1]]);
+            Ok(InputSeen::Controller {
+                number: le16(10) as i16,
+                active_mask: le16(12),
+                buttons: le16(16) as u32 | ((le16(30) as u32) << 16),
+                lt: packet[18],
+                rt: packet[19],
+                sticks: [le16(20) as i16, le16(22) as i16, le16(24) as i16, le16(26) as i16],
+            })
         }
         other => Ok(InputSeen::Other { magic: other }),
     }

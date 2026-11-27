@@ -881,7 +881,8 @@ impl Remote {
                 }
                 out
             }
-            Command::Close => Vec::new(),
+            // RustDesk's protocol has no game controllers.
+            Command::Close | Command::Gamepad { .. } => Vec::new(),
         }
     }
 

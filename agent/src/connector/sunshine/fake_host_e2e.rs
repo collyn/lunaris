@@ -213,6 +213,8 @@ fn input_kind(seen: &InputSeen) -> &'static str {
         InputSeen::HScroll { .. } => "hscroll",
         InputSeen::Key { .. } => "key",
         InputSeen::Text(_) => "text",
+        InputSeen::ControllerArrival { .. } => "controller_arrival",
+        InputSeen::Controller { .. } => "controller",
         InputSeen::Other { .. } => "other",
     }
 }

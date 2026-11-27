@@ -267,6 +267,13 @@ async fn set_up_then_a_whole_session() {
         Command::Key { position: 30, down: false },
         Command::Key { position: 42, down: false },
         Command::Text { text: "héllo wörld".into() },
+        // A controller plugged in (arrival + state), then unplugged.
+        Command::Gamepad {
+            id: 1,
+            kind: 1,
+            state: Some(crate::gamepad::PadState { buttons: crate::gamepad::buttons::B, lt: 0, rt: 200, lx: 0, ly: 1000, rx: 0, ry: 0 }),
+        },
+        Command::Gamepad { id: 1, kind: 0, state: None },
         // Ignored: GameStream fixes these at the start and has no clipboard.
         Command::Quality { fps: 30, bitrate_kbps: 5000 },
         Command::SwitchDisplay { index: 1 },
@@ -276,11 +283,25 @@ async fn set_up_then_a_whole_session() {
     for command in commands {
         session.commands.send(command).await.unwrap();
     }
-    host.wait("the input and the key frame request", |st| st.stream.input.len() == 11 && st.stream.idr_requests == 3).await;
+    host.wait("the input and the key frame request", |st| st.stream.input.len() == 14 && st.stream.idr_requests == 3).await;
     {
         let st = host.state.lock().unwrap();
+        let (controller, others): (Vec<InputSeen>, Vec<InputSeen>) = st
+            .stream
+            .input
+            .iter()
+            .cloned()
+            .partition(|i| matches!(i, InputSeen::Controller { .. } | InputSeen::ControllerArrival { .. }));
+        assert_eq!(
+            controller,
+            vec![
+                InputSeen::ControllerArrival { number: 1, kind: 1, capabilities: 1, buttons: 0xF7FF },
+                InputSeen::Controller { number: 1, active_mask: 0b10, buttons: 0x2000, lt: 0, rt: 200, sticks: [0, -1000, 0, 0] },
+                InputSeen::Controller { number: 1, active_mask: 0, buttons: 0, lt: 0, rt: 0, sticks: [0; 4] },
+            ]
+        );
         let (keyboard, mouse): (Vec<InputSeen>, Vec<InputSeen>) =
-            st.stream.input.iter().cloned().partition(|i| matches!(i, InputSeen::Key { .. } | InputSeen::Text(_)));
+            others.into_iter().partition(|i| matches!(i, InputSeen::Key { .. } | InputSeen::Text(_)));
         assert_eq!(
             mouse,
             vec![
@@ -304,10 +325,11 @@ async fn set_up_then_a_whole_session() {
             ]
         );
         assert_eq!(st.stream.malformed_input, 0);
-        // Input travels on the mouse and keyboard channels, the IDR request on the urgent one.
+        // Input travels on the mouse and keyboard channels (controller 1 on
+        // 0x11), the IDR request on the urgent one.
         for message in &st.stream.control {
             match message.ptype {
-                0x0206 => assert!(message.channel == 2 || message.channel == 3),
+                0x0206 => assert!(matches!(message.channel, 2 | 3 | 0x11)),
                 0x0302 if message.seq != 0 => assert_eq!(message.channel, 1),
                 _ => assert_eq!(message.channel, 0),
             }
