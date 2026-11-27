@@ -200,7 +200,57 @@ pub fn answer(id: u64, accept: bool) {
 /// The agent's questions, for the approval helper's channel.
 struct HelperQuestions;
 
+/// The web page of the agent's server, for the tray's "Open".
+static WEB_URL: Mutex<Option<String>> = Mutex::new(None);
+
+/// The web page (`http(s)://host:port/`) of a server address as configured
+/// (`ws://`, `wss://`, `http(s)://` or `host:port`, see lib.rs
+/// server_ws_url); None when there is none.
+pub fn web_url_of(server_url: &str) -> Option<String> {
+    let ws = crate::server_ws_url(server_url);
+    let (scheme, rest) = if let Some(rest) = ws.strip_prefix("wss://") {
+        ("https", rest)
+    } else {
+        ("http", ws.strip_prefix("ws://")?)
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    if authority.is_empty() {
+        return None;
+    }
+    Some(format!("{scheme}://{authority}/"))
+}
+
+/// Starts the agent again (the tray's Restart). As a Windows service's
+/// agent: it exits and the service starts it again (win_service.rs, within
+/// a few seconds). Otherwise it starts itself again (restart.rs).
+fn restart_agent() {
+    tracing::info!("Restarting the agent, as the person at this computer asked");
+    #[cfg(target_os = "windows")]
+    if crate::win_service::running_as_local_system() {
+        std::process::exit(0);
+    }
+    let e = updater::restart::restart_now();
+    #[cfg(target_os = "windows")]
+    {
+        let _ = e;
+        std::process::exit(0);
+    }
+    // Unix: only when re-executing failed. A service manager (Restart=always)
+    // starts it again.
+    #[cfg(not(target_os = "windows"))]
+    {
+        tracing::error!("Cannot start the agent again: {}", e);
+        std::process::exit(1);
+    }
+}
+
 impl approval_channel::Answerer for HelperQuestions {
+    fn info(&self) -> approval_channel::AgentInfo {
+        approval_channel::AgentInfo { web_url: WEB_URL.lock().unwrap().clone() }
+    }
+    fn restart(&self) {
+        restart_agent();
+    }
     fn attach(&self, sink: Box<dyn Fn(Event) + Send + Sync>) -> u64 {
         attach(sink)
     }
@@ -215,7 +265,9 @@ impl approval_channel::Answerer for HelperQuestions {
 /// The agent running as a daemon: the person here answers through the
 /// approval helper, when one connects (in the background; in a tokio
 /// runtime). Without one, nothing changes: only the password lets anyone in.
-pub fn spawn_helper_listener() {
+/// `server_url`: the configured server, whose web page the tray opens.
+pub fn spawn_helper_listener(server_url: &str) {
+    *WEB_URL.lock().unwrap() = web_url_of(server_url);
     approval_channel::spawn_listener(Arc::new(HelperQuestions));
 }
 
@@ -312,6 +364,17 @@ pub(crate) static TEST_SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::cons
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_trays_web_page_of_a_server_address() {
+        use super::web_url_of;
+        assert_eq!(web_url_of("ws://127.0.0.1:8090").as_deref(), Some("http://127.0.0.1:8090/"));
+        assert_eq!(web_url_of("wss://srv.lan:8443/ws?x=1").as_deref(), Some("https://srv.lan:8443/"));
+        assert_eq!(web_url_of("https://example.com/").as_deref(), Some("https://example.com/"));
+        assert_eq!(web_url_of("srv.lan:8090").as_deref(), Some("https://srv.lan:8090/"));
+        assert_eq!(web_url_of("ws://[::1]:8090").as_deref(), Some("http://[::1]:8090/"));
+        assert_eq!(web_url_of("ws://"), None);
+    }
+
     use super::*;
 
     #[test]
@@ -454,6 +517,8 @@ mod tests {
         let (hr, mut hw) = tokio::io::split(helper_end);
         let mut hr = tokio::io::BufReader::new(hr).lines();
         assert_eq!(hr.next_line().await.unwrap().unwrap(), approval_channel::READY_LINE);
+        // Then what the tray offers (the web page: none set in this test).
+        assert!(approval_channel::parse_info_line(&hr.next_line().await.unwrap().unwrap()).is_some());
         while !attended() {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }

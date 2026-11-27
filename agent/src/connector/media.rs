@@ -422,6 +422,8 @@ fn hop_report() -> Option<String> {
 /// What the viewer sends that is for the computer shown.
 pub enum ViewerInput {
     Packet(InboundPacket),
+    /// A game controller's state or its unplugging (gamepad.rs).
+    Gamepad(crate::gamepad::PadMsg),
     /// The viewer's clipboard text changed.
     Clipboard(String),
 }
@@ -755,6 +757,19 @@ pub async fn run(source: Source, link: ViewerLink) {
                                 if commands.send(command).await.is_err() {
                                     break;
                                 }
+                            }
+                        }
+                        Some(ViewerInput::Gamepad(message)) => {
+                            input_events += 1;
+                            counters.input_events = input_events;
+                            let command = match message {
+                                crate::gamepad::PadMsg::State { id, kind, state } => Command::Gamepad { id, kind, state: Some(state) },
+                                crate::gamepad::PadMsg::Removed { id } => Command::Gamepad { id, kind: 0, state: None },
+                            };
+                            input_commands += 1;
+                            counters.input_commands = input_commands;
+                            if commands.send(command).await.is_err() {
+                                break ("The connector ended".to_string(), true, "ended");
                             }
                         }
                         Some(ViewerInput::Clipboard(text)) => {

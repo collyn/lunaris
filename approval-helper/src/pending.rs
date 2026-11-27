@@ -4,14 +4,36 @@
 
 use std::sync::Mutex;
 
-use approval_channel::{Event, Question};
+use approval_channel::{AgentInfo, Event, HelperRequest, Question};
 use tokio::sync::mpsc::UnboundedSender;
 
 /// The questions waiting for an answer, oldest first.
 static PENDING: Mutex<Vec<Question>> = Mutex::new(Vec::new());
 
 /// Where the answers go: the agent's channel while connected.
-static REMOTE: Mutex<Option<UnboundedSender<(u64, bool)>>> = Mutex::new(None);
+static REMOTE: Mutex<Option<UnboundedSender<HelperRequest>>> = Mutex::new(None);
+
+/// What the connected agent said of itself (the tray's web page).
+static INFO: Mutex<Option<AgentInfo>> = Mutex::new(None);
+
+/// The agent said what the tray offers.
+pub fn on_info(info: AgentInfo) {
+    *INFO.lock().unwrap_or_else(|e| e.into_inner()) = Some(info);
+}
+
+/// The web page of the agent's server, while an agent that has one is
+/// connected.
+pub fn web_url() -> Option<String> {
+    INFO.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|i| i.web_url.clone())
+}
+
+/// The tray's Restart: asks the connected agent to start again (nothing
+/// without one).
+pub fn restart_agent() {
+    if let Some(remote) = REMOTE.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        let _ = remote.send(HelperRequest::Restart);
+    }
+}
 
 /// A question or withdrawal from the agent.
 pub fn on_event(event: Event) {
@@ -36,13 +58,16 @@ pub fn pending_json() -> String {
 pub fn answer(id: u64, accept: bool) {
     PENDING.lock().unwrap_or_else(|e| e.into_inner()).retain(|q| q.id != id);
     if let Some(remote) = REMOTE.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
-        let _ = remote.send((id, accept));
+        let _ = remote.send(HelperRequest::Answer { id, accept });
     }
 }
 
 /// The answers go to `remote` from now on (None: the agent went away).
 /// The questions shown are dropped either way.
-pub fn set_remote(remote: Option<UnboundedSender<(u64, bool)>>) {
+pub fn set_remote(remote: Option<UnboundedSender<HelperRequest>>) {
+    if remote.is_none() {
+        *INFO.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
     *REMOTE.lock().unwrap_or_else(|e| e.into_inner()) = remote;
     PENDING.lock().unwrap_or_else(|e| e.into_inner()).clear();
 }
@@ -70,12 +95,18 @@ mod tests {
         assert_eq!(list.len(), 1);
         assert_eq!((list[0]["id"].as_u64(), list[0]["kind"].as_str()), (Some(5), Some("control")));
         answer(5, true);
-        assert_eq!(rx.recv().await, Some((5, true)));
+        assert_eq!(rx.recv().await, Some(HelperRequest::Answer { id: 5, accept: true }));
         assert!(listed().is_empty());
+        // The tray: the agent's web page, and its Restart.
+        on_info(AgentInfo { web_url: Some("https://srv:8090/".into()) });
+        assert_eq!(web_url().as_deref(), Some("https://srv:8090/"));
+        restart_agent();
+        assert_eq!(rx.recv().await, Some(HelperRequest::Restart));
         // The agent went away: what was shown goes, late answers go nowhere.
         on_event(Event::Ask(q(7, "files")));
         set_remote(None);
         assert!(listed().is_empty());
+        assert_eq!(web_url(), None);
         answer(7, true);
         assert!(rx.recv().await.is_none());
     }

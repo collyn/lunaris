@@ -1064,6 +1064,15 @@ pub async fn setup_bridge_session(
             Ok(tasks) => spawned_tasks.extend(tasks),
             Err(e) => warn!("Clipboard channel unavailable: {}", e),
         }
+        // Game controllers go to the other computer (a connector that has
+        // none, VNC or RDP, leaves them).
+        let to_source = viewer_input_tx.clone();
+        let sink = move |message| {
+            let _ = to_source.send(crate::connector::media::ViewerInput::Gamepad(message));
+        };
+        if let Err(e) = crate::gamepad::attach_forward(&peer_connection, sink).await {
+            warn!("Controller channel unavailable: {}", e);
+        }
     } else {
         drop(source_clipboard_rx);
         match crate::share::attach(&peer_connection, agent_config.allow_clipboard).await {

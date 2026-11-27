@@ -9,11 +9,10 @@ import QtQuick.Layouts
 // Accept/Decline, declined by the agent when nobody answers in time.
 Popup {
     id: dialog
-    // The ApprovalBridge, the window to bring up and the tray icon (its
-    // notification when the window cannot be raised over other windows).
+    // The ApprovalBridge (also the tray's notification, when the window
+    // cannot be raised over other windows) and the window to bring up.
     required property var agentBridge
     required property var hostWindow
-    property var tray: null
 
     property var question: null
     property int secondsLeft: 30
@@ -73,10 +72,9 @@ Popup {
                 w.raise();
                 w.requestActivate();
                 w.alert(0);
-                if (dialog.tray && dialog.tray.supportsMessages)
-                    dialog.tray.showMessage(dialog.files ? dialog.t("Someone wants to transfer files")
-                                                         : dialog.t("Someone wants to control this computer"),
-                                            q.requester, 1, (q.timeout_s || 30) * 1000);
+                dialog.agentBridge.notify(dialog.files ? dialog.t("Someone wants to transfer files")
+                                                       : dialog.t("Someone wants to control this computer"),
+                                          q.requester, (q.timeout_s || 30) * 1000);
                 dialog.open();
             }
         }

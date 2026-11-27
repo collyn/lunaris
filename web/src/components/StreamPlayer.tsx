@@ -1,4 +1,4 @@
-import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { BITRATES, CHROMAS, RESOLUTIONS, bitrateLabel, readDisplayMode, readVolume, objectFitFor, pictureClip, pointerReference, resolutionSize, shownPictureSize, type DisplayMode } from '../streamOptions';
 import StreamSettingsDialog, { type StreamSettingsValues, type ViewerSettings } from './StreamSettingsDialog';
 import { t } from '../i18n';
@@ -747,6 +747,20 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
   const [clipboardSync, setClipboardSync] = useState<boolean>(readClipboardSync);
   const [fileTransfer, setFileTransfer] = useState<boolean>(readFileTransfer);
   const [isDraggingFiles, setIsDraggingFiles] = useState(false);
+  // The drop hint goes away when no dragover came for a moment: dragleave
+  // misses a drag that leaves the window over a child (its target is the
+  // child) or ends outside the page, which left the hint up for good.
+  const dragHintTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const hideDropHint = useCallback(() => {
+    if (dragHintTimer.current) { clearTimeout(dragHintTimer.current); dragHintTimer.current = null; }
+    setIsDraggingFiles(false);
+  }, []);
+  const showDropHint = useCallback(() => {
+    setIsDraggingFiles(true);
+    if (dragHintTimer.current) clearTimeout(dragHintTimer.current);
+    dragHintTimer.current = setTimeout(hideDropHint, 400);
+  }, [hideDropHint]);
+  useEffect(() => () => { if (dragHintTimer.current) clearTimeout(dragHintTimer.current); }, []);
   // File manager on its own connection (FileManager.tsx); files dropped on
   // the stream go to the remote computer's Downloads/Lunaris through it.
   const [fileManager, setFileManager] = useState<{ uploads?: File[] } | null>(null);
@@ -4552,13 +4566,16 @@ export const StreamPlayer: React.FC<StreamPlayerProps> = ({
       className={`stream-container is-live ${isKeyboardActive ? 'keyboard-open' : ''}`}
       style={keyboardArea ? { top: keyboardArea.top, height: keyboardArea.height } : undefined}
       ref={containerRef}
-      onDragOver={(e) => { if (filesOffered && e.dataTransfer.types.includes('Files')) { e.preventDefault(); setIsDraggingFiles(true); } }}
-      onDragLeave={(e) => { if (e.currentTarget === e.target) setIsDraggingFiles(false); }}
+      // Nothing in the stream is a drag source: a drag started here (a held
+      // button moving over the picture) is the remote mouse, not a file.
+      onDragStart={(e) => e.preventDefault()}
+      onDragOver={(e) => { if (filesOffered && e.dataTransfer.types.includes('Files')) { e.preventDefault(); showDropHint(); } }}
+      onDragLeave={(e) => { const to = e.relatedTarget as Node | null; if (!to || !e.currentTarget.contains(to)) hideDropHint(); }}
       onDrop={(e) => {
+        hideDropHint();
         if (!e.dataTransfer.files.length) return;
         e.preventDefault();
         if (!filesOffered) return;
-        setIsDraggingFiles(false);
         if (!fileTransfer) { showShareToast(t('File transfer is turned off in Settings')); return; }
         setFileManager({ uploads: Array.from(e.dataTransfer.files) });
       }}

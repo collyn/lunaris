@@ -21,6 +21,7 @@
 mod bridge;
 mod helper;
 mod pending;
+mod tray;
 
 fn main() -> std::process::ExitCode {
     use tracing_subscriber::layer::SubscriberExt;
@@ -49,7 +50,10 @@ fn main() -> std::process::ExitCode {
     if ready_rx.recv().is_err() {
         return std::process::ExitCode::FAILURE;
     }
-    unsafe { bridge::qobject::create_widgets_application() };
+    unsafe {
+        bridge::qobject::create_widgets_application();
+        bridge::qobject::create_tray();
+    }
     let mut engine = cxx_qt_lib::QQmlApplicationEngine::new();
     if let Some(engine) = engine.as_mut() {
         engine.load(&cxx_qt_lib::QUrl::from("qrc:/Main.qml"));

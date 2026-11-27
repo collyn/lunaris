@@ -344,3 +344,79 @@ fn movements_that_came_at_once_become_fewer() {
     );
     assert!(coalesce(Vec::new()).is_empty());
 }
+
+#[test]
+fn controller_packets_byte_for_byte() {
+    // SS_CONTROLLER_ARRIVAL_PACKET: size 12 (BE), magic 0x55000004 (LE),
+    // number, type, capabilities (LE), supportedButtonFlags (LE).
+    let arrival = controller_arrival(1, 2, 0x0001, 0x0010_F7FF);
+    assert_eq!(arrival, [0, 0, 0, 12, 0x04, 0, 0, 0x55, 1, 2, 0x01, 0x00, 0xFF, 0xF7, 0x10, 0x00]);
+    assert_eq!(
+        read(&arrival),
+        InputSeen::ControllerArrival { number: 1, kind: 2, capabilities: 1, buttons: 0x0010_F7FF }
+    );
+
+    // NV_MULTI_CONTROLLER_PACKET (gen 5): size 30, magic 0x0C, then LE16
+    // headerB 0x1A, number, mask, midB 0x14, buttons, two triggers, four
+    // sticks, tailA 0x9C, buttonFlags2, tailB 0x55.
+    let state = multi_controller(1, 0b11, 0x0010_1001, 7, 255, [-32768, 32767, 1, -1]);
+    assert_eq!(
+        state,
+        [
+            0, 0, 0, 30, 0x0C, 0, 0, 0, 0x1A, 0, 1, 0, 3, 0, 0x14, 0, 0x01, 0x10, 7, 255, 0x00, 0x80, 0xFF, 0x7F, 1, 0,
+            0xFF, 0xFF, 0x9C, 0, 0x10, 0, 0x55, 0
+        ]
+    );
+    assert_eq!(
+        read(&state),
+        InputSeen::Controller { number: 1, active_mask: 3, buttons: 0x0010_1001, lt: 7, rt: 255, sticks: [-32768, 32767, 1, -1] }
+    );
+}
+
+#[test]
+fn a_controller_arrives_once_moves_and_leaves() {
+    use crate::gamepad::{buttons as b, PadState};
+    let mut encoder = InputEncoder::new(1920, 1080);
+    let pad = PadState { buttons: b::A | b::TOUCHPAD, lt: 10, rt: 0, lx: 100, ly: -200, rx: 0, ry: 32767 };
+    let first = encoder.encode(&Command::Gamepad { id: 2, kind: 2, state: Some(pad) });
+    assert_eq!(first.len(), 2);
+    assert!(first.iter().all(|p| p.channel == 0x12));
+    assert_eq!(
+        read(&first[0].data),
+        InputSeen::ControllerArrival { number: 2, kind: 2, capabilities: 1, buttons: 0xF7FF | 0x10_0000 }
+    );
+    // y grows upwards on the wire; the touch pad is Sunshine's own flag.
+    assert_eq!(
+        read(&first[1].data),
+        InputSeen::Controller { number: 2, active_mask: 0b100, buttons: 0x1000 | 0x10_0000, lt: 10, rt: 0, sticks: [100, 200, 0, -32767] }
+    );
+    // Known now: the state alone.
+    let next = encoder.encode(&Command::Gamepad { id: 2, kind: 2, state: Some(PadState::default()) });
+    assert_eq!(next.len(), 1);
+    // Unplugged: its bit leaves the mask, and only once.
+    let gone = encoder.encode(&Command::Gamepad { id: 2, kind: 0, state: None });
+    assert_eq!(gone.len(), 1);
+    assert!(matches!(read(&gone[0].data), InputSeen::Controller { number: 2, active_mask: 0, .. }));
+    assert!(encoder.encode(&Command::Gamepad { id: 2, kind: 0, state: None }).is_empty());
+    // Past what the host has room for: nothing.
+    assert!(encoder.encode(&Command::Gamepad { id: 16, kind: 1, state: Some(pad) }).is_empty());
+}
+
+#[test]
+fn every_controller_button_has_its_flag() {
+    use crate::gamepad::buttons as b;
+    let all = [b::A, b::B, b::X, b::Y, b::UP, b::DOWN, b::LEFT, b::RIGHT, b::LB, b::RB, b::START, b::BACK, b::LS, b::RS, b::GUIDE];
+    let flags: Vec<u32> = all.iter().map(|x| controller_buttons(*x)).collect();
+    // Limelight.h: A B X Y, UP DOWN LEFT RIGHT, LB RB, PLAY BACK, LS RS, SPECIAL.
+    assert_eq!(flags, [0x1000, 0x2000, 0x4000, 0x8000, 1, 2, 4, 8, 0x100, 0x200, 0x10, 0x20, 0x40, 0x80, 0x400]);
+    assert_eq!(all.iter().fold(0, |f, x| f | controller_buttons(*x)), XBOX_BUTTONS);
+    assert_eq!(controller_buttons(b::TOUCHPAD), 0x10_0000);
+}
+
+#[test]
+fn controller_states_in_a_row_keep_the_last_while_the_buttons_stay() {
+    use crate::gamepad::PadState;
+    let at = |lx: i16, buttons: u32| Command::Gamepad { id: 0, kind: 1, state: Some(PadState { buttons, lx, ..Default::default() }) };
+    let out = coalesce(vec![at(1, 0), at(2, 0), at(3, 1), at(4, 1), Command::Gamepad { id: 1, kind: 1, state: None }]);
+    assert_eq!(out, vec![at(2, 0), at(4, 1), Command::Gamepad { id: 1, kind: 1, state: None }]);
+}

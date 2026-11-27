@@ -97,6 +97,31 @@ enum Event {
     Closed,
 }
 
+/// Opens the `gamepad` channel on a session's connection whose controllers
+/// belong to another computer (a connector's: Sunshine): each state or
+/// unplugging goes to `sink` as it comes; nothing is plugged in here.
+pub async fn attach_forward(
+    pc: &Arc<dyn PeerConnection>,
+    sink: impl Fn(PadMsg) + Send + 'static,
+) -> anyhow::Result<()> {
+    let init = RTCDataChannelInit { ordered: false, max_retransmits: Some(0), ..Default::default() };
+    let channel = pc.create_data_channel("gamepad", Some(init)).await?;
+    tokio::spawn(async move {
+        while let Some(event) = channel.poll().await {
+            match event {
+                DataChannelEvent::OnMessage(msg) if !msg.is_string => {
+                    if let Some(m) = parse(&msg.data) {
+                        sink(m);
+                    }
+                }
+                DataChannelEvent::OnClose => break,
+                _ => {}
+            }
+        }
+    });
+    Ok(())
+}
+
 /// Opens the `gamepad` channel on a new session's connection.
 pub async fn attach(pc: &Arc<dyn PeerConnection>) -> anyhow::Result<()> {
     let init = RTCDataChannelInit { ordered: false, max_retransmits: Some(0), ..Default::default() };

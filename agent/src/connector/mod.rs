@@ -298,6 +298,10 @@ pub enum Command {
     /// What the viewer would like; 0 = no wish.
     Quality { fps: u32, bitrate_kbps: u32 },
     SwitchDisplay { index: usize },
+    /// A game controller of the viewer, its whole state (gamepad.rs);
+    /// `state` = `None`: unplugged. `kind`: 0 unknown, 1 Xbox,
+    /// 2 PlayStation, 3 Nintendo. Connectors without controllers ignore it.
+    Gamepad { id: u8, kind: u8, state: Option<crate::gamepad::PadState> },
     Close,
 }
 

@@ -17,8 +17,15 @@
 //! magic (little-endian u32), then the fields; they are big-endian except the
 //! key code.
 //!
-//! Limits: no game controllers, no touch, no pen (their packets are not
-//! built; `gcmap` of the launch is 0).
+//! Game controllers: as moonlight-common-c sends them to Sunshine — an
+//! arrival (`SS_CONTROLLER_ARRIVAL_PACKET`, type and buttons) when one is
+//! first seen, then whole states (`NV_MULTI_CONTROLLER_PACKET`, generation
+//! 5), each controller on its own channel (`CTRL_CHANNEL_GAMEPAD_BASE` + its
+//! number); an unplugging is a state whose `activeGamepadMask` no longer has
+//! its bit (Sunshine input.cpp frees the controller). No rumble, motion or
+//! controller touch pad.
+//!
+//! Limits: no touch, no pen (their packets are not built).
 //!
 //! Nothing here logs a key, a text or a position.
 
@@ -36,6 +43,23 @@ const MOUSE_BUTTON_UP_EVENT_MAGIC_GEN5: u32 = 0x09;
 const SCROLL_MAGIC_GEN5: u32 = 0x0A;
 const UTF8_TEXT_EVENT_MAGIC: u32 = 0x17;
 const SS_HSCROLL_MAGIC: u32 = 0x5500_0001;
+const MULTI_CONTROLLER_MAGIC_GEN5: u32 = 0x0C;
+const SS_CONTROLLER_ARRIVAL_MAGIC: u32 = 0x5500_0004;
+// NV_MULTI_CONTROLLER_PACKET's fixed fields.
+const MC_HEADER_B: u16 = 0x001A;
+const MC_MID_B: u16 = 0x0014;
+const MC_TAIL_A: u16 = 0x009C;
+const MC_TAIL_B: u16 = 0x0055;
+/// Limelight-internal.h: controller n goes on channel 0x10 + n.
+const CTRL_CHANNEL_GAMEPAD_BASE: u8 = 0x10;
+/// Sunshine's most controllers (bits of `activeGamepadMask`).
+pub const MAX_GAMEPADS: u8 = 16;
+// Limelight.h button flags (the Xbox ones are XInput's bits).
+const TOUCHPAD_FLAG: u32 = 0x10_0000;
+/// Every Xbox 360 button: A B X Y, the pad, LB RB, Start Back, the sticks, Guide.
+const XBOX_BUTTONS: u32 = 0xF7FF;
+const LI_CTYPE_PS: u8 = 0x02;
+const LI_CCAP_ANALOG_TRIGGERS: u16 = 0x01;
 /// The most text bytes one packet holds.
 pub const UTF8_TEXT_EVENT_MAX_COUNT: usize = 32;
 
@@ -150,6 +174,78 @@ pub fn utf8_text(text: &str) -> Vec<Vec<u8>> {
     out
 }
 
+/// SS_CONTROLLER_ARRIVAL_PACKET (InputStream.c LiSendControllerArrivalEvent):
+/// fields little-endian.
+pub fn controller_arrival(number: u8, kind: u8, capabilities: u16, buttons: u32) -> Vec<u8> {
+    let mut fields = Vec::with_capacity(8);
+    fields.push(number);
+    fields.push(kind);
+    fields.extend_from_slice(&capabilities.to_le_bytes());
+    fields.extend_from_slice(&buttons.to_le_bytes());
+    packet(SS_CONTROLLER_ARRIVAL_MAGIC, &fields)
+}
+
+/// NV_MULTI_CONTROLLER_PACKET for a generation 5+ host
+/// (InputStream.c sendControllerEventInternal): fields little-endian,
+/// sticks with y growing upwards, the buttons above 16 bits in
+/// `buttonFlags2` (a Sunshine extension).
+#[allow(clippy::too_many_arguments)]
+pub fn multi_controller(
+    number: u8,
+    active_mask: u16,
+    buttons: u32,
+    left_trigger: u8,
+    right_trigger: u8,
+    sticks: [i16; 4],
+) -> Vec<u8> {
+    let mut fields = Vec::with_capacity(22);
+    let le16 = |fields: &mut Vec<u8>, v: u16| fields.extend_from_slice(&v.to_le_bytes());
+    le16(&mut fields, MC_HEADER_B);
+    le16(&mut fields, number as u16);
+    le16(&mut fields, active_mask);
+    le16(&mut fields, MC_MID_B);
+    le16(&mut fields, buttons as u16);
+    fields.push(left_trigger);
+    fields.push(right_trigger);
+    for v in sticks {
+        le16(&mut fields, v as u16);
+    }
+    le16(&mut fields, MC_TAIL_A);
+    le16(&mut fields, (buttons >> 16) as u16);
+    le16(&mut fields, MC_TAIL_B);
+    packet(MULTI_CONTROLLER_MAGIC_GEN5, &fields)
+}
+
+/// Lunaris' controller buttons (gamepad.rs) as Limelight.h flags (XInput's
+/// bits for the Xbox ones).
+fn controller_buttons(buttons: u32) -> u32 {
+    use crate::gamepad::buttons as b;
+    const MAP: [(u32, u32); 16] = [
+        (b::UP, 0x0001),
+        (b::DOWN, 0x0002),
+        (b::LEFT, 0x0004),
+        (b::RIGHT, 0x0008),
+        (b::START, 0x0010),
+        (b::BACK, 0x0020),
+        (b::LS, 0x0040),
+        (b::RS, 0x0080),
+        (b::LB, 0x0100),
+        (b::RB, 0x0200),
+        (b::GUIDE, 0x0400),
+        (b::A, 0x1000),
+        (b::B, 0x2000),
+        (b::X, 0x4000),
+        (b::Y, 0x8000),
+        (b::TOUCHPAD, TOUCHPAD_FLAG),
+    ];
+    MAP.iter().filter(|(ours, _)| buttons & ours != 0).fold(0, |flags, (_, theirs)| flags | theirs)
+}
+
+/// y grows downwards here and upwards in the protocol (XInput's way).
+fn flip_y(v: i16) -> i16 {
+    clamp16(-(v as i32))
+}
+
 /// One input packet and the control stream channel it goes on.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InputPacket {
@@ -178,6 +274,8 @@ pub struct InputEncoder {
     /// The modifier keys this side holds down, as `MODIFIER_*`, one bit per
     /// physical key so that two Shift keys do not cancel each other.
     held: u8,
+    /// The viewer's controllers the host was told of, one bit each.
+    gamepads: u16,
 }
 
 // One bit per modifier key (left, right).
@@ -198,7 +296,37 @@ impl InputEncoder {
             width: width.clamp(2, i16::MAX as u32) as i16,
             height: height.clamp(2, i16::MAX as u32) as i16,
             held: 0,
+            gamepads: 0,
         }
+    }
+
+    /// The packets of a controller's state or unplugging.
+    fn gamepad(&mut self, id: u8, kind: u8, state: Option<&crate::gamepad::PadState>) -> Vec<InputPacket> {
+        if id >= MAX_GAMEPADS {
+            return Vec::new();
+        }
+        let bit = 1u16 << id;
+        let channel = CTRL_CHANNEL_GAMEPAD_BASE + id;
+        let Some(state) = state else {
+            if self.gamepads & bit == 0 {
+                return Vec::new();
+            }
+            self.gamepads &= !bit;
+            // The host frees a controller whose bit is gone from the mask.
+            return vec![InputPacket { channel, data: multi_controller(id, self.gamepads, 0, 0, 0, [0; 4]) }];
+        };
+        let mut out = Vec::with_capacity(2);
+        if self.gamepads & bit == 0 {
+            self.gamepads |= bit;
+            let supported = if kind == LI_CTYPE_PS { XBOX_BUTTONS | TOUCHPAD_FLAG } else { XBOX_BUTTONS };
+            out.push(InputPacket { channel, data: controller_arrival(id, kind, LI_CCAP_ANALOG_TRIGGERS, supported) });
+        }
+        let sticks = [state.lx, flip_y(state.ly), state.rx, flip_y(state.ry)];
+        out.push(InputPacket {
+            channel,
+            data: multi_controller(id, self.gamepads, controller_buttons(state.buttons), state.lt, state.rt, sticks),
+        });
+        out
     }
 
     /// The `modifiers` byte of a keyboard packet: Sunshine presses and
@@ -283,6 +411,7 @@ impl InputEncoder {
                 vec![key(keyboard(vk, *down, self.modifiers(), keymap::flags_of_vk(vk)))]
             }
             Command::Text { text } => utf8_text(text).into_iter().map(key).collect(),
+            Command::Gamepad { id, kind, state } => self.gamepad(*id, *kind, state.as_ref()),
             _ => Vec::new(),
         }
     }
@@ -305,6 +434,14 @@ pub fn coalesce(commands: Vec<Command>) -> Vec<Command> {
                 *dx = dx.saturating_add(*ndx);
                 *dy = dy.saturating_add(*ndy);
             }
+            // InputStream.c batches a controller's states while its buttons
+            // stay the same: only the sticks and triggers of the last count.
+            (
+                Some(Command::Gamepad { id, state: Some(last), .. }),
+                Command::Gamepad { id: nid, state: Some(next), .. },
+            ) if id == nid && last.buttons == next.buttons => {
+                *last = *next;
+            }
             _ => out.push(command),
         }
     }
@@ -322,6 +459,7 @@ pub fn is_input(command: &Command) -> bool {
             | Command::Wheel { .. }
             | Command::Key { .. }
             | Command::Text { .. }
+            | Command::Gamepad { .. }
     )
 }
 

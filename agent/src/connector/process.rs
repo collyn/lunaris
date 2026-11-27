@@ -222,8 +222,9 @@ pub enum EventHeader {
     Closed { reason: String },
 }
 
-pub fn command_to_wire(command: &Command) -> (CommandHeader, Bytes) {
-    match command {
+/// `None` for what the wire has no word for (game controllers).
+pub fn command_to_wire(command: &Command) -> Option<(CommandHeader, Bytes)> {
+    Some(match command {
         Command::PointerMove { x, y } => (CommandHeader::PointerMove { x: *x, y: *y }, Bytes::new()),
         Command::PointerMoveRelative { dx, dy } => (CommandHeader::PointerMoveRelative { dx: *dx, dy: *dy }, Bytes::new()),
         Command::PointerButton { button, down } => (CommandHeader::PointerButton { button: *button, down: *down }, Bytes::new()),
@@ -235,7 +236,8 @@ pub fn command_to_wire(command: &Command) -> (CommandHeader, Bytes) {
         Command::Quality { fps, bitrate_kbps } => (CommandHeader::Quality { fps: *fps, bitrate_kbps: *bitrate_kbps }, Bytes::new()),
         Command::SwitchDisplay { index } => (CommandHeader::SwitchDisplay { index: *index }, Bytes::new()),
         Command::Close => (CommandHeader::Close, Bytes::new()),
-    }
+        Command::Gamepad { .. } => return None,
+    })
 }
 
 /// The event of a message from a connector; `None` for `hello` (not an
@@ -643,7 +645,7 @@ impl Connector for ProcessConnector {
         tokio::spawn(async move {
             while let Some(command) = command_rx.recv().await {
                 let close = command == Command::Close;
-                let (header, payload) = command_to_wire(&command);
+                let Some((header, payload)) = command_to_wire(&command) else { continue };
                 if write_message(&mut stdin, &header, &payload).await.is_err() || close {
                     break;
                 }

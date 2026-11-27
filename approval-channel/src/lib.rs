@@ -17,6 +17,18 @@
 //! helper -> agent   {"id":1,"accept":true}
 //! ```
 //!
+//! On this channel (not on stdio) the agent also says, right after the
+//! first line, what the tray offers, and the tray may ask for a restart:
+//!
+//! ```text
+//! agent -> helper   @lunaris-agent-info {"web_url":"https://server:8090/"}
+//! helper -> agent   @lunaris-agent-restart
+//! ```
+//!
+//! An older agent drops a helper that asks for a restart (not an answer),
+//! and the helper connects again; an older helper drops an agent that says
+//! its info and connects again: both go together in one package.
+//!
 //! One helper answers at a time (others are disconnected at once); when it
 //! goes away, the questions waiting count as declined and the agent is
 //! unattended again (only the password lets anyone in) until a helper
@@ -131,8 +143,47 @@ pub fn parse_answer_line(line: &str) -> Result<Option<(u64, bool)>, String> {
     serde_json::from_str::<Answer>(line).map(|a| Some((a.id, a.accept))).map_err(|e| e.to_string())
 }
 
+/// What the agent tells the tray about itself.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentInfo {
+    /// The web page of the agent's Lunaris server (`http(s)://`), when it
+    /// has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub web_url: Option<String>,
+}
+
+/// The line of the agent's info (without the newline).
+pub fn info_line(info: &AgentInfo) -> String {
+    format!("{INFO_PREFIX}{}", serde_json::to_string(info).unwrap_or_default())
+}
+
+/// The info in a line of [`info_line`]; None for anything else.
+pub fn parse_info_line(line: &str) -> Option<AgentInfo> {
+    serde_json::from_str(line.trim().strip_prefix(INFO_PREFIX)?).ok()
+}
+
+const INFO_PREFIX: &str = "@lunaris-agent-info ";
+
+/// The helper's request that the agent start again.
+pub const RESTART_LINE: &str = "@lunaris-agent-restart";
+
+/// What the helper sends to the agent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HelperRequest {
+    /// The answer to question `id`.
+    Answer { id: u64, accept: bool },
+    /// Start the agent again (the tray's "Restart").
+    Restart,
+}
+
 /// The agent's questions, as the listening side sees them.
 pub trait Answerer: Send + Sync + 'static {
+    /// What the tray is told about the agent when it connects.
+    fn info(&self) -> AgentInfo {
+        AgentInfo::default()
+    }
+    /// The person here asked the agent to start again.
+    fn restart(&self) {}
     /// A helper answers from now on: each question and withdrawal goes to
     /// `sink` (which must not block). Returns what [`Answerer::detach`]
     /// takes.
@@ -198,7 +249,7 @@ where
     W: AsyncWrite + Unpin,
 {
     let (tx, mut rx) = mpsc::unbounded_channel::<Event>();
-    writer.write_all(format!("{READY_LINE}\n").as_bytes()).await?;
+    writer.write_all(format!("{READY_LINE}\n{}\n", info_line(&answerer.info())).as_bytes()).await?;
     writer.flush().await?;
     let generation = answerer.attach(Box::new(move |event| {
         let _ = tx.send(event);
@@ -209,6 +260,11 @@ where
             let Some(line) = read_line_capped(&mut reader, MAX_LINE).await? else {
                 return Ok(());
             };
+            if line.trim() == RESTART_LINE {
+                info!("Approval helper: the person here asked for a restart");
+                answerer.restart();
+                continue;
+            }
             match parse_answer_line(&line) {
                 Ok(Some((id, accept))) => answerer.answer(id, accept),
                 Ok(None) => {}
@@ -234,16 +290,18 @@ where
 }
 
 /// Helper side: once the agent said it lets this helper answer, calls
-/// `on_ready`, then shows each question and withdrawal with `on_event` and
-/// sends the answers given on `answers`, until the agent goes away (Ok) or
-/// sends something else (Err). Err(NotConnected) when the agent turned
-/// this helper away (another one answers).
+/// `on_ready`, then shows each question and withdrawal with `on_event`
+/// (and what the agent says of itself with `on_info`) and sends the
+/// answers and requests given on `requests`, until the agent goes away
+/// (Ok) or sends something else (Err). Err(NotConnected) when the agent
+/// turned this helper away (another one answers).
 pub async fn run_answerer<R, W>(
     reader: R,
     mut writer: W,
     on_ready: impl FnOnce(),
     on_event: impl Fn(Event),
-    answers: &mut mpsc::UnboundedReceiver<(u64, bool)>,
+    on_info: impl Fn(AgentInfo),
+    requests: &mut mpsc::UnboundedReceiver<HelperRequest>,
 ) -> io::Result<()>
 where
     R: AsyncRead + Unpin,
@@ -263,6 +321,10 @@ where
             if line.trim().is_empty() {
                 continue;
             }
+            if let Some(info) = parse_info_line(&line) {
+                on_info(info);
+                continue;
+            }
             match parse_event_line(&line) {
                 Some(event) => on_event(event),
                 None => return Err(io::Error::new(io::ErrorKind::InvalidData, "not a question")),
@@ -270,8 +332,11 @@ where
         }
     };
     let write = async {
-        while let Some((id, accept)) = answers.recv().await {
-            let mut line = answer_line(id, accept);
+        while let Some(request) = requests.recv().await {
+            let mut line = match request {
+                HelperRequest::Answer { id, accept } => answer_line(id, accept),
+                HelperRequest::Restart => RESTART_LINE.to_string(),
+            };
             line.push('\n');
             writer.write_all(line.as_bytes()).await?;
             writer.flush().await?;
@@ -912,6 +977,7 @@ mod tests {
         sink: Mutex<Option<(u64, Sink)>>,
         next: AtomicU64,
         answers: Mutex<Vec<(u64, bool)>>,
+        restarts: AtomicU64,
     }
 
     impl Questions {
@@ -953,10 +1019,29 @@ mod tests {
                 *sink = None;
             }
         }
+        fn info(&self) -> AgentInfo {
+            AgentInfo { web_url: Some("https://srv.lan:8090/".into()) }
+        }
+        fn restart(&self) {
+            self.restarts.fetch_add(1, Ordering::SeqCst);
+        }
     }
 
     fn question(id: u64, kind: &'static str) -> Question {
         Question { id, requester: "huy (direct)".into(), kind, timeout_s: 30 }
+    }
+
+    #[test]
+    fn info_lines_round_trip() {
+        let info = AgentInfo { web_url: Some("https://a.b:1/".into()) };
+        let line = info_line(&info);
+        assert_eq!(line, r#"@lunaris-agent-info {"web_url":"https://a.b:1/"}"#);
+        assert_eq!(parse_info_line(&line), Some(info));
+        assert_eq!(info_line(&AgentInfo::default()), "@lunaris-agent-info {}");
+        assert_eq!(parse_info_line("@lunaris-agent-info {}"), Some(AgentInfo::default()));
+        assert_eq!(parse_info_line("@lunaris-approval-ready"), None);
+        // Not a question, so the stdio protocol never mistakes it for one.
+        assert_eq!(parse_event_line(&line), None);
     }
 
     #[test]
@@ -1004,9 +1089,21 @@ mod tests {
         let (atx, mut arx) = mpsc::unbounded_channel();
         let seen = Arc::new(Mutex::new(Vec::new()));
         let s = seen.clone();
+        let infos = Arc::new(Mutex::new(Vec::new()));
+        let i = infos.clone();
         let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
         let helper = tokio::spawn(async move {
-            run_answerer(hr, hw, move || { let _ = ready_tx.send(()); }, move |e| s.lock().unwrap().push(e), &mut arx).await
+            run_answerer(
+                hr,
+                hw,
+                move || {
+                    let _ = ready_tx.send(());
+                },
+                move |e| s.lock().unwrap().push(e),
+                move |info| i.lock().unwrap().push(info),
+                &mut arx,
+            )
+            .await
         });
         ready_rx.await.unwrap();
         questions.wait_attended(true).await;
@@ -1021,8 +1118,16 @@ mod tests {
             *seen.lock().unwrap(),
             vec![Event::Ask(question(1, "control")), Event::Ask(question(2, "files")), Event::Cancel(2)]
         );
-        atx.send((1, true)).unwrap();
+        // The agent said where its web page is, right after the first line.
+        assert_eq!(*infos.lock().unwrap(), vec![AgentInfo { web_url: Some("https://srv.lan:8090/".into()) }]);
+        atx.send(HelperRequest::Answer { id: 1, accept: true }).unwrap();
         assert_eq!(questions.wait_answer().await, (1, true));
+        // The tray's Restart reaches the agent, and the helper stays.
+        atx.send(HelperRequest::Restart).unwrap();
+        while questions.restarts.load(Ordering::SeqCst) == 0 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert!(questions.attended());
 
         // The helper goes away (its answers' sender dropped): detached.
         drop(atx);
@@ -1065,13 +1170,13 @@ mod tests {
     async fn helper_side_turned_away() {
         for (sent, kind) in [(&b""[..], io::ErrorKind::NotConnected), (&b"hello\n"[..], io::ErrorKind::InvalidData)] {
             let (_atx, mut arx) = mpsc::unbounded_channel();
-            let r = run_answerer(sent, tokio::io::sink(), || panic!("ready"), |_| {}, &mut arx).await;
+            let r = run_answerer(sent, tokio::io::sink(), || panic!("ready"), |_| {}, |_| {}, &mut arx).await;
             assert_eq!(r.unwrap_err().kind(), kind);
         }
         // An agent that is ready, then sends something else.
         let (_atx, mut arx) = mpsc::unbounded_channel();
         let sent = format!("{READY_LINE}\nnonsense\n");
-        let r = run_answerer(sent.as_bytes(), tokio::io::sink(), || {}, |_| {}, &mut arx).await;
+        let r = run_answerer(sent.as_bytes(), tokio::io::sink(), || {}, |_| {}, |_| {}, &mut arx).await;
         assert_eq!(r.unwrap_err().kind(), io::ErrorKind::InvalidData);
     }
 
@@ -1173,6 +1278,8 @@ mod tests {
             questions.emit(Event::Ask(question(5, "control")));
             let (fr, mut fw) = first.into_split();
             let mut lines = BufReader::new(fr).lines();
+            // The agent's info comes first, then the question.
+            assert!(parse_info_line(&lines.next_line().await.unwrap().unwrap()).is_some());
             assert_eq!(parse_event_line(&lines.next_line().await.unwrap().unwrap()), Some(Event::Ask(question(5, "control"))));
             fw.write_all(format!("{}\n", answer_line(5, true)).as_bytes()).await.unwrap();
             assert_eq!(questions.wait_answer().await, (5, true));
